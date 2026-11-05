@@ -11,13 +11,21 @@
 
 #include "kicadd_local_drc.h"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
+#include <memory>
+#include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <set>
 #include <tuple>
 #include <unordered_set>
 
 #include <board.h>
+#include <connectivity/connectivity_algo.h>
+#include <connectivity/connectivity_data.h>
+#include <connectivity/connectivity_items.h>
 #include <board_design_settings.h>
 #include <drc/drc_engine.h>
 #include <drc/drc_rule.h>
@@ -77,6 +85,19 @@ public:
 
         if( m_engine && m_engine->QueryWorstConstraint( EDGE_CLEARANCE_CONSTRAINT, worst ) )
             m_largestEdgeClearance = worst.GetValue().Min();
+
+        // Upper bounds of every CLEARANCE / HOLE_CLEARANCE rule (netclass rules included): a
+        // pair that doesn't collide at the bound can't violate any rule, so its rules need no
+        // evaluation. Upstream's copper provider sizes its R-tree query by the same value.
+        m_copper = LSET::AllCuMask( m_board->GetCopperLayerCount() );
+        m_worstClearance = m_maxClearance;
+        m_worstHoleClearance = m_maxClearance;
+
+        if( m_engine && m_engine->QueryWorstConstraint( CLEARANCE_CONSTRAINT, worst ) )
+            m_worstClearance = std::max( 0, worst.GetValue().Min() );
+
+        if( m_engine && m_engine->QueryWorstConstraint( HOLE_CLEARANCE_CONSTRAINT, worst ) )
+            m_worstHoleClearance = std::max( 0, worst.GetValue().Min() );
     }
 
     bool Ready() const { return m_engine != nullptr; }
@@ -84,11 +105,21 @@ public:
     void Run( const std::vector<FOOTPRINT*>& aFootprints )
     {
         std::unordered_set<const FOOTPRINT*> moved( aFootprints.begin(), aFootprints.end() );
+        const bool prof = std::getenv( "KICADD_DRC_PROFILE" ) != nullptr;
+        using clk = std::chrono::steady_clock;
+        double tPads = 0, tTracks = 0, tQuery = 0;
+        long   nTracks = 0;
 
         for( FOOTPRINT* fp : aFootprints )
         {
             BOX2I area = fp->GetBoundingBox( false );
             area.Inflate( m_maxClearance );
+
+            // The footprint's pads in a grid, so each neighbour item only meets the pads
+            // near it (a 700-pin connector would otherwise test every pad against everything).
+            PAD_GRID grid( fp, m_maxClearance );
+
+            auto t0 = clk::now();
 
             for( FOOTPRINT* other : m_board->Footprints() )
             {
@@ -102,32 +133,180 @@ public:
                 if( !area.Intersects( other->GetBoundingBox( false ) ) )
                     continue;
 
-                for( PAD* pad : fp->Pads() )
-                {
-                    for( PAD* otherPad : other->Pads() )
-                        testCopperPair( pad, otherPad );
-                }
+                for( PAD* otherPad : other->Pads() )
+                    grid.Visit( otherPad->GetBoundingBox(), [&]( PAD* pad ) { testPadPair( pad, otherPad ); } );
 
                 testCourtyards( fp, other );
             }
 
-            for( PCB_TRACK* track : m_board->Tracks() )
-            {
-                if( !area.Intersects( track->GetBoundingBox() ) )
-                    continue;
+            auto t1 = clk::now();
+            tPads += std::chrono::duration<double, std::milli>( t1 - t0 ).count();
 
-                for( PAD* pad : fp->Pads() )
-                    testCopperPair( pad, track );
+            std::vector<std::pair<PCB_TRACK*, BOX2I>> near = tracksIn( area );
+            tQuery += std::chrono::duration<double, std::milli>( clk::now() - t1 ).count();
+
+            for( const auto& [track, box] : near )
+            {
+                nTracks++;
+                grid.Visit( box, [&]( PAD* pad ) { testTrackPair( pad, track ); } );
             }
+
+            tTracks += std::chrono::duration<double, std::milli>( clk::now() - t1 ).count();
         }
+
+        auto t2 = clk::now();
 
         if( !std::getenv( "KICADD_NO_EDGE_DRC" ) )
             testEdges( aFootprints );
+
+        double tEdges = std::chrono::duration<double, std::milli>( clk::now() - t2 ).count();
+
+        if( prof )
+        {
+            std::fprintf( stderr, "local drc: pads %.2f ms, tracks %.2f ms (query %.2f ms, %ld tracks), edges %.2f ms, "
+                                  "%ld bbox hits, %ld rule evals, %ld layer tests\n",
+                          tPads, tTracks, tQuery, nTracks, tEdges, m_bboxHits, m_ruleEvals, m_layerTests );
+        }
     }
 
     std::vector<DrcViolation> TakeResults() { return std::move( m_results ); }
 
 private:
+    /// Pads of one footprint bucketed by their clearance-inflated bounding boxes.
+    class PAD_GRID
+    {
+    public:
+        PAD_GRID( FOOTPRINT* aFp, int aClearance )
+        {
+            for( PAD* pad : aFp->Pads() )
+                m_pads.push_back( { pad, pad->GetBoundingBox().GetInflated( aClearance ) } );
+
+            if( m_pads.empty() )
+                return;
+
+            m_bounds = m_pads.front().box;
+
+            for( const ENTRY& e : m_pads )
+                m_bounds.Merge( e.box );
+
+            // About 4 pads per cell on a dense part, never finer than 0.5 mm.
+            double area = std::max( 1.0, (double) m_bounds.GetWidth() * (double) m_bounds.GetHeight() );
+            m_cell = std::max<int64_t>( 500000, (int64_t) std::sqrt( area * 4 / m_pads.size() ) );
+            m_nx = std::max<int64_t>( 1, m_bounds.GetWidth() / m_cell + 1 );
+            m_ny = std::max<int64_t>( 1, m_bounds.GetHeight() / m_cell + 1 );
+            m_cells.resize( m_nx * m_ny );
+            m_stamp.assign( m_pads.size(), 0 );
+
+            for( size_t i = 0; i < m_pads.size(); ++i )
+            {
+                auto [x0, y0, x1, y1] = cellRange( m_pads[i].box );
+
+                for( int64_t y = y0; y <= y1; ++y )
+                    for( int64_t x = x0; x <= x1; ++x )
+                        m_cells[y * m_nx + x].push_back( (int) i );
+            }
+        }
+
+        /// Call aFunc for each pad whose inflated box intersects aBox (each pad once).
+        template <class F>
+        void Visit( const BOX2I& aBox, F aFunc )
+        {
+            if( m_pads.empty() || !m_bounds.Intersects( aBox ) )
+                return;
+
+            ++m_epoch;
+            auto [x0, y0, x1, y1] = cellRange( aBox );
+
+            for( int64_t y = y0; y <= y1; ++y )
+            {
+                for( int64_t x = x0; x <= x1; ++x )
+                {
+                    for( int i : m_cells[y * m_nx + x] )
+                    {
+                        if( m_stamp[i] == m_epoch )
+                            continue;
+
+                        m_stamp[i] = m_epoch;
+
+                        if( m_pads[i].box.Intersects( aBox ) )
+                            aFunc( m_pads[i].pad );
+                    }
+                }
+            }
+        }
+
+    private:
+        struct ENTRY
+        {
+            PAD*  pad;
+            BOX2I box;
+        };
+
+        std::tuple<int64_t, int64_t, int64_t, int64_t> cellRange( const BOX2I& aBox ) const
+        {
+            auto clampX = [&]( int64_t v ) { return std::clamp<int64_t>( v, 0, m_nx - 1 ); };
+            auto clampY = [&]( int64_t v ) { return std::clamp<int64_t>( v, 0, m_ny - 1 ); };
+            return { clampX( ( (int64_t) aBox.GetLeft() - m_bounds.GetLeft() ) / m_cell ),
+                     clampY( ( (int64_t) aBox.GetTop() - m_bounds.GetTop() ) / m_cell ),
+                     clampX( ( (int64_t) aBox.GetRight() - m_bounds.GetLeft() ) / m_cell ),
+                     clampY( ( (int64_t) aBox.GetBottom() - m_bounds.GetTop() ) / m_cell ) };
+        }
+
+        std::vector<ENTRY>            m_pads;
+        BOX2I                         m_bounds;
+        int64_t                       m_cell = 1;
+        int64_t                       m_nx = 1, m_ny = 1;
+        std::vector<std::vector<int>> m_cells;
+        std::vector<unsigned>         m_stamp;
+        unsigned                      m_epoch = 0;
+    };
+
+    /// Tracks, arcs and vias whose bounding box intersects aArea, from the connectivity
+    /// R-tree (kept current by every commit) instead of a scan of every track on the board.
+    std::vector<std::pair<PCB_TRACK*, BOX2I>> tracksIn( const BOX2I& aArea )
+    {
+        std::vector<std::pair<PCB_TRACK*, BOX2I>> out;
+        std::shared_ptr<CONNECTIVITY_DATA>       conn = m_board->GetConnectivity();
+
+        if( conn && conn->GetConnectivityAlgo() && !std::getenv( "KICADD_DRC_SCAN_TRACKS" ) )
+        {
+            std::unordered_set<PCB_TRACK*> seen;
+
+            conn->GetConnectivityAlgo()->ItemList().QueryArea( aArea,
+                    [&]( CN_ITEM* aItem ) -> bool
+                    {
+                        if( !aItem->Valid() )
+                            return true;
+
+                        BOARD_CONNECTED_ITEM* parent = aItem->Parent();
+
+                        if( parent->Type() == PCB_TRACE_T || parent->Type() == PCB_ARC_T
+                            || parent->Type() == PCB_VIA_T )
+                        {
+                            PCB_TRACK*   t = static_cast<PCB_TRACK*>( parent );
+                            const BOX2I& box = aItem->BBox();   // the parent's GetBoundingBox(), cached
+
+                            if( aArea.Intersects( box ) && seen.insert( t ).second )
+                                out.emplace_back( t, box );
+                        }
+
+                        return true;
+                    } );
+
+            return out;
+        }
+
+        for( PCB_TRACK* track : m_board->Tracks() )
+        {
+            BOX2I box = track->GetBoundingBox();
+
+            if( aArea.Intersects( box ) )
+                out.emplace_back( track, box );
+        }
+
+        return out;
+    }
+
     void report( DrcType aType, const BOARD_ITEM* aA, const BOARD_ITEM* aB, PCB_LAYER_ID aLayer,
                  int aRequired, int aActual, const VECTOR2I& aPos )
     {
@@ -188,22 +367,20 @@ private:
                || m_engine->IsNetTieExclusion( netOf( aB ), aLayer, aPos, const_cast<BOARD_ITEM*>( aA ) );
     }
 
-    void testCopperPair( PAD* aPad, BOARD_ITEM* aOther )
+    /// The grid already applied testCopperPair's bounding-box filter.
+    void testPadPair( PAD* aPad, PAD* aOther )
     {
-        if( !aPad->GetBoundingBox().GetInflated( m_maxClearance ).Intersects( aOther->GetBoundingBox() ) )
-            return;
+        m_bboxHits++;
+        testPadPath( aPad, aOther );
+    }
 
-        if( aOther->Type() == PCB_PAD_T )
-        {
-            testPadPath( aPad, static_cast<PAD*>( aOther ) );
-        }
-        else
-        {
-            testTrackPath( static_cast<PCB_TRACK*>( aOther ), aPad );
+    void testTrackPair( PAD* aPad, PCB_TRACK* aTrack )
+    {
+        m_bboxHits++;
+        testTrackPath( aTrack, aPad );
 
-            if( aOther->Type() == PCB_VIA_T )
-                testPadPath( aPad, aOther );
-        }
+        if( aTrack->Type() == PCB_VIA_T )
+            testPadPath( aPad, aTrack );
     }
 
     /// Mirrors DRC_TEST_PROVIDER_COPPER_CLEARANCE::testPadAgainstItem for pad-vs-pad (full)
@@ -230,8 +407,7 @@ private:
                               || ( otherPad && otherPad->GetDrillSize().x > 0 )
                               || ( otherVia && otherVia->GetDrill() > 0 );
 
-        LSET layers = pad->GetLayerSet() & other->GetLayerSet()
-                      & LSET::AllCuMask( m_board->GetCopperLayerCount() );
+        LSET layers = LSET( pad->GetLayerSet() & other->GetLayerSet() & m_copper );
 
         for( PCB_LAYER_ID layer : layers.Seq() )
         {
@@ -248,9 +424,9 @@ private:
 
             bool testHoles = anyDrill;
 
-            if( testClearance )
+            if( testClearance && padShape->Collide( otherShape.get(), m_worstClearance ) )
             {
-                DRC_CONSTRAINT c = m_engine->EvalRules( CLEARANCE_CONSTRAINT, pad, other, layer );
+                DRC_CONSTRAINT c = ( ++m_ruleEvals, m_engine )->EvalRules( CLEARANCE_CONSTRAINT, pad, other, layer );
                 int            clearance = c.GetValue().Min();
                 int            actual = 0;
                 VECTOR2I       pos;
@@ -268,7 +444,21 @@ private:
             if( !testHoles )
                 continue;
 
-            DRC_CONSTRAINT hc = m_engine->EvalRules( HOLE_CLEARANCE_CONSTRAINT, pad, other, layer );
+            auto holeNear = [&]( const SHAPE* aCopper, const BOARD_ITEM* aHolder )
+            {
+                std::shared_ptr<SHAPE_SEGMENT> hole = aHolder->GetEffectiveHoleShape( layer, HOLE_CLEARANCE_CONSTRAINT );
+                return hole && aCopper->Collide( hole.get(), m_worstHoleClearance );
+            };
+
+            // Same candidates as the tests below, at the worst hole clearance of any rule.
+            if( !( otherPad && otherPad->HasHole() && pad->FlashLayer( layer ) && holeNear( padShape.get(), otherPad ) )
+                && !( otherPad && pad->HasHole() && otherPad->FlashLayer( layer ) && holeNear( otherShape.get(), pad ) )
+                && !( otherVia && otherVia->HasHole() && holeNear( padShape.get(), otherVia ) ) )
+            {
+                continue;
+            }
+
+            DRC_CONSTRAINT hc = ( ++m_ruleEvals, m_engine )->EvalRules( HOLE_CLEARANCE_CONSTRAINT, pad, other, layer );
 
             if( hc.GetSeverity() == RPT_SEVERITY_IGNORE )
                 continue;
@@ -321,10 +511,26 @@ private:
         if( aTrack->GetNetCode() == aPad->GetNetCode() )
             return;
 
-        LSET layers = aTrack->GetLayerSet() & aPad->GetLayerSet()
-                      & LSET::AllCuMask( m_board->GetCopperLayerCount() );
+        // Same layers as GetLayerSet() & pad layers & copper, without building LSETs (which
+        // allocate) for every pair: a trace or arc has exactly one layer.
+        PCB_LAYER_ID              single = UNDEFINED_LAYER;
+        std::vector<PCB_LAYER_ID> viaLayers;
 
-        for( PCB_LAYER_ID layer : layers.Seq() )
+        if( aTrack->Type() != PCB_VIA_T )
+        {
+            single = aTrack->GetLayer();
+
+            if( !m_copper.Contains( single ) || !aPad->IsOnLayer( single ) )
+                return;
+        }
+        else
+        {
+            viaLayers = LSET( aTrack->GetLayerSet() & aPad->GetLayerSet() & m_copper ).Seq();
+        }
+
+        const std::vector<PCB_LAYER_ID>& layerList = single != UNDEFINED_LAYER ? m_one( single ) : viaLayers;
+
+        for( PCB_LAYER_ID layer : layerList )
         {
             BOARD_ITEM*            item = aTrack;
             BOARD_ITEM*            other = aPad;
@@ -347,15 +553,24 @@ private:
             if( !itemShape || !otherShape )
                 continue;
 
+            m_layerTests++;
+
             if( item->m_Uuid > other->m_Uuid )
             {
                 std::swap( item, other );
                 std::swap( itemShape, otherShape );
             }
 
-            if( testClearance )
+            // Hole clearance, both directions, tested even at 0 clearance.
+            std::array<BOARD_ITEM*, 2>                    a{ item, other };
+            std::array<BOARD_ITEM*, 2>                    b{ other, item };
+            std::array<std::shared_ptr<SHAPE>, 2>         aShape{ itemShape, otherShape };
+            std::array<std::shared_ptr<SHAPE_SEGMENT>, 2> holes{ holeOn( b[0], layer ), holeOn( b[1], layer ) };
+
+            // Rules are only evaluated for shapes within the worst clearance of their kind.
+            if( testClearance && itemShape->Collide( otherShape.get(), m_worstClearance ) )
             {
-                DRC_CONSTRAINT c = m_engine->EvalRules( CLEARANCE_CONSTRAINT, item, other, layer );
+                DRC_CONSTRAINT c = ( ++m_ruleEvals, m_engine )->EvalRules( CLEARANCE_CONSTRAINT, item, other, layer );
                 int            clearance = c.GetValue().Min();
                 int            actual = 0;
                 VECTOR2I       pos;
@@ -369,22 +584,17 @@ private:
                 }
             }
 
-            // Hole clearance, both directions, tested even at 0 clearance.
-            std::array<BOARD_ITEM*, 2>            a{ item, other };
-            std::array<BOARD_ITEM*, 2>            b{ other, item };
-            std::array<std::shared_ptr<SHAPE>, 2> aShape{ itemShape, otherShape };
-
             for( size_t ii = 0; ii < 2; ++ii )
             {
-                std::shared_ptr<SHAPE_SEGMENT> hole = holeOn( b[ii], layer );
+                const std::shared_ptr<SHAPE_SEGMENT>& hole = holes[ii];
 
-                if( !hole )
+                if( !hole || !aShape[ii]->Collide( hole.get(), m_worstHoleClearance ) )
                     continue;
 
                 if( m_engine->IsNetTieExclusion( netOf( b[ii] ), layer, hole->Centre(), a[ii] ) )
                     continue;
 
-                DRC_CONSTRAINT hc = m_engine->EvalRules( HOLE_CLEARANCE_CONSTRAINT, b[ii], a[ii], layer );
+                DRC_CONSTRAINT hc = ( ++m_ruleEvals, m_engine )->EvalRules( HOLE_CLEARANCE_CONSTRAINT, b[ii], a[ii], layer );
 
                 if( hc.GetSeverity() == RPT_SEVERITY_IGNORE )
                     continue;
@@ -640,6 +850,20 @@ private:
     int                          m_epsilon;
     int                          m_maxClearance;
     int                          m_largestEdgeClearance = 0;
+    long                         m_bboxHits = 0;
+    long                         m_ruleEvals = 0;
+    long                         m_layerTests = 0;
+    int                          m_worstClearance = 0;
+    LSET                         m_copper;
+    std::vector<PCB_LAYER_ID>    m_oneLayer{ UNDEFINED_LAYER };
+
+    const std::vector<PCB_LAYER_ID>& m_one( PCB_LAYER_ID aLayer )
+    {
+        m_oneLayer[0] = aLayer;
+        return m_oneLayer;
+    }
+
+    int                          m_worstHoleClearance = 0;
     std::vector<std::unique_ptr<PCB_SHAPE>> m_edges;
     std::vector<DrcViolation>    m_results;
     std::set<std::tuple<int, const BOARD_ITEM*, const BOARD_ITEM*>> m_seen;

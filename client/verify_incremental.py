@@ -134,9 +134,12 @@ def part_b(c, s, fps, refs, board_file, rng):
     name = board_rules_pb2.DrcErrorType.Name
     print("  baseline full DRC by type:",
           {name(t): n for t, n in sorted(by_type.items()) if t in COVERED})
-    moved = rng.sample(refs, 12)
+    # KICADD_TEST_REFS=J1,J18 picks the parts (with small moves: big parts make many violations).
+    chosen = [r for r in os.environ.get("KICADD_TEST_REFS", "").split(",") if r]
+    moved = chosen or rng.sample(refs, 12)
+    span = 0.3 if chosen else 1.5
     for ref in moved:
-        c.move([ref], dx_mm=rng.uniform(-1.5, 1.5), dy_mm=rng.uniform(-1.5, 1.5))
+        c.move([ref], dx_mm=rng.uniform(-span, span), dy_mm=rng.uniform(-span, span))
 
     local = c.call(kd.CheckLocalDrc(refs=moved), kd.LocalDrcResponse)
     print(f"  local DRC on {len(moved)} footprints: {len(local.drc)} violations "
@@ -157,7 +160,7 @@ def part_b(c, s, fps, refs, board_file, rng):
         owner.setdefault(f.id, f.handle)
     # pads: ask around each moved fp (radius large enough to cover the footprint)
     for ref in moved:
-        for it in c.query_radius(30, ref=ref, kinds=[kd.IK_PAD], limit=100000,
+        for it in c.query_radius(150, ref=ref, kinds=[kd.IK_PAD], limit=100000,
                                  with_ids=True).items:
             owner[it.id] = it.handle.split(".")[0]
     zone_ids = {z.id for z in all_items(c, s, [kd.IK_ZONE])}
@@ -184,6 +187,17 @@ def part_b(c, s, fps, refs, board_file, rng):
     both = local_set & full_set
     only_local = local_set - full_set
     only_full = full_set - local_set
+
+    # Upstream stops testing a track at its first violation (unless "report all track
+    # errors" is set), so it names one pad per track where local DRC lists every pair.
+    # A local-only pair is that case when its track already has a full-DRC report.
+    track_ids = {t.id for t in all_items(c, s, [kd.IK_TRACK, kd.IK_ARC, kd.IK_VIA])}
+    reported = {i for _, pair in full_set for i in pair}
+    first_only = {(t, pair) for t, pair in only_local if any(i in track_ids and i in reported for i in pair)}
+    if first_only:
+        print(f"  {len(first_only)} local-only pair(s) are extra pads on a track upstream already reported "
+              f"(it reports one violation per track)")
+    only_local -= first_only
     print(f"  in scope: full={len(full_set)} local={len(local_set)} "
           f"matched={len(both)} only_local={len(only_local)} only_full={len(only_full)}")
 

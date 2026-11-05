@@ -821,6 +821,33 @@ index 124540f6..0dd03aa8 100644
      /// Used to suppress ratsnest calculations on dynamic ratsnests
      bool                            m_skipRatsnestUpdate;
  
+diff --git a/pcbnew/connectivity/connectivity_items.h b/pcbnew/connectivity/connectivity_items.h
+index 9dfdd070..8044b723 100644
+--- a/pcbnew/connectivity/connectivity_items.h
++++ b/pcbnew/connectivity/connectivity_items.h
+@@ -33,6 +33,7 @@
+ #include <deque>
+ #include <functional>
+ #include <memory>
++#include <limits>
+ #include <vector>
+ 
+ #include <connectivity/connectivity_rtree.h>
+@@ -493,6 +494,14 @@ public:
+         m_index.Query( aItem->BBox(), aItem->StartLayer(), aItem->EndLayer(), aFunc );
+     }
+ 
++    /// Visit every indexed item whose bounding box intersects aBounds, on any copper layer.
++    /// Removed items may still be indexed until garbage collection: check Valid() first.
++    template <class T>
++    void QueryArea( const BOX2I& aBounds, T aFunc ) const
++    {
++        m_index.Query( aBounds, std::numeric_limits<int>::min(), std::numeric_limits<int>::max(), aFunc );
++    }
++
+     void SetHasInvalid( bool aInvalid = true ) { m_hasInvalid = aInvalid; }
+ 
+     void SetDirty( bool aDirty = true ) { m_dirty = aDirty; }
 diff --git a/pcbnew/pcbnew.cpp b/pcbnew/pcbnew.cpp
 index 2282c07e..137019c6 100644
 --- a/pcbnew/pcbnew.cpp
