@@ -130,6 +130,7 @@ message MoveResponse
   repeated DrcViolation drc = 5;          // local DRC around the moved footprints
   int64                 drc_us = 6;
   repeated string       ratsnest_pending = 7;  // large nets whose ratsnest is deferred
+  string                history_label = 8;     // undo label recorded for this edit
 }
 
 // ---------------------------------------------------------------------------
@@ -235,4 +236,26 @@ message FlushRatsnestResponse
   int32 nets_flushed = 1;
   int32 unconnected  = 2;   // complete, board-wide
   int64 elapsed_us   = 3;
+}
+
+// ---------------------------------------------------------------------------------------------
+// History (undo / redo)
+//
+// Headless KiCad commits keep no undo list (that lives in the editor frame), so KiCadD keeps
+// its own: every KiCadD edit records the before/after state of what it touched. Undo/redo
+// restore those states as new commits. Edits made through other API commands aren't recorded.
+
+message Undo {}
+message Redo {}
+message GetHistory {}
+
+// Returns HistoryResponse (Undo / Redo / GetHistory)
+message HistoryResponse
+{
+  bool            ok       = 1;     // false: nothing to undo/redo
+  string          label    = 2;     // what was undone / redone
+  MoveResponse    result   = 3;     // positions, unconnected, local DRC after undo/redo
+  repeated string undo     = 4;     // labels, oldest first
+  repeated string redo     = 5;     // labels, next redo last
+  bool            modified = 6;     // board differs from the file on disk
 }

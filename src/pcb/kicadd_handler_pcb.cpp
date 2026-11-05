@@ -11,7 +11,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <set>
+#include <unordered_map>
 
 #include <api/pcb_context.h>
 #include <board.h>
@@ -189,6 +191,9 @@ KICADD_HANDLER_PCB::KICADD_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext ) 
     registerHandler<QueryRadius, QueryResponse>( &KICADD_HANDLER_PCB::handleQueryRadius );
     registerHandler<QueryNet, QueryResponse>( &KICADD_HANDLER_PCB::handleQueryNet );
     registerHandler<MoveDelta, MoveResponse>( &KICADD_HANDLER_PCB::handleMoveDelta );
+    registerHandler<Undo, HistoryResponse>( &KICADD_HANDLER_PCB::handleUndo );
+    registerHandler<Redo, HistoryResponse>( &KICADD_HANDLER_PCB::handleRedo );
+    registerHandler<GetHistory, HistoryResponse>( &KICADD_HANDLER_PCB::handleGetHistory );
     registerHandler<CheckLocalDrc, LocalDrcResponse>( &KICADD_HANDLER_PCB::handleCheckLocalDrc );
     registerHandler<GetStateDigest, StateDigestResponse>( &KICADD_HANDLER_PCB::handleGetStateDigest );
     registerHandler<SetRatsnestDeferral, RatsnestDeferralResponse>(
@@ -426,32 +431,14 @@ KICADD_HANDLER_PCB::handleQueryNet( const HANDLER_CONTEXT<QueryNet>& aCtx )
 }
 
 
-HANDLER_RESULT<MoveResponse>
-KICADD_HANDLER_PCB::handleMoveDelta( const HANDLER_CONTEXT<MoveDelta>& aCtx )
+void KICADD_HANDLER_PCB::applyFootprintEdit( const std::vector<FOOTPRINT*>& aTargets,
+                                             const std::function<void( FOOTPRINT* )>& aMutate,
+                                             const wxString& aCommitMessage, MoveResponse& aOut )
 {
     auto   t0 = std::chrono::steady_clock::now();
-    BOARD* b  = board();
+    BOARD* b = board();
 
-    if( !b )
-        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
-
-    const MoveDelta& req = aCtx.Request;
-
-    if( req.refs().empty() )
-        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "MoveDelta needs refs" ) );
-
-    MoveResponse            out;
-    std::vector<FOOTPRINT*> targets;
-
-    for( const std::string& ref : req.refs() )
-    {
-        if( FOOTPRINT* fp = b->FindFootprintByReference( wxString::FromUTF8( ref ) ) )
-            targets.push_back( fp );
-        else
-            out.add_missing( ref );
-    }
-
-    if( !targets.empty() )
+    if( !aTargets.empty() )
     {
         std::shared_ptr<CONNECTIVITY_DATA> conn = b->GetConnectivity();
 
@@ -487,57 +474,268 @@ KICADD_HANDLER_PCB::handleMoveDelta( const HANDLER_CONTEXT<MoveDelta>& aCtx )
                     } );
         }
 
-        BOARD_COMMIT    commit( m_context->GetToolManager(), true, false );
-        const VECTOR2I  delta( req.dx(), req.dy() );
-        const EDA_ANGLE drot( req.drot_decideg() / 10.0, DEGREES_T );
+        BOARD_COMMIT commit( m_context->GetToolManager(), true, false );
 
-        for( FOOTPRINT* fp : targets )
+        for( FOOTPRINT* fp : aTargets )
         {
             commit.Modify( fp );
-
-            if( delta.x != 0 || delta.y != 0 )
-                fp->Move( delta );
-
-            if( req.drot_decideg() != 0 )
-                fp->Rotate( fp->GetPosition(), drot );
+            aMutate( fp );
         }
 
-        commit.Push( wxS( "KiCadD MoveDelta" ) );
+        commit.Push( aCommitMessage );
         m_context->SetContentModified();
 
-        for( FOOTPRINT* fp : targets )
+        for( FOOTPRINT* fp : aTargets )
             fp->BuildCourtyardCaches();
 
-        for( const FOOTPRINT* fp : targets )
+        for( const FOOTPRINT* fp : aTargets )
         {
-            MoveResult* r = out.add_moved();
+            MoveResult* r = aOut.add_moved();
             r->set_ref( fp->GetReference().ToStdString() );
             setPoint( r->mutable_pos(), fp->GetPosition() );
             r->set_rot_decideg( fp->GetOrientation().AsTenthsOfADegree() );
         }
     }
 
-    out.set_elapsed_us( std::chrono::duration_cast<std::chrono::microseconds>(
-                                std::chrono::steady_clock::now() - t0 ).count() );
+    aOut.set_elapsed_us( std::chrono::duration_cast<std::chrono::microseconds>(
+                                 std::chrono::steady_clock::now() - t0 ).count() );
     {
         std::shared_ptr<CONNECTIVITY_DATA> conn = b->GetConnectivity();
-        out.set_unconnected( static_cast<int>( conn->GetUnconnectedCountNoFlush( false ) ) );
+        aOut.set_unconnected( static_cast<int>( conn->GetUnconnectedCountNoFlush( false ) ) );
 
         for( int net : conn->GetPendingRatsnestNets() )
-            out.add_ratsnest_pending( netName( b, net ) );
+            aOut.add_ratsnest_pending( netName( b, net ) );
     }
 
-    if( !targets.empty() )
+    if( !aTargets.empty() )
     {
         auto d0 = std::chrono::steady_clock::now();
 
-        for( DrcViolation& v : kicadd::RunLocalDrc( b, targets ) )
-            *out.add_drc() = std::move( v );
+        for( DrcViolation& v : kicadd::RunLocalDrc( b, aTargets ) )
+            *aOut.add_drc() = std::move( v );
 
-        out.set_drc_us( std::chrono::duration_cast<std::chrono::microseconds>(
-                                std::chrono::steady_clock::now() - d0 ).count() );
+        aOut.set_drc_us( std::chrono::duration_cast<std::chrono::microseconds>(
+                                 std::chrono::steady_clock::now() - d0 ).count() );
+    }
+}
+
+
+KICADD_HANDLER_PCB::FP_STATE KICADD_HANDLER_PCB::stateOf( const FOOTPRINT* aFp )
+{
+    return { aFp->m_Uuid, aFp->GetPosition(), aFp->GetOrientation() };
+}
+
+
+namespace
+{
+
+std::string mmText( int64_t aNm )
+{
+    char buf[32];
+    std::snprintf( buf, sizeof( buf ), "%+.2f", aNm / 1e6 );
+    return buf;
+}
+
+
+std::string describeMove( const std::vector<FOOTPRINT*>& aTargets, const VECTOR2I& aDelta, int aDrotDecideg )
+{
+    std::string refs;
+
+    for( size_t i = 0; i < aTargets.size() && i < 3; ++i )
+        refs += ( i ? "," : "" ) + aTargets[i]->GetReference().ToStdString();
+
+    if( aTargets.size() > 3 )
+        refs += ",+" + std::to_string( aTargets.size() - 3 );
+
+    std::string label;
+
+    if( aDelta.x || aDelta.y )
+        label = "move " + refs + " " + mmText( aDelta.x ) + "," + mmText( aDelta.y ) + " mm";
+
+    if( aDrotDecideg )
+    {
+        char buf[32];
+        std::snprintf( buf, sizeof( buf ), "%+g", aDrotDecideg / 10.0 );
+        label += ( label.empty() ? "rotate " + refs + " " : ", rotate " ) + std::string( buf ) + "°";
     }
 
+    return label;
+}
+
+} // namespace
+
+
+HANDLER_RESULT<MoveResponse>
+KICADD_HANDLER_PCB::handleMoveDelta( const HANDLER_CONTEXT<MoveDelta>& aCtx )
+{
+    BOARD* b = board();
+
+    if( !b )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
+
+    const MoveDelta& req = aCtx.Request;
+
+    if( req.refs().empty() )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "MoveDelta needs refs" ) );
+
+    MoveResponse            out;
+    std::vector<FOOTPRINT*> targets;
+
+    for( const std::string& ref : req.refs() )
+    {
+        if( FOOTPRINT* fp = b->FindFootprintByReference( wxString::FromUTF8( ref ) ) )
+            targets.push_back( fp );
+        else
+            out.add_missing( ref );
+    }
+
+    const VECTOR2I  delta( req.dx(), req.dy() );
+    const EDA_ANGLE drot( req.drot_decideg() / 10.0, DEGREES_T );
+
+    HISTORY_ENTRY entry;
+
+    for( const FOOTPRINT* fp : targets )
+        entry.before.push_back( stateOf( fp ) );
+
+    applyFootprintEdit( targets,
+                        [&]( FOOTPRINT* fp )
+                        {
+                            if( delta.x != 0 || delta.y != 0 )
+                                fp->Move( delta );
+
+                            if( req.drot_decideg() != 0 )
+                                fp->Rotate( fp->GetPosition(), drot );
+                        },
+                        wxS( "KiCadD MoveDelta" ), out );
+
+    if( !targets.empty() && ( delta.x || delta.y || req.drot_decideg() ) )
+    {
+        for( const FOOTPRINT* fp : targets )
+            entry.after.push_back( stateOf( fp ) );
+
+        entry.label = describeMove( targets, delta, req.drot_decideg() );
+        out.set_history_label( entry.label );
+        m_undo.push_back( std::move( entry ) );
+        m_redo.clear();
+
+        if( m_undo.size() > MAX_HISTORY )
+            m_undo.erase( m_undo.begin() );
+    }
+
+    return out;
+}
+
+
+bool KICADD_HANDLER_PCB::restore( const std::vector<FP_STATE>& aStates, const std::string& aLabel,
+                                  MoveResponse& aOut )
+{
+    BOARD*                                  b = board();
+    std::vector<FOOTPRINT*>                 targets;
+    std::unordered_map<FOOTPRINT*, FP_STATE> wanted;
+
+    for( const FP_STATE& st : aStates )
+    {
+        BOARD_ITEM* item = b->ResolveItem( st.id, true );
+
+        if( item && item->Type() == PCB_FOOTPRINT_T )
+        {
+            FOOTPRINT* fp = static_cast<FOOTPRINT*>( item );
+            targets.push_back( fp );
+            wanted[fp] = st;
+        }
+        else
+        {
+            aOut.add_missing( st.id.AsStdString() );
+        }
+    }
+
+    if( targets.empty() )
+        return false;
+
+    applyFootprintEdit( targets,
+                        [&]( FOOTPRINT* fp )
+                        {
+                            const FP_STATE& st = wanted[fp];
+
+                            if( fp->GetOrientation() != st.orient )
+                                fp->SetOrientation( st.orient );
+
+                            if( fp->GetPosition() != st.pos )
+                                fp->SetPosition( st.pos );
+                        },
+                        wxString::FromUTF8( "KiCadD " + aLabel ), aOut );
+    return true;
+}
+
+
+void KICADD_HANDLER_PCB::fillHistory( HistoryResponse& aOut ) const
+{
+    for( const HISTORY_ENTRY& e : m_undo )
+        aOut.add_undo( e.label );
+
+    for( const HISTORY_ENTRY& e : m_redo )
+        aOut.add_redo( e.label );
+
+    aOut.set_modified( m_context && m_context->IsContentModified() );
+}
+
+
+HANDLER_RESULT<HistoryResponse>
+KICADD_HANDLER_PCB::handleUndo( const HANDLER_CONTEXT<Undo>& aCtx )
+{
+    if( !board() )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
+
+    HistoryResponse out;
+
+    if( !m_undo.empty() )
+    {
+        HISTORY_ENTRY entry = std::move( m_undo.back() );
+        m_undo.pop_back();
+
+        out.set_ok( restore( entry.before, "undo " + entry.label, *out.mutable_result() ) );
+        out.set_label( entry.label );
+
+        if( out.ok() )
+            m_redo.push_back( std::move( entry ) );
+    }
+
+    fillHistory( out );
+    return out;
+}
+
+
+HANDLER_RESULT<HistoryResponse>
+KICADD_HANDLER_PCB::handleRedo( const HANDLER_CONTEXT<Redo>& aCtx )
+{
+    if( !board() )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
+
+    HistoryResponse out;
+
+    if( !m_redo.empty() )
+    {
+        HISTORY_ENTRY entry = std::move( m_redo.back() );
+        m_redo.pop_back();
+
+        out.set_ok( restore( entry.after, "redo " + entry.label, *out.mutable_result() ) );
+        out.set_label( entry.label );
+
+        if( out.ok() )
+            m_undo.push_back( std::move( entry ) );
+    }
+
+    fillHistory( out );
+    return out;
+}
+
+
+HANDLER_RESULT<HistoryResponse>
+KICADD_HANDLER_PCB::handleGetHistory( const HANDLER_CONTEXT<GetHistory>& aCtx )
+{
+    HistoryResponse out;
+    out.set_ok( true );
+    fillHistory( out );
     return out;
 }
 

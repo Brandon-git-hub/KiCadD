@@ -23,7 +23,10 @@
   .pill.warn { color: var(--warn); border-color: #7a5a24; }
   button { background: #222831; color: var(--text); border: 1px solid var(--line); border-radius: 5px;
            padding: 4px 10px; cursor: pointer; font: inherit; }
-  button:hover { border-color: var(--accent); }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .4; cursor: default; }
+  button.dirty { border-color: var(--warn); color: var(--warn); }
+  .btns { display: flex; gap: 6px; }
   #stage { position: relative; overflow: hidden; }
   canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
   canvas.grab { cursor: grabbing; }
@@ -54,6 +57,11 @@
     <span class="brand">KiCadD</span>
     <span class="file" id="file">connecting…</span>
     <span class="spacer"></span>
+    <span class="btns">
+      <button id="undo" disabled title="Undo (Ctrl+Z)">↶ Undo</button>
+      <button id="redo" disabled title="Redo (Ctrl+Y)">↷ Redo</button>
+      <button id="save" title="Save to file (Ctrl+S)">Save</button>
+    </span>
     <span class="pill" id="conn">offline</span>
     <button id="fit" title="Fit board (F)">Fit</button>
   </header>
@@ -78,7 +86,8 @@
     <section class="help">
       <kbd>drag</kbd> move footprint · <kbd>R</kbd>/<kbd>⇧R</kbd> rotate ·
       <kbd>←↑→↓</kbd> nudge 0.1 mm (<kbd>⇧</kbd> 1 mm) · <kbd>wheel</kbd> zoom ·
-      <kbd>right-drag</kbd> pan · <kbd>F</kbd> fit · <kbd>Alt</kbd> no grid snap
+      <kbd>right-drag</kbd> pan · <kbd>F</kbd> fit · <kbd>Alt</kbd> no grid snap ·
+      <kbd>Ctrl+Z</kbd>/<kbd>Ctrl+Y</kbd> undo/redo · <kbd>Ctrl+S</kbd> save
     </section>
   </aside>
   <footer>
@@ -497,8 +506,14 @@ let moveSentAt = 0;
 
 function onMoved(msg) {
   const rtt = performance.now() - moveSentAt;
-  $("lat").textContent = msg.ok ? `move: ${rtt.toFixed(0)} ms round trip (server ${msg.ms} ms)` : "";
-  if (!msg.ok) { log(`<span style="color:var(--bad)">move failed: ${msg.error || msg.missing}</span>`); send({ t: "resync" }); return; }
+  const op = msg.op || "move";
+  $("lat").textContent = msg.ok ? `${op}: ${rtt.toFixed(0)} ms round trip (server ${msg.ms} ms)` : "";
+  if (!msg.ok) {
+    log(`<span style="color:var(--bad)">${op} failed: ${msg.error || msg.missing}</span>`);
+    if (op === "move") send({ t: "resync" });
+    return;
+  }
+  if (op !== "move") log(`${op}: <b>${msg.label}</b>`);
   drcMarks = msg.drc;
   const list = $("drc");
   $("drcCount").textContent = msg.drc.length ? `(${msg.drc.length})` : "";
@@ -519,6 +534,24 @@ function onMoved(msg) {
   $("stats").dataset.unc = `unconnected ${msg.unconnected}${pend}`;
   updateStats();
   dirty = true;
+}
+
+function onHistory(h) {
+  if (h.error) return;
+  const u = $("undo"), r = $("redo"), sv = $("save");
+  u.disabled = !h.undo; r.disabled = !h.redo;
+  u.title = h.undo ? `Undo: ${h.next_undo} (Ctrl+Z)` : "Nothing to undo";
+  r.title = h.redo ? `Redo: ${h.next_redo} (Ctrl+Y)` : "Nothing to redo";
+  sv.classList.toggle("dirty", !!h.modified);
+  sv.textContent = h.modified ? "Save •" : "Save";
+  sv.title = h.modified ? "Unsaved changes — save to file (Ctrl+S)" : "Saved (Ctrl+S)";
+}
+
+function undoRedo(op) {
+  for (const f of board.fp.values()) pendingOwn.add(f.id);   // our own change: don't flash as remote
+  setTimeout(() => pendingOwn.clear(), 2000);
+  moveSentAt = performance.now();
+  send({ t: op });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -638,6 +671,15 @@ window.addEventListener("mouseup", () => {
 
 window.addEventListener("keydown", e => {
   if (e.target.tagName === "INPUT") return;
+  if (e.ctrlKey || e.metaKey) {
+    const k = e.key.toLowerCase();
+    if (k === "z" && !e.shiftKey) undoRedo("undo");
+    else if (k === "y" || (k === "z" && e.shiftKey)) undoRedo("redo");
+    else if (k === "s") send({ t: "save" });
+    else return;
+    e.preventDefault();
+    return;
+  }
   const f = selected ? board.fp.get(selected) : null;
   const step = e.shiftKey ? 1000 : 100;
   if (e.key === "f" || e.key === "F") fit();
@@ -653,6 +695,9 @@ window.addEventListener("keydown", e => {
 });
 
 $("fit").onclick = () => fit();
+$("undo").onclick = () => undoRedo("undo");
+$("redo").onclick = () => undoRedo("redo");
+$("save").onclick = () => send({ t: "save" });
 window.addEventListener("resize", resize);
 
 // ---------------------------------------------------------------------------------------------
@@ -680,6 +725,8 @@ function connect() {
     if (msg.t === "snapshot") applySnapshot(msg);
     else if (msg.t === "delta") applyDelta(msg);
     else if (msg.t === "moved") onMoved(msg);
+    else if (msg.t === "history") onHistory(msg);
+    else if (msg.t === "saved") log(msg.ok ? `saved <b>${msg.file}</b>` : `<span style="color:var(--bad)">save failed: ${msg.error}</span>`);
     else if (msg.t === "error") log(`<span style="color:var(--bad)">${msg.error}</span>`);
   };
 }

@@ -10,13 +10,20 @@
 #ifndef KICADD_HANDLER_PCB_H
 #define KICADD_HANDLER_PCB_H
 
+#include <functional>
 #include <memory>
+#include <vector>
+
+#include <kiid.h>
+#include <geometry/eda_angle.h>
+#include <math/vector2d.h>
 
 #include <api/api_handler.h>
 #include <kicadd/board.pb.h>
 #include <kicadd/render.pb.h>
 
 class BOARD;
+class FOOTPRINT;
 class PCB_CONTEXT;
 
 namespace kicadd { class RENDER_FEED; }
@@ -63,6 +70,48 @@ private:
 
     HANDLER_RESULT<kicadd::render::RenderChanges>
     handleGetChanges( const HANDLER_CONTEXT<kicadd::render::GetChanges>& aCtx );
+
+    HANDLER_RESULT<kicadd::board::HistoryResponse>
+    handleUndo( const HANDLER_CONTEXT<kicadd::board::Undo>& aCtx );
+
+    HANDLER_RESULT<kicadd::board::HistoryResponse>
+    handleRedo( const HANDLER_CONTEXT<kicadd::board::Redo>& aCtx );
+
+    HANDLER_RESULT<kicadd::board::HistoryResponse>
+    handleGetHistory( const HANDLER_CONTEXT<kicadd::board::GetHistory>& aCtx );
+
+    /// One commit that applies aMutate to each target, with large-net ratsnest deferral,
+    /// then fills aOut with positions, unconnected count and the local DRC of the targets.
+    void applyFootprintEdit( const std::vector<FOOTPRINT*>& aTargets,
+                             const std::function<void( FOOTPRINT* )>& aMutate,
+                             const wxString& aCommitMessage, kicadd::board::MoveResponse& aOut );
+
+    struct FP_STATE
+    {
+        KIID      id;
+        VECTOR2I  pos;
+        EDA_ANGLE orient;
+    };
+
+    struct HISTORY_ENTRY
+    {
+        std::string           label;
+        std::vector<FP_STATE> before;
+        std::vector<FP_STATE> after;
+    };
+
+    static FP_STATE stateOf( const FOOTPRINT* aFp );
+
+    /// Restore aStates; fills aOut. Returns false if none of the footprints still exist.
+    bool restore( const std::vector<FP_STATE>& aStates, const std::string& aLabel,
+                  kicadd::board::MoveResponse& aOut );
+
+    void fillHistory( kicadd::board::HistoryResponse& aOut ) const;
+
+    static constexpr size_t MAX_HISTORY = 200;
+
+    std::vector<HISTORY_ENTRY> m_undo;
+    std::vector<HISTORY_ENTRY> m_redo;
 
     std::shared_ptr<PCB_CONTEXT> m_context;
     std::unique_ptr<kicadd::RENDER_FEED> m_feed;

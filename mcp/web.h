@@ -64,6 +64,10 @@ private:
     void runJob( const JOB& aJob );
     void poll();
     void broadcast( const std::string& aText );
+    std::string historyJson();
+    void sendMoveResult( const std::shared_ptr<WS_SESSION>& aSession, const char* aOp, bool aOk,
+                         const std::string& aError, const void* aMoveResponse, double aMs,
+                         const std::string& aLabel );
     std::set<std::shared_ptr<WS_SESSION>> sessions();
 
     IPC_CLIENT&              m_ipc;

@@ -6,7 +6,10 @@
  *   server -> client
  *     {"t":"snapshot","rev":R,"file":..,"outline":[[x,y,..],..], ITEMS}
  *     {"t":"delta","since":S,"rev":R, ITEMS, "rm":[id,..]}
- *     {"t":"moved","ok":true,"ms":..,"unconnected":N,"pending":[..],"drc":[..],"text":".."}
+ *     {"t":"moved","op":"move|undo|redo","ok":true,"ms":..,"unconnected":N,"pending":[..],"drc":[..],
+ *      "label":".."}
+ *     {"t":"history","undo":N,"redo":N,"next_undo":"..","next_redo":"..","modified":bool}
+ *     {"t":"saved","ok":bool,"file":"..","error":".."}
  *     {"t":"error","error":".."}
  *   ITEMS = "nets":[..],"lys":[..]  (string tables; items reference them by index)
  *           "fp":[{id,ref,val,back,x,y,r,lk,bb:[x0,y0,x1,y1],cy:[..],
@@ -16,6 +19,7 @@
  *           "zone":[{id,net,ly:[..],ko,ol:[[..],..]}]
  *   client -> server
  *     {"t":"move","refs":[..],"dx":mm,"dy":mm,"rot":deg}
+ *     {"t":"undo"} / {"t":"redo"} / {"t":"save"}
  *     {"t":"resync"}
  *
  * A client applies a delta when since <= its revision < rev, ignores it when rev <= its
@@ -38,6 +42,9 @@
 
 #include <kicadd/board.pb.h>
 #include <kicadd/render.pb.h>
+#include <api/common/commands/project_commands.pb.h>
+#include <api/common/types/base_types.pb.h>
+#include <google/protobuf/empty.pb.h>
 
 using json = nlohmann::json;
 namespace beast = boost::beast;
@@ -405,7 +412,7 @@ void WEB_HUB::Received( const std::shared_ptr<WS_SESSION>& aSession, const std::
 
     if( t == "resync" )
         msg = json{ { "t", "snapshot" } };
-    else if( t != "move" )
+    else if( t != "move" && t != "undo" && t != "redo" && t != "save" )
     {
         aSession->Send( std::make_shared<std::string>( errorJson( "unknown message type '" + t + "'" ) ) );
         return;
@@ -492,6 +499,50 @@ void WEB_HUB::runJob( const JOB& aJob )
             m_revision = snap.revision();
 
         session->Send( std::make_shared<std::string>( snapshotJson( snap ).dump() ) );
+        session->Send( std::make_shared<std::string>( historyJson() ) );
+        return;
+    }
+
+    if( t == "undo" || t == "redo" )
+    {
+        auto                t0 = std::chrono::steady_clock::now();
+        kb::HistoryResponse r;
+        bool ok = t == "undo" ? m_ipc.Call( kb::Undo(), r, err ) : m_ipc.Call( kb::Redo(), r, err );
+        double ms = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - t0 ).count();
+
+        if( !ok )
+            sendMoveResult( session, t.c_str(), false, err, nullptr, ms, "" );
+        else if( !r.ok() )
+            sendMoveResult( session, t.c_str(), false, "nothing to " + t, nullptr, ms, "" );
+        else
+            sendMoveResult( session, t.c_str(), true, "", &r.result(), ms, r.label() );
+
+        poll();   // also broadcasts the new history state
+        return;
+    }
+
+    if( t == "save" )
+    {
+        kb::BoardSummaryResponse summary;
+        json                     reply = { { "t", "saved" }, { "ok", false } };
+
+        if( m_ipc.Call( kb::GetBoardSummary(), summary, err ) )
+        {
+            std::string file = summary.file().substr( summary.file().find_last_of( '/' ) + 1 );
+            kiapi::common::commands::SaveDocument req;
+            req.mutable_document()->set_type( kiapi::common::types::DOCTYPE_PCB );
+            req.mutable_document()->set_board_filename( file );
+            google::protobuf::Empty empty;
+
+            if( m_ipc.Call( req, empty, err ) )
+                reply = { { "t", "saved" }, { "ok", true }, { "file", file } };
+        }
+
+        if( !reply["ok"] )
+            reply["error"] = err;
+
+        session->Send( std::make_shared<std::string>( reply.dump() ) );
+        broadcast( historyJson() );
         return;
     }
 
@@ -521,7 +572,47 @@ void WEB_HUB::runJob( const JOB& aJob )
             return;
         }
 
-        json drc = json::array();
+        double ms = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - t0 ).count();
+        sendMoveResult( session, "move", r.moved_size() > 0, r.moved_size() ? "" : "no footprint moved", &r, ms,
+                        r.history_label() );
+
+        poll();   // push the geometry change (and history state) to every view right away
+    }
+}
+
+
+std::string WEB_HUB::historyJson()
+{
+    kb::HistoryResponse r;
+    std::string         err;
+
+    if( !m_ipc.Call( kb::GetHistory(), r, err ) )
+        return json{ { "t", "history" }, { "error", err } }.dump();
+
+    return json{ { "t", "history" },
+                 { "undo", r.undo_size() },
+                 { "redo", r.redo_size() },
+                 { "next_undo", r.undo_size() ? r.undo( r.undo_size() - 1 ) : "" },
+                 { "next_redo", r.redo_size() ? r.redo( r.redo_size() - 1 ) : "" },
+                 { "modified", r.modified() } }.dump();
+}
+
+
+void WEB_HUB::sendMoveResult( const std::shared_ptr<WS_SESSION>& aSession, const char* aOp, bool aOk,
+                              const std::string& aError, const void* aMoveResponse, double aMs,
+                              const std::string& aLabel )
+{
+    json out = { { "t", "moved" }, { "op", aOp }, { "ok", aOk }, { "ms", std::round( aMs * 10 ) / 10 },
+                 { "label", aLabel } };
+
+    if( !aError.empty() )
+        out["error"] = aError;
+
+    json drc = json::array(), missing = json::array(), pending = json::array();
+
+    if( aMoveResponse )
+    {
+        const kb::MoveResponse& r = *static_cast<const kb::MoveResponse*>( aMoveResponse );
 
         for( const kb::DrcViolation& v : r.drc() )
         {
@@ -531,23 +622,19 @@ void WEB_HUB::runJob( const JOB& aJob )
                              { "x", um( v.pos().x() ) }, { "y", um( v.pos().y() ) } } );
         }
 
-        json missing = json::array(), pending = json::array();
-
         for( const std::string& s : r.missing() )
             missing.push_back( s );
 
         for( const std::string& s : r.ratsnest_pending() )
             pending.push_back( s );
 
-        double ms = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - t0 ).count();
-
-        session->Send( std::make_shared<std::string>(
-                json{ { "t", "moved" }, { "ok", r.moved_size() > 0 }, { "ms", std::round( ms * 10 ) / 10 },
-                      { "unconnected", r.unconnected() }, { "pending", pending },
-                      { "missing", missing }, { "drc", drc } }.dump() ) );
-
-        poll();   // push the geometry change to every view right away
+        out["unconnected"] = r.unconnected();
     }
+
+    out["drc"] = std::move( drc );
+    out["missing"] = std::move( missing );
+    out["pending"] = std::move( pending );
+    aSession->Send( std::make_shared<std::string>( out.dump() ) );
 }
 
 
@@ -589,6 +676,7 @@ void WEB_HUB::poll()
     out["rm"] = std::move( rm );
     m_revision = r.revision();
     broadcast( out.dump() );
+    broadcast( historyJson() );   // undo/redo availability and the unsaved flag changed too
 }
 
 } // namespace kicadd::mcp

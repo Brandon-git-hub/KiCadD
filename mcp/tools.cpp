@@ -227,6 +227,41 @@ std::string renderPending( const google::protobuf::RepeatedPtrField<std::string>
 }
 
 
+std::string renderMoveResult( const kb::MoveResponse& r )
+{
+    std::string s;
+
+    for( const kb::MoveResult& m : r.moved() )
+        s += m.ref() + " @" + pt( m.pos() ) + ( m.rot_decideg() ? " r" + deg( m.rot_decideg() ) : "" ) + "\n";
+
+    if( !r.missing().empty() )
+    {
+        s += "not found:";
+
+        for( const std::string& m : r.missing() )
+            s += " " + m;
+
+        s += "\n";
+    }
+
+    s += "unconnected=" + std::to_string( r.unconnected() ) + renderPending( r.ratsnest_pending() ) + "\n";
+    s += renderDrc( r.drc() );
+    return s;
+}
+
+
+std::string renderHistory( const kb::HistoryResponse& r )
+{
+    std::string s = "history: " + std::to_string( r.undo_size() ) + " undo, " + std::to_string( r.redo_size() )
+                    + " redo" + ( r.modified() ? ", unsaved changes" : ", saved" );
+
+    if( r.undo_size() )
+        s += "; next undo: " + r.undo( r.undo_size() - 1 );
+
+    return s + "\n";
+}
+
+
 // ---- tool bodies ---------------------------------------------------------------------------
 
 TOOL_RESULT boardSummary( IPC_CLIENT& aIpc )
@@ -360,24 +395,26 @@ TOOL_RESULT moveFootprints( IPC_CLIENT& aIpc, const json& aArgs )
     if( !aIpc.Call( req, r, err ) )
         return error( err );
 
-    std::string s;
+    return { renderMoveResult( r ), r.moved().empty() };
+}
 
-    for( const kb::MoveResult& m : r.moved() )
-        s += m.ref() + " @" + pt( m.pos() ) + ( m.rot_decideg() ? " r" + deg( m.rot_decideg() ) : "" ) + "\n";
 
-    if( !r.missing().empty() )
-    {
-        s += "not found:";
+TOOL_RESULT history( IPC_CLIENT& aIpc, bool aUndo )
+{
+    kb::HistoryResponse r;
+    std::string         err;
+    bool                ok = aUndo ? aIpc.Call( kb::Undo(), r, err ) : aIpc.Call( kb::Redo(), r, err );
 
-        for( const std::string& m : r.missing() )
-            s += " " + m;
+    if( !ok )
+        return error( err );
 
-        s += "\n";
-    }
+    const char* verb = aUndo ? "undo" : "redo";
 
-    s += "unconnected=" + std::to_string( r.unconnected() ) + renderPending( r.ratsnest_pending() ) + "\n";
-    s += renderDrc( r.drc() );
-    return { s, r.moved().empty() };
+    if( !r.ok() )
+        return { std::string( "nothing to " ) + verb + "\n" + renderHistory( r ) };
+
+    return { std::string( aUndo ? "undid: " : "redid: " ) + r.label() + "\n" + renderMoveResult( r.result() )
+             + renderHistory( r ) };
 }
 
 
@@ -533,6 +570,17 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                                  { "rotate", { { "type", "number" }, { "description", "Rotation delta, degrees CCW" } } } },
                                { "refs" } ),
                        [&aIpc]( const json& a ) { return moveFootprints( aIpc, a ); } } );
+
+    tools.push_back( { "undo",
+                       "Undo the last KiCadD edit (move/rotate), restoring the exact previous positions. "
+                       "Returns what was undone, new positions and local DRC.",
+                       schema( json::object() ),
+                       [&aIpc]( const json& ) { return history( aIpc, true ); } } );
+
+    tools.push_back( { "redo",
+                       "Redo the last undone edit.",
+                       schema( json::object() ),
+                       [&aIpc]( const json& ) { return history( aIpc, false ); } } );
 
     tools.push_back( { "check_drc",
                        "Local DRC for the given footprints against their surroundings, without moving them.",

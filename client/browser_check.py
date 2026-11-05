@@ -113,6 +113,16 @@ def main(base, outdir):
         page.wait_for_function(f"[...board.fp.values()].find(f => f.ref === 'C216').r === {r0}", timeout=5000)
         check(True, "R / Shift+R rotate the selected footprint and back")
 
+        # Undo button reverts the last edit (Shift+R), Ctrl+Y redoes it; Save shows unsaved state.
+        check(page.inner_text("#save").startswith("Save •"), f"Save button shows unsaved changes ('{page.inner_text('#save')}')")
+        title = page.get_attribute("#undo", "title")
+        page.click("#undo")
+        page.wait_for_function(f"[...board.fp.values()].find(f => f.ref === 'C216').r !== {r0}", timeout=5000)
+        check("rotate C216" in title, f"Undo button ({title}) reverts the rotation")
+        page.keyboard.press("Control+y")
+        page.wait_for_function(f"[...board.fp.values()].find(f => f.ref === 'C216').r === {r0}", timeout=5000)
+        check(True, "Ctrl+Y redoes it")
+
         check(not errors, f"no console errors{': ' + '; '.join(errors[:3]) if errors else ''}")
         browser.close()
 
