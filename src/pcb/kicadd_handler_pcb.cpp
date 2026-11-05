@@ -7,7 +7,6 @@
 #include "kicadd_handler_pcb.h"
 #include "kicadd_local_drc.h"
 #include "kicadd_render.h"
-#include "kicadd_render.h"
 
 #include <algorithm>
 #include <chrono>
@@ -16,6 +15,12 @@
 #include <unordered_map>
 
 #include <api/pcb_context.h>
+#include <board_design_settings.h>
+#include <lib_id.h>
+#include <netlist_reader/pcb_netlist_utils.h>
+#include <pcb_io/kicad_sexpr/pcb_io_kicad_sexpr.h>
+#include <wx/filename.h>
+#include <wx/tokenzr.h>
 #include <board.h>
 #include <board_commit.h>
 #include <footprint.h>
@@ -192,6 +197,8 @@ KICADD_HANDLER_PCB::KICADD_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext ) 
     registerHandler<QueryRadius, QueryResponse>( &KICADD_HANDLER_PCB::handleQueryRadius );
     registerHandler<QueryNet, QueryResponse>( &KICADD_HANDLER_PCB::handleQueryNet );
     registerHandler<MoveDelta, MoveResponse>( &KICADD_HANDLER_PCB::handleMoveDelta );
+    registerHandler<DeleteFootprints, MoveResponse>( &KICADD_HANDLER_PCB::handleDeleteFootprints );
+    registerHandler<AddFootprint, MoveResponse>( &KICADD_HANDLER_PCB::handleAddFootprint );
     registerHandler<Undo, HistoryResponse>( &KICADD_HANDLER_PCB::handleUndo );
     registerHandler<Redo, HistoryResponse>( &KICADD_HANDLER_PCB::handleRedo );
     registerHandler<GetHistory, HistoryResponse>( &KICADD_HANDLER_PCB::handleGetHistory );
@@ -437,14 +444,14 @@ KICADD_HANDLER_PCB::handleQueryNet( const HANDLER_CONTEXT<QueryNet>& aCtx )
 }
 
 
-void KICADD_HANDLER_PCB::applyFootprintEdit( const std::vector<FOOTPRINT*>& aTargets,
-                                             const std::function<void( FOOTPRINT* )>& aMutate,
-                                             const wxString& aCommitMessage, MoveResponse& aOut )
+void KICADD_HANDLER_PCB::runCommit( const std::function<std::vector<KIID>( BOARD_COMMIT& )>& aBuild,
+                                    const wxString& aCommitMessage, MoveResponse& aOut )
 {
     auto   t0 = std::chrono::steady_clock::now();
     BOARD* b = board();
 
-    if( !aTargets.empty() )
+    std::vector<FOOTPRINT*> report;
+
     {
         std::shared_ptr<CONNECTIVITY_DATA> conn = b->GetConnectivity();
 
@@ -480,26 +487,32 @@ void KICADD_HANDLER_PCB::applyFootprintEdit( const std::vector<FOOTPRINT*>& aTar
                     } );
         }
 
-        BOARD_COMMIT commit( m_context->GetToolManager(), true, false );
+        BOARD_COMMIT      commit( m_context->GetToolManager(), true, false );
+        std::vector<KIID> ids = aBuild( commit );
 
-        for( FOOTPRINT* fp : aTargets )
-        {
-            commit.Modify( fp );
-            aMutate( fp );
-        }
+        if( commit.Empty() )
+            return;
 
         commit.Push( aCommitMessage );
         m_context->SetContentModified();
 
-        for( FOOTPRINT* fp : aTargets )
+        for( const KIID& id : ids )
+        {
+            BOARD_ITEM* item = b->ResolveItem( id, true );
+
+            if( item && item->Type() == PCB_FOOTPRINT_T )
+                report.push_back( static_cast<FOOTPRINT*>( item ) );
+        }
+
+        for( FOOTPRINT* fp : report )
+        {
             fp->BuildCourtyardCaches();
 
-        for( const FOOTPRINT* fp : aTargets )
-        {
             MoveResult* r = aOut.add_moved();
             r->set_ref( fp->GetReference().ToStdString() );
             setPoint( r->mutable_pos(), fp->GetPosition() );
             r->set_rot_decideg( fp->GetOrientation().AsTenthsOfADegree() );
+            r->set_back( fp->IsFlipped() );
         }
     }
 
@@ -513,11 +526,11 @@ void KICADD_HANDLER_PCB::applyFootprintEdit( const std::vector<FOOTPRINT*>& aTar
             aOut.add_ratsnest_pending( netName( b, net ) );
     }
 
-    if( !aTargets.empty() )
+    if( !report.empty() )
     {
         auto d0 = std::chrono::steady_clock::now();
 
-        for( DrcViolation& v : kicadd::RunLocalDrc( b, aTargets ) )
+        for( DrcViolation& v : kicadd::RunLocalDrc( b, report ) )
             *aOut.add_drc() = std::move( v );
 
         aOut.set_drc_us( std::chrono::duration_cast<std::chrono::microseconds>(
@@ -526,9 +539,113 @@ void KICADD_HANDLER_PCB::applyFootprintEdit( const std::vector<FOOTPRINT*>& aTar
 }
 
 
+void KICADD_HANDLER_PCB::applyFootprintEdit( const std::vector<FOOTPRINT*>& aTargets,
+                                             const std::function<void( FOOTPRINT* )>& aMutate,
+                                             const wxString& aCommitMessage, MoveResponse& aOut )
+{
+    runCommit(
+            [&]( BOARD_COMMIT& aCommit )
+            {
+                std::vector<KIID> ids;
+
+                for( FOOTPRINT* fp : aTargets )
+                {
+                    aCommit.Modify( fp );
+                    aMutate( fp );
+                    ids.push_back( fp->m_Uuid );
+                }
+
+                return ids;
+            },
+            aCommitMessage, aOut );
+}
+
+
 KICADD_HANDLER_PCB::FP_STATE KICADD_HANDLER_PCB::stateOf( const FOOTPRINT* aFp )
 {
-    return { aFp->m_Uuid, aFp->GetPosition(), aFp->GetOrientation() };
+    return { aFp->m_Uuid, aFp->GetPosition(), aFp->GetOrientation(), aFp->IsFlipped() };
+}
+
+
+void KICADD_HANDLER_PCB::setState( FOOTPRINT* aFp, const FP_STATE& aState )
+{
+    // Side first: a flip mirrors the orientation, which is then set exactly.
+    if( aFp->IsFlipped() != aState.back )
+        aFp->Flip( aFp->GetPosition(), FLIP_DIRECTION::LEFT_RIGHT );
+
+    if( aFp->GetOrientation() != aState.orient )
+        aFp->SetOrientation( aState.orient );
+
+    if( aFp->GetPosition() != aState.pos )
+        aFp->SetPosition( aState.pos );
+}
+
+
+KICADD_HANDLER_PCB::FP_SNAPSHOT KICADD_HANDLER_PCB::detach( FOOTPRINT* aFp )
+{
+    FP_SNAPSHOT snap;
+    snap.fp.reset( aFp );
+
+    for( PAD* pad : aFp->Pads() )
+    {
+        snap.padNets.push_back( pad->GetNetCode() > 0 ? pad->GetNetname() : wxString() );
+        pad->SetNet( NETINFO_LIST::OrphanedItem() );
+    }
+
+    aFp->SetParent( nullptr );
+    return snap;
+}
+
+
+NETINFO_ITEM* KICADD_HANDLER_PCB::netFor( const wxString& aName, BOARD_COMMIT& aCommit, MoveResponse& aOut )
+{
+    BOARD* b = board();
+
+    if( aName.IsEmpty() )
+        return b->FindNet( NETINFO_LIST::UNCONNECTED );
+
+    if( NETINFO_ITEM* net = b->FindNet( aName ) )
+        return net;
+
+    // Created earlier in this commit, not on the board until it's pushed.
+    for( NETINFO_ITEM* pending : m_pendingNets )
+    {
+        if( pending->GetNetname() == aName )
+            return pending;
+    }
+
+    NETINFO_ITEM* net = new NETINFO_ITEM( b, aName );
+    aCommit.Add( net );
+    m_pendingNets.push_back( net );
+    aOut.add_created_nets( aName.ToStdString() );
+    return net;
+}
+
+
+FOOTPRINT* KICADD_HANDLER_PCB::instantiate( const FP_SNAPSHOT& aSnap, BOARD_COMMIT& aCommit, MoveResponse& aOut )
+{
+    FOOTPRINT* fp = static_cast<FOOTPRINT*>( aSnap.fp->Clone() );   // same KIIDs
+    fp->SetParent( board() );
+
+    size_t i = 0;
+
+    for( PAD* pad : fp->Pads() )
+    {
+        pad->SetNet( netFor( i < aSnap.padNets.size() ? aSnap.padNets[i] : wxString(), aCommit, aOut ) );
+        ++i;
+    }
+
+    return fp;
+}
+
+
+void KICADD_HANDLER_PCB::record( HISTORY_ENTRY&& aEntry )
+{
+    m_undo.push_back( std::move( aEntry ) );
+    m_redo.clear();
+
+    if( m_undo.size() > MAX_HISTORY )
+        m_undo.erase( m_undo.begin() );
 }
 
 
@@ -543,17 +660,36 @@ std::string mmText( int64_t aNm )
 }
 
 
-std::string describeMove( const std::vector<FOOTPRINT*>& aTargets, const VECTOR2I& aDelta, int aDrotDecideg )
+std::string refList( const std::vector<std::string>& aRefs )
 {
     std::string refs;
 
-    for( size_t i = 0; i < aTargets.size() && i < 3; ++i )
-        refs += ( i ? "," : "" ) + aTargets[i]->GetReference().ToStdString();
+    for( size_t i = 0; i < aRefs.size() && i < 3; ++i )
+        refs += ( i ? "," : "" ) + aRefs[i];
 
-    if( aTargets.size() > 3 )
-        refs += ",+" + std::to_string( aTargets.size() - 3 );
+    if( aRefs.size() > 3 )
+        refs += ",+" + std::to_string( aRefs.size() - 3 );
 
-    std::string label;
+    return refs;
+}
+
+
+std::string refList( const std::vector<FOOTPRINT*>& aTargets )
+{
+    std::vector<std::string> refs;
+
+    for( const FOOTPRINT* fp : aTargets )
+        refs.push_back( fp->GetReference().ToStdString() );
+
+    return refList( refs );
+}
+
+
+std::string describeMove( const std::vector<FOOTPRINT*>& aTargets, const VECTOR2I& aDelta, int aDrotDecideg,
+                          bool aFlip )
+{
+    const std::string refs = refList( aTargets );
+    std::string       label;
 
     if( aDelta.x || aDelta.y )
         label = "move " + refs + " " + mmText( aDelta.x ) + "," + mmText( aDelta.y ) + " mm";
@@ -565,7 +701,108 @@ std::string describeMove( const std::vector<FOOTPRINT*>& aTargets, const VECTOR2
         label += ( label.empty() ? "rotate " + refs + " " : ", rotate " ) + std::string( buf ) + "°";
     }
 
+    if( aFlip )
+    {
+        // Side after the flip, when all targets end up on the same one.
+        bool        back = !aTargets.empty() && aTargets.front()->IsFlipped();
+        bool        same = std::all_of( aTargets.begin(), aTargets.end(),
+                                        [&]( const FOOTPRINT* fp ) { return fp->IsFlipped() == back; } );
+        std::string side = same ? ( back ? " to B.Cu" : " to F.Cu" ) : "";
+        label += ( label.empty() ? "flip " + refs : ", flip" ) + side;
+    }
+
     return label;
+}
+
+
+/// Next free "<prefix><n>" designator.
+wxString nextReference( BOARD* aBoard, const wxString& aPrefix )
+{
+    long highest = 0;
+
+    for( const FOOTPRINT* fp : aBoard->Footprints() )
+    {
+        const wxString& ref = fp->GetReference();
+        long            n = 0;
+
+        if( ref.StartsWith( aPrefix ) && ref.Mid( aPrefix.length() ).ToLong( &n ) && n > highest )
+            highest = n;
+    }
+
+    return aPrefix + wxString::Format( wxS( "%ld" ), highest + 1 );
+}
+
+
+wxString referencePrefix( const wxString& aRef )
+{
+    size_t n = aRef.length();
+
+    while( n > 0 && wxIsdigit( aRef[n - 1] ) )
+        --n;
+
+    return aRef.Left( n );
+}
+
+
+/// A footprint from a .pretty directory: KICADD_FOOTPRINT_DIRS, then the system library.
+std::unique_ptr<FOOTPRINT> loadFromDirectories( const LIB_ID& aLibId, std::string& aSource )
+{
+    std::vector<wxString> dirs;
+
+    if( const char* env = std::getenv( "KICADD_FOOTPRINT_DIRS" ) )
+    {
+        wxStringTokenizer tok( wxString::FromUTF8( env ), wxS( ":" ) );
+
+        while( tok.HasMoreTokens() )
+            dirs.push_back( tok.GetNextToken() );
+    }
+
+    dirs.push_back( wxS( "/usr/share/kicad/footprints" ) );
+
+    for( const wxString& dir : dirs )
+    {
+        wxFileName lib( dir, wxEmptyString );
+        lib.AppendDir( aLibId.GetLibNickname().wx_str() + wxS( ".pretty" ) );
+
+        wxFileName file( lib.GetPath(), aLibId.GetLibItemName().wx_str(), wxS( "kicad_mod" ) );
+
+        if( !file.FileExists() )
+            continue;
+
+        try
+        {
+            PCB_IO_KICAD_SEXPR         io;
+            std::unique_ptr<FOOTPRINT> fp = io.FootprintLoad( lib.GetPath(), aLibId.GetLibItemName().wx_str() );
+
+            if( fp )
+            {
+                aSource = file.GetFullPath().ToStdString();
+                return fp;
+            }
+        }
+        catch( const IO_ERROR& )
+        {
+        }
+    }
+
+    return nullptr;
+}
+
+
+/// A copy of a board footprint as a fresh, unplaced part: new KIIDs, no nets, front side, 0°.
+std::unique_ptr<FOOTPRINT> copyAsNew( const FOOTPRINT* aSource )
+{
+    std::unique_ptr<FOOTPRINT> fp( static_cast<FOOTPRINT*>( aSource->Clone() ) );
+
+    fp->SetUuid( KIID() );
+    fp->RunOnChildren( []( BOARD_ITEM* aChild ) { aChild->ResetUuid(); }, RECURSE_MODE::RECURSE );
+    fp->ClearAllNets();
+
+    if( fp->IsFlipped() )
+        fp->Flip( fp->GetPosition(), FLIP_DIRECTION::LEFT_RIGHT );
+
+    fp->SetOrientation( ANGLE_0 );
+    return fp;
 }
 
 } // namespace
@@ -597,13 +834,14 @@ KICADD_HANDLER_PCB::handleMoveDelta( const HANDLER_CONTEXT<MoveDelta>& aCtx )
 
     const VECTOR2I  delta( req.dx(), req.dy() );
     const EDA_ANGLE drot( req.drot_decideg() / 10.0, DEGREES_T );
+    const bool      changes = delta.x || delta.y || req.drot_decideg() || req.flip();
 
     HISTORY_ENTRY entry;
 
     for( const FOOTPRINT* fp : targets )
         entry.before.push_back( stateOf( fp ) );
 
-    applyFootprintEdit( targets,
+    applyFootprintEdit( changes ? targets : std::vector<FOOTPRINT*>(),
                         [&]( FOOTPRINT* fp )
                         {
                             if( delta.x != 0 || delta.y != 0 )
@@ -611,65 +849,323 @@ KICADD_HANDLER_PCB::handleMoveDelta( const HANDLER_CONTEXT<MoveDelta>& aCtx )
 
                             if( req.drot_decideg() != 0 )
                                 fp->Rotate( fp->GetPosition(), drot );
+
+                            // Mirrored around its own anchor: Flip swaps every layer of the
+                            // footprint (copper padstacks, silk, fab, courtyard, mask, paste).
+                            if( req.flip() )
+                                fp->Flip( fp->GetPosition(), FLIP_DIRECTION::LEFT_RIGHT );
                         },
                         wxS( "KiCadD MoveDelta" ), out );
 
-    if( !targets.empty() && ( delta.x || delta.y || req.drot_decideg() ) )
+    if( !targets.empty() && changes )
     {
         for( const FOOTPRINT* fp : targets )
             entry.after.push_back( stateOf( fp ) );
 
-        entry.label = describeMove( targets, delta, req.drot_decideg() );
+        entry.label = describeMove( targets, delta, req.drot_decideg(), req.flip() );
         out.set_history_label( entry.label );
-        m_undo.push_back( std::move( entry ) );
-        m_redo.clear();
-
-        if( m_undo.size() > MAX_HISTORY )
-            m_undo.erase( m_undo.begin() );
+        record( std::move( entry ) );
     }
 
     return out;
 }
 
 
-bool KICADD_HANDLER_PCB::restore( const std::vector<FP_STATE>& aStates, const std::string& aLabel,
-                                  MoveResponse& aOut )
+HANDLER_RESULT<MoveResponse>
+KICADD_HANDLER_PCB::handleDeleteFootprints( const HANDLER_CONTEXT<DeleteFootprints>& aCtx )
 {
-    BOARD*                                  b = board();
-    std::vector<FOOTPRINT*>                 targets;
-    std::unordered_map<FOOTPRINT*, FP_STATE> wanted;
+    BOARD* b = board();
 
-    for( const FP_STATE& st : aStates )
+    if( !b )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
+
+    if( aCtx.Request.refs().empty() )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "DeleteFootprints needs refs" ) );
+
+    MoveResponse            out;
+    std::vector<FOOTPRINT*> targets;
+
+    for( const std::string& ref : aCtx.Request.refs() )
     {
-        BOARD_ITEM* item = b->ResolveItem( st.id, true );
+        FOOTPRINT* fp = b->FindFootprintByReference( wxString::FromUTF8( ref ) );
 
-        if( item && item->Type() == PCB_FOOTPRINT_T )
-        {
-            FOOTPRINT* fp = static_cast<FOOTPRINT*>( item );
+        if( !fp )
+            out.add_missing( ref );
+        else if( std::find( targets.begin(), targets.end(), fp ) == targets.end() )
             targets.push_back( fp );
-            wanted[fp] = st;
-        }
-        else
-        {
-            aOut.add_missing( st.id.AsStdString() );
-        }
     }
 
     if( targets.empty() )
+        return out;
+
+    HISTORY_ENTRY entry;
+    entry.label = "delete " + refList( targets );
+
+    runCommit(
+            [&]( BOARD_COMMIT& aCommit )
+            {
+                for( FOOTPRINT* fp : targets )
+                {
+                    out.add_removed( fp->GetReference().ToStdString() );
+                    aCommit.Remove( fp );
+                }
+
+                return std::vector<KIID>();
+            },
+            wxS( "KiCadD DeleteFootprints" ), out );
+
+    // Headless commits keep no undo list, so the removed footprints are ours now: off the
+    // board and out of connectivity (BOARD::Remove), they become the history's snapshots.
+    for( FOOTPRINT* fp : targets )
+        entry.removed.push_back( detach( fp ) );
+
+    out.set_history_label( entry.label );
+    record( std::move( entry ) );
+    return out;
+}
+
+
+HANDLER_RESULT<MoveResponse>
+KICADD_HANDLER_PCB::handleAddFootprint( const HANDLER_CONTEXT<AddFootprint>& aCtx )
+{
+    BOARD* b = board();
+
+    if( !b )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
+
+    const AddFootprint&        req = aCtx.Request;
+    std::unique_ptr<FOOTPRINT> fp;
+    std::string                source;
+    const FOOTPRINT*           like = nullptr;
+
+    if( !req.like().empty() )
+    {
+        like = b->FindFootprintByReference( wxString::FromUTF8( req.like() ) );
+
+        if( !like )
+            return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no footprint " + req.like() ) );
+
+        fp = copyAsNew( like );
+        source = "copy of " + req.like() + " (" + like->GetFPID().Format().wx_str().ToStdString() + ")";
+    }
+    else if( !req.lib_id().empty() )
+    {
+        LIB_ID libId;
+
+        if( libId.Parse( wxString::FromUTF8( req.lib_id() ) ) >= 0 || libId.GetLibNickname().empty()
+            || libId.GetLibItemName().empty() )
+        {
+            return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
+                                              "lib_id must be Nickname:Name, got " + req.lib_id() ) );
+        }
+
+        if( FOOTPRINT* loaded = LoadFootprintFromProject( b, libId ) )
+        {
+            fp.reset( loaded );
+            source = "library table";
+        }
+        else if( ( fp = loadFromDirectories( libId, source ) ) )
+        {
+            fp->ClearAllNets();
+            BOARD_DESIGN_SETTINGS& bds = b->GetDesignSettings();
+            fp->ApplyDefaultSettings( *b, bds.m_StyleFPFields, bds.m_StyleFPText, bds.m_StyleFPShapes,
+                                      bds.m_StyleFPDimensions, bds.m_StyleFPBarcodes );
+        }
+        else
+        {
+            for( const FOOTPRINT* candidate : b->Footprints() )
+            {
+                if( candidate->GetFPID() == libId )
+                {
+                    fp = copyAsNew( candidate );
+                    source = "copy of " + candidate->GetReference().ToStdString() + " (no library has it)";
+                    break;
+                }
+            }
+        }
+
+        if( !fp )
+        {
+            return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
+                                              "footprint " + req.lib_id()
+                                                      + " not found (library table, KICADD_FOOTPRINT_DIRS, "
+                                                        "/usr/share/kicad/footprints, board)" ) );
+        }
+
+        fp->SetFPID( libId );
+    }
+    else
+    {
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "AddFootprint needs lib_id or like" ) );
+    }
+
+    // Reference designator.
+    wxString ref = wxString::FromUTF8( req.ref() );
+
+    if( ref.IsEmpty() )
+    {
+        if( !like )
+            return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
+                                              "AddFootprint needs ref (e.g. \"R?\" for the next free R)" ) );
+
+        ref = referencePrefix( like->GetReference() ) + wxS( "?" );
+    }
+
+    if( ref.EndsWith( wxS( "?" ) ) )
+        ref = nextReference( b, ref.Left( ref.length() - 1 ) );
+
+    if( b->FindFootprintByReference( ref ) )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, ref.ToStdString() + " already exists" ) );
+
+    // Pad numbers must exist; report the valid ones otherwise.
+    std::set<wxString> numbers;
+
+    for( const PAD* pad : fp->Pads() )
+        numbers.insert( pad->GetNumber() );
+
+    for( const auto& [number, net] : req.nets() )
+    {
+        if( !numbers.count( wxString::FromUTF8( number ) ) )
+        {
+            std::string valid;
+
+            for( const wxString& n : numbers )
+                valid += ( valid.empty() ? "" : "," ) + n.ToStdString();
+
+            return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
+                                              "no pad " + number + " on " + req.lib_id() + req.like()
+                                                      + " (pads: " + valid + ")" ) );
+        }
+    }
+
+    fp->SetReference( ref );
+
+    if( !req.value().empty() )
+        fp->SetValue( wxString::FromUTF8( req.value() ) );
+
+    fp->SetParent( b );
+    fp->SetPosition( VECTOR2I( req.pos().x(), req.pos().y() ) );
+
+    if( req.back() )
+        fp->Flip( fp->GetPosition(), FLIP_DIRECTION::LEFT_RIGHT );
+
+    fp->SetOrientation( EDA_ANGLE( req.rot_decideg() / 10.0, DEGREES_T ) );
+
+    MoveResponse out;
+    out.set_source( source );
+    FOOTPRINT* placed = fp.release();
+
+    runCommit(
+            [&]( BOARD_COMMIT& aCommit )
+            {
+                for( PAD* pad : placed->Pads() )
+                {
+                    auto it = req.nets().find( pad->GetNumber().ToStdString() );
+                    pad->SetNet( netFor( it != req.nets().end() ? wxString::FromUTF8( it->second ) : wxString(),
+                                         aCommit, out ) );
+                }
+
+                aCommit.Add( placed );
+                out.add_added( ref.ToStdString() );
+                return std::vector<KIID>{ placed->m_Uuid };
+            },
+            wxS( "KiCadD AddFootprint" ), out );
+
+    m_pendingNets.clear();
+
+    // Redo puts this exact footprint back; keep a detached copy of it.
+    HISTORY_ENTRY entry;
+    entry.label = "add " + ref.ToStdString() + " (" + placed->GetFPID().Format().wx_str().ToStdString() + ")";
+    entry.added.push_back( detach( static_cast<FOOTPRINT*>( placed->Clone() ) ) );
+    out.set_history_label( entry.label );
+    record( std::move( entry ) );
+    return out;
+}
+
+
+bool KICADD_HANDLER_PCB::applyHistory( const HISTORY_ENTRY& aEntry, bool aUndo, MoveResponse& aOut )
+{
+    BOARD* b = board();
+
+    const std::vector<FP_SNAPSHOT>& toRemove = aUndo ? aEntry.added : aEntry.removed;
+    const std::vector<FP_SNAPSHOT>& toAdd = aUndo ? aEntry.removed : aEntry.added;
+    const std::vector<FP_STATE>&    states = aUndo ? aEntry.before : aEntry.after;
+
+    auto resolve = [&]( const KIID& aId ) -> FOOTPRINT*
+    {
+        BOARD_ITEM* item = b->ResolveItem( aId, true );
+        return item && item->Type() == PCB_FOOTPRINT_T ? static_cast<FOOTPRINT*>( item ) : nullptr;
+    };
+
+    std::vector<FOOTPRINT*>                                removing;
+    std::vector<std::pair<FOOTPRINT*, const FP_STATE*>>    modifying;
+    std::vector<const FP_SNAPSHOT*>                        adding;
+
+    for( const FP_SNAPSHOT& snap : toRemove )
+    {
+        if( FOOTPRINT* fp = resolve( snap.fp->m_Uuid ) )
+            removing.push_back( fp );
+        else
+            aOut.add_missing( snap.fp->GetReference().ToStdString() );
+    }
+
+    for( const FP_SNAPSHOT& snap : toAdd )
+    {
+        if( resolve( snap.fp->m_Uuid ) )
+            aOut.add_missing( snap.fp->GetReference().ToStdString() + " (already on the board)" );
+        else
+            adding.push_back( &snap );
+    }
+
+    for( const FP_STATE& st : states )
+    {
+        if( FOOTPRINT* fp = resolve( st.id ) )
+            modifying.emplace_back( fp, &st );
+        else
+            aOut.add_missing( st.id.AsStdString() );
+    }
+
+    if( removing.empty() && adding.empty() && modifying.empty() )
         return false;
 
-    applyFootprintEdit( targets,
-                        [&]( FOOTPRINT* fp )
-                        {
-                            const FP_STATE& st = wanted[fp];
+    runCommit(
+            [&]( BOARD_COMMIT& aCommit )
+            {
+                std::vector<KIID> ids;
 
-                            if( fp->GetOrientation() != st.orient )
-                                fp->SetOrientation( st.orient );
+                for( FOOTPRINT* fp : removing )
+                {
+                    aOut.add_removed( fp->GetReference().ToStdString() );
+                    aCommit.Remove( fp );
+                }
 
-                            if( fp->GetPosition() != st.pos )
-                                fp->SetPosition( st.pos );
-                        },
-                        wxString::FromUTF8( "KiCadD " + aLabel ), aOut );
+                for( const FP_SNAPSHOT* snap : adding )
+                {
+                    FOOTPRINT* fp = instantiate( *snap, aCommit, aOut );
+                    aCommit.Add( fp );
+                    aOut.add_added( fp->GetReference().ToStdString() );
+                    ids.push_back( fp->m_Uuid );
+                }
+
+                for( auto& [fp, st] : modifying )
+                {
+                    aCommit.Modify( fp );
+                    setState( fp, *st );
+                    ids.push_back( fp->m_Uuid );
+                }
+
+                return ids;
+            },
+            wxString::FromUTF8( std::string( "KiCadD " ) + ( aUndo ? "undo " : "redo " ) + aEntry.label ),
+            aOut );
+
+    m_pendingNets.clear();
+
+    // The snapshots stay in the history (undo/redo can repeat); the board copies we just
+    // removed are no longer referenced by anything.
+    for( FOOTPRINT* fp : removing )
+        delete fp;
+
     return true;
 }
 
@@ -699,7 +1195,7 @@ KICADD_HANDLER_PCB::handleUndo( const HANDLER_CONTEXT<Undo>& aCtx )
         HISTORY_ENTRY entry = std::move( m_undo.back() );
         m_undo.pop_back();
 
-        out.set_ok( restore( entry.before, "undo " + entry.label, *out.mutable_result() ) );
+        out.set_ok( applyHistory( entry, true, *out.mutable_result() ) );
         out.set_label( entry.label );
 
         if( out.ok() )
@@ -724,7 +1220,7 @@ KICADD_HANDLER_PCB::handleRedo( const HANDLER_CONTEXT<Redo>& aCtx )
         HISTORY_ENTRY entry = std::move( m_redo.back() );
         m_redo.pop_back();
 
-        out.set_ok( restore( entry.after, "redo " + entry.label, *out.mutable_result() ) );
+        out.set_ok( applyHistory( entry, false, *out.mutable_result() ) );
         out.set_label( entry.label );
 
         if( out.ok() )

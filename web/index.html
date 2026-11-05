@@ -62,10 +62,11 @@
       <button id="undo" disabled title="Undo (Ctrl+Z)">↶ Undo</button>
       <button id="redo" disabled title="Redo (Ctrl+Y)">↷ Redo</button>
       <button id="save" title="Save to file (Ctrl+S)">Save</button>
+      <button id="add" title="Add a footprint at the cursor (A)">＋ Add</button>
       <button id="refill" title="Refill all copper zones (fills go stale when parts move)">Refill zones</button>
     </span>
     <span class="pill" id="conn">offline</span>
-    <button id="fit" title="Fit board (F)">Fit</button>
+    <button id="fit" title="Fit board (Home, or F with nothing selected)">Fit</button>
   </header>
   <div id="stage"><canvas id="cv"></canvas><div id="tip"></div></div>
   <aside>
@@ -88,9 +89,10 @@
       <div id="log" class="log"></div>
     </section>
     <section class="help">
-      <kbd>drag</kbd> move footprint · <kbd>R</kbd>/<kbd>⇧R</kbd> rotate ·
+      <kbd>drag</kbd> move footprint · <kbd>R</kbd>/<kbd>⇧R</kbd> rotate · <kbd>F</kbd> flip side ·
+      <kbd>Del</kbd> delete · <kbd>A</kbd> add at cursor ·
       <kbd>←↑→↓</kbd> nudge 0.1 mm (<kbd>⇧</kbd> 1 mm) · <kbd>wheel</kbd> zoom ·
-      <kbd>right-drag</kbd> pan · <kbd>F</kbd> fit · <kbd>Alt</kbd> no grid snap ·
+      <kbd>right-drag</kbd> pan · <kbd>Home</kbd> fit · <kbd>Alt</kbd> no grid snap ·
       <kbd>Ctrl+Z</kbd>/<kbd>Ctrl+Y</kbd> undo/redo · <kbd>Ctrl+S</kbd> save
     </section>
   </aside>
@@ -203,7 +205,11 @@ function applyDelta(msg) {
   if ((msg.rm || []).length) log(`removed ${msg.rm.length} item(s)`);
   rev = msg.rev;
   dirty = true;
-  if (selected) showSelection();
+  if (selectRef) {
+    for (const f of board.fp.values()) if (f.ref === selectRef) { selected = f.id; selectRef = null; break; }
+  }
+  if (selected && !board.fp.has(selected)) selected = null;
+  showSelection();
   updateStats();
 }
 
@@ -531,7 +537,7 @@ function padAt(f, x, y) {
 // ---------------------------------------------------------------------------------------------
 // Edits
 
-function requestMove(f, dx, dy, rotDeg) {
+function requestMove(f, dx, dy, rotDeg, flip) {
   if (!f) return;
   if (f.lk) { log(`<b>${f.ref}</b> is locked`); return; }
   // Optimistic: show the translation now; the server's delta replaces it with the truth.
@@ -545,7 +551,33 @@ function requestMove(f, dx, dy, rotDeg) {
   }
   pendingOwn.add(f.id);
   moveSentAt = performance.now();
-  send({ t: "move", refs: [f.ref], dx: dx / 1000, dy: dy / 1000, rot: rotDeg || 0 });
+  send({ t: "move", refs: [f.ref], dx: dx / 1000, dy: dy / 1000, rot: rotDeg || 0, flip: !!flip });
+}
+
+function requestDelete(f) {
+  if (!f) return;
+  if (f.lk) { log(`<b>${f.ref}</b> is locked`); return; }
+  moveSentAt = performance.now();
+  send({ t: "delete", refs: [f.ref] });
+}
+
+// Add: "Library:Name" from the footprint libraries, or an existing reference to copy.
+let lastWorld = null, selectRef = null;
+function requestAdd() {
+  const what = (prompt("Footprint to add — Library:Name (e.g. Capacitor_SMD:C_0603_1608Metric), " +
+                       "or the reference of a part to copy (e.g. C12):", requestAdd.last || "") || "").trim();
+  if (!what) return;
+  requestAdd.last = what;
+  const like = !what.includes(":");
+  const guess = like ? what.replace(/\d+$/, "") + "?" : "";
+  const ref = (prompt("Reference (\"R?\" = next free number):", guess) || "").trim();
+  if (!ref) return;
+  const r = cv.getBoundingClientRect();
+  const [x, y] = lastWorld || toWorld({ clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 });
+  const snap = v => Math.round(v / GRID) * GRID;
+  moveSentAt = performance.now();
+  send(Object.assign({ t: "add", ref, x: snap(x) / 1000, y: snap(y) / 1000 },
+                     like ? { like: what } : { footprint: what }));
 }
 let moveSentAt = 0;
 
@@ -558,9 +590,12 @@ function onMoved(msg) {
     if (op === "move") send({ t: "resync" });
     return;
   }
-  if (op !== "move") log(`${op}: <b>${msg.label}</b>`);
+  if (op !== "move") log(`${op}: <b>${msg.label}</b>${msg.source ? ` <span style="color:var(--dim)">from ${msg.source}</span>` : ""}`);
+  if ((msg.new_nets || []).length) log(`new nets: ${msg.new_nets.join(", ")}`);
+  if (op === "delete" && (msg.removed || []).includes(board.fp.get(selected)?.ref)) { selected = null; showSelection(); }
+  if (op === "add" && (msg.added || []).length) selectRef = msg.added[0];
   drcMarks = msg.drc;
-  $("drcSummary").textContent = "local check of the moved footprint";
+  $("drcSummary").textContent = op === "delete" ? "" : `local check of the ${op === "add" ? "new" : "moved"} footprint`;
   const list = $("drc");
   $("drcCount").textContent = msg.drc.length ? `(${msg.drc.length})` : "";
   if (!msg.drc.length) { list.className = "drc"; list.innerHTML = `<span style="color:var(--ok)">clean</span>`; }
@@ -571,7 +606,7 @@ function onMoved(msg) {
       const div = document.createElement("div");
       div.className = "mono";
       div.innerHTML = `<span class="t">${d.type}</span>${d.a} × ${d.b}` +
-        `<br><span style="color:var(--dim)">${d.ly}${d.type !== "courtyard" ? ` · need ${mm(d.need)} have ${mm(d.have)} mm` : ""}</span>`;
+        `<br><span style="color:var(--dim)">${d.ly}${d.type !== "courtyard" && d.type !== "outside_board" ? ` · need ${mm(d.need)} have ${mm(d.have)} mm` : ""}</span>`;
       div.onclick = () => { const r = 1500; fit([d.x - r, d.y - r, d.x + r, d.y + r]); };
       list.appendChild(div);
     }
@@ -749,6 +784,8 @@ cv.addEventListener("mousedown", e => {
 
 window.addEventListener("mousemove", e => {
   const [x, y] = toWorld(e);
+  const cr = cv.getBoundingClientRect();
+  lastWorld = e.clientX >= cr.left && e.clientX <= cr.right && e.clientY >= cr.top && e.clientY <= cr.bottom ? [x, y] : null;
   $("cursor").textContent = `${mm(x)}, ${mm(y)} mm`;
   if (pan) {
     view.ox = pan.ox + e.clientX - pan.x; view.oy = pan.oy + e.clientY - pan.y; dirty = true; return;
@@ -797,9 +834,12 @@ window.addEventListener("keydown", e => {
   }
   const f = selected ? board.fp.get(selected) : null;
   const step = e.shiftKey ? 1000 : 100;
-  if (e.key === "f" || e.key === "F") fit();
+  if (e.key === "Home" || ((e.key === "f" || e.key === "F") && !f)) fit();
   else if (e.key === "Escape") { selected = null; showSelection(); drcMarks = []; dirty = true; }
+  else if (e.key === "a" || e.key === "A") requestAdd();
   else if (!f) return;
+  else if (e.key === "f" || e.key === "F") requestMove(f, 0, 0, 0, true);
+  else if (e.key === "Delete" || e.key === "Backspace") requestDelete(f);
   else if (e.key === "r" || e.key === "R") requestMove(f, 0, 0, e.shiftKey ? -90 : 90);
   else if (e.key === "ArrowLeft") requestMove(f, -step, 0);
   else if (e.key === "ArrowRight") requestMove(f, step, 0);
@@ -813,6 +853,7 @@ $("fit").onclick = () => fit();
 $("undo").onclick = () => undoRedo("undo");
 $("redo").onclick = () => undoRedo("redo");
 $("save").onclick = () => send({ t: "save" });
+$("add").onclick = () => { lastWorld = null; requestAdd(); };
 $("fulldrc").onclick = () => { $("fulldrc").disabled = true; $("fulldrc").textContent = "Running…"; send({ t: "drc" }); };
 $("refill").onclick = () => { $("refill").disabled = true; $("refill").textContent = "Refilling…"; send({ t: "refill" }); };
 window.addEventListener("resize", resize);

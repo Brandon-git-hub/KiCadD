@@ -6,8 +6,8 @@
  *   server -> client
  *     {"t":"snapshot","rev":R,"file":..,"outline":[[x,y,..],..], ITEMS}
  *     {"t":"delta","since":S,"rev":R, ITEMS, "rm":[id,..]}
- *     {"t":"moved","op":"move|undo|redo","ok":true,"ms":..,"unconnected":N,"pending":[..],"drc":[..],
- *      "label":".."}
+ *     {"t":"moved","op":"move|delete|add|undo|redo","ok":true,"ms":..,"unconnected":N,"pending":[..],
+ *      "drc":[..],"label":"..","added":[ref..],"removed":[ref..],"source":"..","new_nets":[..]}
  *     {"t":"history","undo":N,"redo":N,"next_undo":"..","next_redo":"..","modified":bool}
  *     {"t":"saved","ok":bool,"file":"..","error":".."}
  *     {"t":"fills","fills":[{"id","net","ly","polys":[[x0,y0,dx,dy,dx,dy,..],..]},..]}
@@ -23,7 +23,10 @@
  *           "via":[[id,net,x,y,d,drill],..]
  *           "zone":[{id,net,ly:[..],ko,ol:[[..],..]}]
  *   client -> server
- *     {"t":"move","refs":[..],"dx":mm,"dy":mm,"rot":deg}
+ *     {"t":"move","refs":[..],"dx":mm,"dy":mm,"rot":deg,"flip":bool}
+ *     {"t":"delete","refs":[..]}
+ *     {"t":"add","footprint":"Lib:Name"|"like":"C12","ref":"C?","x":mm,"y":mm,"rot":deg,"back":bool,
+ *      "value":"..","nets":{"1":"GND",..}}
  *     {"t":"undo"} / {"t":"redo"} / {"t":"save"}
  *     {"t":"fills","ids":[..]}   (ids empty = all)   /   {"t":"refill"}   /   {"t":"drc"}
  *   server -> client (full DRC)
@@ -360,6 +363,8 @@ const char* drcName( kb::DrcType aType )
     case kb::DT_SHORT:             return "short";
     case kb::DT_HOLE_CLEARANCE:    return "hole";
     case kb::DT_COURTYARD_OVERLAP: return "courtyard";
+    case kb::DT_EDGE_CLEARANCE:    return "edge";
+    case kb::DT_COPPER_OUTSIDE_BOARD: return "outside_board";
     default:                       return "drc";
     }
 }
@@ -449,7 +454,7 @@ void WEB_HUB::Received( const std::shared_ptr<WS_SESSION>& aSession, const std::
 
     if( t == "resync" )
         msg = json{ { "t", "snapshot" } };
-    else if( t != "move" && t != "undo" && t != "redo" && t != "save" && t != "fills" && t != "refill"
+    else if( t != "move" && t != "delete" && t != "add" && t != "undo" && t != "redo" && t != "save" && t != "fills" && t != "refill"
              && t != "drc" )
     {
         aSession->Send( std::make_shared<std::string>( errorJson( "unknown message type '" + t + "'" ) ) );
@@ -713,6 +718,7 @@ void WEB_HUB::runJob( const JOB& aJob )
         req.set_dx( std::llround( num( "dx" ) * 1e6 ) );
         req.set_dy( std::llround( num( "dy" ) * 1e6 ) );
         req.set_drot_decideg( static_cast<int>( std::lround( num( "rot" ) * 10 ) ) );
+        req.set_flip( m.contains( "flip" ) && m["flip"].is_boolean() && m["flip"].get<bool>() );
 
         auto             t0 = std::chrono::steady_clock::now();
         kb::MoveResponse r;
@@ -729,6 +735,60 @@ void WEB_HUB::runJob( const JOB& aJob )
                         r.history_label() );
 
         poll();   // push the geometry change (and history state) to every view right away
+        return;
+    }
+
+    if( t == "delete" || t == "add" )
+    {
+        const json&      m = aJob.message;
+        auto             t0 = std::chrono::steady_clock::now();
+        kb::MoveResponse r;
+        bool             ok;
+
+        auto str = [&]( const char* aKey ) { return m.contains( aKey ) && m[aKey].is_string() ? m[aKey].get<std::string>() : std::string(); };
+        auto num = [&]( const char* aKey ) { return m.contains( aKey ) && m[aKey].is_number() ? m[aKey].get<double>() : 0.0; };
+
+        if( t == "delete" )
+        {
+            kb::DeleteFootprints req;
+
+            if( m.contains( "refs" ) && m["refs"].is_array() )
+                for( const json& ref : m["refs"] )
+                    if( ref.is_string() )
+                        req.add_refs( ref.get<std::string>() );
+
+            ok = !req.refs().empty() && m_ipc.Call( req, r, err );
+            ok = ok && r.removed_size() > 0;
+        }
+        else
+        {
+            kb::AddFootprint req;
+            req.set_lib_id( str( "footprint" ) );
+            req.set_like( str( "like" ) );
+            req.set_ref( str( "ref" ) );
+            req.set_value( str( "value" ) );
+            req.mutable_pos()->set_x( std::llround( num( "x" ) * 1e6 ) );
+            req.mutable_pos()->set_y( std::llround( num( "y" ) * 1e6 ) );
+            req.set_rot_decideg( static_cast<int>( std::lround( num( "rot" ) * 10 ) ) );
+            req.set_back( m.contains( "back" ) && m["back"].is_boolean() && m["back"].get<bool>() );
+
+            if( m.contains( "nets" ) && m["nets"].is_object() )
+                for( const auto& [pad, net] : m["nets"].items() )
+                    if( net.is_string() )
+                        ( *req.mutable_nets() )[pad] = net.get<std::string>();
+
+            ok = m_ipc.Call( req, r, err ) && r.added_size() > 0;
+        }
+
+        double ms = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - t0 ).count();
+
+        if( ok )
+            err.clear();
+        else if( err.empty() )
+            err = t == "delete" ? "no footprint deleted" : "nothing added";
+
+        sendMoveResult( session, t.c_str(), ok, err, &r, ms, r.history_label() );
+        poll();
     }
 }
 
@@ -781,6 +841,12 @@ void WEB_HUB::sendMoveResult( const std::shared_ptr<WS_SESSION>& aSession, const
             pending.push_back( s );
 
         out["unconnected"] = r.unconnected();
+        out["added"] = json( std::vector<std::string>( r.added().begin(), r.added().end() ) );
+        out["removed"] = json( std::vector<std::string>( r.removed().begin(), r.removed().end() ) );
+        out["new_nets"] = json( std::vector<std::string>( r.created_nets().begin(), r.created_nets().end() ) );
+
+        if( !r.source().empty() )
+            out["source"] = r.source();
     }
 
     out["drc"] = std::move( drc );

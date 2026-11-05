@@ -28,6 +28,8 @@ TYPE_MAP = {
     kd.DT_SHORT: board_rules_pb2.DRCET_SHORTING_ITEMS,
     kd.DT_HOLE_CLEARANCE: board_rules_pb2.DRCET_HOLE_CLEARANCE,
     kd.DT_COURTYARD_OVERLAP: board_rules_pb2.DRCET_OVERLAPPING_FOOTPRINTS,
+    kd.DT_EDGE_CLEARANCE: board_rules_pb2.DRCET_EDGE_CLEARANCE,
+    kd.DT_COPPER_OUTSIDE_BOARD: board_rules_pb2.DRCET_COPPER_OUTSIDE_BOARD,
 }
 COVERED = set(TYPE_MAP.values())
 
@@ -167,9 +169,9 @@ def part_b(c, s, fps, refs, board_file, rng):
 
     full_set = set()
     for m in full.violations:
-        if m.error_type not in COVERED or len(m.items) != 2 or m.excluded:
+        if m.error_type not in COVERED or len(m.items) not in (1, 2) or m.excluded:
             continue
-        a, b = (i.value for i in m.items)
+        a, b = m.items[0].value, m.items[-1].value   # one item: copper outside the board
         if a in zone_ids or b in zone_ids:
             continue  # local DRC deliberately skips zone fills
         oa, ob = owner.get(a), owner.get(b)

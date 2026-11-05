@@ -8,6 +8,7 @@
 #include "drc.h"
 #include "ipc_client.h"
 
+#include <algorithm>
 #include <set>
 
 #include <cmath>
@@ -193,6 +194,11 @@ std::string renderDrc( const google::protobuf::RepeatedPtrField<kb::DrcViolation
         case kb::DT_SHORT:             s += "SHORT "; break;
         case kb::DT_HOLE_CLEARANCE:    s += "HOLE "; break;
         case kb::DT_COURTYARD_OVERLAP: s += "COURTYARD "; break;
+        case kb::DT_EDGE_CLEARANCE:    s += "EDGE "; break;
+        case kb::DT_COPPER_OUTSIDE_BOARD:
+            s += "OUTSIDE_BOARD " + v.a() + ( v.net_a().empty() ? "" : "[" + v.net_a() + "]" ) + " " + v.layer()
+                 + " @" + pt( v.pos() ) + "\n";
+            continue;
         default:                       s += "DRC "; break;
         }
 
@@ -236,8 +242,28 @@ std::string renderMoveResult( const kb::MoveResponse& r )
 {
     std::string s;
 
+    if( !r.source().empty() )
+        s += "from " + r.source() + "\n";
+
+    if( !r.created_nets().empty() )
+    {
+        s += "new nets:";
+
+        for( const std::string& n : r.created_nets() )
+            s += " " + n;
+
+        s += "\n";
+    }
+
+    for( const std::string& ref : r.removed() )
+        s += ref + " deleted\n";
+
     for( const kb::MoveResult& m : r.moved() )
-        s += m.ref() + " @" + pt( m.pos() ) + ( m.rot_decideg() ? " r" + deg( m.rot_decideg() ) : "" ) + "\n";
+    {
+        bool added = std::find( r.added().begin(), r.added().end(), m.ref() ) != r.added().end();
+        s += m.ref() + ( added ? " added" : "" ) + " @" + pt( m.pos() )
+             + ( m.rot_decideg() ? " r" + deg( m.rot_decideg() ) : "" ) + ( m.back() ? " B.Cu" : "" ) + "\n";
+    }
 
     if( !r.missing().empty() )
     {
@@ -381,9 +407,10 @@ TOOL_RESULT moveFootprints( IPC_CLIENT& aIpc, const json& aArgs )
     getNumber( aArgs, "dx", dx );
     getNumber( aArgs, "dy", dy );
     getNumber( aArgs, "rotate", rot );
+    bool flip = aArgs.contains( "flip" ) && aArgs["flip"].is_boolean() && aArgs["flip"].get<bool>();
 
-    if( dx == 0 && dy == 0 && rot == 0 )
-        return error( "nothing to do: give dx, dy (mm) and/or rotate (deg)" );
+    if( dx == 0 && dy == 0 && rot == 0 && !flip )
+        return error( "nothing to do: give dx, dy (mm), rotate (deg) and/or flip" );
 
     kb::MoveDelta req;
 
@@ -393,6 +420,7 @@ TOOL_RESULT moveFootprints( IPC_CLIENT& aIpc, const json& aArgs )
     req.set_dx( toNm( dx ) );
     req.set_dy( toNm( dy ) );
     req.set_drot_decideg( static_cast<int>( std::lround( rot * 10 ) ) );
+    req.set_flip( flip );
 
     kb::MoveResponse r;
     std::string      err;
@@ -401,6 +429,77 @@ TOOL_RESULT moveFootprints( IPC_CLIENT& aIpc, const json& aArgs )
         return error( err );
 
     return { renderMoveResult( r ), r.moved().empty() };
+}
+
+
+TOOL_RESULT deleteFootprints( IPC_CLIENT& aIpc, const json& aArgs )
+{
+    std::vector<std::string> refs = getStrings( aArgs, "refs" );
+
+    if( refs.empty() )
+        return error( "refs (list of reference designators) is required" );
+
+    kb::DeleteFootprints req;
+
+    for( const std::string& r : refs )
+        req.add_refs( r );
+
+    kb::MoveResponse r;
+    std::string      err;
+
+    if( !aIpc.Call( req, r, err ) )
+        return error( err );
+
+    return { renderMoveResult( r ), r.removed().empty() };
+}
+
+
+TOOL_RESULT addFootprint( IPC_CLIENT& aIpc, const json& aArgs )
+{
+    kb::AddFootprint req;
+
+    auto str = [&]( const char* aKey ) -> std::string
+    {
+        return aArgs.contains( aKey ) && aArgs[aKey].is_string() ? aArgs[aKey].get<std::string>() : "";
+    };
+
+    req.set_lib_id( str( "footprint" ) );
+    req.set_like( str( "like" ) );
+    req.set_ref( str( "ref" ) );
+    req.set_value( str( "value" ) );
+
+    if( req.lib_id().empty() && req.like().empty() )
+        return error( "give footprint (\"Library:Name\") or like (an existing ref to copy)" );
+
+    double x = 0, y = 0, rot = 0;
+
+    if( !getNumber( aArgs, "x", x ) || !getNumber( aArgs, "y", y ) )
+        return error( "x and y (mm) are required" );
+
+    getNumber( aArgs, "rotate", rot );
+    req.mutable_pos()->set_x( toNm( x ) );
+    req.mutable_pos()->set_y( toNm( y ) );
+    req.set_rot_decideg( static_cast<int>( std::lround( rot * 10 ) ) );
+    req.set_back( aArgs.contains( "back" ) && aArgs["back"].is_boolean() && aArgs["back"].get<bool>() );
+
+    if( aArgs.contains( "nets" ) && aArgs["nets"].is_object() )
+    {
+        for( const auto& [pad, net] : aArgs["nets"].items() )
+        {
+            if( !net.is_string() )
+                return error( "nets: pad number -> net name, e.g. {\"1\": \"GND\", \"2\": \"+3V3\"}" );
+
+            ( *req.mutable_nets() )[pad] = net.get<std::string>();
+        }
+    }
+
+    kb::MoveResponse r;
+    std::string      err;
+
+    if( !aIpc.Call( req, r, err ) )
+        return error( err );
+
+    return { renderMoveResult( r ), r.added().empty() };
 }
 
 
@@ -690,20 +789,48 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        [&aIpc]( const json& a ) { return queryNet( aIpc, a ); } } );
 
     tools.push_back( { "move_footprints",
-                       "Move/rotate footprints by a relative delta as one undoable edit. Returns new "
-                       "positions, the unrouted-connection count and a local DRC of the moved parts "
-                       "(clearance, shorts, hole clearance, courtyard overlap). Large nets (GND, power) "
-                       "skip ratsnest updates while you iterate; the count says which.",
+                       "Move/rotate/flip footprints as one undoable edit (move, then rotate, then flip; each "
+                       "around its own anchor). Returns new positions (B.Cu = bottom side), the "
+                       "unrouted-connection count and a local DRC of the moved parts (clearance, shorts, "
+                       "hole clearance, courtyard overlap, board-edge clearance, copper outside the board). "
+                       "Large nets (GND, power) skip ratsnest updates while you iterate; the count says which.",
                        schema( { { "refs", refs },
                                  { "dx", { { "type", "number" }, { "description", "Delta X, mm" } } },
                                  { "dy", { { "type", "number" }, { "description", "Delta Y, mm (down is +)" } } },
-                                 { "rotate", { { "type", "number" }, { "description", "Rotation delta, degrees CCW" } } } },
+                                 { "rotate", { { "type", "number" }, { "description", "Rotation delta, degrees CCW" } } },
+                                 { "flip", { { "type", "boolean" },
+                                             { "description", "Move to the other side (F.Cu <-> B.Cu), mirrored left-right" } } } },
                                { "refs" } ),
                        [&aIpc]( const json& a ) { return moveFootprints( aIpc, a ); } } );
 
+    tools.push_back( { "add_footprint",
+                       "Place a new footprint as one undoable edit: from a library (footprint = "
+                       "\"Library:Name\", e.g. \"Capacitor_SMD:C_0603_1608Metric\") or as a copy of a part "
+                       "already on the board (like = \"C12\"). ref \"C?\" takes the next free number. "
+                       "nets maps pad numbers to nets; unknown nets are created and reported. Returns the "
+                       "placement, unrouted count and local DRC.",
+                       schema( { { "footprint", { { "type", "string" }, { "description", "Library:Name" } } },
+                                 { "like", { { "type", "string" }, { "description", "Copy the footprint of this ref instead" } } },
+                                 { "ref", { { "type", "string" }, { "description", "Reference, e.g. C301 or C? (default: prefix of like)" } } },
+                                 { "value", { { "type", "string" }, { "description", "Value, e.g. 100nF" } } },
+                                 { "x", { { "type", "number" }, { "description", "Position X, mm" } } },
+                                 { "y", { { "type", "number" }, { "description", "Position Y, mm" } } },
+                                 { "rotate", { { "type", "number" }, { "description", "Orientation, degrees CCW" } } },
+                                 { "back", { { "type", "boolean" }, { "description", "Place on the bottom side" } } },
+                                 { "nets", { { "type", "object" }, { "additionalProperties", { { "type", "string" } } },
+                                             { "description", "Pad number -> net name, e.g. {\"1\": \"+3V3\", \"2\": \"GND\"}" } } } },
+                               { "x", "y" } ),
+                       [&aIpc]( const json& a ) { return addFootprint( aIpc, a ); } } );
+
+    tools.push_back( { "delete_footprints",
+                       "Delete footprints as one undoable edit (undo restores them with their nets). "
+                       "Tracks and vias stay. Returns the new unrouted count.",
+                       schema( { { "refs", refs } }, { "refs" } ),
+                       [&aIpc]( const json& a ) { return deleteFootprints( aIpc, a ); } } );
+
     tools.push_back( { "undo",
-                       "Undo the last KiCadD edit (move/rotate), restoring the exact previous positions. "
-                       "Returns what was undone, new positions and local DRC.",
+                       "Undo the last KiCadD edit (move/rotate/flip/add/delete), restoring the exact previous "
+                       "state. Returns what was undone, new positions and local DRC.",
                        schema( json::object() ),
                        [&aIpc]( const json& ) { return history( aIpc, true ); } } );
 

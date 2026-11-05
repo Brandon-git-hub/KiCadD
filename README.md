@@ -122,8 +122,9 @@ API and `GetStateDigest`, triggers the rebuild automatically. Saving needs no fl
 the ratsnest isn't stored in the file.
 
 Local DRC (`src/pcb/kicadd_local_drc.cpp`) mirrors the upstream copper-clearance provider's
-pad path and track path, the hole-clearance rules, net ties, and courtyard overlap. All rules
-come from the board's `DRC_ENGINE`. Not covered: zone fills (stale until refill), silk, edge,
+pad path and track path, the hole-clearance rules, net ties, and courtyard overlap, plus the
+edge-clearance provider (copper vs Edge.Cuts / Margin, copper entirely outside the board). All
+rules come from the board's `DRC_ENGINE`. Not covered: zone fills (stale until refill), silk,
 text, track-to-track (an unmoved track pair can't change).
 
 ### Results (Jetson AGX Thor board, Release build)
@@ -338,8 +339,39 @@ other API commands, and not zone refills. The history resets when another board 
 Headless KiCad commits keep no undo list of their own.
 
 Verification: `client/history_e2e.py` (19 checks, including save and reload from disk),
-`browser_check.py` (Undo/Redo buttons and shortcuts), `mcp_e2e.py` (12 tools). `run_drc`
+`browser_check.py` (Undo/Redo buttons and shortcuts), `mcp_e2e.py` (14 tools). `run_drc`
 reports exactly upstream's non-excluded markers (Jetson: 317 = 317).
+
+## Layout closure: flip, add, delete, edge DRC (2026-11-06)
+
+| Feature | Daemon / MCP | Web view |
+|---|---|---|
+| **Flip** | `MoveDelta.flip`; `move_footprints {flip}` — upstream `FOOTPRINT::Flip` around the footprint's own anchor, left-right: padstacks, silk, fab, courtyard, mask/paste swap sides, geometry mirrored | `F` on the selection |
+| **Delete** | `DeleteFootprints`; `delete_footprints` — one commit, `BOARD::Remove` takes the pads out of connectivity; the removed footprint is owned by the history (headless commits keep no undo list), detached: no parent, nets kept by name | `Del` / `Backspace` |
+| **Add** | `AddFootprint`; `add_footprint {footprint: "Lib:Name" \| like: "C12", ref: "C?", x, y, rotate, back, value, nets: {pad: net}}` | `A` / ＋ Add: at the cursor, `Lib:Name` or a ref to copy |
+| **Edge DRC** | local DRC: `DT_EDGE_CLEARANCE`, `DT_COPPER_OUTSIDE_BOARD`, in every move/flip/add result | listed with the local check |
+
+Footprints for `add_footprint` come from the project/global footprint library table, then
+`KICADD_FOOTPRINT_DIRS` (colon separated directories of `Nickname.pretty/`), then
+`/usr/share/kicad/footprints` (Debian package `kicad-footprints`), then a footprint already on
+the board with the same lib_id. Nets that don't exist are created and reported. `ref` ending
+in `?` takes the next free number. Undo/redo of adds and deletes restore the same KIIDs and pad
+nets, so earlier history entries (moves) still apply.
+
+Edge DRC follows `DRC_TEST_PROVIDER_EDGE_CLEARANCE`: Edge.Cuts strokes at width 0, rectangles
+and polygons split into sides, one report per item, castellated and edge-connector pads
+exempt. A headless board has no cached outline until something builds it; local DRC builds it
+once per outline generation. Cost: +0.1–0.8 ms per footprint; the first check after the
+outline changes also triangulates it (~16 ms on Jetson).
+
+Verification: `client/layout_e2e.py` (58 checks) and `client/browser_layout.py` (F / Del / A / Ctrl+Z in Chromium). Flip mirrors pads and courtyard exactly,
+round-trips and undoes to identical geometry, and the saved file has the part on B.Cu with
+B.SilkS / B.Fab / B.CrtYd. After every delete / add / undo / redo `VerifyConnectivity`
+(incremental vs full rebuild) is empty. 24 footprints pushed over / off the Jetson edge:
+local edge DRC reports exactly the pads full DRC reports (41 = 41); unedited RoyalBlue54L
+board: 28 = 28. `verify_incremental.py` part B (12 random moves, all local DRC types incl. edge)
+matches full DRC exactly (seeds 7 / 3: 47 = 47, 79 = 79); run part B on a fresh board, since
+after part A's 60 random moves full DRC hits its per-type error limits (199 / 499).
 
 ## License
 

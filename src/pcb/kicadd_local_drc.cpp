@@ -3,7 +3,8 @@
  *
  * Pairwise semantics follow DRC_TEST_PROVIDER_COPPER_CLEARANCE::testSingleLayerItemAgainstItem
  * (per copper layer, hole shape where a pad/via isn't flashed, net-tie exclusion, DRC epsilon)
- * and DRC_TEST_PROVIDER_COURTYARD_CLEARANCE (front/back courtyard collision).
+ * DRC_TEST_PROVIDER_COURTYARD_CLEARANCE (front/back courtyard collision) and
+ * DRC_TEST_PROVIDER_EDGE_CLEARANCE (copper vs Edge.Cuts / Margin, copper outside the board).
  *
  * This file is part of KiCadD and is licensed GPL-3.0-or-later, like KiCad.
  */
@@ -11,6 +12,7 @@
 #include "kicadd_local_drc.h"
 
 #include <array>
+#include <cstdlib>
 #include <set>
 #include <tuple>
 #include <unordered_set>
@@ -21,8 +23,11 @@
 #include <drc/drc_rule.h>
 #include <footprint.h>
 #include <pad.h>
+#include <pcb_board_outline.h>
+#include <pcb_shape.h>
 #include <pcb_track.h>
 #include <geometry/shape.h>
+#include <geometry/shape_arc.h>
 #include <geometry/shape_poly_set.h>
 #include <geometry/shape_segment.h>
 
@@ -44,6 +49,16 @@ std::string handleOf( const BOARD_ITEM* aItem )
     if( aItem->Type() == PCB_FOOTPRINT_T )
         return static_cast<const FOOTPRINT*>( aItem )->GetReference().ToStdString();
 
+    if( aItem->Type() == PCB_SHAPE_T && ( aItem->IsOnLayer( Edge_Cuts ) || aItem->IsOnLayer( Margin ) ) )
+    {
+        std::string what = aItem->IsOnLayer( Edge_Cuts ) ? "edge" : "margin";
+
+        if( const FOOTPRINT* fp = aItem->GetParentFootprint() )
+            return fp->GetReference().ToStdString() + "." + what;
+
+        return what;
+    }
+
     return aItem->m_Uuid.AsStdString().substr( 0, 8 );
 }
 
@@ -57,7 +72,12 @@ public:
             m_engine( m_bds.m_DRCEngine.get() ),
             m_epsilon( m_bds.GetDRCEpsilon() ),
             m_maxClearance( m_bds.GetBiggestClearanceValue() )
-    {}
+    {
+        DRC_CONSTRAINT worst;
+
+        if( m_engine && m_engine->QueryWorstConstraint( EDGE_CLEARANCE_CONSTRAINT, worst ) )
+            m_largestEdgeClearance = worst.GetValue().Min();
+    }
 
     bool Ready() const { return m_engine != nullptr; }
 
@@ -100,6 +120,9 @@ public:
                     testCopperPair( pad, track );
             }
         }
+
+        if( !std::getenv( "KICADD_NO_EDGE_DRC" ) )
+            testEdges( aFootprints );
     }
 
     std::vector<DrcViolation> TakeResults() { return std::move( m_results ); }
@@ -378,6 +401,195 @@ private:
         }
     }
 
+    /// Edge.Cuts / Margin shapes near aArea, split like DRC_TEST_PROVIDER_EDGE_CLEARANCE does
+    /// (rectangles and polygons into their sides, Edge.Cuts stroke width 0).
+    void collectEdges( const BOX2I& aArea )
+    {
+        auto take = [&]( BOARD_ITEM* aItem )
+        {
+            if( aItem->Type() != PCB_SHAPE_T || !( aItem->IsOnLayer( Edge_Cuts ) || aItem->IsOnLayer( Margin ) ) )
+                return;
+
+            PCB_SHAPE* shape = static_cast<PCB_SHAPE*>( aItem );
+
+            if( !aArea.Intersects( shape->GetBoundingBox() ) )
+                return;
+
+            STROKE_PARAMS stroke = shape->GetStroke();
+
+            if( shape->IsOnLayer( Edge_Cuts ) )
+                stroke.SetWidth( 0 );
+
+            auto piece = [&]() -> PCB_SHAPE*
+            {
+                m_edges.emplace_back( static_cast<PCB_SHAPE*>( shape->Clone() ) );
+                m_edges.back()->SetStroke( stroke );
+                return m_edges.back().get();
+            };
+
+            auto segment = [&]( const VECTOR2I& aA, const VECTOR2I& aB )
+            {
+                PCB_SHAPE* e = piece();
+                e->SetShape( SHAPE_T::SEGMENT );
+                e->SetStart( aA );
+                e->SetEnd( aB );
+            };
+
+            if( shape->GetShape() == SHAPE_T::RECTANGLE && !shape->IsSolidFill() )
+            {
+                if( shape->GetCornerRadius() > 0 )
+                {
+                    for( SHAPE* sub : shape->MakeEffectiveShapes( true ) )
+                    {
+                        if( SHAPE_SEGMENT* seg = dynamic_cast<SHAPE_SEGMENT*>( sub ) )
+                        {
+                            segment( seg->GetStart(), seg->GetEnd() );
+                        }
+                        else if( SHAPE_ARC* arc = dynamic_cast<SHAPE_ARC*>( sub ) )
+                        {
+                            PCB_SHAPE* e = piece();
+                            e->SetShape( SHAPE_T::ARC );
+                            e->SetArcGeometry( arc->GetP0(), arc->GetArcMid(), arc->GetP1() );
+                        }
+
+                        delete sub;
+                    }
+                }
+                else
+                {
+                    VECTOR2I s = shape->GetStart(), e = shape->GetEnd();
+                    segment( s, { s.x, e.y } );
+                    segment( s, { e.x, s.y } );
+                    segment( { e.x, s.y }, e );
+                    segment( { s.x, e.y }, e );
+                }
+            }
+            else if( shape->GetShape() == SHAPE_T::POLY && !shape->IsSolidFill()
+                     && !shape->GetPolyShape().IsEmpty() )
+            {
+                const SHAPE_LINE_CHAIN& poly = shape->GetPolyShape().COutline( 0 );
+
+                for( int ii = 0; ii < (int) poly.GetSegmentCount(); ++ii )
+                    segment( poly.CSegment( ii ).A, poly.CSegment( ii ).B );
+            }
+            else
+            {
+                piece();
+            }
+        };
+
+        for( BOARD_ITEM* item : m_board->Drawings() )
+            take( item );
+
+        for( FOOTPRINT* fp : m_board->Footprints() )
+        {
+            if( !aArea.Intersects( fp->GetBoundingBox( false ) ) )
+                continue;
+
+            for( BOARD_ITEM* item : fp->GraphicalItems() )
+                take( item );
+        }
+
+        // Drop pieces of a split outline that are nowhere near the footprints.
+        std::erase_if( m_edges, [&]( const std::unique_ptr<PCB_SHAPE>& e )
+                                { return !aArea.Intersects( e->GetBoundingBox() ); } );
+    }
+
+    /// Copper of the footprints against the board edge, following
+    /// DRC_TEST_PROVIDER_EDGE_CLEARANCE::testAgainstEdge and testCopperOutsideBoard.
+    void testEdges( const std::vector<FOOTPRINT*>& aFootprints )
+    {
+        if( aFootprints.empty() )
+            return;
+
+        BOX2I area = aFootprints.front()->GetBoundingBox( false );
+
+        for( const FOOTPRINT* fp : aFootprints )
+            area.Merge( fp->GetBoundingBox( false ) );
+
+        area.Inflate( std::max( m_largestEdgeClearance, 0 ) + m_epsilon );
+        collectEdges( area );
+
+        const PCB_BOARD_OUTLINE* outline = m_board->BoardOutline();
+        const bool hasOutline = outline && outline->HasOutline();
+
+        // Castellated pads and edge-connector fingers are meant to reach the edge (upstream
+        // exempts them, and tracks inside castellated holes; KiCadD only moves footprints).
+        auto testItem = [&]( BOARD_ITEM* aItem, const std::vector<PCB_LAYER_ID>& aLayers )
+        {
+            bool touchesBoard = !hasOutline;
+
+            for( PCB_LAYER_ID shapeLayer : aLayers )
+            {
+                std::shared_ptr<SHAPE> itemShape = aItem->GetEffectiveShape( shapeLayer );
+
+                if( !itemShape )
+                    continue;
+
+                if( !touchesBoard && outline->GetOutline().Collide( itemShape.get() ) )
+                    touchesBoard = true;
+
+                const BOX2I itemBox = itemShape->BBox().GetInflated( std::max( m_largestEdgeClearance, 0 ) );
+
+                for( PCB_LAYER_ID testLayer : { Edge_Cuts, Margin } )
+                {
+                    for( const std::unique_ptr<PCB_SHAPE>& edge : m_edges )
+                    {
+                        if( !edge->IsOnLayer( testLayer ) || !itemBox.Intersects( edge->GetBoundingBox() ) )
+                            continue;
+
+                        DRC_CONSTRAINT c = m_engine->EvalRules( EDGE_CLEARANCE_CONSTRAINT, edge.get(), aItem,
+                                                                UNDEFINED_LAYER );
+                        int clearance = c.GetValue().Min();
+
+                        if( c.GetSeverity() == RPT_SEVERITY_IGNORE || clearance < 0 )
+                            continue;
+
+                        std::shared_ptr<SHAPE> edgeShape = edge->GetEffectiveShape( Edge_Cuts );
+                        int                    actual = 0;
+                        VECTOR2I               pos;
+
+                        if( itemShape->Collide( edgeShape.get(), std::max( 0, clearance - m_epsilon ), &actual,
+                                                &pos ) )
+                        {
+                            report( DT_EDGE_CLEARANCE, aItem, edge.get(),
+                                    shapeLayer == UNDEFINED_LAYER ? aItem->GetLayer() : shapeLayer, clearance,
+                                    actual, pos );
+                            break;   // one edge per item is enough, as upstream
+                        }
+                    }
+                }
+            }
+
+            if( !touchesBoard && aItem->IsOnCopperLayer() )
+            {
+                PCB_LAYER_ID layer = aLayers.empty() || aLayers.front() == UNDEFINED_LAYER ? aItem->GetLayer()
+                                                                                            : aLayers.front();
+                report( DT_COPPER_OUTSIDE_BOARD, aItem, aItem, layer, 0, 0, aItem->GetPosition() );
+            }
+        };
+
+        for( FOOTPRINT* fp : aFootprints )
+        {
+            for( PAD* pad : fp->Pads() )
+            {
+                if( pad->GetProperty() == PAD_PROP::CASTELLATED || pad->GetAttribute() == PAD_ATTRIB::CONN )
+                    continue;
+
+                if( !pad->IsOnCopperLayer() )
+                    continue;
+
+                testItem( pad, pad->Padstack().UniqueLayers() );
+            }
+
+            for( BOARD_ITEM* item : fp->GraphicalItems() )
+            {
+                if( item->Type() == PCB_SHAPE_T && item->IsOnCopperLayer() )
+                    testItem( item, { UNDEFINED_LAYER } );
+            }
+        }
+    }
+
     void testCourtyards( FOOTPRINT* aFp, FOOTPRINT* aOther )
     {
         for( PCB_LAYER_ID layer : { F_CrtYd, B_CrtYd } )
@@ -427,6 +639,8 @@ private:
     DRC_ENGINE*                  m_engine;
     int                          m_epsilon;
     int                          m_maxClearance;
+    int                          m_largestEdgeClearance = 0;
+    std::vector<std::unique_ptr<PCB_SHAPE>> m_edges;
     std::vector<DrcViolation>    m_results;
     std::set<std::tuple<int, const BOARD_ITEM*, const BOARD_ITEM*>> m_seen;
 };
@@ -440,6 +654,18 @@ std::vector<DrcViolation> kicadd::RunLocalDrc( BOARD* aBoard, const std::vector<
 
     if( !drc.Ready() )
         return {};
+
+    // A headless board has no cached outline until something (full DRC, an Edge.Cuts commit)
+    // builds it. Build it once per outline generation; a board without a closed outline
+    // isn't retried until its edges change.
+    static std::pair<const BOARD*, uint64_t> tried{ nullptr, 0 };
+
+    if( !aBoard->BoardOutline()->HasOutline()
+        && !( tried.first == aBoard && tried.second == aBoard->GetBoardOutlineGeneration() ) )
+    {
+        aBoard->UpdateBoardOutline();
+        tried = { aBoard, aBoard->GetBoardOutlineGeneration() };
+    }
 
     drc.Run( aFootprints );
     return drc.TakeResults();

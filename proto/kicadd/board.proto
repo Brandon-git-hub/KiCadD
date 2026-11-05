@@ -103,8 +103,8 @@ message QueryResponse
   bool                 truncated = 3;
 }
 
-// Relative move/rotate of footprints, addressed by reference designator.
-// The whole request is applied as a single undoable commit.
+// Relative move/rotate/flip of footprints, addressed by reference designator.
+// The whole request is applied as a single undoable commit, in the order move, rotate, flip.
 // Returns MoveResponse
 message MoveDelta
 {
@@ -112,6 +112,9 @@ message MoveDelta
   int64  dx = 2;              // nm
   int64  dy = 3;              // nm
   int32  drot_decideg = 4;    // rotation delta around each footprint's own anchor
+  bool   flip = 5;            // move to the other side (F.Cu <-> B.Cu), mirrored left-right
+                              // around the footprint's own anchor: pads, padstacks, silk,
+                              // fab and courtyard layers swap, geometry is mirrored
 }
 
 message MoveResult
@@ -119,6 +122,7 @@ message MoveResult
   string ref = 1;
   Point  pos = 2;
   int32  rot_decideg = 3;
+  bool   back = 4;            // on B.Cu
 }
 
 message MoveResponse
@@ -131,6 +135,42 @@ message MoveResponse
   int64                 drc_us = 6;
   repeated string       ratsnest_pending = 7;  // large nets whose ratsnest is deferred
   string                history_label = 8;     // undo label recorded for this edit
+  repeated string       removed = 9;           // refs deleted by this edit
+  repeated string       added   = 10;          // refs added by this edit
+  string                source  = 11;          // AddFootprint: where the footprint came from
+  repeated string       created_nets = 12;     // AddFootprint: nets that did not exist before
+}
+
+// Remove footprints (and their pads from connectivity). Tracks and vias are left in place,
+// as in the editor. Undoable: undo puts the same footprints back with the same ids and nets.
+// Returns MoveResponse (removed, unconnected)
+message DeleteFootprints
+{
+  repeated string refs = 1;
+}
+
+// Place a new footprint in memory.
+//
+// The footprint is taken from, in order:
+//   - `like`: a copy of the footprint already on the board with that reference;
+//   - `lib_id` ("Nickname:Name"): the footprint library table, then the directories in
+//     KICADD_FOOTPRINT_DIRS (colon separated, each holding Nickname.pretty/) and
+//     /usr/share/kicad/footprints, then a footprint on the board that uses the same lib_id.
+//
+// `ref` may end in "?" (e.g. "R?") to take the next free number; empty means the prefix of
+// `like`. Pads get nets by pad number; nets that don't exist yet are created and listed in
+// created_nets. Pads not in `nets` stay unconnected (a `like` copy keeps none of its nets).
+// Returns MoveResponse (added, moved, source, local DRC of the new footprint)
+message AddFootprint
+{
+  string              lib_id = 1;
+  string              like   = 2;
+  string              ref    = 3;
+  string              value  = 4;
+  Point               pos    = 5;
+  int32               rot_decideg = 6;
+  bool                back   = 7;          // place on B.Cu
+  map<string, string> nets   = 8;          // pad number -> net name
 }
 
 // ---------------------------------------------------------------------------
@@ -143,6 +183,8 @@ enum DrcType
   DT_SHORT             = 2;   // different-net copper touching
   DT_HOLE_CLEARANCE    = 3;   // copper too close to a hole on a layer where it isn't flashed
   DT_COURTYARD_OVERLAP = 4;
+  DT_EDGE_CLEARANCE    = 5;   // copper closer to Edge.Cuts / Margin than copper_edge_clearance
+  DT_COPPER_OUTSIDE_BOARD = 6;  // copper entirely outside the board outline (a == b)
 }
 
 message DrcViolation
@@ -161,8 +203,9 @@ message DrcViolation
 }
 
 // Run local DRC for the given footprints against their neighbourhood.
-// Checks: copper clearance / shorts / hole clearance (pads vs pads, tracks, arcs, vias) and
-// courtyard overlap. Not checked: zone fills (stale until refill), silk, edge, text.
+// Checks: copper clearance / shorts / hole clearance (pads vs pads, tracks, arcs, vias),
+// courtyard overlap, copper vs board edge (Edge.Cuts and Margin) and copper outside the board.
+// Not checked: zone fills (stale until refill), silk, text.
 // Returns LocalDrcResponse
 message CheckLocalDrc
 {

@@ -156,7 +156,7 @@ bool RunFullDrc( IPC_CLIENT& aIpc, DRC_REPORT& aReport, std::string& aError )
 
     // Most consequential first: what breaks the circuit, then what breaks fabrication.
     static const std::vector<std::string> priority = {
-        "shorting_items", "tracks_crossing", "clearance", "hole_clearance", "copper_edge_clearance",
+        "shorting_items", "tracks_crossing", "clearance", "hole_clearance", "edge_clearance", "copper_outside_board",
         "unconnected_items", "zones_intersect", "drill_out_of_range", "annular_width",
         "overlapping_footprints", "track_width", "via_diameter", "soldermask_bridge"
     };
