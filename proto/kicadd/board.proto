@@ -259,3 +259,25 @@ message HistoryResponse
   repeated string redo     = 5;     // labels, next redo last
   bool            modified = 6;     // board differs from the file on disk
 }
+
+// ---------------------------------------------------------------------------------------------
+// Item description (e.g. to turn DRC marker KIIDs into readable handles)
+
+// Returns DescribeItemsResponse
+message DescribeItems
+{
+  repeated string ids = 1;   // full KIIDs
+}
+
+message DescribedItem
+{
+  string   id     = 1;
+  string   handle = 2;   // "U5", "U5.3", short id for tracks/vias, "zone:<net>", "edge", ...
+  string   net    = 3;
+  ItemKind kind   = 4;
+}
+
+message DescribeItemsResponse
+{
+  repeated DescribedItem items = 1;   // same order as the request; empty handle if unknown
+}

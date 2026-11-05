@@ -81,6 +81,7 @@ add_executable( kicadd-mcp
     ${KICADD_DIR}/mcp/ipc_client.cpp
     ${KICADD_DIR}/mcp/mcp_server.cpp
     ${KICADD_DIR}/mcp/tools.cpp
+    ${KICADD_DIR}/mcp/drc.cpp
     ${KICADD_DIR}/mcp/transports.cpp
     )
 target_include_directories( kicadd-mcp PRIVATE ${KICADD_DIR}/mcp ${NNG_INCLUDE_DIR} )

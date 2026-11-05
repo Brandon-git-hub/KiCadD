@@ -42,6 +42,7 @@
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
   .drc div, .log div { padding: 3px 0; border-bottom: 1px dashed #232830; cursor: pointer; }
   .drc .t { color: var(--bad); font-weight: 600; margin-right: 6px; }
+  .drc .t.w { color: var(--warn); }
   .log div { cursor: default; color: var(--dim); } .log b { color: var(--text); font-weight: 500; }
   .empty { color: var(--dim); font-style: italic; }
   footer { grid-column: 1 / 3; display: flex; gap: 18px; align-items: center; padding: 0 12px;
@@ -77,8 +78,10 @@
       <div id="sel" class="empty">Click a footprint</div>
     </section>
     <section>
-      <h3>Local DRC <span id="drcCount"></span></h3>
-      <div id="drc" class="drc empty">Move a footprint to check it</div>
+      <h3 style="display:flex;align-items:center;gap:8px">DRC <span id="drcCount"></span>
+        <span style="flex:1"></span><button id="fulldrc" title="Run every KiCad DRC check on the whole board">Run full DRC</button></h3>
+      <div id="drcSummary" class="mono" style="color:var(--dim);margin-bottom:4px"></div>
+      <div id="drc" class="drc empty">Move a footprint for a local check, or run a full DRC</div>
     </section>
     <section>
       <h3>Activity</h3>
@@ -454,7 +457,7 @@ function draw() {
   // DRC markers
   for (const d of drcMarks) {
     const r = 10 * px;
-    ctx.strokeStyle = "#ff5d5d"; ctx.lineWidth = 2 * px;
+    ctx.strokeStyle = d.w ? "#ffb547" : "#ff5d5d"; ctx.lineWidth = 2 * px;
     ctx.beginPath(); ctx.arc(d.x, d.y, r, 0, Math.PI * 2); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(d.x - r * .6, d.y - r * .6); ctx.lineTo(d.x + r * .6, d.y + r * .6);
     ctx.moveTo(d.x + r * .6, d.y - r * .6); ctx.lineTo(d.x - r * .6, d.y + r * .6); ctx.stroke();
@@ -557,6 +560,7 @@ function onMoved(msg) {
   }
   if (op !== "move") log(`${op}: <b>${msg.label}</b>`);
   drcMarks = msg.drc;
+  $("drcSummary").textContent = "local check of the moved footprint";
   const list = $("drc");
   $("drcCount").textContent = msg.drc.length ? `(${msg.drc.length})` : "";
   if (!msg.drc.length) { list.className = "drc"; list.innerHTML = `<span style="color:var(--ok)">clean</span>`; }
@@ -607,6 +611,32 @@ function onFills(msg) {
   }
   fillPaths = null; dirty = true;
   log(`copper fill: ${msg.fills.length} zone layer(s), ${pts.toLocaleString()} points (${(performance.now() - t0).toFixed(0)} ms)`);
+}
+
+function onDrcFull(msg) {
+  const b = $("fulldrc"); b.disabled = false; b.textContent = "Run full DRC";
+  if (!msg.ok) { log(`<span style="color:var(--bad)">DRC failed: ${msg.error}</span>`); return; }
+  const sum = (o) => Object.values(o).reduce((a, b) => a + b, 0);
+  const fmt = (o) => Object.entries(o).map(([k, v]) => `${k} ${v}`).join(", ") || "none";
+  const ne = sum(msg.errors), nw = sum(msg.warnings);
+  $("drcCount").textContent = `(${ne} E / ${nw} W)`;
+  $("drcSummary").innerHTML = `full board, ${msg.s} s<br>errors: ${fmt(msg.errors)}<br>warnings: ${fmt(msg.warnings)}`;
+  drcMarks = msg.items;
+  const list = $("drc");
+  list.className = "drc"; list.innerHTML = "";
+  if (!msg.items.length) list.innerHTML = `<span style="color:var(--ok)">clean</span>`;
+  for (const d of msg.items.slice(0, 400)) {
+    const div = document.createElement("div");
+    div.className = "mono";
+    const na = d.na ? `[${d.na}]` : "", nb = d.nb ? `[${d.nb}]` : "";
+    div.innerHTML = `<span class="t${d.w ? " w" : ""}">${d.type}</span>${d.a}${na}${d.b ? ` × ${d.b}${nb}` : ""}` +
+      `<br><span style="color:var(--dim)">${d.ly ? d.ly + " · " : ""}${d.desc || ""}</span>`;
+    div.onclick = () => { const r = 2000; fit([d.x - r, d.y - r, d.x + r, d.y + r]); };
+    list.appendChild(div);
+  }
+  if (msg.total > 400) list.insertAdjacentHTML("beforeend", `<div class="empty">… ${msg.total - 400} more</div>`);
+  log(`full DRC: <b>${ne} errors, ${nw} warnings</b> in ${msg.s} s`);
+  dirty = true;
 }
 
 function onRatsnest(r) {
@@ -783,6 +813,7 @@ $("fit").onclick = () => fit();
 $("undo").onclick = () => undoRedo("undo");
 $("redo").onclick = () => undoRedo("redo");
 $("save").onclick = () => send({ t: "save" });
+$("fulldrc").onclick = () => { $("fulldrc").disabled = true; $("fulldrc").textContent = "Running…"; send({ t: "drc" }); };
 $("refill").onclick = () => { $("refill").disabled = true; $("refill").textContent = "Refilling…"; send({ t: "refill" }); };
 window.addEventListener("resize", resize);
 
@@ -814,6 +845,7 @@ function connect() {
     else if (msg.t === "history") onHistory(msg);
     else if (msg.t === "ratsnest") onRatsnest(msg);
     else if (msg.t === "fills") onFills(msg);
+    else if (msg.t === "drcfull") onDrcFull(msg);
     else if (msg.t === "refilled") {
       $("refill").disabled = false; $("refill").textContent = "Refill zones";
       log(msg.ok ? `zones refilled in <b>${(msg.ms / 1000).toFixed(1)} s</b>` : `<span style="color:var(--bad)">refill failed: ${msg.error}</span>`);

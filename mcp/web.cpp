@@ -25,7 +25,10 @@
  *   client -> server
  *     {"t":"move","refs":[..],"dx":mm,"dy":mm,"rot":deg}
  *     {"t":"undo"} / {"t":"redo"} / {"t":"save"}
- *     {"t":"fills","ids":[..]}   (ids empty = all)   /   {"t":"refill"}
+ *     {"t":"fills","ids":[..]}   (ids empty = all)   /   {"t":"refill"}   /   {"t":"drc"}
+ *   server -> client (full DRC)
+ *     {"t":"drcfull","ok":bool,"s":secs,"errors":{type:n},"warnings":{type:n},
+ *      "items":[{"type","w","a","b","na","nb","ly","x","y","desc"},..]}
  *     {"t":"resync"}
  *
  * A client applies a delta when since <= its revision < rev, ignores it when rev <= its
@@ -35,6 +38,7 @@
  */
 
 #include "web.h"
+#include "drc.h"
 #include "ipc_client.h"
 
 #include <chrono>
@@ -445,7 +449,8 @@ void WEB_HUB::Received( const std::shared_ptr<WS_SESSION>& aSession, const std::
 
     if( t == "resync" )
         msg = json{ { "t", "snapshot" } };
-    else if( t != "move" && t != "undo" && t != "redo" && t != "save" && t != "fills" && t != "refill" )
+    else if( t != "move" && t != "undo" && t != "redo" && t != "save" && t != "fills" && t != "refill"
+             && t != "drc" )
     {
         aSession->Send( std::make_shared<std::string>( errorJson( "unknown message type '" + t + "'" ) ) );
         return;
@@ -606,6 +611,38 @@ void WEB_HUB::runJob( const JOB& aJob )
 
         session->Send( std::make_shared<std::string>(
                 json{ { "t", "fills" }, { "full", req.ids().empty() }, { "fills", std::move( fills ) } }.dump() ) );
+        return;
+    }
+
+    if( t == "drc" )
+    {
+        DRC_REPORT report;
+        json       out = { { "t", "drcfull" }, { "ok", false } };
+
+        if( RunFullDrc( m_ipc, report, err ) )
+        {
+            json items = json::array();
+
+            for( const DRC_ENTRY& e : report.entries )
+            {
+                if( items.size() >= 2000 )
+                    break;
+
+                items.push_back( { { "type", e.type }, { "w", e.warning }, { "a", e.a }, { "b", e.b },
+                                   { "na", e.netA }, { "nb", e.netB }, { "ly", e.layer },
+                                   { "x", um( e.x ) }, { "y", um( e.y ) }, { "desc", e.description } } );
+            }
+
+            out = { { "t", "drcfull" }, { "ok", true }, { "s", std::round( report.seconds * 10 ) / 10 },
+                    { "errors", report.errors }, { "warnings", report.warnings },
+                    { "total", report.entries.size() }, { "items", std::move( items ) } };
+        }
+        else
+        {
+            out["error"] = err;
+        }
+
+        session->Send( std::make_shared<std::string>( out.dump() ) );
         return;
     }
 

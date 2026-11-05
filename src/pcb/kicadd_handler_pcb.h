@@ -86,6 +86,9 @@ private:
     HANDLER_RESULT<kicadd::board::HistoryResponse>
     handleGetHistory( const HANDLER_CONTEXT<kicadd::board::GetHistory>& aCtx );
 
+    HANDLER_RESULT<kicadd::board::DescribeItemsResponse>
+    handleDescribeItems( const HANDLER_CONTEXT<kicadd::board::DescribeItems>& aCtx );
+
     /// One commit that applies aMutate to each target, with large-net ratsnest deferral,
     /// then fills aOut with positions, unconnected count and the local DRC of the targets.
     void applyFootprintEdit( const std::vector<FOOTPRINT*>& aTargets,

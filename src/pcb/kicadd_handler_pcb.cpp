@@ -195,6 +195,7 @@ KICADD_HANDLER_PCB::KICADD_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext ) 
     registerHandler<Undo, HistoryResponse>( &KICADD_HANDLER_PCB::handleUndo );
     registerHandler<Redo, HistoryResponse>( &KICADD_HANDLER_PCB::handleRedo );
     registerHandler<GetHistory, HistoryResponse>( &KICADD_HANDLER_PCB::handleGetHistory );
+    registerHandler<DescribeItems, DescribeItemsResponse>( &KICADD_HANDLER_PCB::handleDescribeItems );
     registerHandler<CheckLocalDrc, LocalDrcResponse>( &KICADD_HANDLER_PCB::handleCheckLocalDrc );
     registerHandler<GetStateDigest, StateDigestResponse>( &KICADD_HANDLER_PCB::handleGetStateDigest );
     registerHandler<SetRatsnestDeferral, RatsnestDeferralResponse>(
@@ -1129,6 +1130,74 @@ KICADD_HANDLER_PCB::handleGetZoneFills( const HANDLER_CONTEXT<kicadd::render::Ge
                 for( int h = 0; h < fill->HoleCount( i ); ++h )
                     addChain( fill->CHole( i, h ), fp->add_holes() );
             }
+        }
+    }
+
+    return out;
+}
+
+
+HANDLER_RESULT<DescribeItemsResponse>
+KICADD_HANDLER_PCB::handleDescribeItems( const HANDLER_CONTEXT<DescribeItems>& aCtx )
+{
+    BOARD* b = board();
+
+    if( !b )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
+
+    DescribeItemsResponse out;
+
+    for( const std::string& id : aCtx.Request.ids() )
+    {
+        DescribedItem* d = out.add_items();
+        d->set_id( id );
+
+        BOARD_ITEM* item = b->ResolveItem( KIID( id ), true );
+
+        if( !item )
+            continue;
+
+        d->set_net( netOf( item ) );
+
+        switch( item->Type() )
+        {
+        case PCB_FOOTPRINT_T:
+            d->set_kind( IK_FOOTPRINT );
+            d->set_handle( static_cast<FOOTPRINT*>( item )->GetReference().ToStdString() );
+            break;
+
+        case PCB_PAD_T:
+            d->set_kind( IK_PAD );
+            d->set_handle( describePad( static_cast<PAD*>( item ) ).handle() );
+            break;
+
+        case PCB_TRACE_T: d->set_kind( IK_TRACK ); d->set_handle( shortId( item ) ); break;
+        case PCB_ARC_T:   d->set_kind( IK_ARC );   d->set_handle( shortId( item ) ); break;
+        case PCB_VIA_T:   d->set_kind( IK_VIA );   d->set_handle( "via:" + shortId( item ) ); break;
+
+        case PCB_ZONE_T:
+            d->set_kind( IK_ZONE );
+            d->set_handle( "zone:" + ( d->net().empty() ? shortId( item ) : d->net() ) );
+            break;
+
+        default:
+            if( const FOOTPRINT* fp = item->GetParentFootprint() )
+            {
+                d->set_kind( IK_FOOTPRINT );
+                d->set_handle( fp->GetReference().ToStdString() + ":" + item->GetLayerName().ToStdString() );
+            }
+            else if( item->GetLayer() == Edge_Cuts )
+            {
+                d->set_kind( IK_SHAPE );
+                d->set_handle( "edge" );
+            }
+            else
+            {
+                d->set_kind( item->Type() == PCB_SHAPE_T ? IK_SHAPE : IK_TEXT );
+                d->set_handle( item->GetLayerName().ToStdString() + ":" + shortId( item ) );
+            }
+
+            break;
         }
     }
 

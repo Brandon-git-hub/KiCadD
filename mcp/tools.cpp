@@ -5,7 +5,10 @@
  */
 
 #include "tools.h"
+#include "drc.h"
 #include "ipc_client.h"
+
+#include <set>
 
 #include <cmath>
 #include <cstdio>
@@ -488,6 +491,106 @@ TOOL_RESULT saveBoard( IPC_CLIENT& aIpc )
 }
 
 
+TOOL_RESULT runDrc( IPC_CLIENT& aIpc, const json& aArgs )
+{
+    double limit = 40;
+    getNumber( aArgs, "limit", limit );
+    const bool warnings = !aArgs.contains( "include_warnings" ) || aArgs["include_warnings"].get<bool>();
+
+    std::vector<std::string> typeList = getStrings( aArgs, "types" );
+    std::vector<std::string> refList = getStrings( aArgs, "refs" );
+    std::set<std::string>    types( typeList.begin(), typeList.end() ), refs( refList.begin(), refList.end() );
+
+    DRC_REPORT  report;
+    std::string err;
+
+    if( !RunFullDrc( aIpc, report, err ) )
+        return error( err );
+
+    auto involves = [&]( const DRC_ENTRY& e )
+    {
+        if( refs.empty() )
+            return true;
+
+        for( const std::string* h : { &e.a, &e.b } )
+        {
+            std::string ref = h->substr( 0, h->find_first_of( ".:" ) );
+
+            if( refs.count( ref ) )
+                return true;
+        }
+
+        return false;
+    };
+
+    auto counts = []( const std::map<std::string, int>& m )
+    {
+        std::string s;
+
+        for( const auto& [k, v] : m )
+            s += ( s.empty() ? "" : ", " ) + k + " " + std::to_string( v );
+
+        return s.empty() ? std::string( "none" ) : s;
+    };
+
+    int nErr = 0, nWarn = 0;
+
+    for( const auto& [k, v] : report.errors )
+        nErr += v;
+
+    for( const auto& [k, v] : report.warnings )
+        nWarn += v;
+
+    char head[160];
+    std::snprintf( head, sizeof( head ), "full DRC %.1f s: %d errors, %d warnings (%d excluded, %d ignored)\n",
+                   report.seconds, nErr, nWarn, report.excluded, report.ignored );
+
+    std::string s = head;
+    s += "errors: " + counts( report.errors ) + "\n";
+    s += "warnings: " + counts( report.warnings ) + "\n";
+
+    int shown = 0, matching = 0;
+
+    for( const DRC_ENTRY& e : report.entries )
+    {
+        if( ( e.warning && !warnings ) || ( !types.empty() && !types.count( e.type ) ) || !involves( e ) )
+            continue;
+
+        if( matching++ >= static_cast<int>( limit ) )
+            continue;
+
+        s += std::string( e.warning ? "W " : "E " ) + e.type + " " + e.a;
+
+        if( !e.netA.empty() )
+            s += "[" + e.netA + "]";
+
+        if( !e.b.empty() )
+        {
+            s += " x " + e.b;
+
+            if( !e.netB.empty() )
+                s += "[" + e.netB + "]";
+        }
+
+        if( !e.layer.empty() )
+            s += " " + e.layer;
+
+        s += " @" + mm( e.x ) + "," + mm( e.y );
+
+        if( !e.description.empty() )
+            s += " " + e.description;
+
+        s += "\n";
+        ++shown;
+    }
+
+    if( matching > shown )
+        s += "... " + std::to_string( matching - shown ) + " more (raise limit or filter by types/refs)\n";
+
+    return { s };
+}
+
+
 TOOL_RESULT refillZones( IPC_CLIENT& aIpc )
 {
     std::string err;
@@ -619,6 +722,19 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        "unrouted-connection count.",
                        schema( json::object() ),
                        [&aIpc]( const json& ) { return flushRatsnest( aIpc ); } } );
+
+    tools.push_back( { "run_drc",
+                       "Full-board DRC (all KiCad checks: clearance, shorts, unconnected, courtyards, "
+                       "silk, edge, holes, ...). Takes seconds on large boards. Output: counts by type, "
+                       "then violations (errors first) as 'E|W type itemA[net] x itemB[net] layer @x,y "
+                       "detail'. Refill zones first if parts moved.",
+                       schema( { { "limit", { { "type", "integer" }, { "description", "Max violations listed (default 40)" } } },
+                                 { "include_warnings", { { "type", "boolean" }, { "description", "Default true" } } },
+                                 { "types", { { "type", "array" }, { "items", { { "type", "string" } } },
+                                              { "description", "Only these types, e.g. [\"clearance\", \"shorting_items\"]" } } },
+                                 { "refs", { { "type", "array" }, { "items", { { "type", "string" } } },
+                                             { "description", "Only violations involving these footprints" } } } } ),
+                       [&aIpc]( const json& a ) { return runDrc( aIpc, a ); } } );
 
     tools.push_back( { "refill_zones",
                        "Refill all copper zones. Fills go stale when parts move; refill before judging "

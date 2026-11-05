@@ -88,7 +88,7 @@ async def test_http_sdk(url):
     async with Client(url) as client:
         tools = await client.list_tools()
         names = sorted(t.name for t in tools.tools)
-        check(len(names) == 11, f"tools/list -> {names}")
+        check(len(names) == 12, f"tools/list -> {names}")
         check(all(t.input_schema.get("type") == "object" for t in tools.tools), "every inputSchema is an object")
         await exercise(client.call_tool, "http")
 
