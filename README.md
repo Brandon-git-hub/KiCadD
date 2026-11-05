@@ -1,0 +1,172 @@
+# KiCadD
+
+Headless, in-memory KiCad daemon for LLM (MCP) and human co-editing.
+Built as a thin extension of upstream `kicad-cli api-server`, not a fork of the core.
+
+## Requirements this project tracks
+
+1. Headless/CLI on a Linux server + MCP + remote 2D view/edit
+2. No SWIG; Python only as an isolated IPC client (no host pollution)
+3. Component library backed by LCSC / JLC online catalog
+
+## Layout
+
+| Path | What |
+|---|---|
+| `proto/kicadd/board.proto` | Compact, spatially scoped board API (`kicadd.board.*`) |
+| `src/pcb/kicadd_handler_pcb.*` | Handler; shares the resident `PCB_CONTEXT` with upstream `API_HANDLER_PCB` |
+| `cmake/kicadd.cmake` | Generates C++/Python protobuf, defines `kicadd_proto`, `KICADD_PCB_SRCS` |
+| `patches/0001-*.patch` | Upstream hooks (all guarded by `KICADD_DIR` / `#ifdef KICADD`) + api-server wake-up fix |
+| `src/pcb/kicadd_local_drc.*` | Local (incremental) DRC |
+| `client/` | Python IPC client, benchmark, verification + A/B scripts, `run_server.sh` |
+
+### Upstream patch (~320 lines, 13 files)
+
+- **Hooks** (guarded by `KICADD_DIR` / `#ifdef KICADD`): `CMakeLists.txt`, `pcbnew/CMakeLists.txt`,
+  `pcbnew/pcbnew.cpp` register `KICADD_HANDLER_PCB` next to `API_HANDLER_PCB`.
+- **api-server wake-up**: `SetRequestQueuedNotifier()` replaces the fixed 10 ms poll
+  (`api_server.h/.cpp`, `command_api_server.cpp`). Ping 10.1 ms → 49 µs.
+- **Incremental connectivity** (`connectivity_algo.*`): `SearchClusters(..., aDirtyOnly)`.
+  Ratsnest clusters are per-net, so only dirty nets are searched; net propagation crosses nets,
+  so only components reachable from a dirty-net item are searched. `Remove()` marks the
+  neighbours' nets dirty so split-off components stay visible.
+- **Teardrop update** (`teardrop.*`, `connectivity_data.*`, `board_commit.cpp`): the
+  incremental `UpdateTeardrops` visits only tracks that are dirty or directly connected to a
+  dirty pad/via; skips the board-wide track cache when no candidate has teardrops enabled;
+  returns whether it created anything, and the commit re-runs `RecalculateRatsnest` only then.
+
+- **Lazy ratsnest for large nets** (`connectivity_data.*`, `board.cpp`): an optional
+  per-net predicate defers ratsnest rebuild (never net propagation). Deferred nets are
+  *cleared* and marked pending, never left stale. Every ratsnest reader (`GetUnconnectedCount`,
+  `GetRatsnestForNet`, `RunOnUnconnectedEdges`, `GetNodeCount`, local ratsnest) rebuilds them
+  first. A flush can run mid-commit, so it saves and restores the other nets' dirty flags.
+  Ratsnest exclusions move from `BOARD::UpdateRatsnestExclusions` into connectivity
+  (`SetRatsnestExclusions`), which re-applies them when deferred nets are rebuilt. Without
+  this, that function read every edge on each commit and defeated the deferral. The
+  predicate is only installed by KiCadD's `MoveDelta`; with no predicate, behaviour is upstream's.
+
+These changes are always on. A/B switches (env vars, read once at startup):
+`KICADD_FULL_CONNECTIVITY=1` (all upstream behaviour), or individually
+`KICADD_FULL_CLUSTERS`, `KICADD_FULL_TEARDROPS`, `KICADD_ALWAYS_RECALC`.
+
+## Build
+
+```sh
+cd kicad && git apply ../KiCadD/patches/0001-kicadd-hooks-and-api-server-wakeup.patch   # if not applied
+cmake -S kicad -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+      -DKICAD_BUILD_QA_TESTS=OFF -DKICAD_BUILD_I18N=OFF -DKICAD_USE_SENTRY=OFF \
+      -DKICADD_DIR=$PWD/KiCadD
+ninja -C build kicad-cli pcbnew_kiface eeschema_kiface
+```
+
+## Run
+
+```sh
+# Unix socket paths are limited to 108 bytes — keep --socket short.
+KICAD_RUN_FROM_BUILD_DIR=1 build/kicad/kicad-cli api-server \
+    --socket $PWD/KiCadD/run/kicadd.sock path/to/board.kicad_pcb
+```
+
+`--socket` takes a plain path (the server adds `ipc://` itself).
+
+## Python client (requirement 2)
+
+```sh
+python3 -m venv KiCadD/.venv
+KiCadD/.venv/bin/pip install "protobuf>=4.21,<5" pynng
+protoc --python_out=KiCadD/client/kicadd_client/_pb --proto_path=kicad/api/proto \
+       $(cd kicad/api/proto && find . -name '*.proto' | sed 's|^\./||')
+protoc --python_out=KiCadD/client/kicadd_client/_pb --proto_path=KiCadD/proto kicadd/board.proto
+KiCadD/.venv/bin/python -I KiCadD/client/bench.py $PWD/KiCadD/run/kicadd.sock
+```
+
+Note: upstream item commands (`GetItems`, …) need `header.document.board_filename` set to the
+board's file name, otherwise the handler answers `AS_UNHANDLED`.
+
+## Phase-1 baseline (2026-11-05)
+
+Board: `demos/jetson-agx-thor-baseboard` — 81 MB, 1125 footprints, 22 151 tracks,
+3235 vias, 125 zones, 1388 nets, 10 Cu layers. Release build, 16 cores, Python client RTT.
+
+| Operation | p50 | ≈ LLM tokens |
+|---|---|---|
+| Board load → resident | 1.7 s (once) | — |
+| RSS resident | ~1.0 GB | — |
+| Ping (before wake-up fix) | 10 100 µs | — |
+| Ping (after) | 49 µs | — |
+| upstream `GetItems` all footprints | 456 ms | 29.7 M |
+| `kicadd QueryRadius` 5 mm (64 of 268) | 1.7 ms | 2.5 k |
+| `kicadd QueryNet` (55 items) | 0.32 ms | 2.2 k |
+| `kicadd GetBoardSummary` | 3.8 ms | <100 |
+| `kicadd MoveDelta` (1 fp, undoable commit) | 37 ms | <50 |
+
+## Incremental evaluation (2026-11-05)
+
+### KiCadD commands
+
+| Command | What |
+|---|---|
+| `MoveDelta` | Δ move/rotate, one undoable commit; returns positions, `unconnected`, **local DRC** |
+| `CheckLocalDrc` | Local DRC for given refs without moving |
+| `VerifyConnectivity` | Diff incremental connectivity vs a from-scratch rebuild (diagnostic) |
+| `GetStateDigest` | Hash of nets / ratsnest / teardrops for A/B tests (diagnostic) |
+| `SetRatsnestDeferral` | Enable/disable lazy ratsnest; `min_pads` threshold (default: defer nets with > 50 pads) |
+| `FlushRatsnest` | Rebuild deferred nets now; returns the complete unconnected count |
+
+`MoveDelta.unconnected` excludes deferred nets; `MoveDelta.ratsnest_pending` lists them
+(e.g. `GND`, `+3V3`, `+1V8`). Anything that reads ratsnest, including full DRC, the upstream
+API and `GetStateDigest`, triggers the rebuild automatically. Saving needs no flush, because
+the ratsnest isn't stored in the file.
+
+Local DRC (`src/pcb/kicadd_local_drc.cpp`) mirrors the upstream copper-clearance provider's
+pad path and track path, the hole-clearance rules, net ties, and courtyard overlap. All rules
+come from the board's `DRC_ENGINE`. Not covered: zone fills (stale until refill), silk, edge,
+text, track-to-track (an unmoved track pair can't change).
+
+### Results (Jetson AGX Thor board, Release build)
+
+| | before | after |
+|---|---|---|
+| `MoveDelta` 1 footprint (U78), commit p50 | 35.5 ms | **12.7 ms** |
+| random 1–3 fp moves, commit p50 (seed 5) | 45.7 ms | **18.1 ms** |
+| local DRC after a move | — (full DRC 4.7 s) | **~1.6 ms p50** |
+| random moves on a fragmented board (seed 9: GND split into ~1000 pieces), commit p50 | 126.9 ms | **9.7 ms** (lazy ratsnest) |
+| random moves seed 5 / 13, commit p50 | 44.1 / 45.8 ms | **9.2 / 9.1 ms** |
+| `FlushRatsnest` of GND, +3V3, +1V8 | — | 7.2 ms |
+
+The fragmented case is the realistic one for an agent: during initial placement on an
+unrouted board every pad is its own cluster, and GND (1266 pads here) dominates the MST.
+
+### Verification (`client/verify_incremental.py`, `client/ab_equivalence.py`)
+
+- Local DRC vs upstream full DRC, scoped to moved footprints: **exact match on 8 seeds**
+  (405/405 violations, 0 false positives, 0 misses); seed 42 re-checked on the final build.
+- A/B, same random move sequence on an optimised and an upstream-mode server, comparing
+  net assignments, per-net ratsnest, teardrop zones and unconnected count:
+  final build: Jetson 2 seeds × 200 moves and RoyalBlue54L (263 teardrops) 4 seeds × 120
+  moves **identical at every checkpoint**. Seed 3 on RoyalBlue diverges in some runs (below).
+  With lazy ratsnest (digest reads trigger the auto-flush): Jetson seeds 5/9/13 identical;
+  RoyalBlue seeds 2/5/6 identical, seed 4 identical in 4 of 5 runs (the same nondeterminism).
+- **Upstream nondeterminism found:** on RoyalBlue54L, two servers that both run *unmodified
+  upstream* logic diverge at the same move in 2 of 3 runs (net + teardrop state). The same
+  binary/config/input also gives different outcomes from run to run. The one optimised-vs-upstream
+  divergence (seed 3 at move ~110) falls in this class: both sides flip between 196 and 197
+  teardrops across runs. Root cause not investigated yet (thread scheduling or pointer-ordered
+  containers in propagation/teardrop code). Worth reporting upstream.
+- Also pre-existing upstream: commit-time net propagation can differ from a fresh
+  `BuildConnectivity()` (`VerifyConnectivity` shows it, identically with or without KiCadD).
+
+### Known next targets
+
+- Large-net ratsnest is deferred, not incremental: a flush still rebuilds the whole net
+  (GND ≈ 7 ms here). Incremental per-net MST would also make the flush cheap.
+- The mid-commit flush path (a reader running inside `Push` before the ratsnest step) is
+  handled by design but not exercised by the current tests.
+- `SearchClusters` still does an O(items) participation pass; `updateJumperPads` is board-wide.
+- `QueryRadius` / local DRC candidate search are linear scans (fine at ~1–2 ms here).
+- MCP endpoint, change-push channel for the web view, LCSC integration (Phases 2–4).
+
+## License
+
+GPL-3.0-or-later (same as KiCad). Konnect (AGPL-3.0-only) is used as design reference only;
+do not copy its code into this tree.

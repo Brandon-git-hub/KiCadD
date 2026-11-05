@@ -1,0 +1,237 @@
+/*
+ * KiCadD compact board API.
+ *
+ * Design goals (see KiCadD/README.md):
+ *  - Spatially scoped queries instead of whole-board dumps.
+ *  - Human/LLM-friendly handles: footprints are addressed by reference designator,
+ *    other items by a short id (first 8 hex chars of the KIID).
+ *  - All coordinates are integer nanometres (KiCad internal units), rotations in
+ *    tenths of a degree, so messages stay small and lossless.
+ *
+ * This file is part of KiCadD and is licensed GPL-3.0-or-later, like KiCad.
+ */
+
+syntax = "proto3";
+
+package kicadd.board;
+
+// ---------------------------------------------------------------------------
+// Common types
+
+message Point
+{
+  int64 x = 1;
+  int64 y = 2;
+}
+
+enum ItemKind
+{
+  IK_UNKNOWN   = 0;
+  IK_FOOTPRINT = 1;
+  IK_PAD       = 2;
+  IK_TRACK     = 3;
+  IK_ARC       = 4;
+  IK_VIA       = 5;
+  IK_ZONE      = 6;
+  IK_SHAPE     = 7;
+  IK_TEXT      = 8;
+}
+
+// A deliberately small description of a board item.
+message CompactItem
+{
+  ItemKind kind  = 1;
+  string   handle = 2;   // "R12" for footprints, "R12.3" for pads, short KIID otherwise
+  string   net   = 3;    // empty when unconnected / not applicable
+  string   layer = 4;    // canonical layer name, e.g. "F.Cu"; empty for multi-layer
+  Point    pos   = 5;    // anchor / start point
+  Point    end   = 6;    // segment end (tracks/arcs only)
+  int64    width = 7;    // track width or via diameter, 0 if n/a
+  int32    rot_decideg = 8;  // footprint rotation
+  int64    dist  = 9;    // distance from query center (nm)
+  string   id    = 10;   // full KIID, only when the query sets with_ids
+}
+
+// ---------------------------------------------------------------------------
+// Commands
+
+// Returns BoardSummaryResponse
+message GetBoardSummary {}
+
+message BoardSummaryResponse
+{
+  string file       = 1;
+  int32  footprints = 2;
+  int32  tracks     = 3;
+  int32  vias       = 4;
+  int32  zones      = 5;
+  int32  nets       = 6;
+  int32  copper_layers = 7;
+  Point  bbox_min   = 8;
+  Point  bbox_max   = 9;
+}
+
+// Items whose bounding box intersects a circle.
+// Center is either an explicit point or the position of a footprint (by reference).
+// Returns QueryResponse
+message QueryRadius
+{
+  oneof center
+  {
+    Point  point     = 1;
+    string reference = 2;
+  }
+  int64             radius   = 3;   // nm
+  repeated ItemKind kinds    = 4;   // empty = footprints, tracks, vias, pads
+  int32             limit    = 5;   // 0 = default (64)
+  bool              with_ids = 6;   // also return full KIIDs (costs tokens; for tooling)
+}
+
+// Topology of a single net: pads, tracks and vias on it.
+// Returns QueryResponse
+message QueryNet
+{
+  string net   = 1;
+  int32  limit = 2;   // 0 = default (256)
+}
+
+message QueryResponse
+{
+  repeated CompactItem items     = 1;
+  int32                total     = 2;  // total matches before limit was applied
+  bool                 truncated = 3;
+}
+
+// Relative move/rotate of footprints, addressed by reference designator.
+// The whole request is applied as a single undoable commit.
+// Returns MoveResponse
+message MoveDelta
+{
+  repeated string refs = 1;
+  int64  dx = 2;              // nm
+  int64  dy = 3;              // nm
+  int32  drot_decideg = 4;    // rotation delta around each footprint's own anchor
+}
+
+message MoveResult
+{
+  string ref = 1;
+  Point  pos = 2;
+  int32  rot_decideg = 3;
+}
+
+message MoveResponse
+{
+  repeated MoveResult   moved   = 1;
+  repeated string       missing = 2;   // refs that were not found
+  int64                 elapsed_us = 3;   // commit incl. connectivity update
+  int32                 unconnected = 4;  // unrouted connections, excluding ratsnest_pending nets
+  repeated DrcViolation drc = 5;          // local DRC around the moved footprints
+  int64                 drc_us = 6;
+  repeated string       ratsnest_pending = 7;  // large nets whose ratsnest is deferred
+}
+
+// ---------------------------------------------------------------------------
+// Local (incremental) DRC
+
+enum DrcType
+{
+  DT_UNKNOWN           = 0;
+  DT_CLEARANCE         = 1;   // copper-to-copper closer than the clearance rule
+  DT_SHORT             = 2;   // different-net copper touching
+  DT_HOLE_CLEARANCE    = 3;   // copper too close to a hole on a layer where it isn't flashed
+  DT_COURTYARD_OVERLAP = 4;
+}
+
+message DrcViolation
+{
+  DrcType type     = 1;
+  string  a        = 2;   // handle of the moved-side item, e.g. "U5.3"
+  string  b        = 3;   // handle of the other item, e.g. "C12.1" or short track id
+  string  net_a    = 4;
+  string  net_b    = 5;
+  string  layer    = 6;
+  int64   required = 7;   // nm (0 for courtyard)
+  int64   actual   = 8;   // nm
+  Point   pos      = 9;
+  string  a_id     = 10;  // full KIIDs, for cross-referencing with upstream API / markers
+  string  b_id     = 11;
+}
+
+// Run local DRC for the given footprints against their neighbourhood.
+// Checks: copper clearance / shorts / hole clearance (pads vs pads, tracks, arcs, vias) and
+// courtyard overlap. Not checked: zone fills (stale until refill), silk, edge, text.
+// Returns LocalDrcResponse
+message CheckLocalDrc
+{
+  repeated string refs = 1;
+}
+
+message LocalDrcResponse
+{
+  repeated DrcViolation drc     = 1;
+  repeated string       missing = 2;
+  int64                 drc_us  = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostics
+
+// Snapshot incremental connectivity state, rebuild connectivity from scratch, and diff.
+// Leaves the board with the freshly rebuilt state.
+// Returns VerifyConnectivityResponse
+message VerifyConnectivity {}
+
+message VerifyConnectivityResponse
+{
+  int32           items_checked      = 1;
+  int32           nets_checked       = 2;
+  repeated string item_mismatches    = 3;   // "<handle>: <net before> -> <net after>"
+  repeated string net_mismatches     = 4;   // "<net>: <edges before> -> <edges after>"
+  int32           unconnected_before = 5;
+  int32           unconnected_after  = 6;
+  int64           rebuild_us         = 7;
+}
+
+// Order-independent fingerprint of derived board state, for A/B equivalence tests.
+// Returns StateDigestResponse
+message GetStateDigest {}
+
+message StateDigestResponse
+{
+  uint64 net_hash       = 1;   // (item KIID, net code) for pads, tracks, vias, zones
+  uint64 ratsnest_hash  = 2;   // (net, unrouted edge count) per net
+  uint64 teardrop_hash  = 3;   // teardrop zones: KIID, priority, outline vertices
+  int32  teardrops      = 4;
+  int32  unconnected    = 5;
+}
+
+// ---------------------------------------------------------------------------
+// Lazy ratsnest for large nets
+//
+// During MoveDelta, nets with more than min_pads pads skip ratsnest recomputation (net
+// propagation still runs). Their ratsnest is rebuilt on FlushRatsnest, or automatically
+// the first time anything reads ratsnest data (full DRC, upstream API, GetStateDigest).
+
+// Returns RatsnestDeferralResponse
+message SetRatsnestDeferral
+{
+  bool  enabled  = 1;
+  int32 min_pads = 2;   // defer nets with more pads than this; 0 = keep current (default 50)
+}
+
+message RatsnestDeferralResponse
+{
+  bool  enabled  = 1;
+  int32 min_pads = 2;
+}
+
+// Rebuild all deferred nets now. Returns FlushRatsnestResponse
+message FlushRatsnest {}
+
+message FlushRatsnestResponse
+{
+  int32 nets_flushed = 1;
+  int32 unconnected  = 2;   // complete, board-wide
+  int64 elapsed_us   = 3;
+}

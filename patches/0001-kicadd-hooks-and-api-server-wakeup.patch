@@ -1,0 +1,995 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index b4b5627b..8c64625e 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1132,6 +1132,12 @@ endif()
+ 
+ # Binaries ( CMake targets )
+ add_subdirectory( api )
++
++# KiCadD extension layer (out-of-tree). Set KICADD_DIR to enable.
++set( KICADD_DIR "" CACHE PATH "Path to the KiCadD source tree (empty = disabled)" )
++if( KICADD_DIR )
++    include( ${KICADD_DIR}/cmake/kicadd.cmake )
++endif()
+ add_subdirectory( resources )
+ add_subdirectory( thirdparty )
+ add_subdirectory( libs )
+diff --git a/common/api/api_server.cpp b/common/api/api_server.cpp
+index 317ed06e..312169ef 100644
+--- a/common/api/api_server.cpp
++++ b/common/api/api_server.cpp
+@@ -258,6 +258,9 @@ void KICAD_API_SERVER::onApiRequest( std::string* aRequest )
+ 
+     // Takes ownership and frees the wxCommandEvent
+     QueueEvent( evt );
++
++    if( m_requestQueuedNotifier )
++        m_requestQueuedNotifier();
+ }
+ 
+ 
+diff --git a/include/api/api_server.h b/include/api/api_server.h
+index c5cd6f2a..a0f846b9 100644
+--- a/include/api/api_server.h
++++ b/include/api/api_server.h
+@@ -84,6 +84,16 @@ public:
+         m_readyToReply.store( aReady, std::memory_order_release );
+     }
+ 
++    /**
++     * Set a callback invoked (from the NNG listener thread) right after a request has been
++     * queued for the main thread. Headless hosts use it to wake their loop immediately
++     * instead of polling.
++     */
++    void SetRequestQueuedNotifier( std::function<void()> aNotifier )
++    {
++        m_requestQueuedNotifier = std::move( aNotifier );
++    }
++
+     void SetSocketPath( const wxString& aSocketPath )
+     {
+         m_socketPathOverride = aSocketPath;
+@@ -157,6 +167,8 @@ private:
+ 
+     std::function<void( kiapi::common::types::DocumentType, const wxString&, const wxString& )> m_renameListener;
+ 
++    std::function<void()> m_requestQueuedNotifier;
++
+     wxString m_socketPathOverride;
+ 
+     static wxString s_logFileName;
+diff --git a/kicad/cli/command_api_server.cpp b/kicad/cli/command_api_server.cpp
+index e65d5b26..0314aab8 100644
+--- a/kicad/cli/command_api_server.cpp
++++ b/kicad/cli/command_api_server.cpp
+@@ -38,6 +38,10 @@
+ 
+ #include "command_api_server.h"
+ 
++#include <chrono>
++#include <condition_variable>
++#include <mutex>
++
+ #define ARG_PATH "path"
+ #define ARG_SOCKET "--socket"
+ 
+@@ -692,12 +696,33 @@ int CLI::API_SERVER_COMMAND::doPerform( KIWAY& aKiway )
+ 
+     g_apiServerExitRequested.store( false );
+ 
++    // Wake as soon as the listener thread queues a request; the timeout only bounds how
++    // long we take to notice a signal or other (non-API) pending events.
++    std::mutex              wakeMutex;
++    std::condition_variable wakeCv;
++    bool                    wakePending = false;
++
++    server->SetRequestQueuedNotifier(
++            [&]()
++            {
++                {
++                    std::lock_guard<std::mutex> lock( wakeMutex );
++                    wakePending = true;
++                }
++                wakeCv.notify_one();
++            } );
++
+     while( !g_apiServerExitRequested.load() )
+     {
+         wxTheApp->ProcessPendingEvents();
+-        wxMilliSleep( 10 );
++
++        std::unique_lock<std::mutex> lock( wakeMutex );
++        wakeCv.wait_for( lock, std::chrono::milliseconds( 10 ), [&] { return wakePending; } );
++        wakePending = false;
+     }
+ 
++    server->SetRequestQueuedNotifier( nullptr );
++
+     std::signal( SIGINT, oldSigInt );
+ #ifdef SIGTERM
+     std::signal( SIGTERM, oldSigTerm );
+diff --git a/pcbnew/CMakeLists.txt b/pcbnew/CMakeLists.txt
+index 0780a942..6cacce0d 100644
+--- a/pcbnew/CMakeLists.txt
++++ b/pcbnew/CMakeLists.txt
+@@ -757,6 +757,13 @@ add_library( pcbnew_kiface_objects OBJECT
+     ${PCBNEW_COMMON_SRCS}
+     )
+ 
++if( KICADD_DIR )
++    target_sources( pcbnew_kiface_objects PRIVATE ${KICADD_PCB_SRCS} )
++    target_include_directories( pcbnew_kiface_objects PRIVATE ${KICADD_INCLUDE_DIRS} )
++    target_compile_definitions( pcbnew_kiface_objects PRIVATE KICADD )
++    target_link_libraries( pcbnew_kiface_objects PRIVATE kicadd_proto )
++endif()
++
+ if( KICAD_USE_PCH )
+     target_precompile_headers( pcbnew_kiface_objects
+         PRIVATE
+@@ -799,6 +806,12 @@ add_library( pcbnew_kiface MODULE
+     pcbnew.cpp
+     )
+ 
++if( KICADD_DIR )
++    target_include_directories( pcbnew_kiface PRIVATE ${KICADD_INCLUDE_DIRS} )
++    target_compile_definitions( pcbnew_kiface PRIVATE KICADD )
++    target_link_libraries( pcbnew_kiface PRIVATE kicadd_proto )
++endif()
++
+ set_target_properties( pcbnew_kiface PROPERTIES
+ #Decorate OUTPUT_NAME with PREFIX and SUFFIX, creating something like
+ #_pcbnew.so, _pcbnew.dll, or _pcbnew.kiface
+diff --git a/pcbnew/board.cpp b/pcbnew/board.cpp
+index c745afed..51c0b2cb 100644
+--- a/pcbnew/board.cpp
++++ b/pcbnew/board.cpp
+@@ -549,20 +549,9 @@ void BOARD::UpdateRatsnestExclusions()
+         }
+     }
+ 
+-    GetConnectivity()->RunOnUnconnectedEdges(
+-            [&]( CN_EDGE& aEdge )
+-            {
+-                if( aEdge.GetSourceNode() && aEdge.GetTargetNode() && !aEdge.GetSourceNode()->Dirty()
+-                    && !aEdge.GetTargetNode()->Dirty() )
+-                {
+-                    std::pair<KIID, KIID> ids = { aEdge.GetSourceNode()->Parent()->m_Uuid,
+-                                                  aEdge.GetTargetNode()->Parent()->m_Uuid };
+-
+-                    aEdge.SetVisible( m_ratsnestExclusions.count( ids ) == 0 );
+-                }
+-
+-                return true;
+-            } );
++    // Connectivity applies these to edge visibility now, and again to any net whose ratsnest
++    // is rebuilt later (deferred nets), so this must not force deferred nets to be computed.
++    GetConnectivity()->SetRatsnestExclusions( std::move( m_ratsnestExclusions ) );
+ }
+ 
+ 
+diff --git a/pcbnew/board_commit.cpp b/pcbnew/board_commit.cpp
+index ac90446d..46cb5d51 100644
+--- a/pcbnew/board_commit.cpp
++++ b/pcbnew/board_commit.cpp
+@@ -36,6 +36,7 @@
+ #include <tools/zone_filler_tool.h>
+ #include <view/view.h>
+ #include <board_commit.h>
++#include <wx/utils.h>
+ #include <tools/pcb_tool_base.h>
+ #include <tools/pcb_actions.h>
+ #include <connectivity/connectivity_data.h>
+@@ -741,10 +742,15 @@ void BOARD_COMMIT::Push( const wxString& aMessage, int aCommitFlags )
+ 
+         if( !staleTeardropPadsAndVias.empty() || !staleTeardropTracks.empty() )
+         {
+-            teardropMgr.UpdateTeardrops( *this, &staleTeardropPadsAndVias, &staleTeardropTracks );
++            // UpdateTeardrops() can modify the ratsnest data; rebuild it only if it did.
++            static const bool alwaysRecalc = wxGetEnv( wxS( "KICADD_FULL_CONNECTIVITY" ), nullptr )
++                                             || wxGetEnv( wxS( "KICADD_ALWAYS_RECALC" ), nullptr );
+ 
+-            // UpdateTeardrops() can modify the ratsnest data. So rebuild this ratsnest data
+-            connectivity->RecalculateRatsnest( this );
++            if( teardropMgr.UpdateTeardrops( *this, &staleTeardropPadsAndVias, &staleTeardropTracks )
++                || alwaysRecalc )
++            {
++                connectivity->RecalculateRatsnest( this );
++            }
+         }
+ 
+         // Log undo items for any connectivity or teardrop changes
+diff --git a/pcbnew/connectivity/connectivity_algo.cpp b/pcbnew/connectivity/connectivity_algo.cpp
+index 3857839c..ce57dba6 100644
+--- a/pcbnew/connectivity/connectivity_algo.cpp
++++ b/pcbnew/connectivity/connectivity_algo.cpp
+@@ -28,6 +28,7 @@
+ #include <ranges>
+ 
+ #include <connectivity/connectivity_algo.h>
++#include <wx/utils.h>
+ #include <core/union_find.h>
+ #include <progress_reporter.h>
+ #include <geometry/geometry_utils.h>
+@@ -46,6 +47,19 @@
+ #endif
+ 
+ 
++namespace
++{
++/// Dirty-only cluster searches are on by default; KICADD_FULL_CONNECTIVITY=1 restores the
++/// whole-board search (for A/B comparison and as an escape hatch).
++bool incrementalClustersEnabled()
++{
++    static const bool enabled = !wxGetEnv( wxS( "KICADD_FULL_CONNECTIVITY" ), nullptr )
++                                 && !wxGetEnv( wxS( "KICADD_FULL_CLUSTERS" ), nullptr );
++    return enabled;
++}
++} // namespace
++
++
+ bool CN_CONNECTIVITY_ALGO::Remove( BOARD_ITEM* aItem )
+ {
+     bool anythingDeleted = false;
+@@ -58,6 +72,7 @@ bool CN_CONNECTIVITY_ALGO::Remove( BOARD_ITEM* aItem )
+         {
+             if( m_itemMap.find( pad ) != m_itemMap.end() ) // prevent double deletion
+             {
++                markNeighbourNetsAsDirty( m_itemMap[pad] );
+                 m_itemMap[pad].MarkItemsAsInvalid();
+                 m_itemMap.erase( pad );
+                 anythingDeleted = true;
+@@ -75,6 +90,7 @@ bool CN_CONNECTIVITY_ALGO::Remove( BOARD_ITEM* aItem )
+     case PCB_SHAPE_T:
+         if( m_itemMap.find( aItem ) != m_itemMap.end() ) // prevent double deletion
+         {
++            markNeighbourNetsAsDirty( m_itemMap[aItem] );
+             m_itemMap[aItem].MarkItemsAsInvalid();
+             m_itemMap.erase ( aItem );
+             m_itemList.SetDirty( true );
+@@ -95,6 +111,19 @@ bool CN_CONNECTIVITY_ALGO::Remove( BOARD_ITEM* aItem )
+ }
+ 
+ 
++void CN_CONNECTIVITY_ALGO::markNeighbourNetsAsDirty( const ITEM_MAP_ENTRY& aEntry )
++{
++    for( CN_ITEM* item : aEntry.GetItems() )
++    {
++        for( CN_ITEM* neighbour : item->ConnectedItems() )
++        {
++            if( neighbour->Valid() )
++                MarkNetAsDirty( neighbour->Net() );
++        }
++    }
++}
++
++
+ void CN_CONNECTIVITY_ALGO::markItemNetAsDirty( const BOARD_ITEM* aItem )
+ {
+     if( aItem->IsConnected() )
+@@ -397,7 +426,8 @@ const CN_CONNECTIVITY_ALGO::CLUSTERS CN_CONNECTIVITY_ALGO::SearchClusters( CLUST
+ 
+ 
+ const CN_CONNECTIVITY_ALGO::CLUSTERS
+-CN_CONNECTIVITY_ALGO::SearchClusters( CLUSTER_SEARCH_MODE aMode, bool aExcludeZones, int aSingleNet )
++CN_CONNECTIVITY_ALGO::SearchClusters( CLUSTER_SEARCH_MODE aMode, bool aExcludeZones, int aSingleNet,
++                                      bool aDirtyOnly )
+ {
+     bool withinAnyNet = ( aMode != CSM_PROPAGATE );
+ 
+@@ -433,6 +463,75 @@ CN_CONNECTIVITY_ALGO::SearchClusters( CLUSTER_SEARCH_MODE aMode, bool aExcludeZo
+         }
+     }
+ 
++    // Dirty-only search: drop members whose result cannot have changed.  Skipped when every
++    // net is dirty (initial build), where it would select everything anyway.
++    if( aDirtyOnly && !AllNetsDirty() )
++    {
++        std::vector<char> keep( members.size(), 0 );
++
++        if( withinAnyNet )
++        {
++            // Per-net clusters never cross nets: the dirty nets' clusters are exact on their own.
++            for( size_t ii = 0; ii < members.size(); ++ii )
++                keep[ii] = IsNetDirty( members[ii]->Net() );
++        }
++        else
++        {
++            // Propagation crosses nets: take whole components reachable from a dirty-net seed.
++            std::vector<size_t> stack;
++
++            for( size_t ii = 0; ii < members.size(); ++ii )
++            {
++                if( !keep[ii] && IsNetDirty( members[ii]->Net() ) )
++                {
++                    keep[ii] = 1;
++                    stack.push_back( ii );
++                }
++            }
++
++            while( !stack.empty() )
++            {
++                CN_ITEM* item = members[stack.back()];
++                stack.pop_back();
++
++                for( CN_ITEM* neighbour : item->ConnectedItems() )
++                {
++                    int listIndex = neighbour->ListIndex();
++
++                    if( listIndex < 0 || listIndex >= (int) memberOf.size() )
++                        continue;
++
++                    int index = memberOf[listIndex];
++
++                    if( index >= 0 && !keep[index] )
++                    {
++                        keep[index] = 1;
++                        stack.push_back( static_cast<size_t>( index ) );
++                    }
++                }
++            }
++        }
++
++        std::vector<CN_ITEM*> kept;
++        std::vector<bool>     keptSelected;
++        kept.reserve( members.size() );
++
++        std::fill( memberOf.begin(), memberOf.end(), -1 );
++
++        for( size_t ii = 0; ii < members.size(); ++ii )
++        {
++            if( keep[ii] )
++            {
++                memberOf[members[ii]->ListIndex()] = static_cast<int>( kept.size() );
++                kept.push_back( members[ii] );
++                keptSelected.push_back( selected[ii] );
++            }
++        }
++
++        members = std::move( kept );
++        selected = std::move( keptSelected );
++    }
++
+     if( m_progressReporter && m_progressReporter->IsCancelled() )
+         return CLUSTERS();
+ 
+@@ -740,7 +839,7 @@ void CN_CONNECTIVITY_ALGO::propagateConnections( BOARD_COMMIT* aCommit )
+ void CN_CONNECTIVITY_ALGO::PropagateNets( BOARD_COMMIT* aCommit )
+ {
+     updateJumperPads();
+-    m_connClusters = SearchClusters( CSM_PROPAGATE );
++    m_connClusters = SearchClusters( CSM_PROPAGATE, true, -1, incrementalClustersEnabled() );
+     propagateConnections( aCommit );
+ }
+ 
+@@ -840,7 +939,8 @@ void CN_CONNECTIVITY_ALGO::FillIsolatedIslandsMap( std::map<ZONE*, std::map<PCB_
+ 
+ const CN_CONNECTIVITY_ALGO::CLUSTERS& CN_CONNECTIVITY_ALGO::GetClusters()
+ {
+-    m_ratsnestClusters = SearchClusters( CSM_RATSNEST );
++    // Only dirty nets' clusters are consumed (internalRecalculateRatsnest), so only search those.
++    m_ratsnestClusters = SearchClusters( CSM_RATSNEST, false, -1, incrementalClustersEnabled() );
+     return m_ratsnestClusters;
+ }
+ 
+diff --git a/pcbnew/connectivity/connectivity_algo.h b/pcbnew/connectivity/connectivity_algo.h
+index bece5fa8..5d11953f 100644
+--- a/pcbnew/connectivity/connectivity_algo.h
++++ b/pcbnew/connectivity/connectivity_algo.h
+@@ -225,12 +225,34 @@ public:
+         return m_itemMap[ aItem ];
+     }
+ 
++    /// Non-inserting lookup; null when aItem isn't in the connectivity graph.
++    const ITEM_MAP_ENTRY* FindItemEntry( const BOARD_CONNECTED_ITEM* aItem ) const
++    {
++        auto it = m_itemMap.find( aItem );
++        return it == m_itemMap.end() ? nullptr : &it->second;
++    }
++
+     bool IsNetDirty( int aNet ) const
+     {
+         if( aNet < 0 )
+             return false;
+ 
+-        return m_dirtyNets[ aNet ];
++        return aNet < (int) m_dirtyNets.size() && m_dirtyNets[ aNet ];
++    }
++
++    void ClearNetDirty( int aNet )
++    {
++        if( aNet >= 0 && aNet < (int) m_dirtyNets.size() )
++            m_dirtyNets[aNet] = false;
++    }
++
++    /// Snapshot / restore of the dirty-net flags, for work that must not consume them.
++    std::vector<bool> GetDirtyNets() const { return m_dirtyNets; }
++    void SetDirtyNets( std::vector<bool> aDirty ) { m_dirtyNets = std::move( aDirty ); }
++
++    bool AllNetsDirty() const
++    {
++        return std::all_of( m_dirtyNets.begin(), m_dirtyNets.end(), []( bool d ) { return d; } );
+     }
+ 
+     void ClearDirtyFlags()
+@@ -264,7 +286,14 @@ public:
+     bool Remove( BOARD_ITEM* aItem );
+     bool Add( BOARD_ITEM* aItem );
+ 
+-    const CLUSTERS SearchClusters( CLUSTER_SEARCH_MODE aMode, bool aExcludeZones, int aSingleNet );
++    /**
++     * @param aDirtyOnly restrict the search to what can have changed since the last pass:
++     *        in per-net modes, items on dirty nets; in CSM_PROPAGATE (which crosses nets),
++     *        the connected components that contain at least one item on a dirty net.
++     *        Results for other nets/components are omitted, not recomputed.
++     */
++    const CLUSTERS SearchClusters( CLUSTER_SEARCH_MODE aMode, bool aExcludeZones, int aSingleNet,
++                                   bool aDirtyOnly = false );
+     const CLUSTERS SearchClusters( CLUSTER_SEARCH_MODE aMode );
+ 
+     /**
+@@ -323,6 +352,10 @@ private:
+ 
+     void markItemNetAsDirty( const BOARD_ITEM* aItem );
+ 
++    /// Mark the nets of everything currently connected to aEntry; called before removal so
++    /// the components that may split off stay visible to dirty-only cluster searches.
++    void markNeighbourNetsAsDirty( const ITEM_MAP_ENTRY& aEntry );
++
+     void updateJumperPads();
+ 
+ private:
+diff --git a/pcbnew/connectivity/connectivity_data.cpp b/pcbnew/connectivity/connectivity_data.cpp
+index 2954a42c..f1da859f 100644
+--- a/pcbnew/connectivity/connectivity_data.cpp
++++ b/pcbnew/connectivity/connectivity_data.cpp
+@@ -28,6 +28,8 @@
+ #include <initializer_list>
+ 
+ #include <connectivity/connectivity_data.h>
++#include <wx/log.h>
++#include <wx/thread.h>
+ #include <connectivity/connectivity_algo.h>
+ #include <properties/property.h>
+ #include <connectivity/from_to_cache.h>
+@@ -235,7 +237,12 @@ void CONNECTIVITY_DATA::RecalculateRatsnest( BOARD_COMMIT* aCommit  )
+ void CONNECTIVITY_DATA::internalRecalculateRatsnest( BOARD_COMMIT* aCommit  )
+ {
+     m_connAlgo->PropagateNets( aCommit );
++    rebuildDirtyRatsnest( true );
++}
++
+ 
++void CONNECTIVITY_DATA::rebuildDirtyRatsnest( bool aAllowDefer )
++{
+     int lastNet = m_connAlgo->NetCount();
+ 
+     if( lastNet >= (int) m_nets.size() )
+@@ -252,6 +259,35 @@ void CONNECTIVITY_DATA::internalRecalculateRatsnest( BOARD_COMMIT* aCommit  )
+             m_nets[ii]->Clear();
+     }
+ 
++    // Deferred nets: clear (never keep stale edges) and mark pending; drop their dirty flag
++    // so the cluster search below skips them.  Dirty nets that are computed now stop pending.
++    {
++        std::lock_guard<std::mutex> guard( m_pendingRatsnestMutex );
++
++        for( int net = 1; net < lastNet; net++ )
++        {
++            if( !m_connAlgo->IsNetDirty( net ) )
++                continue;
++
++            if( aAllowDefer && m_deferRatsnest && m_deferRatsnest( net ) )
++            {
++                m_nets[net]->Clear();
++                m_connAlgo->ClearNetDirty( net );
++                m_pendingRatsnestNets.insert( net );
++            }
++            else
++            {
++                m_pendingRatsnestNets.erase( net );
++            }
++        }
++
++        // Nets beyond the current count no longer exist.
++        m_pendingRatsnestNets.erase( m_pendingRatsnestNets.lower_bound( lastNet ),
++                                     m_pendingRatsnestNets.end() );
++
++        m_hasPendingRatsnest.store( !m_pendingRatsnestNets.empty(), std::memory_order_release );
++    }
++
+     const std::vector<std::shared_ptr<CN_CLUSTER>>& clusters = m_connAlgo->GetClusters();
+ 
+     for( int net = 0; net < lastNet; net++ )
+@@ -282,6 +318,123 @@ void CONNECTIVITY_DATA::internalRecalculateRatsnest( BOARD_COMMIT* aCommit  )
+ }
+ 
+ 
++int CONNECTIVITY_DATA::FlushDeferredRatsnest() const
++{
++    // Rebuilding mutates m_nets and submits work to the KiCad thread pool.  All current
++    // readers run on the main thread (GUI tools, DRC providers, API tasks dispatched via wx
++    // events); a reader inside a pool task would risk a nested-pool deadlock and races.
++    wxASSERT_MSG( wxIsMainThread(), wxS( "deferred ratsnest flushed off the main thread" ) );
++
++    if( !wxIsMainThread() )
++        wxLogTrace( wxT( "CN" ), wxT( "FlushDeferredRatsnest called off the main thread" ) );
++
++    CONNECTIVITY_DATA* self = const_cast<CONNECTIVITY_DATA*>( this );
++    std::vector<int>   nets;
++
++    {
++        std::lock_guard<std::mutex> guard( m_pendingRatsnestMutex );
++
++        if( m_pendingRatsnestNets.empty() )
++            return 0;
++
++        nets.assign( m_pendingRatsnestNets.begin(), m_pendingRatsnestNets.end() );
++        self->m_pendingRatsnestNets.clear();
++    }
++
++    // A reader may run in the middle of a commit, between marking nets dirty and the commit's
++    // RecalculateRatsnest.  Those flags must survive (incremental propagation relies on them),
++    // so rebuild with only the pending nets dirty and restore the rest afterwards.
++    std::vector<bool> saved = m_connAlgo->GetDirtyNets();
++    std::vector<bool> onlyPending( std::max<size_t>( saved.size(), nets.back() + 1 ), false );
++
++    for( int net : nets )
++        onlyPending[net] = true;
++
++    m_connAlgo->SetDirtyNets( std::move( onlyPending ) );
++    self->rebuildDirtyRatsnest( false );
++    m_connAlgo->SetDirtyNets( std::move( saved ) );
++    self->applyRatsnestExclusions( &nets );
++
++    {
++        std::lock_guard<std::mutex> guard( m_pendingRatsnestMutex );
++        self->m_hasPendingRatsnest.store( !m_pendingRatsnestNets.empty(), std::memory_order_release );
++    }
++
++    return static_cast<int>( nets.size() );
++}
++
++
++void CONNECTIVITY_DATA::SetRatsnestExclusions( std::set<std::pair<KIID, KIID>> aExclusions )
++{
++    m_ratsnestExclusions = std::move( aExclusions );
++    applyRatsnestExclusions( nullptr );
++}
++
++
++void CONNECTIVITY_DATA::applyRatsnestExclusions( const std::vector<int>* aNets )
++{
++    auto applyNet =
++            [&]( RN_NET* aNet )
++            {
++                if( !aNet )
++                    return;
++
++                for( CN_EDGE& edge : aNet->GetEdges() )
++                {
++                    if( edge.GetSourceNode() && edge.GetTargetNode() && !edge.GetSourceNode()->Dirty()
++                        && !edge.GetTargetNode()->Dirty() )
++                    {
++                        std::pair<KIID, KIID> ids = { edge.GetSourceNode()->Parent()->m_Uuid,
++                                                      edge.GetTargetNode()->Parent()->m_Uuid };
++
++                        edge.SetVisible( m_ratsnestExclusions.count( ids ) == 0 );
++                    }
++                }
++            };
++
++    if( aNets )
++    {
++        for( int net : *aNets )
++        {
++            if( net >= 0 && net < (int) m_nets.size() )
++                applyNet( m_nets[net] );
++        }
++    }
++    else
++    {
++        for( RN_NET* net : m_nets )
++            applyNet( net );
++    }
++}
++
++
++std::vector<int> CONNECTIVITY_DATA::GetPendingRatsnestNets() const
++{
++    std::lock_guard<std::mutex> guard( m_pendingRatsnestMutex );
++    return std::vector<int>( m_pendingRatsnestNets.begin(), m_pendingRatsnestNets.end() );
++}
++
++
++unsigned int CONNECTIVITY_DATA::GetUnconnectedCountNoFlush( bool aVisibleOnly ) const
++{
++    unsigned int unconnected = 0;
++
++    for( RN_NET* net : m_nets )
++    {
++        if( !net )
++            continue;
++
++        for( const CN_EDGE& edge : net->GetEdges() )
++        {
++            if( edge.IsVisible() || !aVisibleOnly )
++                ++unconnected;
++        }
++    }
++
++    return unconnected;
++}
++
++
+ void CONNECTIVITY_DATA::BlockRatsnestItems( const std::vector<BOARD_ITEM*>& aItems )
+ {
+     std::vector<BOARD_CONNECTED_ITEM*> citems;
+@@ -336,6 +489,8 @@ void CONNECTIVITY_DATA::ComputeLocalRatsnest( const std::vector<BOARD_ITEM*>& aI
+     if( !aDynamicData )
+         return;
+ 
++    ensureRatsnestFlushed();
++
+     m_dynamicRatsnest.clear();
+     std::mutex dynamic_ratsnest_mutex;
+ 
+@@ -554,6 +709,8 @@ bool CONNECTIVITY_DATA::IsConnectedOnLayer( const BOARD_CONNECTED_ITEM *aItem, i
+ 
+ unsigned int CONNECTIVITY_DATA::GetUnconnectedCount( bool aVisibleOnly ) const
+ {
++    ensureRatsnestFlushed();
++
+     unsigned int unconnected = 0;
+ 
+     for( RN_NET* net : m_nets )
+@@ -687,6 +844,30 @@ const
+ }
+ 
+ 
++void CONNECTIVITY_DATA::GetDirectlyConnectedTracks( const BOARD_CONNECTED_ITEM* aItem,
++                                                    std::vector<PCB_TRACK*>* aTracks ) const
++{
++    const CN_CONNECTIVITY_ALGO::ITEM_MAP_ENTRY* entry = m_connAlgo->FindItemEntry( aItem );
++
++    if( !entry )
++        return;
++
++    for( CN_ITEM* citem : entry->GetItems() )
++    {
++        for( CN_ITEM* connected : citem->ConnectedItems() )
++        {
++            if( !connected->Valid() )
++                continue;
++
++            BOARD_CONNECTED_ITEM* parent = connected->Parent();
++
++            if( parent->Type() == PCB_TRACE_T || parent->Type() == PCB_ARC_T )
++                aTracks->push_back( static_cast<PCB_TRACK*>( parent ) );
++        }
++    }
++}
++
++
+ void CONNECTIVITY_DATA::GetConnectedPadsAndVias( const BOARD_CONNECTED_ITEM* aItem, std::vector<PAD*>* pads,
+                                                  std::vector<PCB_VIA*>* vias )
+ {
+@@ -733,6 +914,8 @@ void CONNECTIVITY_DATA::GetZoneIslandConnections( const ZONE* aZone, PCB_LAYER_I
+ 
+ unsigned int CONNECTIVITY_DATA::GetNodeCount( int aNet ) const
+ {
++    ensureRatsnestFlushed();
++
+     int sum = 0;
+ 
+     if( aNet < 0 )      // Node count for all nets
+@@ -770,6 +953,8 @@ unsigned int CONNECTIVITY_DATA::GetPadCount( int aNet ) const
+ 
+ void CONNECTIVITY_DATA::RunOnUnconnectedEdges( std::function<bool( CN_EDGE& )> aFunc )
+ {
++    ensureRatsnestFlushed();
++
+     for( RN_NET* rnNet : m_nets )
+     {
+         if( rnNet )
+@@ -981,6 +1166,8 @@ CONNECTIVITY_DATA::GetConnectedItemsAtAnchor( const BOARD_CONNECTED_ITEM* aItem,
+ 
+ RN_NET* CONNECTIVITY_DATA::GetRatsnestForNet( int aNet )
+ {
++    ensureRatsnestFlushed();
++
+     if ( aNet < 0 || aNet >= (int) m_nets.size() )
+         return nullptr;
+ 
+diff --git a/pcbnew/connectivity/connectivity_data.h b/pcbnew/connectivity/connectivity_data.h
+index 124540f6..a17690a7 100644
+--- a/pcbnew/connectivity/connectivity_data.h
++++ b/pcbnew/connectivity/connectivity_data.h
+@@ -26,14 +26,18 @@
+ #include <core/typeinfo.h>
+ #include <core/spinlock.h>
+ 
++#include <atomic>
++#include <functional>
+ #include <memory>
+ #include <mutex>
+ #include <set>
++#include <utility>
+ #include <vector>
+ #include <wx/string.h>
+ 
+ #include <math/vector2d.h>
+ #include <zone.h>
++#include <kiid.h>
+ 
+ class FROM_TO_CACHE;
+ class NET_SETTINGS;
+@@ -185,6 +189,43 @@ public:
+ 
+     void GetConnectedPads( const BOARD_CONNECTED_ITEM* aItem, std::set<PAD*>* pads ) const;
+ 
++    /**
++     * Tracks and arcs directly connected to aItem (one hop in the connectivity graph, no
++     * cluster search). The graph is symmetric, so a track T is returned for pad P exactly
++     * when GetConnectedPadsAndVias( T ) contains P.
++     */
++    void GetDirectlyConnectedTracks( const BOARD_CONNECTED_ITEM* aItem,
++                                     std::vector<PCB_TRACK*>* aTracks ) const;
++
++    /**
++     * Deferred (lazy) ratsnest for selected nets.
++     *
++     * While a predicate is set, a net that becomes dirty and matches it has its ratsnest
++     * cleared and marked pending instead of recomputed; net propagation is unaffected.
++     * Every ratsnest reader (GetUnconnectedCount, GetRatsnestForNet, RunOnUnconnectedEdges,
++     * GetNodeCount) first rebuilds pending nets, so no caller ever sees stale data.
++     */
++    void SetRatsnestDeferral( std::function<bool( int aNet )> aPredicate )
++    {
++        m_deferRatsnest = std::move( aPredicate );
++    }
++
++    /// Rebuild the ratsnest of all pending nets now. @return number of nets rebuilt.
++    int FlushDeferredRatsnest() const;
++
++    /// Pending nets, without flushing.
++    std::vector<int> GetPendingRatsnestNets() const;
++
++    /**
++     * Set the excluded ratsnest connections (pairs of item KIIDs, both orders) and apply them
++     * to edge visibility.  Applied now to computed nets without flushing, and again to
++     * deferred nets whenever they are rebuilt.
++     */
++    void SetRatsnestExclusions( std::set<std::pair<KIID, KIID>> aExclusions );
++
++    /// Unconnected edge count over non-pending nets, without flushing.
++    unsigned int GetUnconnectedCountNoFlush( bool aVisibleOnly ) const;
++
+     void GetConnectedPadsAndVias( const BOARD_CONNECTED_ITEM* aItem, std::vector<PAD*>* pads,
+                                   std::vector<PCB_VIA*>* vias );
+ 
+@@ -298,6 +339,26 @@ private:
+     std::vector<RN_DYNAMIC_LINE>    m_dynamicRatsnest;
+     std::vector<RN_NET*>            m_nets;
+ 
++    /// Rebuild ratsnest for currently-dirty nets (the part of internalRecalculateRatsnest
++    /// after net propagation). aAllowDefer: apply m_deferRatsnest.
++    void rebuildDirtyRatsnest( bool aAllowDefer );
++
++    void ensureRatsnestFlushed() const
++    {
++        if( m_hasPendingRatsnest.load( std::memory_order_acquire ) )
++            FlushDeferredRatsnest();
++    }
++
++    /// Apply m_ratsnestExclusions to the edges of aNets (all nets when null); no flush.
++    void applyRatsnestExclusions( const std::vector<int>* aNets );
++
++    std::set<std::pair<KIID, KIID>> m_ratsnestExclusions;
++
++    std::function<bool( int )> m_deferRatsnest;
++    std::set<int>              m_pendingRatsnestNets;
++    mutable std::mutex         m_pendingRatsnestMutex;
++    std::atomic<bool>          m_hasPendingRatsnest{ false };
++
+     /// Used to suppress ratsnest calculations on dynamic ratsnests
+     bool                            m_skipRatsnestUpdate;
+ 
+diff --git a/pcbnew/pcbnew.cpp b/pcbnew/pcbnew.cpp
+index 2282c07e..137019c6 100644
+--- a/pcbnew/pcbnew.cpp
++++ b/pcbnew/pcbnew.cpp
+@@ -27,6 +27,9 @@
+ #include <api/api_handler_footprint.h>
+ #include <api/api_handler_fp_libraries.h>
+ #include <api/api_handler_pcb.h>
++#ifdef KICADD
++#include <pcb/kicadd_handler_pcb.h>
++#endif
+ #include <api/api_server.h>
+ #include <api/api_utils.h>
+ #include <api/cross_probe_client.h>
+@@ -706,6 +709,9 @@ private:
+     KIWAY* m_kiway = nullptr;
+     std::shared_ptr<HEADLESS_PCB_CONTEXT>       m_openContext;
+     std::unique_ptr<API_HANDLER_PCB>            m_openHandler;
++#ifdef KICADD
++    std::unique_ptr<KICADD_HANDLER_PCB>         m_kicaddHandler;
++#endif
+     std::shared_ptr<HEADLESS_FOOTPRINT_CONTEXT> m_openFpContext;
+     std::unique_ptr<API_HANDLER_FOOTPRINT>      m_openFpHandler;
+     std::unique_ptr<API_HANDLER_FP_LIBRARIES>   m_apiHandlerFpLibs;
+@@ -978,6 +984,16 @@ void IFACE::closeBoard( KICAD_API_SERVER* aServer )
+         m_openHandler.reset();
+     }
+ 
++#ifdef KICADD
++    if( m_kicaddHandler )
++    {
++        if( aServer )
++            aServer->DeregisterHandler( m_kicaddHandler.get() );
++
++        m_kicaddHandler.reset();
++    }
++#endif
++
+     m_openContext.reset();
+ 
+     // The jobs handler caches the last-loaded board. Clear it so the next job
+@@ -1201,6 +1217,10 @@ bool IFACE::handleOpenPcb( const wxString& aPath, KICAD_API_SERVER* aServer, wxS
+ 
+     m_openHandler = std::make_unique<API_HANDLER_PCB>( m_openContext, nullptr );
+     aServer->RegisterHandler( m_openHandler.get() );
++#ifdef KICADD
++    m_kicaddHandler = std::make_unique<KICADD_HANDLER_PCB>( m_openContext );
++    aServer->RegisterHandler( m_kicaddHandler.get() );
++#endif
+ 
+     return true;
+ }
+@@ -1279,6 +1299,10 @@ bool IFACE::handleCreatePcb( const wxString& aPath, KICAD_API_SERVER* aServer, w
+ 
+     m_openHandler = std::make_unique<API_HANDLER_PCB>( m_openContext, nullptr );
+     aServer->RegisterHandler( m_openHandler.get() );
++#ifdef KICADD
++    m_kicaddHandler = std::make_unique<KICADD_HANDLER_PCB>( m_openContext );
++    aServer->RegisterHandler( m_kicaddHandler.get() );
++#endif
+ 
+     return true;
+ }
+diff --git a/pcbnew/teardrop/teardrop.cpp b/pcbnew/teardrop/teardrop.cpp
+index 6ffef0eb..01d669ee 100644
+--- a/pcbnew/teardrop/teardrop.cpp
++++ b/pcbnew/teardrop/teardrop.cpp
+@@ -21,6 +21,7 @@
+ #include "teardrop/teardrop.h"
+ 
+ #include <confirm.h>
++#include <wx/utils.h>
+ 
+ #include <board_design_settings.h>
+ #include <pcb_track.h>
+@@ -434,13 +435,15 @@ void TEARDROP_MANAGER::RemoveTeardrops( BOARD_COMMIT& aCommit,
+ }
+ 
+ 
+-void TEARDROP_MANAGER::UpdateTeardrops( BOARD_COMMIT& aCommit,
++bool TEARDROP_MANAGER::UpdateTeardrops( BOARD_COMMIT& aCommit,
+                                         const std::vector<BOARD_ITEM*>* dirtyPadsAndVias,
+                                         const std::set<PCB_TRACK*>* dirtyTracks,
+                                         bool aForceFullUpdate )
+ {
+     if( m_board->LegacyTeardrops() )
+-        return;
++        return false;
++
++    const size_t createdBefore = m_createdTdList.size();
+ 
+     // Init parameters:
+     m_tolerance = pcbIUScale.mmToIU( 0.01 );
+@@ -458,19 +461,80 @@ void TEARDROP_MANAGER::UpdateTeardrops( BOARD_COMMIT& aCommit,
+         m_board->BulkRemoveStaleTeardrops( aCommit );
+     }
+ 
+-    BuildTrackCaches();
+-
+     std::shared_ptr<CONNECTIVITY_DATA> connectivity = m_board->GetConnectivity();
+     std::unordered_set<BOARD_ITEM*>    dirtyPadViaSet;
+ 
+     if( dirtyPadsAndVias )
+         dirtyPadViaSet.insert( dirtyPadsAndVias->begin(), dirtyPadsAndVias->end() );
+ 
++    // An incremental update only acts on a track that is itself dirty or is connected to a
++    // dirty pad/via (anything else hits the "!forceUpdate && !dirty" skip below).  Collect
++    // those up front from the connectivity graph instead of querying every board track.
++    std::unordered_set<PCB_TRACK*> candidates;
++
++    // KICADD_FULL_CONNECTIVITY=1 also restores the scan of every track here (A/B testing).
++    static const bool scanAllTracks = wxGetEnv( wxS( "KICADD_FULL_CONNECTIVITY" ), nullptr )
++                                      || wxGetEnv( wxS( "KICADD_FULL_TEARDROPS" ), nullptr );
++    const bool        restrictToCandidates = !aForceFullUpdate && !scanAllTracks;
++
++    if( restrictToCandidates )
++    {
++        if( dirtyTracks )
++            candidates.insert( dirtyTracks->begin(), dirtyTracks->end() );
++
++        std::vector<PCB_TRACK*> connected;
++
++        for( BOARD_ITEM* item : dirtyPadViaSet )
++        {
++            if( item->IsConnected() )
++                connectivity->GetDirectlyConnectedTracks( static_cast<BOARD_CONNECTED_ITEM*>( item ),
++                                                          &connected );
++        }
++
++        candidates.insert( connected.begin(), connected.end() );
++
++        if( candidates.empty() )
++            return false;
++
++        // The track cache is only read when a teardrop is actually attempted.  Every attempt
++        // below is gated on the pad/via teardrop params being enabled (or on track-to-track
++        // teardrops for dirty tracks), so if none apply there is nothing to build it for.
++        bool needed = dirtyTracks && !dirtyTracks->empty()
++                      && m_prmsList->GetParameters( TARGET_TRACK )->m_Enabled;
++
++        for( PCB_TRACK* track : candidates )
++        {
++            if( needed )
++                break;
++
++            if( !( track->Type() == PCB_TRACE_T || track->Type() == PCB_ARC_T ) )
++                continue;
++
++            std::vector<PAD*>     pads;
++            std::vector<PCB_VIA*> vias;
++            connectivity->GetConnectedPadsAndVias( track, &pads, &vias );
++
++            for( PAD* pad : pads )
++                needed |= pad->GetTeardropParams().m_Enabled;
++
++            for( PCB_VIA* via : vias )
++                needed |= via->GetTeardropParams().m_Enabled;
++        }
++
++        if( !needed )
++            return false;
++    }
++
++    BuildTrackCaches();
++
+     for( PCB_TRACK* track : m_board->Tracks() )
+     {
+         if( ! ( track->Type() == PCB_TRACE_T || track->Type() == PCB_ARC_T ) )
+             continue;
+ 
++        if( restrictToCandidates && !candidates.contains( track ) )
++            continue;
++
+         std::vector<PAD*>     connectedPads;
+         std::vector<PCB_VIA*> connectedVias;
+ 
+@@ -613,6 +677,8 @@ void TEARDROP_MANAGER::UpdateTeardrops( BOARD_COMMIT& aCommit,
+ 
+     // Now set priority of teardrops now all teardrops are added
+     setTeardropPriorities();
++
++    return m_createdTdList.size() != createdBefore;
+ }
+ 
+ 
+diff --git a/pcbnew/teardrop/teardrop.h b/pcbnew/teardrop/teardrop.h
+index 41ebfb8d..8bf56b80 100644
+--- a/pcbnew/teardrop/teardrop.h
++++ b/pcbnew/teardrop/teardrop.h
+@@ -106,7 +106,7 @@ public:
+     /**
+      * Update teardrops on a list of items.
+      */
+-    void UpdateTeardrops( BOARD_COMMIT& aCommit, const std::vector<BOARD_ITEM*>* dirtyPadsAndVias,
++    bool UpdateTeardrops( BOARD_COMMIT& aCommit, const std::vector<BOARD_ITEM*>* dirtyPadsAndVias,
+                           const std::set<PCB_TRACK*>* dirtyTracks, bool aForceFullUpdate = false );
+ 
+     /**
