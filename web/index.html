@@ -870,7 +870,11 @@ function connect() {
   // Relative to the page, so the view also works behind path-prefix proxies such as
   // code-server's /proxy/8765/ or VS Code port forwarding.
   const token = new URLSearchParams(location.search).get("token");
-  const u = new URL("ws", location.href);
+  // The page is always the directory index: "/proxy/8765" and "/proxy/8765/" both mean
+  // ".../8765/ws" (resolving "ws" against a path without the trailing slash would drop "8765").
+  const base = location.pathname.endsWith("/") || location.pathname.endsWith(".html")
+             ? location.pathname : location.pathname + "/";
+  const u = new URL("ws", location.origin + base);
   u.protocol = location.protocol === "https:" ? "wss:" : "ws:";
   u.search = token ? "?token=" + encodeURIComponent(token) : "";
   const url = u.toString();

@@ -228,7 +228,12 @@ RESPONSE handle( MCP_SERVER& aServer, const HTTP_OPTIONS& aOpt, const REQUEST& a
         return makeResponse( aReq, http::status::not_found, R"({"error":"not found"})" );
 
     if( !originAllowed( aOpt, aReq ) )
+    {
+        auto it = aReq.find( http::field::origin );
+        std::fprintf( stderr, "kicadd-mcp: refused %s: origin %s not allowed\n", std::string( aReq.target() ).c_str(),
+                      it == aReq.end() ? "-" : std::string( it->value() ).c_str() );
         return makeResponse( aReq, http::status::forbidden, R"({"error":"origin not allowed"})" );
+    }
 
     if( !aOpt.token.empty() && !( aOpt.trustLoopback && aLoopbackPeer ) )
     {
@@ -330,6 +335,10 @@ void serveConnection( tcp::socket aSocket, MCP_SERVER& aServer, const HTTP_OPTIO
 
             if( refused )
             {
+                auto hdr = [&]( http::field f ) { auto it = req.find( f ); return it == req.end() ? std::string( "-" ) : std::string( it->value() ); };
+                std::fprintf( stderr, "kicadd-mcp: refused WebSocket %s: %d (origin %s, host %s)\n",
+                              std::string( req.target() ).c_str(), static_cast<int>( refuse.result_int() ),
+                              hdr( http::field::origin ).c_str(), hdr( http::field::host ).c_str() );
                 refuse.keep_alive( false );
                 http::write( aSocket, refuse, ec );
                 break;
