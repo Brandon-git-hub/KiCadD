@@ -181,9 +181,9 @@ bool originAllowed( const HTTP_OPTIONS& aOpt, const REQUEST& aReq )
 }
 
 
-bool authorized( const HTTP_OPTIONS& aOpt, const REQUEST& aReq )
+bool authorized( const HTTP_OPTIONS& aOpt, const REQUEST& aReq, bool aLoopbackPeer )
 {
-    if( aOpt.token.empty() )
+    if( aOpt.token.empty() || ( aOpt.trustLoopback && aLoopbackPeer ) )
         return true;
 
     auto auth = aReq.find( http::field::authorization );
@@ -208,7 +208,7 @@ std::string loadPage( const HTTP_OPTIONS& aOpt )
 }
 
 
-RESPONSE handle( MCP_SERVER& aServer, const HTTP_OPTIONS& aOpt, const REQUEST& aReq )
+RESPONSE handle( MCP_SERVER& aServer, const HTTP_OPTIONS& aOpt, const REQUEST& aReq, bool aLoopbackPeer )
 {
     // Strip the query string for matching.
     std::string target( aReq.target() );
@@ -230,7 +230,7 @@ RESPONSE handle( MCP_SERVER& aServer, const HTTP_OPTIONS& aOpt, const REQUEST& a
     if( !originAllowed( aOpt, aReq ) )
         return makeResponse( aReq, http::status::forbidden, R"({"error":"origin not allowed"})" );
 
-    if( !aOpt.token.empty() )
+    if( !aOpt.token.empty() && !( aOpt.trustLoopback && aLoopbackPeer ) )
     {
         auto auth = aReq.find( http::field::authorization );
 
@@ -287,6 +287,9 @@ RESPONSE handle( MCP_SERVER& aServer, const HTTP_OPTIONS& aOpt, const REQUEST& a
 
 void serveConnection( tcp::socket aSocket, MCP_SERVER& aServer, const HTTP_OPTIONS& aOpt, WEB_HUB* aHub )
 {
+    beast::error_code peerEc;
+    const bool        loopbackPeer = aSocket.remote_endpoint( peerEc ).address().is_loopback() && !peerEc;
+
     beast::flat_buffer buffer;
     beast::error_code  ec;
 
@@ -320,7 +323,7 @@ void serveConnection( tcp::socket aSocket, MCP_SERVER& aServer, const HTTP_OPTIO
                 refuse = makeResponse( req, http::status::not_found, R"({"error":"not found"})" );
             else if( !originAllowed( aOpt, req ) )
                 refuse = makeResponse( req, http::status::forbidden, R"({"error":"origin not allowed"})" );
-            else if( !authorized( aOpt, req ) )
+            else if( !authorized( aOpt, req, loopbackPeer ) )
                 refuse = makeResponse( req, http::status::unauthorized, R"({"error":"unauthorized"})" );
             else
                 refused = false;
@@ -336,7 +339,7 @@ void serveConnection( tcp::socket aSocket, MCP_SERVER& aServer, const HTTP_OPTIO
             return;   // the hub owns the socket now
         }
 
-        RESPONSE res = handle( aServer, aOpt, req );
+        RESPONSE res = handle( aServer, aOpt, req, loopbackPeer );
         bool     keepAlive = res.keep_alive();
 
         http::write( aSocket, res, ec );

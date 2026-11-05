@@ -1,11 +1,13 @@
 #!/bin/sh
-# Start KiCadD (kicad-cli api-server with the board resident) and its MCP endpoint.
+# Start KiCadD (kicad-cli api-server with the board resident) and its MCP endpoint + 2D view.
 #
 #   client/kicadd_up.sh /path/board.kicad_pcb [PORT]
 #
-# MCP Streamable HTTP on 127.0.0.1:PORT/mcp (default 8765), 2D view on 127.0.0.1:PORT/. Set KICADD_MCP_TOKEN to require
-# a bearer token, and KICADD_MCP_HOST to bind elsewhere (a token is then mandatory).
-# Ctrl-C stops both.
+# Default: 127.0.0.1:PORT (8765) — MCP at /mcp, 2D view at /.
+# KICADD_MCP_HOST=0.0.0.0 makes it reachable from outside this machine/container (e.g. a
+# Docker host running VS Code Tunnel). Remote peers then need a token: KICADD_MCP_TOKEN, or
+# one is generated into run/token. Local peers (this container: agents, code-server proxy)
+# don't need it. Ctrl-C stops both.
 set -eu
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 BOARD=${1:?usage: kicadd_up.sh BOARD.kicad_pcb [PORT]}
@@ -13,12 +15,30 @@ PORT=${2:-8765}
 HOST=${KICADD_MCP_HOST:-127.0.0.1}
 SOCK=${KICADD_SOCK:-$HERE/run/kicadd.sock}
 MCP="$HERE/../build/kicadd-mcp"
-
 mkdir -p "$HERE/run"
+
+EXTRA=""
+TOKEN=${KICADD_MCP_TOKEN:-}
+case "$HOST" in
+    127.0.0.1|localhost|::1) ;;
+    *)
+        if [ -z "$TOKEN" ]; then
+            [ -s "$HERE/run/token" ] || ( umask 077; head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$HERE/run/token" )
+            TOKEN=$(cat "$HERE/run/token")
+        fi
+        EXTRA="--trust-loopback"
+        ;;
+esac
+
 KICADD_SOCK=$SOCK "$HERE/client/run_server.sh" "$BOARD" > "$HERE/run/daemon.log" 2>&1 &
 DAEMON=$!
 trap 'kill $DAEMON 2>/dev/null' EXIT INT TERM
 
 echo "daemon pid $DAEMON (log: $HERE/run/daemon.log), socket $SOCK"
-echo "2D view: http://$HOST:$PORT/${KICADD_MCP_TOKEN:+?token=...}   MCP: http://$HOST:$PORT/mcp"
-"$MCP" --socket "$SOCK" --http "$HOST:$PORT"
+if [ -n "$EXTRA" ]; then
+    for ip in $(hostname -I 2>/dev/null); do
+        echo "remote 2D view: http://$ip:$PORT/?token=$TOKEN   (MCP: http://$ip:$PORT/mcp + Bearer token)"
+    done
+fi
+echo "local  2D view: http://127.0.0.1:$PORT/   MCP: http://127.0.0.1:$PORT/mcp"
+KICADD_MCP_TOKEN=$TOKEN "$MCP" --socket "$SOCK" --http "$HOST:$PORT" $EXTRA

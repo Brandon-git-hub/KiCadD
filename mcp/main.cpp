@@ -34,6 +34,8 @@ void usage()
                   "  --stdio    MCP over stdin/stdout (spawned by the client, e.g. via ssh)\n"
                   "  --http     MCP Streamable HTTP; binds 127.0.0.1 unless HOST is given\n"
                   "  --token    require Authorization: Bearer TOKEN; env KICADD_MCP_TOKEN\n"
+                  "  --trust-loopback  with --token: let peers on 127.0.0.1/::1 in without it\n"
+                  "                    (same machine/container, e.g. a local agent or code-server proxy)\n"
                   "  --no-web   don't serve the 2D view (/ and /ws) in --http mode\n"
                   "  --web-root DIR  serve DIR/index.html instead of the embedded page\n" );
 }
@@ -88,6 +90,8 @@ int main( int argc, char** argv )
             http.token = next();
         else if( a == "--allow-origin" )
             http.allowedOrigins.push_back( next() );
+        else if( a == "--trust-loopback" )
+            http.trustLoopback = true;
         else if( a == "--no-web" )
             http.web = false;
         else if( a == "--web-root" )

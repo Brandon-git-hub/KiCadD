@@ -268,18 +268,23 @@ agent ──/mcp──┤              worker thread ──IPC─────┼
 
 ### Opening the view remotely
 
-This dev container has no sshd; it runs code-server (port 8443) and VS Code Remote servers.
-kicadd-mcp stays on 127.0.0.1:8765. Reach it in one of these ways:
+Topology of this setup: KiCadD runs inside a Docker container (`dev-server`, 172.18.0.2) that
+has no sshd. The container runs code-server on `[::]:8443`. VS Code Tunnel runs on the
+**Docker host**, not in the container, so forwarding `localhost:8765` in the Ports panel
+reaches the host's loopback, where nothing is listening ("無法轉送 localhost:8765").
 
-- **VS Code Remote-SSH / Tunnel**: in the **Ports** panel, forward `8765`, then open
-  `http://localhost:8765/`. The MCP endpoint is `http://localhost:8765/mcp`.
-- **code-server in the browser**: open `https://<code-server>/proxy/8765/`. The page
-  derives its WebSocket URL from its own location, so the path prefix works. code-server
-  passes the Host header through, so the same-origin check accepts it (tested: 101 for an
-  upgrade from the code-server origin).
-- **Plain SSH to the Docker host**: bind kicadd-mcp to the container IP with a token
-  (`KICADD_MCP_HOST=172.18.0.2 KICADD_MCP_TOKEN=... client/kicadd_up.sh BOARD`), then
-  `ssh -N -L 8765:172.18.0.2:8765 user@docker-host` and open `http://localhost:8765/?token=...`.
+- **Via code-server's proxy (no new exposure)**: in VS Code's Ports panel, forward
+  `172.18.0.2:8443` (the container's code-server, already listening on all interfaces),
+  then open `http://localhost:<forwarded port>/proxy/8765/`. code-server proxies to
+  127.0.0.1:8765 inside the container. The page computes its WebSocket URL relative to its
+  location, and code-server keeps the Host header, so the same-origin check passes.
+- **Expose kicadd-mcp itself** (your decision; it opens a port on the Docker network):
+  `KICADD_MCP_HOST=0.0.0.0 client/kicadd_up.sh BOARD` generates a token in `run/token` and
+  prints `http://172.18.0.2:8765/?token=...`. Forward `172.18.0.2:8765` in the Ports panel.
+  Remote peers need the token; loopback peers (agents in the container, the code-server
+  proxy) are trusted via `--trust-loopback`. Untested so far with a real non-loopback peer.
+- **Plain SSH** to the Docker host works the same way as the Ports panel:
+  `ssh -N -L 8765:172.18.0.2:8443 user@docker-host` → `http://localhost:8765/proxy/8765/`.
 
 `Bad local forwarding specification` from ssh means the `-L` argument itself could not be
 parsed. This usually happens when a full-width colon or a non-breaking space comes along

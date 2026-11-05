@@ -27,6 +27,7 @@ struct HTTP_OPTIONS
     unsigned short           port = 8765;
     std::string              path = "/mcp";
     std::string              token;            ///< if set, require "Authorization: Bearer <token>"
+    bool                     trustLoopback = false;   ///< no token needed from 127.0.0.1 / ::1 peers
     std::vector<std::string> allowedOrigins;   ///< besides localhost; "*" disables the check
 
     bool        web = true;   ///< serve the 2D view at / and its WebSocket at /ws
