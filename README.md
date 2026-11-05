@@ -323,6 +323,24 @@ single `Path2D` of all 4.8k pads took ~217 ms (superlinear) and stalled the UI o
 - Concurrent edits are last-writer-wins per move. The daemon serialises them; there is no
   locking or "someone else is dragging this" indicator yet.
 
+## PCB editing safety and display (2026-11-06)
+
+| Feature | Daemon / MCP | Web view |
+|---|---|---|
+| **Save** | `save_board` (upstream SaveDocument) | Save button, `Ctrl+S`, unsaved marker `Save •` |
+| **Undo / Redo** | KiCadD history (before/after footprint states, 200 deep); `undo` / `redo` tools | buttons with the edit's name, `Ctrl+Z` / `Ctrl+Y` / `Ctrl+Shift+Z`; state synced across browsers and agent |
+| **Ratsnest** | `GetRatsnest {flush}` (no-flush reader added upstream) | layer toggle; follows a dragged footprint; deferred large nets fill in 400 ms after edits stop |
+| **Copper fill** | `GetZoneFills`; `refill_zones` tool | layer toggle (default on), fetched after the snapshot, per-zone refresh; Refill zones button |
+| **Full DRC** | `run_drc` tool (upstream DRC task + readable handles, filters) | Run full DRC: summary, list, markers, click to zoom |
+
+Undo covers KiCadD edits (footprint move/rotate from MCP or the web), not edits made with
+other API commands, and not zone refills. The history resets when another board is opened.
+Headless KiCad commits keep no undo list of their own.
+
+Verification: `client/history_e2e.py` (19 checks, including save and reload from disk),
+`browser_check.py` (Undo/Redo buttons and shortcuts), `mcp_e2e.py` (12 tools). `run_drc`
+reports exactly upstream's non-excluded markers (Jetson: 317 = 317).
+
 ## License
 
 GPL-3.0-or-later (same as KiCad). Konnect (AGPL-3.0-only) is used as design reference only;
