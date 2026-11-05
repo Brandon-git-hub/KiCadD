@@ -92,6 +92,10 @@ CompactItem describeFootprint( const FOOTPRINT* aFp )
     CompactItem out = makeItem( IK_FOOTPRINT, aFp, aFp->GetReference().ToStdString() );
     out.set_layer( aFp->GetLayerName().ToStdString() );
     out.set_rot_decideg( aFp->GetOrientation().AsTenthsOfADegree() );
+
+    BOX2I body = aFp->GetBoundingBox( false );
+    out.mutable_size()->set_x( body.GetWidth() );
+    out.mutable_size()->set_y( body.GetHeight() );
     return out;
 }
 

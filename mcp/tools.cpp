@@ -107,7 +107,8 @@ const std::map<std::string, kb::ItemKind>& kindNames()
 
 // ---- rendering -----------------------------------------------------------------------------
 
-std::string renderItem( const kb::CompactItem& aItem )
+/// aRadius: query radius (nm), 0 if not a radius query.
+std::string renderItem( const kb::CompactItem& aItem, int64_t aRadius = 0 )
 {
     std::string s;
 
@@ -144,11 +145,19 @@ std::string renderItem( const kb::CompactItem& aItem )
     if( aItem.dist() > 0 )
         s += " ~" + mm( aItem.dist() );
 
+    // A footprint far larger than the query whose body covers the centre (modules, heatsinks):
+    // say so, or its distant anchor position reads like a wrong result.
+    if( aItem.kind() == kb::IK_FOOTPRINT && aItem.dist() == 0 && aRadius > 0
+        && ( aItem.size().x() > 2 * aRadius || aItem.size().y() > 2 * aRadius ) )
+    {
+        s += " (body " + mm( aItem.size().x() ) + "x" + mm( aItem.size().y() ) + " covers query point)";
+    }
+
     return s;
 }
 
 
-std::string renderQuery( const kb::QueryResponse& aResp )
+std::string renderQuery( const kb::QueryResponse& aResp, int64_t aRadius = 0 )
 {
     std::string s = std::to_string( aResp.items_size() );
 
@@ -158,7 +167,7 @@ std::string renderQuery( const kb::QueryResponse& aResp )
     s += " items\n";
 
     for( const kb::CompactItem& it : aResp.items() )
-        s += renderItem( it ) + "\n";
+        s += renderItem( it, aRadius ) + "\n";
 
     return s;
 }
@@ -296,7 +305,7 @@ TOOL_RESULT queryArea( IPC_CLIENT& aIpc, const json& aArgs )
     if( !aIpc.Call( req, r, err ) )
         return error( err );
 
-    return { renderQuery( r ) };
+    return { renderQuery( r, req.radius() ) };
 }
 
 

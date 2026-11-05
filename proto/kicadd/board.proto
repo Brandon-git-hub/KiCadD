@@ -50,6 +50,7 @@ message CompactItem
   int32    rot_decideg = 8;  // footprint rotation
   int64    dist  = 9;    // distance from query center (nm)
   string   id    = 10;   // full KIID, only when the query sets with_ids
+  Point    size  = 11;   // footprints: body bounding-box width/height (no text)
 }
 
 // ---------------------------------------------------------------------------
