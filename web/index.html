@@ -664,9 +664,13 @@ function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj))
 function setConn(state, text) { const c = $("conn"); c.className = "pill " + state; c.textContent = text; }
 
 function connect() {
+  // Relative to the page, so the view also works behind path-prefix proxies such as
+  // code-server's /proxy/8765/ or VS Code port forwarding.
   const token = new URLSearchParams(location.search).get("token");
-  const url = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws" +
-              (token ? "?token=" + encodeURIComponent(token) : "");
+  const u = new URL("ws", location.href);
+  u.protocol = location.protocol === "https:" ? "wss:" : "ws:";
+  u.search = token ? "?token=" + encodeURIComponent(token) : "";
+  const url = u.toString();
   ws = new WebSocket(url);
   setConn("warn", "connecting");
   ws.onopen = () => { setConn("ok", "live"); backoff = 500; };

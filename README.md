@@ -266,6 +266,25 @@ agent ──/mcp──┤              worker thread ──IPC─────┼
   `--allow-origin`) and the token (`?token=` since browsers can't set WebSocket headers).
   `--no-web` disables both routes.
 
+### Opening the view remotely
+
+This dev container has no sshd; it runs code-server (port 8443) and VS Code Remote servers.
+kicadd-mcp stays on 127.0.0.1:8765. Reach it in one of these ways:
+
+- **VS Code Remote-SSH / Tunnel**: in the **Ports** panel, forward `8765`, then open
+  `http://localhost:8765/`. The MCP endpoint is `http://localhost:8765/mcp`.
+- **code-server in the browser**: open `https://<code-server>/proxy/8765/`. The page
+  derives its WebSocket URL from its own location, so the path prefix works. code-server
+  passes the Host header through, so the same-origin check accepts it (tested: 101 for an
+  upgrade from the code-server origin).
+- **Plain SSH to the Docker host**: bind kicadd-mcp to the container IP with a token
+  (`KICADD_MCP_HOST=172.18.0.2 KICADD_MCP_TOKEN=... client/kicadd_up.sh BOARD`), then
+  `ssh -N -L 8765:172.18.0.2:8765 user@docker-host` and open `http://localhost:8765/?token=...`.
+
+`Bad local forwarding specification` from ssh means the `-L` argument itself could not be
+parsed. This usually happens when a full-width colon or a non-breaking space comes along
+with a copied command; type it by hand.
+
 ### Numbers (Jetson board, headless Chromium)
 
 | | |
