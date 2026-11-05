@@ -18,6 +18,7 @@ Built as a thin extension of upstream `kicad-cli api-server`, not a fork of the 
 | `cmake/kicadd.cmake` | Generates C++/Python protobuf, defines `kicadd_proto`, `KICADD_PCB_SRCS` |
 | `patches/0001-*.patch` | Upstream hooks (all guarded by `KICADD_DIR` / `#ifdef KICADD`) + api-server wake-up fix |
 | `src/pcb/kicadd_local_drc.*` | Local (incremental) DRC |
+| `mcp/` | `kicadd-mcp`: MCP server (C++; stdio + Streamable HTTP via Boost.Beast) |
 | `client/` | Python IPC client, benchmark, verification + A/B scripts, `run_server.sh` |
 
 ### Upstream patch (~320 lines, 13 files)
@@ -56,7 +57,7 @@ cd kicad && git apply ../KiCadD/patches/0001-kicadd-hooks-and-api-server-wakeup.
 cmake -S kicad -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
       -DKICAD_BUILD_QA_TESTS=OFF -DKICAD_BUILD_I18N=OFF -DKICAD_USE_SENTRY=OFF \
       -DKICADD_DIR=$PWD/KiCadD
-ninja -C build kicad-cli pcbnew_kiface eeschema_kiface
+ninja -C build kicad-cli pcbnew_kiface eeschema_kiface kicadd-mcp
 ```
 
 ## Run
@@ -165,6 +166,74 @@ unrouted board every pad is its own cluster, and GND (1266 pads here) dominates 
 - `SearchClusters` still does an O(items) participation pass; `updateJumperPads` is board-wide.
 - `QueryRadius` / local DRC candidate search are linear scans (fine at ~1–2 ms here).
 - MCP endpoint, change-push channel for the web view, LCSC integration (Phases 2–4).
+
+## Phase 2: MCP (2026-11-05)
+
+`kicadd-mcp` (`build/kicadd-mcp`) is a standalone C++ MCP server. It is an IPC client of the
+daemon, so it shares the daemon's semantics and needs no further changes to upstream. No
+Python or Node runtime is needed.
+
+| Tool | |
+|---|---|
+| `board_summary` | counts, layers, outline |
+| `query_area` | items near `ref` or `x,y` within `radius` (mm), nearest first; `kinds`, `limit` |
+| `query_net` | pads / tracks / vias / zones of one net |
+| `move_footprints` | `refs`, `dx`, `dy` (mm), `rotate` (deg); returns positions, unconnected count, local DRC |
+| `check_drc` | local DRC for `refs` without moving |
+| `flush_ratsnest` | rebuild deferred large nets, full unconnected count |
+| `open_board` / `save_board` | load another board / write the in-memory board to disk |
+
+Output is compact text, e.g. a move that creates violations (~266 tokens for 14 violations):
+
+```
+C216 @152.5,107.5 r180
+unconnected=0 (excl. deferred nets: GND +1V8; call flush_ratsnest for the full count)
+drc: 14
+SHORT C216.2[+1V8] x C356.2[+3V3] F.Cu need0.1 have0 @152,107.328
+COURTYARD C216 x C356 F.Courtyard @152,107.5
+...
+```
+
+Protocol: JSON-RPC 2.0, handshake versions 2025-11-25 / 2025-06-18 / 2025-03-26 / 2024-11-05.
+Clients that probe the 2026 `server/discover` get -32601 and fall back to `initialize`.
+Streamable HTTP: POST → JSON response, notification → 202, GET → 405 (the server never
+pushes messages), `Mcp-Session-Id` is set on initialize.
+Security defaults: binds 127.0.0.1; any other bind address is refused without `--token`;
+`Origin` must be localhost or `--allow-origin`; optional `Authorization: Bearer`.
+
+### Run and connect
+
+```sh
+# on the server
+KiCadD/client/kicadd_up.sh /path/board.kicad_pcb 8765        # daemon + MCP on 127.0.0.1:8765
+
+# from your machine: tunnel, then register with Claude Code
+ssh -N -L 8765:127.0.0.1:8765 user@server
+claude mcp add --transport http kicadd http://127.0.0.1:8765/mcp
+
+# or stdio over ssh (no tunnel, no port; the daemon must already be running)
+claude mcp add kicadd -- ssh user@server /path/build/kicadd-mcp \
+    --socket /path/KiCadD/run/kicadd.sock --stdio
+```
+
+With a token: `KICADD_MCP_TOKEN=... kicadd_up.sh ...` and
+`claude mcp add --transport http kicadd URL --header "Authorization: Bearer ..."`.
+
+### Verification (`client/mcp_e2e.py`)
+
+All 38 checks pass, using the official MCP Python SDK (2.3.0) both over HTTP (`Client`,
+`mode=auto`: discover probe, then fallback) and over stdio (`ClientSession`), plus raw-HTTP
+edge cases (version negotiation, 202, 405, 404, 403 for a foreign Origin, 401/200 with a
+token, malformed JSON → -32700, refusing a non-loopback bind without a token). A move costs
+**~12–14 ms end-to-end** through MCP on the Jetson board.
+
+### Known limits
+
+- One board per daemon; tool calls are serialised (one shared board).
+- No MCP resources/prompts, no server-initiated notifications (Phase 3 adds a push channel
+  for the web view).
+- `query_area` ranks by distance, then by size. Large modules whose body contains the centre
+  still have distance 0 and come early; filter with `kinds` if needed.
 
 ## License
 

@@ -59,3 +59,25 @@ add_custom_target( kicadd_python
     DEPENDS ${_kicadd_proto_full}
     COMMENT "Generating KiCadD Python protobuf stubs"
     )
+
+# MCP server (Phase 2): a standalone IPC client of the daemon. C++ only; HTTP via Boost.Beast
+# (Boost is already a KiCad dependency), JSON via KiCad's bundled nlohmann_json.
+find_package( Threads REQUIRED )
+
+add_executable( kicadd-mcp
+    ${KICADD_DIR}/mcp/main.cpp
+    ${KICADD_DIR}/mcp/ipc_client.cpp
+    ${KICADD_DIR}/mcp/mcp_server.cpp
+    ${KICADD_DIR}/mcp/tools.cpp
+    ${KICADD_DIR}/mcp/transports.cpp
+    )
+target_include_directories( kicadd-mcp PRIVATE ${KICADD_DIR}/mcp ${NNG_INCLUDE_DIR} )
+target_link_libraries( kicadd-mcp PRIVATE
+    kicadd_proto
+    kiapi
+    nlohmann_json
+    Boost::boost
+    Threads::Threads
+    ${NNG_LIBRARY}
+    )
+target_compile_features( kicadd-mcp PRIVATE cxx_std_20 )

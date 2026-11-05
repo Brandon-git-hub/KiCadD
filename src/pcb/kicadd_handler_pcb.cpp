@@ -271,8 +271,10 @@ KICADD_HANDLER_PCB::handleQueryRadius( const HANDLER_CONTEXT<QueryRadius>& aCtx 
 
     auto want = [&]( ItemKind k ) { return kinds.count( k ) > 0; };
 
-    std::vector<CompactItem> hits;
-    const int64_t            radius = req.radius();
+    // (item, bbox area): area breaks distance ties, so a module or heatsink whose body merely
+    // contains the centre (distance 0) ranks after the small parts actually there.
+    std::vector<std::pair<CompactItem, double>> hits;
+    const int64_t                               radius = req.radius();
 
     auto consider = [&]( const BOARD_ITEM* aItem, auto&& aDescribe )
     {
@@ -285,7 +287,11 @@ KICADD_HANDLER_PCB::handleQueryRadius( const HANDLER_CONTEXT<QueryRadius>& aCtx 
 
             if( req.with_ids() )
                 ci.set_id( aItem->m_Uuid.AsStdString() );
-            hits.push_back( std::move( ci ) );
+
+            BOX2I bb = aItem->Type() == PCB_FOOTPRINT_T
+                               ? static_cast<const FOOTPRINT*>( aItem )->GetBoundingBox( false )
+                               : aItem->GetBoundingBox();
+            hits.emplace_back( std::move( ci ), static_cast<double>( bb.GetArea() ) );
         }
     };
 
@@ -326,8 +332,14 @@ KICADD_HANDLER_PCB::handleQueryRadius( const HANDLER_CONTEXT<QueryRadius>& aCtx 
         }
     }
 
-    std::sort( hits.begin(), hits.end(),
-               []( const CompactItem& a, const CompactItem& b ) { return a.dist() < b.dist(); } );
+    std::stable_sort( hits.begin(), hits.end(),
+                      []( const auto& a, const auto& b )
+                      {
+                          if( a.first.dist() != b.first.dist() )
+                              return a.first.dist() < b.first.dist();
+
+                          return a.second < b.second;
+                      } );
 
     const int limit = req.limit() > 0 ? req.limit() : DEFAULT_RADIUS_LIMIT;
 
@@ -336,7 +348,7 @@ KICADD_HANDLER_PCB::handleQueryRadius( const HANDLER_CONTEXT<QueryRadius>& aCtx 
     out.set_truncated( static_cast<int>( hits.size() ) > limit );
 
     for( size_t i = 0; i < hits.size() && static_cast<int>( i ) < limit; ++i )
-        *out.add_items() = std::move( hits[i] );
+        *out.add_items() = std::move( hits[i].first );
 
     return out;
 }
