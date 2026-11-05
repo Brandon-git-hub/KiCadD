@@ -10,6 +10,9 @@
  *      "label":".."}
  *     {"t":"history","undo":N,"redo":N,"next_undo":"..","next_redo":"..","modified":bool}
  *     {"t":"saved","ok":bool,"file":"..","error":".."}
+ *     {"t":"fills","fills":[{"id","net","ly","polys":[[x0,y0,dx,dy,dx,dy,..],..]},..]}
+ *          (polygon points delta-encoded: first point absolute, then differences, all µm)
+ *     {"t":"refilled","ok":bool,"ms":..,"error":".."}
  *     {"t":"ratsnest","xy":[x1,y1,x2,y2,..],"net":[i,..],"nets":[..],"pending":[..],"unconnected":N,
  *      "final":bool}   (final=false: deferred large nets still missing, a final one follows)
  *     {"t":"error","error":".."}
@@ -22,6 +25,7 @@
  *   client -> server
  *     {"t":"move","refs":[..],"dx":mm,"dy":mm,"rot":deg}
  *     {"t":"undo"} / {"t":"redo"} / {"t":"save"}
+ *     {"t":"fills","ids":[..]}   (ids empty = all)   /   {"t":"refill"}
  *     {"t":"resync"}
  *
  * A client applies a delta when since <= its revision < rev, ignores it when rev <= its
@@ -45,6 +49,7 @@
 #include <kicadd/board.pb.h>
 #include <kicadd/render.pb.h>
 #include <api/common/commands/project_commands.pb.h>
+#include <api/board/board_commands.pb.h>
 #include <api/common/types/base_types.pb.h>
 #include <google/protobuf/empty.pb.h>
 
@@ -73,6 +78,12 @@ public:
     void Run( beast::http::request<beast::http::string_body> aRequest )
     {
         m_ws.set_option( websocket::stream_base::timeout::suggested( beast::role_type::server ) );
+
+        // Snapshots and copper fills are MBs of JSON digits; browsers negotiate deflate.
+        websocket::permessage_deflate pmd;
+        pmd.server_enable = true;
+        pmd.compLevel = 3;
+        m_ws.set_option( pmd );
         m_ws.set_option( websocket::stream_base::decorator(
                 []( websocket::response_type& aRes ) { aRes.set( beast::http::field::server, "kicadd" ); } ) );
 
@@ -196,6 +207,26 @@ private:
     std::unordered_map<std::string, int> m_index;
     std::vector<std::string>             m_values;
 };
+
+
+/// First point absolute, then per-point differences (µm): fill polygons have ~500k points
+/// on a large board and neighbouring points are close, so this roughly halves the JSON.
+json deltaEncode( const kr::Polyline& aPoly )
+{
+    json    out = json::array();
+    int64_t px = 0, py = 0;
+
+    for( int i = 0; i + 1 < aPoly.xy_size(); i += 2 )
+    {
+        int64_t x = um( aPoly.xy( i ) ), y = um( aPoly.xy( i + 1 ) );
+        out.push_back( x - px );
+        out.push_back( y - py );
+        px = x;
+        py = y;
+    }
+
+    return out;
+}
 
 
 json polyline( const kr::Polyline& aPoly )
@@ -414,7 +445,7 @@ void WEB_HUB::Received( const std::shared_ptr<WS_SESSION>& aSession, const std::
 
     if( t == "resync" )
         msg = json{ { "t", "snapshot" } };
-    else if( t != "move" && t != "undo" && t != "redo" && t != "save" )
+    else if( t != "move" && t != "undo" && t != "redo" && t != "save" && t != "fills" && t != "refill" )
     {
         aSession->Send( std::make_shared<std::string>( errorJson( "unknown message type '" + t + "'" ) ) );
         return;
@@ -533,6 +564,75 @@ void WEB_HUB::runJob( const JOB& aJob )
             sendMoveResult( session, t.c_str(), true, "", &r.result(), ms, r.label() );
 
         poll();   // also broadcasts the new history state
+        return;
+    }
+
+    if( t == "fills" )
+    {
+        kr::GetZoneFills req;
+
+        if( aJob.message.contains( "ids" ) && aJob.message["ids"].is_array() )
+            for( const json& id : aJob.message["ids"] )
+                if( id.is_string() )
+                    req.add_ids( id.get<std::string>() );
+
+        kr::ZoneFills r;
+
+        if( !m_ipc.Call( req, r, err ) )
+        {
+            session->Send( std::make_shared<std::string>( errorJson( err ) ) );
+            return;
+        }
+
+        json fills = json::array();
+
+        for( const kr::ZoneFill& zf : r.fills() )
+        {
+            json polys = json::array();
+
+            for( const kr::FillPoly& fp : zf.polys() )
+            {
+                // Fills come fractured (holes bridged into the outline), but keep holes too.
+                for( const kr::Polyline* pl : { &fp.outline() } )
+                    polys.push_back( deltaEncode( *pl ) );
+
+                for( const kr::Polyline& h : fp.holes() )
+                    polys.push_back( deltaEncode( h ) );
+            }
+
+            fills.push_back( { { "id", zf.id() }, { "net", zf.net() }, { "ly", zf.layer() },
+                               { "polys", std::move( polys ) } } );
+        }
+
+        session->Send( std::make_shared<std::string>(
+                json{ { "t", "fills" }, { "full", req.ids().empty() }, { "fills", std::move( fills ) } }.dump() ) );
+        return;
+    }
+
+    if( t == "refill" )
+    {
+        kb::BoardSummaryResponse summary;
+        json                     reply = { { "t", "refilled" }, { "ok", false } };
+        auto                     t0 = std::chrono::steady_clock::now();
+
+        if( m_ipc.Call( kb::GetBoardSummary(), summary, err ) )
+        {
+            kiapi::board::commands::RefillZones req;
+            req.mutable_board()->set_type( kiapi::common::types::DOCTYPE_PCB );
+            req.mutable_board()->set_board_filename( summary.file().substr( summary.file().find_last_of( '/' ) + 1 ) );
+            google::protobuf::Empty empty;
+
+            if( m_ipc.Call( req, empty, err ) )
+                reply["ok"] = true;
+        }
+
+        reply["ms"] = std::round( std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - t0 ).count() );
+
+        if( !reply["ok"] )
+            reply["error"] = err;
+
+        broadcast( reply.dump() );
+        poll();   // zones changed: their ids go out in the delta; views re-request their fills
         return;
     }
 

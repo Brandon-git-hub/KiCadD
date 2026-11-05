@@ -74,6 +74,9 @@ private:
     HANDLER_RESULT<kicadd::render::Ratsnest>
     handleGetRatsnest( const HANDLER_CONTEXT<kicadd::render::GetRatsnest>& aCtx );
 
+    HANDLER_RESULT<kicadd::render::ZoneFills>
+    handleGetZoneFills( const HANDLER_CONTEXT<kicadd::render::GetZoneFills>& aCtx );
+
     HANDLER_RESULT<kicadd::board::HistoryResponse>
     handleUndo( const HANDLER_CONTEXT<kicadd::board::Undo>& aCtx );
 

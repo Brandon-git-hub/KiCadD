@@ -14,6 +14,8 @@
 #include <kicadd/board.pb.h>
 #include <api/common/commands/base_commands.pb.h>
 #include <api/common/commands/project_commands.pb.h>
+#include <api/board/board_commands.pb.h>
+#include <chrono>
 #include <api/common/types/base_types.pb.h>
 #include <google/protobuf/empty.pb.h>
 
@@ -486,6 +488,31 @@ TOOL_RESULT saveBoard( IPC_CLIENT& aIpc )
 }
 
 
+TOOL_RESULT refillZones( IPC_CLIENT& aIpc )
+{
+    std::string err;
+    std::string file = boardFileName( aIpc, err );
+
+    if( file.empty() )
+        return error( err.empty() ? "no board loaded" : err );
+
+    kiapi::board::commands::RefillZones req;
+    req.mutable_board()->set_type( kiapi::common::types::DOCTYPE_PCB );
+    req.mutable_board()->set_board_filename( file );
+
+    google::protobuf::Empty r;
+    auto                    t0 = std::chrono::steady_clock::now();
+
+    if( !aIpc.Call( req, r, err ) )
+        return error( err );
+
+    char buf[64];
+    std::snprintf( buf, sizeof( buf ), "all zones refilled in %.1f s\n",
+                   std::chrono::duration<double>( std::chrono::steady_clock::now() - t0 ).count() );
+    return { buf };
+}
+
+
 TOOL_RESULT openBoard( IPC_CLIENT& aIpc, const json& aArgs )
 {
     if( !aArgs.contains( "path" ) || !aArgs["path"].is_string() )
@@ -592,6 +619,12 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        "unrouted-connection count.",
                        schema( json::object() ),
                        [&aIpc]( const json& ) { return flushRatsnest( aIpc ); } } );
+
+    tools.push_back( { "refill_zones",
+                       "Refill all copper zones. Fills go stale when parts move; refill before judging "
+                       "copper connectivity, running full DRC or saving for fabrication.",
+                       schema( json::object() ),
+                       [&aIpc]( const json& ) { return refillZones( aIpc ); } } );
 
     tools.push_back( { "open_board",
                        "Open a .kicad_pcb (or .kicad_pro) on the server, replacing the current board.",

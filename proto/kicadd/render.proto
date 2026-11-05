@@ -154,3 +154,30 @@ message Ratsnest
   repeated string pending = 4;
   int32           unconnected = 5;
 }
+
+// Copper fill of zones (what the board actually has, not the zone outline).
+// Fills go stale when parts move until the zones are refilled (upstream RefillZones).
+// Returns ZoneFills
+message GetZoneFills
+{
+  repeated string ids = 1;   // zone ids; empty = all filled copper zones
+}
+
+message FillPoly
+{
+  Polyline          outline = 1;
+  repeated Polyline holes   = 2;
+}
+
+message ZoneFill
+{
+  string            id    = 1;
+  string            net   = 2;
+  string            layer = 3;
+  repeated FillPoly polys = 4;
+}
+
+message ZoneFills
+{
+  repeated ZoneFill fills = 1;
+}

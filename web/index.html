@@ -61,6 +61,7 @@
       <button id="undo" disabled title="Undo (Ctrl+Z)">↶ Undo</button>
       <button id="redo" disabled title="Redo (Ctrl+Y)">↷ Redo</button>
       <button id="save" title="Save to file (Ctrl+S)">Save</button>
+      <button id="refill" title="Refill all copper zones (fills go stale when parts move)">Refill zones</button>
     </span>
     <span class="pill" id="conn">offline</span>
     <button id="fit" title="Fit board (F)">Fit</button>
@@ -102,7 +103,10 @@
 const board = { copper: [], outline: [], fp: new Map(), trk: new Map(), via: new Map(), zone: new Map() };
 let rev = 0;
 const view = { s: 0.01, ox: 0, oy: 0 };          // screen = world * s + o
-const vis = { zones: true, courtyard: true, refs: true, vias: true, ratsnest: true, layers: {} };
+const vis = { zones: true, fills: true, courtyard: true, refs: true, vias: true, ratsnest: true, layers: {} };
+const fills = new Map();          // "zoneId|layer" -> {id, ly, net, polys:[[x,y,..]]}
+let fillPaths = null;             // layer -> Path2D, rebuilt when fills change
+let fillsRequested = false;
 let rats = { xy: [], net: [], nets: [], pending: [], unconnected: 0, path: null };
 let selected = null;                                // footprint id
 let drag = null;                                    // {id, sx, sy, dx, dy, moved}
@@ -171,12 +175,16 @@ function applySnapshot(msg) {
   trkDirty = fpDirty = dirty = true;
   updateStats();
   log(`snapshot <b>rev ${rev}</b>: ${board.fp.size} footprints, ${board.trk.size} tracks`);
+  fills.clear(); fillPaths = null; fillsRequested = false;
+  if (vis.fills) requestFills();
 }
 
 function applyDelta(msg) {
   if (msg.rev <= rev) return;                       // already have it (e.g. via snapshot)
   if (msg.since > rev) { send({ t: "resync" }); return; }   // gap
+  if (vis.fills && fillsRequested && (msg.zone || []).length) requestFills(msg.zone.map(z => z.id));
   for (const id of msg.rm || []) {
+    if (board.zone.has(id)) dropFills(id);
     if (board.fp.delete(id)) { fpCache.delete(id); fpDirty = true; }
     for (const k of ["trk", "via", "zone"]) if (board[k].delete(id)) trkDirty = true;
   }
@@ -329,6 +337,14 @@ function layerOrder() {                 // back first, front last
 
 function draw() {
   if (trkDirty || fpDirty) buildCache();
+  if (!fillPaths && fills.size) {
+    fillPaths = new Map();
+    for (const f of fills.values()) {
+      let p = fillPaths.get(f.ly);
+      if (!p) fillPaths.set(f.ly, p = new Path2D());
+      for (const poly of f.polys) addPoly(p, poly);
+    }
+  }
   const W = cv.width, H = cv.height, dpr = window.devicePixelRatio || 1;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = "#0b0e11"; ctx.fillRect(0, 0, W, H);
@@ -343,6 +359,10 @@ function draw() {
   for (const l of layerOrder()) {
     if (!vis.layers[l]) continue;
     const col = layerColor(l), front = l === "F.Cu";
+    if (vis.fills && fillPaths && fillPaths.has(l)) {
+      ctx.globalAlpha = front ? 0.42 : (l === "B.Cu" ? 0.35 : 0.25);
+      ctx.fillStyle = col; ctx.fill(fillPaths.get(l), "evenodd");
+    }
     if (vis.zones && cache.zones.has(l)) {
       ctx.globalAlpha = 0.55; ctx.strokeStyle = col; ctx.lineWidth = 1 * px;
       ctx.setLineDash([6 * px, 4 * px]); ctx.stroke(cache.zones.get(l)); ctx.setLineDash([]);
@@ -558,6 +578,37 @@ function onMoved(msg) {
   dirty = true;
 }
 
+function requestFills(ids) {
+  fillsRequested = true;
+  send(ids ? { t: "fills", ids } : { t: "fills" });
+}
+
+function dropFills(id) {
+  for (const k of [...fills.keys()]) if (k.startsWith(id + "|")) fills.delete(k);
+  fillPaths = null; dirty = true;
+}
+
+function decodePoly(d) {
+  const out = new Array(d.length);
+  let x = 0, y = 0;
+  for (let i = 0; i < d.length; i += 2) { x += d[i]; y += d[i + 1]; out[i] = x; out[i + 1] = y; }
+  return out;
+}
+
+function onFills(msg) {
+  const t0 = performance.now();
+  if (msg.full) fills.clear();
+  else for (const id of new Set(msg.fills.map(f => f.id))) dropFills(id);
+  let pts = 0;
+  for (const f of msg.fills) {
+    const polys = f.polys.map(decodePoly);
+    pts += polys.reduce((n, p) => n + p.length / 2, 0);
+    fills.set(f.id + "|" + f.ly, { id: f.id, ly: f.ly, net: f.net, polys });
+  }
+  fillPaths = null; dirty = true;
+  log(`copper fill: ${msg.fills.length} zone layer(s), ${pts.toLocaleString()} points (${(performance.now() - t0).toFixed(0)} ms)`);
+}
+
 function onRatsnest(r) {
   if (r.error) return;
   rats = { xy: r.xy, net: r.net, nets: r.nets, pending: r.pending, unconnected: r.unconnected, path: null };
@@ -604,6 +655,7 @@ function buildLayerPanel() {
     if (!(l in vis.layers)) vis.layers[l] = (l === "F.Cu" || l === "B.Cu");
     item(l, l, layerColor(l), () => vis.layers[l], v => vis.layers[l] = v);
   }
+  item("fills", "Copper fill", null, () => vis.fills, v => { vis.fills = v; if (v && !fillsRequested) requestFills(); });
   item("zones", "Zone outlines", null, () => vis.zones, v => vis.zones = v);
   item("vias", "Vias", null, () => vis.vias, v => vis.vias = v);
   item("cy", "Courtyards", null, () => vis.courtyard, v => vis.courtyard = v);
@@ -731,6 +783,7 @@ $("fit").onclick = () => fit();
 $("undo").onclick = () => undoRedo("undo");
 $("redo").onclick = () => undoRedo("redo");
 $("save").onclick = () => send({ t: "save" });
+$("refill").onclick = () => { $("refill").disabled = true; $("refill").textContent = "Refilling…"; send({ t: "refill" }); };
 window.addEventListener("resize", resize);
 
 // ---------------------------------------------------------------------------------------------
@@ -760,6 +813,11 @@ function connect() {
     else if (msg.t === "moved") onMoved(msg);
     else if (msg.t === "history") onHistory(msg);
     else if (msg.t === "ratsnest") onRatsnest(msg);
+    else if (msg.t === "fills") onFills(msg);
+    else if (msg.t === "refilled") {
+      $("refill").disabled = false; $("refill").textContent = "Refill zones";
+      log(msg.ok ? `zones refilled in <b>${(msg.ms / 1000).toFixed(1)} s</b>` : `<span style="color:var(--bad)">refill failed: ${msg.error}</span>`);
+    }
     else if (msg.t === "saved") log(msg.ok ? `saved <b>${msg.file}</b>` : `<span style="color:var(--bad)">save failed: ${msg.error}</span>`);
     else if (msg.t === "error") log(`<span style="color:var(--bad)">${msg.error}</span>`);
   };

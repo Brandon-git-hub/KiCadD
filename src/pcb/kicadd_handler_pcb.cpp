@@ -208,6 +208,8 @@ KICADD_HANDLER_PCB::KICADD_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext ) 
             &KICADD_HANDLER_PCB::handleGetChanges );
     registerHandler<kicadd::render::GetRatsnest, kicadd::render::Ratsnest>(
             &KICADD_HANDLER_PCB::handleGetRatsnest );
+    registerHandler<kicadd::render::GetZoneFills, kicadd::render::ZoneFills>(
+            &KICADD_HANDLER_PCB::handleGetZoneFills );
 
     m_feed = std::make_unique<kicadd::RENDER_FEED>( board() );
 }
@@ -1072,5 +1074,63 @@ KICADD_HANDLER_PCB::handleGetRatsnest( const HANDLER_CONTEXT<kicadd::render::Get
         out.add_pending( netName( b, net ) );
 
     out.set_unconnected( static_cast<int>( conn->GetUnconnectedCountNoFlush( false ) ) );
+    return out;
+}
+
+
+HANDLER_RESULT<kicadd::render::ZoneFills>
+KICADD_HANDLER_PCB::handleGetZoneFills( const HANDLER_CONTEXT<kicadd::render::GetZoneFills>& aCtx )
+{
+    BOARD* b = board();
+
+    if( !b )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
+
+    std::set<std::string> wanted( aCtx.Request.ids().begin(), aCtx.Request.ids().end() );
+
+    auto addChain = []( const SHAPE_LINE_CHAIN& aChain, kicadd::render::Polyline* aOut )
+    {
+        for( int i = 0; i < aChain.PointCount(); ++i )
+        {
+            aOut->add_xy( aChain.CPoint( i ).x );
+            aOut->add_xy( aChain.CPoint( i ).y );
+        }
+    };
+
+    kicadd::render::ZoneFills out;
+
+    for( const ZONE* zone : b->Zones() )
+    {
+        if( zone->GetIsRuleArea() || !zone->IsOnCopperLayer() || !zone->IsFilled() )
+            continue;
+
+        const std::string id = zone->m_Uuid.AsStdString();
+
+        if( !wanted.empty() && !wanted.count( id ) )
+            continue;
+
+        for( PCB_LAYER_ID layer : LSET( zone->GetLayerSet() & LSET::AllCuMask() ).Seq() )
+        {
+            std::shared_ptr<SHAPE_POLY_SET> fill = zone->GetFilledPolysList( layer );
+
+            if( !fill || fill->OutlineCount() == 0 )
+                continue;
+
+            kicadd::render::ZoneFill* zf = out.add_fills();
+            zf->set_id( id );
+            zf->set_net( zone->GetNetCode() > 0 ? zone->GetNetname().ToStdString() : std::string() );
+            zf->set_layer( b->GetLayerName( layer ).ToStdString() );
+
+            for( int i = 0; i < fill->OutlineCount(); ++i )
+            {
+                kicadd::render::FillPoly* fp = zf->add_polys();
+                addChain( fill->COutline( i ), fp->mutable_outline() );
+
+                for( int h = 0; h < fill->HoleCount( i ); ++h )
+                    addChain( fill->CHole( i, h ), fp->add_holes() );
+            }
+        }
+    }
+
     return out;
 }
