@@ -7,7 +7,7 @@
 #   KICADD_INCLUDE_DIRS - include dirs for the above
 
 set( KICADD_PROTO_DIR ${KICADD_DIR}/proto )
-set( KICADD_PROTO_SRCS kicadd/board.proto )
+set( KICADD_PROTO_SRCS kicadd/board.proto kicadd/render.proto )
 set( KICADD_CPP_OUT ${CMAKE_BINARY_DIR}/kicadd/cpp )
 
 set( _kicadd_cpp )
@@ -44,6 +44,7 @@ target_compile_options( kicadd_proto PRIVATE -w )
 set( KICADD_PCB_SRCS
     ${KICADD_DIR}/src/pcb/kicadd_handler_pcb.cpp
     ${KICADD_DIR}/src/pcb/kicadd_local_drc.cpp
+    ${KICADD_DIR}/src/pcb/kicadd_render.cpp
     )
 set( KICADD_INCLUDE_DIRS ${KICADD_DIR}/src ${KICADD_CPP_OUT} )
 
@@ -64,7 +65,18 @@ add_custom_target( kicadd_python
 # (Boost is already a KiCad dependency), JSON via KiCad's bundled nlohmann_json.
 find_package( Threads REQUIRED )
 
+set( KICADD_WEB_INDEX_CPP ${CMAKE_BINARY_DIR}/kicadd/web_index.cpp )
+add_custom_command(
+    OUTPUT ${KICADD_WEB_INDEX_CPP}
+    COMMAND ${CMAKE_COMMAND} -DIN=${KICADD_DIR}/web/index.html -DOUT=${KICADD_WEB_INDEX_CPP}
+            -P ${KICADD_DIR}/cmake/embed_web.cmake
+    DEPENDS ${KICADD_DIR}/web/index.html ${KICADD_DIR}/cmake/embed_web.cmake
+    COMMENT "Embedding KiCadD web view"
+    )
+
 add_executable( kicadd-mcp
+    ${KICADD_WEB_INDEX_CPP}
+    ${KICADD_DIR}/mcp/web.cpp
     ${KICADD_DIR}/mcp/main.cpp
     ${KICADD_DIR}/mcp/ipc_client.cpp
     ${KICADD_DIR}/mcp/mcp_server.cpp

@@ -10,6 +10,7 @@
 
 #include "transports.h"
 #include "mcp_server.h"
+#include "web.h"
 
 #include <atomic>
 #include <cstdio>
@@ -21,6 +22,10 @@
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
+#include <boost/beast/websocket.hpp>
+
+#include <fstream>
+#include <sstream>
 
 using json = nlohmann::json;
 
@@ -66,6 +71,10 @@ int RunStdio( MCP_SERVER& aServer )
 }
 
 
+/// Embedded web/index.html (generated at build time, see cmake/embed_web.cmake).
+extern const char* const KICADD_WEB_INDEX_HTML;
+
+
 namespace
 {
 
@@ -100,6 +109,26 @@ bool isLocalOrigin( const std::string& aOrigin )
 }
 
 
+std::string queryParam( const std::string& aTarget, const std::string& aKey )
+{
+    size_t q = aTarget.find( '?' );
+
+    while( q != std::string::npos )
+    {
+        size_t start = q + 1;
+        size_t end = aTarget.find( '&', start );
+        std::string kv = aTarget.substr( start, end == std::string::npos ? std::string::npos : end - start );
+
+        if( kv.rfind( aKey + "=", 0 ) == 0 )
+            return kv.substr( aKey.size() + 1 );
+
+        q = end;
+    }
+
+    return {};
+}
+
+
 using REQUEST = http::request<http::string_body>;
 using RESPONSE = http::response<http::string_body>;
 
@@ -120,6 +149,65 @@ RESPONSE makeResponse( const REQUEST& aReq, http::status aStatus, std::string aB
 }
 
 
+/// DNS-rebinding protection: browsers send Origin; accept local, same-origin (the page we
+/// served ourselves) or explicitly allowed origins.
+bool originAllowed( const HTTP_OPTIONS& aOpt, const REQUEST& aReq )
+{
+    auto origin = aReq.find( http::field::origin );
+
+    if( origin == aReq.end() )
+        return true;   // not a browser
+
+    std::string o( origin->value() );
+
+    if( isLocalOrigin( o ) )
+        return true;
+
+    if( auto host = aReq.find( http::field::host ); host != aReq.end() )
+    {
+        std::string h( host->value() );
+
+        if( o == "http://" + h || o == "https://" + h )
+            return true;
+    }
+
+    for( const std::string& allowed : aOpt.allowedOrigins )
+    {
+        if( allowed == "*" || allowed == o )
+            return true;
+    }
+
+    return false;
+}
+
+
+bool authorized( const HTTP_OPTIONS& aOpt, const REQUEST& aReq )
+{
+    if( aOpt.token.empty() )
+        return true;
+
+    auto auth = aReq.find( http::field::authorization );
+
+    if( auth != aReq.end() && auth->value() == "Bearer " + aOpt.token )
+        return true;
+
+    // Browsers cannot set headers on a WebSocket: accept ?token= as well.
+    return queryParam( std::string( aReq.target() ), "token" ) == aOpt.token;
+}
+
+
+std::string loadPage( const HTTP_OPTIONS& aOpt )
+{
+    if( aOpt.webRoot.empty() )
+        return KICADD_WEB_INDEX_HTML;
+
+    std::ifstream     in( aOpt.webRoot + "/index.html", std::ios::binary );
+    std::stringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+
+
 RESPONSE handle( MCP_SERVER& aServer, const HTTP_OPTIONS& aOpt, const REQUEST& aReq )
 {
     // Strip the query string for matching.
@@ -128,21 +216,19 @@ RESPONSE handle( MCP_SERVER& aServer, const HTTP_OPTIONS& aOpt, const REQUEST& a
     if( size_t q = target.find( '?' ); q != std::string::npos )
         target.resize( q );
 
+    // The page is static and holds no data; the WebSocket behind it is what's protected.
+    if( aOpt.web && aReq.method() == http::verb::get && ( target == "/" || target == "/index.html" ) )
+    {
+        RESPONSE res = makeResponse( aReq, http::status::ok, loadPage( aOpt ), "text/html; charset=utf-8" );
+        res.set( http::field::cache_control, "no-cache" );
+        return res;
+    }
+
     if( target != aOpt.path )
         return makeResponse( aReq, http::status::not_found, R"({"error":"not found"})" );
 
-    // DNS-rebinding protection: browsers send Origin; only accept local or configured ones.
-    if( auto origin = aReq.find( http::field::origin ); origin != aReq.end() )
-    {
-        std::string o( origin->value() );
-        bool        ok = isLocalOrigin( o );
-
-        for( const std::string& allowed : aOpt.allowedOrigins )
-            ok |= ( allowed == "*" || allowed == o );
-
-        if( !ok )
-            return makeResponse( aReq, http::status::forbidden, R"({"error":"origin not allowed"})" );
-    }
+    if( !originAllowed( aOpt, aReq ) )
+        return makeResponse( aReq, http::status::forbidden, R"({"error":"origin not allowed"})" );
 
     if( !aOpt.token.empty() )
     {
@@ -199,7 +285,7 @@ RESPONSE handle( MCP_SERVER& aServer, const HTTP_OPTIONS& aOpt, const REQUEST& a
 }
 
 
-void serveConnection( tcp::socket aSocket, MCP_SERVER& aServer, const HTTP_OPTIONS& aOpt )
+void serveConnection( tcp::socket aSocket, MCP_SERVER& aServer, const HTTP_OPTIONS& aOpt, WEB_HUB* aHub )
 {
     beast::flat_buffer buffer;
     beast::error_code  ec;
@@ -220,7 +306,36 @@ void serveConnection( tcp::socket aSocket, MCP_SERVER& aServer, const HTTP_OPTIO
             break;
         }
 
-        REQUEST  req = parser.release();
+        REQUEST req = parser.release();
+
+        if( beast::websocket::is_upgrade( req ) )
+        {
+            std::string target( req.target() );
+            target = target.substr( 0, target.find( '?' ) );
+
+            RESPONSE refuse;
+            bool     refused = true;
+
+            if( !aHub || target != "/ws" )
+                refuse = makeResponse( req, http::status::not_found, R"({"error":"not found"})" );
+            else if( !originAllowed( aOpt, req ) )
+                refuse = makeResponse( req, http::status::forbidden, R"({"error":"origin not allowed"})" );
+            else if( !authorized( aOpt, req ) )
+                refuse = makeResponse( req, http::status::unauthorized, R"({"error":"unauthorized"})" );
+            else
+                refused = false;
+
+            if( refused )
+            {
+                refuse.keep_alive( false );
+                http::write( aSocket, refuse, ec );
+                break;
+            }
+
+            aHub->Accept( std::move( aSocket ), std::move( req ) );
+            return;   // the hub owns the socket now
+        }
+
         RESPONSE res = handle( aServer, aOpt, req );
         bool     keepAlive = res.keep_alive();
 
@@ -236,23 +351,26 @@ void serveConnection( tcp::socket aSocket, MCP_SERVER& aServer, const HTTP_OPTIO
 } // namespace
 
 
-int RunHttp( MCP_SERVER& aServer, const HTTP_OPTIONS& aOpt )
+int RunHttp( MCP_SERVER& aServer, const HTTP_OPTIONS& aOpt, WEB_HUB* aHub, asio::io_context& aIoc )
 {
     try
     {
-        asio::io_context ioc{ 1 };
-        tcp::endpoint    endpoint{ asio::ip::make_address( aOpt.host ), aOpt.port };
-        tcp::acceptor    acceptor{ ioc, endpoint };
+        tcp::endpoint endpoint{ asio::ip::make_address( aOpt.host ), aOpt.port };
+        tcp::acceptor acceptor{ aIoc, endpoint };
 
         std::fprintf( stderr, "kicadd-mcp: listening on http://%s:%u%s%s\n", aOpt.host.c_str(),
                       (unsigned) aOpt.port, aOpt.path.c_str(),
                       aOpt.token.empty() ? "" : " (bearer token required)" );
 
+        if( aHub )
+            std::fprintf( stderr, "kicadd-mcp: 2D view at http://%s:%u/%s\n", aOpt.host.c_str(),
+                          (unsigned) aOpt.port, aOpt.token.empty() ? "" : "?token=..." );
+
         for( ;; )
         {
-            tcp::socket socket{ ioc };
+            tcp::socket socket{ aIoc };
             acceptor.accept( socket );
-            std::thread( serveConnection, std::move( socket ), std::ref( aServer ), std::cref( aOpt ) )
+            std::thread( serveConnection, std::move( socket ), std::ref( aServer ), std::cref( aOpt ), aHub )
                     .detach();
         }
     }

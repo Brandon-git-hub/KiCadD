@@ -15,6 +15,9 @@
 #include "mcp_server.h"
 #include "tools.h"
 #include "transports.h"
+#include "web.h"
+
+#include <boost/asio/io_context.hpp>
 
 using namespace kicadd::mcp;
 
@@ -30,7 +33,9 @@ void usage()
                   "  --socket   KiCadD API socket (plain path or ipc:// URL); env KICADD_SOCK\n"
                   "  --stdio    MCP over stdin/stdout (spawned by the client, e.g. via ssh)\n"
                   "  --http     MCP Streamable HTTP; binds 127.0.0.1 unless HOST is given\n"
-                  "  --token    require Authorization: Bearer TOKEN; env KICADD_MCP_TOKEN\n" );
+                  "  --token    require Authorization: Bearer TOKEN; env KICADD_MCP_TOKEN\n"
+                  "  --no-web   don't serve the 2D view (/ and /ws) in --http mode\n"
+                  "  --web-root DIR  serve DIR/index.html instead of the embedded page\n" );
 }
 
 } // namespace
@@ -83,6 +88,10 @@ int main( int argc, char** argv )
             http.token = next();
         else if( a == "--allow-origin" )
             http.allowedOrigins.push_back( next() );
+        else if( a == "--no-web" )
+            http.web = false;
+        else if( a == "--web-root" )
+            http.webRoot = next();
         else if( a == "--timeout-ms" )
             timeoutMs = std::stoi( next() );
         else if( a == "-h" || a == "--help" )
@@ -124,7 +133,33 @@ int main( int argc, char** argv )
         return 1;
     }
 
-    MCP_SERVER server( MakeTools( ipc ) );
+    std::vector<TOOL> tools = MakeTools( ipc );
 
-    return stdio ? RunStdio( server ) : RunHttp( server, http );
+    if( stdio )
+    {
+        MCP_SERVER server( std::move( tools ) );
+        return RunStdio( server );
+    }
+
+    boost::asio::io_context  ioc;
+    std::unique_ptr<WEB_HUB> hub;
+
+    if( http.web )
+    {
+        hub = std::make_unique<WEB_HUB>( ipc, ioc );
+
+        // Push an agent's edits to the browsers right away instead of at the next poll.
+        for( TOOL& t : tools )
+        {
+            t.run = [run = std::move( t.run ), h = hub.get()]( const nlohmann::json& aArgs )
+            {
+                TOOL_RESULT r = run( aArgs );
+                h->Kick();
+                return r;
+            };
+        }
+    }
+
+    MCP_SERVER server( std::move( tools ) );
+    return RunHttp( server, http, hub.get(), ioc );
 }

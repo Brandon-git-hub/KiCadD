@@ -51,6 +51,9 @@ bool IPC_CLIENT::Connect( std::string& aError )
     nng_socket_set_ms( m_socket, NNG_OPT_RECVTIMEO, m_timeoutMs );
     nng_socket_set_ms( m_socket, NNG_OPT_SENDTIMEO, m_timeoutMs );
 
+    // Render snapshots of large boards are several MB; NNG's default cap is 1 MB.
+    nng_socket_set_size( m_socket, NNG_OPT_RECVMAXSZ, 0 );
+
     // Non-blocking dial: the daemon may start after us; NNG keeps retrying in the background.
     if( int rv = nng_dial( m_socket, m_url.c_str(), nullptr, NNG_FLAG_NONBLOCK ); rv != 0 )
     {

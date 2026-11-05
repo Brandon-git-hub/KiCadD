@@ -6,6 +6,8 @@
 
 #include "kicadd_handler_pcb.h"
 #include "kicadd_local_drc.h"
+#include "kicadd_render.h"
+#include "kicadd_render.h"
 
 #include <algorithm>
 #include <chrono>
@@ -194,7 +196,16 @@ KICADD_HANDLER_PCB::KICADD_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext ) 
     registerHandler<FlushRatsnest, FlushRatsnestResponse>( &KICADD_HANDLER_PCB::handleFlushRatsnest );
     registerHandler<VerifyConnectivity, VerifyConnectivityResponse>(
             &KICADD_HANDLER_PCB::handleVerifyConnectivity );
+    registerHandler<kicadd::render::GetRenderSnapshot, kicadd::render::RenderSnapshot>(
+            &KICADD_HANDLER_PCB::handleGetRenderSnapshot );
+    registerHandler<kicadd::render::GetChanges, kicadd::render::RenderChanges>(
+            &KICADD_HANDLER_PCB::handleGetChanges );
+
+    m_feed = std::make_unique<kicadd::RENDER_FEED>( board() );
 }
+
+
+KICADD_HANDLER_PCB::~KICADD_HANDLER_PCB() = default;
 
 
 BOARD* KICADD_HANDLER_PCB::board() const
@@ -795,5 +806,29 @@ KICADD_HANDLER_PCB::handleFlushRatsnest( const HANDLER_CONTEXT<FlushRatsnest>& a
     out.set_unconnected( static_cast<int>( conn->GetUnconnectedCount( false ) ) );
     out.set_elapsed_us( std::chrono::duration_cast<std::chrono::microseconds>(
                                 std::chrono::steady_clock::now() - t0 ).count() );
+    return out;
+}
+
+
+HANDLER_RESULT<kicadd::render::RenderSnapshot>
+KICADD_HANDLER_PCB::handleGetRenderSnapshot( const HANDLER_CONTEXT<kicadd::render::GetRenderSnapshot>& aCtx )
+{
+    if( !board() || !m_feed )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
+
+    kicadd::render::RenderSnapshot out;
+    m_feed->Snapshot( out );
+    return out;
+}
+
+
+HANDLER_RESULT<kicadd::render::RenderChanges>
+KICADD_HANDLER_PCB::handleGetChanges( const HANDLER_CONTEXT<kicadd::render::GetChanges>& aCtx )
+{
+    if( !board() || !m_feed )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
+
+    kicadd::render::RenderChanges out;
+    m_feed->Changes( aCtx.Request.since(), out );
     return out;
 }

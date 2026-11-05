@@ -18,7 +18,9 @@ Built as a thin extension of upstream `kicad-cli api-server`, not a fork of the 
 | `cmake/kicadd.cmake` | Generates C++/Python protobuf, defines `kicadd_proto`, `KICADD_PCB_SRCS` |
 | `patches/0001-*.patch` | Upstream hooks (all guarded by `KICADD_DIR` / `#ifdef KICADD`) + api-server wake-up fix |
 | `src/pcb/kicadd_local_drc.*` | Local (incremental) DRC |
-| `mcp/` | `kicadd-mcp`: MCP server (C++; stdio + Streamable HTTP via Boost.Beast) |
+| `mcp/` | `kicadd-mcp`: MCP server (C++; stdio + Streamable HTTP via Boost.Beast) + web view hub |
+| `src/pcb/kicadd_render.*` | Change journal (`BOARD_LISTENER`) + render snapshot for remote views |
+| `web/index.html` | 2D view (vanilla JS + Canvas 2D), embedded into `kicadd-mcp` at build time |
 | `client/` | Python IPC client, benchmark, verification + A/B scripts, `run_server.sh` |
 
 ### Upstream patch (~320 lines, 13 files)
@@ -234,6 +236,68 @@ token, malformed JSON → -32700, refusing a non-loopback bind without a token).
   for the web view).
 - `query_area` ranks by distance, then by size. Large modules whose body contains the centre
   still have distance 0 and come early; filter with `kinds` if needed.
+
+## Phase 3: remote 2D view (2026-11-05)
+
+`kicadd-mcp --http` also serves a browser view on the same port: `GET /` is the page, and
+`/ws` is a WebSocket. One SSH tunnel carries MCP, the view and edits.
+
+```
+browser ──ws──┐                                      ┌─ GetRenderSnapshot (new view)
+browser ──ws──┤  kicadd-mcp: io thread (Beast async) │
+agent ──/mcp──┤              worker thread ──IPC─────┼─ GetChanges(since) every 50 ms
+              │                                      └─ MoveDelta (browser edits)
+              └──────────────────────── kicad-cli api-server: RENDER_FEED (BOARD_LISTENER)
+```
+
+- **Daemon** (`src/pcb/kicadd_render.*`, no upstream changes): a `BOARD_LISTENER` journals
+  every changed or removed top-level item (pad → footprint) under a revision counter.
+  `GetChanges(since)` returns the current state of changed items plus removed ids, or `resync`
+  when the journal no longer covers `since` (or after `open_board` restarts revisions).
+- **Hub** (`mcp/web.*`): a single worker thread does all IPC (snapshots, browser moves,
+  polling), and it polls immediately after any browser or MCP edit. Deltas fan out to every
+  browser. Clients apply a delta when `since <= rev < delta.rev` and ask for `resync` on a gap.
+- **View** (`web/index.html`, ~28 KB, no dependencies): F.Cu/B.Cu/inner tracks and arcs,
+  pads (circle/rect/oval/roundrect/polygon), vias, courtyards, zone outlines, references,
+  layer toggles. Drag a footprint (0.05 mm snap, Alt = free), `R`/`Shift+R` rotate, arrow keys
+  nudge. The local DRC result is listed and marked on the board. Edits by others (the agent)
+  flash and are logged as remote. Optimistic local move; the server's delta is authoritative.
+- Security: the page is static; `/ws` checks Origin (localhost, same-origin, or
+  `--allow-origin`) and the token (`?token=` since browsers can't set WebSocket headers).
+  `--no-web` disables both routes.
+
+### Numbers (Jetson board, headless Chromium)
+
+| | |
+|---|---|
+| snapshot | 2.9 MB JSON, ~110–150 ms server side, page live in ~220–300 ms |
+| delta for one moved footprint | ~2 KB |
+| browser A drags → browser B sees it | **15 ms** |
+| agent `move_footprints` via MCP → browsers see it | **14–30 ms** |
+| UI round trip of a drop (incl. local DRC) | 37 ms |
+| render cache: cold build + draw / after one footprint changes | 27 ms / **2.4 ms** |
+
+The render cache keeps one `Path2D` per footprint and merges them with `addPath`. Building a
+single `Path2D` of all 4.8k pads took ~217 ms (superlinear) and stalled the UI on every edit.
+
+### Verification
+
+- `client/web_e2e.py`: two WebSocket clients plus an MCP agent covering snapshot, move → ack +
+  DRC, fan-out to the other browser, agent edit pushed to both, rotation propagation,
+  unknown ref, malformed frame, resync, 403 for a foreign Origin, 404 on other paths. All pass.
+- `client/browser_check.py` (Playwright + headless Chromium in the venv): real mouse drag with
+  grid snap, DRC panel, agent edit flashing in the view, keyboard rotate, no console errors,
+  plus screenshots. All pass.
+
+### Known limits / next
+
+- No ratsnest lines in the view yet. Routing ("拉線") and track editing are not implemented;
+  only footprint move/rotate.
+- Zones are drawn as outlines, not fills (fills can be MBs and go stale until refill).
+- Polling at 50 ms (≤ 50 ms extra latency for external IPC clients; in-process MCP and
+  browser edits trigger an immediate poll). An NNG pub socket would make it push-based.
+- Concurrent edits are last-writer-wins per move. The daemon serialises them; there is no
+  locking or "someone else is dragging this" indicator yet.
 
 ## License
 

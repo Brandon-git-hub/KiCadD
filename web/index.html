@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KiCadD</title>
+<style>
+  :root {
+    --bg: #101317; --panel: #171b21; --line: #2a3039; --text: #d6dbe2; --dim: #8a93a0;
+    --accent: #5aa0ff; --bad: #ff5d5d; --warn: #ffb547; --ok: #4fd18b;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+               font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  #app { display: grid; grid-template-columns: 1fr 300px; grid-template-rows: 40px 1fr 26px; height: 100%; }
+  header { grid-column: 1 / 3; display: flex; align-items: center; gap: 14px; padding: 0 12px;
+           border-bottom: 1px solid var(--line); background: var(--panel); }
+  header .brand { font-weight: 600; letter-spacing: .02em; }
+  header .file { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  header .spacer { flex: 1; }
+  .pill { padding: 2px 8px; border-radius: 10px; font-size: 12px; border: 1px solid var(--line); }
+  .pill.ok { color: var(--ok); border-color: #2c6d4c; } .pill.bad { color: var(--bad); border-color: #7a3434; }
+  .pill.warn { color: var(--warn); border-color: #7a5a24; }
+  button { background: #222831; color: var(--text); border: 1px solid var(--line); border-radius: 5px;
+           padding: 4px 10px; cursor: pointer; font: inherit; }
+  button:hover { border-color: var(--accent); }
+  #stage { position: relative; overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
+  canvas.grab { cursor: grabbing; }
+  #tip { position: absolute; pointer-events: none; background: rgba(16,19,23,.92); border: 1px solid var(--line);
+         padding: 3px 7px; border-radius: 4px; font-size: 12px; white-space: nowrap; display: none; }
+  aside { border-left: 1px solid var(--line); background: var(--panel); overflow-y: auto; }
+  section { padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  h3 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); font-weight: 600; }
+  .layers label { display: flex; align-items: center; gap: 8px; padding: 2px 0; cursor: pointer; }
+  .sw { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+  .kv { display: grid; grid-template-columns: 70px 1fr; gap: 2px 8px; }
+  .kv span:nth-child(odd) { color: var(--dim); }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  .drc div, .log div { padding: 3px 0; border-bottom: 1px dashed #232830; cursor: pointer; }
+  .drc .t { color: var(--bad); font-weight: 600; margin-right: 6px; }
+  .log div { cursor: default; color: var(--dim); } .log b { color: var(--text); font-weight: 500; }
+  .empty { color: var(--dim); font-style: italic; }
+  footer { grid-column: 1 / 3; display: flex; gap: 18px; align-items: center; padding: 0 12px;
+           border-top: 1px solid var(--line); background: var(--panel); color: var(--dim); font-size: 12px; }
+  .help { color: var(--dim); font-size: 12px; }
+  .help kbd { background: #222831; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 3px;
+              padding: 0 4px; font-size: 11px; color: var(--text); }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <span class="brand">KiCadD</span>
+    <span class="file" id="file">connecting…</span>
+    <span class="spacer"></span>
+    <span class="pill" id="conn">offline</span>
+    <button id="fit" title="Fit board (F)">Fit</button>
+  </header>
+  <div id="stage"><canvas id="cv"></canvas><div id="tip"></div></div>
+  <aside>
+    <section>
+      <h3>Layers</h3>
+      <div class="layers" id="layers"></div>
+    </section>
+    <section>
+      <h3>Selection</h3>
+      <div id="sel" class="empty">Click a footprint</div>
+    </section>
+    <section>
+      <h3>Local DRC <span id="drcCount"></span></h3>
+      <div id="drc" class="drc empty">Move a footprint to check it</div>
+    </section>
+    <section>
+      <h3>Activity</h3>
+      <div id="log" class="log"></div>
+    </section>
+    <section class="help">
+      <kbd>drag</kbd> move footprint · <kbd>R</kbd>/<kbd>⇧R</kbd> rotate ·
+      <kbd>←↑→↓</kbd> nudge 0.1 mm (<kbd>⇧</kbd> 1 mm) · <kbd>wheel</kbd> zoom ·
+      <kbd>right-drag</kbd> pan · <kbd>F</kbd> fit · <kbd>Alt</kbd> no grid snap
+    </section>
+  </aside>
+  <footer>
+    <span id="stats">–</span><span id="cursor">–</span><span id="lat"></span><span id="revl"></span>
+  </footer>
+</div>
+<script>
+"use strict";
+// ---------------------------------------------------------------------------------------------
+// State. World units are µm (as sent by the server); Y grows downwards like KiCad.
+
+const board = { copper: [], outline: [], fp: new Map(), trk: new Map(), via: new Map(), zone: new Map() };
+let rev = 0;
+const view = { s: 0.01, ox: 0, oy: 0 };          // screen = world * s + o
+const vis = { zones: true, courtyard: true, refs: true, vias: true, layers: {} };
+let selected = null;                                // footprint id
+let drag = null;                                    // {id, sx, sy, dx, dy, moved}
+let pan = null;
+let drcMarks = [];
+const flashes = new Map();                          // id -> expiry ms
+const pendingOwn = new Set();                       // ids we just moved (don't flash as remote)
+let dirty = true;
+// Render caches: tracks/vias/zones/outline rebuild together (cheap, ~5 ms on 22k tracks);
+// footprints keep per-footprint Path2Ds that are merged with addPath. One giant Path2D of all
+// pads costs ~200 ms; per-footprint paths + merge cost ~15 ms once, ~1 ms per edit after.
+let trkDirty = true, fpDirty = true;
+const fpCache = new Map();                          // id -> {pads:[P,P,P], holes:P, cy:P, back}
+const GRID = 50;                                    // µm snap
+
+const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
+const $ = (id) => document.getElementById(id);
+
+// ---------------------------------------------------------------------------------------------
+// Colours
+
+const LAYER_COLORS = { "F.Cu": "#d0463c", "B.Cu": "#3f7fd0" };
+const INNER = ["#c9b03a", "#b04fc0", "#3fb8b0", "#c97b3a", "#7fbf4f", "#bf4f7f", "#4f7fbf", "#9f9f3f"];
+function layerColor(name) {
+  if (LAYER_COLORS[name]) return LAYER_COLORS[name];
+  const i = board.copper.indexOf(name);
+  return INNER[Math.max(0, i - 1) % INNER.length];
+}
+const PAD_COLOR = ["#e0a33c", "#6aa8e8", "#c9b95a"];  // front, back, through
+
+// ---------------------------------------------------------------------------------------------
+// Ingest
+
+function ingest(msg) {
+  const nets = msg.nets || [], lys = msg.lys || [];
+  for (const f of msg.fp || []) {
+    f.pads = f.pads.map(p => ({ num: p[0], net: nets[p[1]] || "", shape: p[2], side: p[3], x: p[4], y: p[5],
+                                w: p[6], h: p[7], rot: p[8], rr: p[9], drill: p[10], poly: p[11] || null }));
+    board.fp.set(f.id, f);
+    fpCache.delete(f.id);
+    fpDirty = true;
+  }
+  if ((msg.trk || []).length || (msg.via || []).length || (msg.zone || []).length) trkDirty = true;
+  for (const t of msg.trk || []) {
+    board.trk.set(t[0], { id: t[0], layer: lys[t[1]], net: nets[t[2]] || "", ax: t[3], ay: t[4], bx: t[5], by: t[6],
+                          w: t[7], arc: t.length >= 10 ? { mx: t[8], my: t[9] } : null });
+  }
+  for (const v of msg.via || []) {
+    board.via.set(v[0], { id: v[0], net: nets[v[1]] || "", x: v[2], y: v[3], d: v[4], drill: v[5] });
+  }
+  for (const z of msg.zone || []) {
+    board.zone.set(z.id, { id: z.id, net: nets[z.net] || "", layers: z.ly.map(i => lys[i]), ko: z.ko, ol: z.ol });
+  }
+}
+
+function applySnapshot(msg) {
+  for (const k of ["fp", "trk", "via", "zone"]) board[k].clear();
+  fpCache.clear();
+  board.copper = msg.copper;
+  board.outline = msg.outline;
+  ingest(msg);
+  rev = msg.rev;
+  $("file").textContent = msg.file.split("/").pop();
+  buildLayerPanel();
+  if (!applySnapshot.fitted) { fit(); applySnapshot.fitted = true; }
+  trkDirty = fpDirty = dirty = true;
+  updateStats();
+  log(`snapshot <b>rev ${rev}</b>: ${board.fp.size} footprints, ${board.trk.size} tracks`);
+}
+
+function applyDelta(msg) {
+  if (msg.rev <= rev) return;                       // already have it (e.g. via snapshot)
+  if (msg.since > rev) { send({ t: "resync" }); return; }   // gap
+  for (const id of msg.rm || []) {
+    if (board.fp.delete(id)) { fpCache.delete(id); fpDirty = true; }
+    for (const k of ["trk", "via", "zone"]) if (board[k].delete(id)) trkDirty = true;
+  }
+  ingest(msg);
+  const now = performance.now();
+  const remote = [];
+  for (const f of msg.fp || []) {
+    if (pendingOwn.has(f.id)) { pendingOwn.delete(f.id); continue; }
+    flashes.set(f.id, now + 1500);
+    remote.push(f.ref);
+  }
+  if (remote.length) log(`remote edit: <b>${remote.slice(0, 6).join(", ")}</b>${remote.length > 6 ? " …" : ""}`);
+  if ((msg.rm || []).length) log(`removed ${msg.rm.length} item(s)`);
+  rev = msg.rev;
+  dirty = true;
+  if (selected) showSelection();
+  updateStats();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Geometry → Path2D caches (world coordinates)
+
+function rot(x, y, deg) {               // KiCad rotation: + is CCW on a Y-down screen
+  const a = deg * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
+  return [x * c + y * s, -x * s + y * c];
+}
+
+function padOutline(p) {
+  const hw = p.w / 2, hh = p.h / 2;
+  let pts = [];
+  if (p.shape === 3) {                  // roundrect
+    const r = Math.min(p.rr * Math.min(p.w, p.h), hw, hh), n = 4;
+    const corners = [[hw - r, hh - r, 0], [-hw + r, hh - r, 90], [-hw + r, -hh + r, 180], [hw - r, -hh + r, 270]];
+    for (const [cx, cy, a0] of corners)
+      for (let i = 0; i <= n; i++) {
+        const a = (a0 + 90 * i / n) * Math.PI / 180;
+        pts.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]);
+      }
+  } else if (p.shape === 2) {           // oval
+    const r = Math.min(hw, hh), n = 8, horiz = hw >= hh;
+    const c1 = horiz ? [hw - r, 0] : [0, hh - r], c2 = horiz ? [-hw + r, 0] : [0, -hh + r];
+    const a1 = horiz ? -90 : 0, a2 = horiz ? 90 : 180;
+    for (let i = 0; i <= n; i++) { const a = (a1 + 180 * i / n) * Math.PI / 180; pts.push([c1[0] + r * Math.cos(a), c1[1] + r * Math.sin(a)]); }
+    for (let i = 0; i <= n; i++) { const a = (a2 + 180 * i / n) * Math.PI / 180; pts.push([c2[0] + r * Math.cos(a), c2[1] + r * Math.sin(a)]); }
+  } else {                              // rect (and fallback)
+    pts = [[hw, hh], [-hw, hh], [-hw, -hh], [hw, -hh]];
+  }
+  return pts.map(([x, y]) => { const [rx, ry] = rot(x, y, p.rot); return [p.x + rx, p.y + ry]; });
+}
+
+function addPad(path, p, dx = 0, dy = 0) {
+  if (p.shape === 0) {
+    path.moveTo(p.x + dx + p.w / 2, p.y + dy);
+    path.arc(p.x + dx, p.y + dy, p.w / 2, 0, Math.PI * 2);
+  } else if (p.shape === 4 && p.poly && p.poly.length >= 6) {
+    path.moveTo(p.poly[0] + dx, p.poly[1] + dy);
+    for (let i = 2; i < p.poly.length; i += 2) path.lineTo(p.poly[i] + dx, p.poly[i + 1] + dy);
+    path.closePath();
+  } else {
+    const pts = padOutline(p);
+    path.moveTo(pts[0][0] + dx, pts[0][1] + dy);
+    for (let i = 1; i < pts.length; i++) path.lineTo(pts[i][0] + dx, pts[i][1] + dy);
+    path.closePath();
+  }
+}
+
+function addPoly(path, xy, dx = 0, dy = 0) {
+  if (!xy || xy.length < 4) return;
+  path.moveTo(xy[0] + dx, xy[1] + dy);
+  for (let i = 2; i < xy.length; i += 2) path.lineTo(xy[i] + dx, xy[i + 1] + dy);
+  path.closePath();
+}
+
+function arcThrough(path, t) {          // circle through start, mid, end
+  const { ax, ay, bx, by } = t, { mx, my } = t.arc;
+  const d = 2 * (ax * (my - by) + mx * (by - ay) + bx * (ay - my));
+  if (Math.abs(d) < 1e-6) { path.moveTo(ax, ay); path.lineTo(bx, by); return; }
+  const ux = ((ax * ax + ay * ay) * (my - by) + (mx * mx + my * my) * (by - ay) + (bx * bx + by * by) * (ay - my)) / d;
+  const uy = ((ax * ax + ay * ay) * (bx - mx) + (mx * mx + my * my) * (ax - bx) + (bx * bx + by * by) * (mx - ax)) / d;
+  const r = Math.hypot(ax - ux, ay - uy);
+  const a0 = Math.atan2(ay - uy, ax - ux), a1 = Math.atan2(by - uy, bx - ux), am = Math.atan2(my - uy, mx - ux);
+  const norm = (a) => (a % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI);
+  const ccw = !(norm(am - a0) < norm(a1 - a0));   // canvas arc: anticlockwise flag
+  path.moveTo(ax, ay);
+  path.arc(ux, uy, r, a0, a1, ccw);
+}
+
+let cache = { tracks: new Map(), pads: [new Path2D(), new Path2D(), new Path2D()], holes: new Path2D(),
+              vias: new Path2D(), viaHoles: new Path2D(), cyF: new Path2D(), cyB: new Path2D(),
+              zones: new Map(), outline: new Path2D() };
+
+function footprintPaths(f) {
+  let e = fpCache.get(f.id);
+  if (e) return e;
+  e = { pads: [new Path2D(), new Path2D(), new Path2D()], holes: new Path2D(), cy: new Path2D(), back: f.back };
+  for (const p of f.pads) {
+    addPad(e.pads[p.side], p);
+    if (p.drill > 0) { e.holes.moveTo(p.x + p.drill / 2, p.y); e.holes.arc(p.x, p.y, p.drill / 2, 0, Math.PI * 2); }
+  }
+  addPoly(e.cy, f.cy);
+  fpCache.set(f.id, e);
+  return e;
+}
+
+function buildCache() {
+  if (trkDirty) {
+    cache.tracks = new Map(); cache.vias = new Path2D(); cache.viaHoles = new Path2D();
+    cache.zones = new Map(); cache.outline = new Path2D();
+    for (const t of board.trk.values()) {
+      const key = t.layer + "|" + t.w;
+      let e = cache.tracks.get(key);
+      if (!e) cache.tracks.set(key, e = { layer: t.layer, w: t.w, path: new Path2D() });
+      if (t.arc) arcThrough(e.path, t); else { e.path.moveTo(t.ax, t.ay); e.path.lineTo(t.bx, t.by); }
+    }
+    for (const v of board.via.values()) {
+      cache.vias.moveTo(v.x + v.d / 2, v.y); cache.vias.arc(v.x, v.y, v.d / 2, 0, Math.PI * 2);
+      cache.viaHoles.moveTo(v.x + v.drill / 2, v.y); cache.viaHoles.arc(v.x, v.y, v.drill / 2, 0, Math.PI * 2);
+    }
+    for (const z of board.zone.values()) {
+      for (const l of z.layers) {
+        let p = cache.zones.get(l);
+        if (!p) cache.zones.set(l, p = new Path2D());
+        for (const ol of z.ol) addPoly(p, ol);
+      }
+    }
+    for (const o of board.outline) addPoly(cache.outline, o);
+    trkDirty = false;
+  }
+  if (fpDirty) {
+    const lifted = drag && drag.moved ? drag.id : null;
+    cache.pads = [new Path2D(), new Path2D(), new Path2D()];
+    cache.holes = new Path2D(); cache.cyF = new Path2D(); cache.cyB = new Path2D();
+    for (const f of board.fp.values()) {
+      if (f.id === lifted) continue;
+      const e = footprintPaths(f);
+      for (let i = 0; i < 3; i++) cache.pads[i].addPath(e.pads[i]);
+      cache.holes.addPath(e.holes);
+      (f.back ? cache.cyB : cache.cyF).addPath(e.cy);
+    }
+    fpDirty = false;
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Drawing
+
+function layerOrder() {                 // back first, front last
+  return [...board.copper].reverse();
+}
+
+function draw() {
+  if (trkDirty || fpDirty) buildCache();
+  const W = cv.width, H = cv.height, dpr = window.devicePixelRatio || 1;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = "#0b0e11"; ctx.fillRect(0, 0, W, H);
+  const s = view.s * dpr;
+  ctx.setTransform(s, 0, 0, s, view.ox * dpr, view.oy * dpr);
+  const px = 1 / s;                     // one device pixel in world units
+
+  ctx.fillStyle = "#13261b"; ctx.fill(cache.outline, "evenodd");
+  ctx.strokeStyle = "#c8c86a"; ctx.lineWidth = 1.5 * px; ctx.stroke(cache.outline);
+
+  ctx.lineCap = "round"; ctx.lineJoin = "round";
+  for (const l of layerOrder()) {
+    if (!vis.layers[l]) continue;
+    const col = layerColor(l), front = l === "F.Cu";
+    if (vis.zones && cache.zones.has(l)) {
+      ctx.globalAlpha = 0.55; ctx.strokeStyle = col; ctx.lineWidth = 1 * px;
+      ctx.setLineDash([6 * px, 4 * px]); ctx.stroke(cache.zones.get(l)); ctx.setLineDash([]);
+    }
+    ctx.globalAlpha = front ? 0.95 : (l === "B.Cu" ? 0.8 : 0.6);
+    ctx.strokeStyle = col;
+    for (const e of cache.tracks.values()) {
+      if (e.layer !== l) continue;
+      ctx.lineWidth = Math.max(e.w, px); ctx.stroke(e.path);
+    }
+  }
+  ctx.globalAlpha = 1;
+  const showF = vis.layers["F.Cu"], showB = vis.layers["B.Cu"];
+  if (showB) { ctx.fillStyle = PAD_COLOR[1]; ctx.globalAlpha = 0.85; ctx.fill(cache.pads[1]); }
+  ctx.globalAlpha = 1;
+  if (showF || showB) { ctx.fillStyle = PAD_COLOR[2]; ctx.fill(cache.pads[2]); }
+  if (showF) { ctx.fillStyle = PAD_COLOR[0]; ctx.fill(cache.pads[0]); }
+  if (vis.vias) { ctx.fillStyle = "#a9adb3"; ctx.fill(cache.vias); }
+  ctx.fillStyle = "#0b0e11"; ctx.fill(cache.holes); if (vis.vias) ctx.fill(cache.viaHoles);
+
+  if (vis.courtyard) {
+    ctx.lineWidth = 1 * px;
+    if (showB) { ctx.strokeStyle = "#3fb0c0"; ctx.globalAlpha = 0.6; ctx.stroke(cache.cyB); }
+    if (showF) { ctx.strokeStyle = "#d060d0"; ctx.globalAlpha = 0.75; ctx.stroke(cache.cyF); }
+    ctx.globalAlpha = 1;
+  }
+
+  // Lifted footprint (being dragged) on top.
+  if (drag && drag.moved) {
+    const f = board.fp.get(drag.id);
+    if (f) {
+      const p = new Path2D(), cy = new Path2D();
+      for (const pad of f.pads) addPad(p, pad, drag.dx, drag.dy);
+      addPoly(cy, f.cy, drag.dx, drag.dy);
+      ctx.fillStyle = "#ffd36a"; ctx.globalAlpha = 0.9; ctx.fill(p); ctx.globalAlpha = 1;
+      ctx.strokeStyle = "#ffd36a"; ctx.lineWidth = 1.5 * px; ctx.stroke(cy);
+    }
+  }
+
+  // Selection, flashes
+  const now = performance.now();
+  const boxes = [];
+  if (selected && board.fp.has(selected) && !(drag && drag.moved)) boxes.push([board.fp.get(selected), "#5aa0ff", 2]);
+  for (const [id, until] of flashes) {
+    if (until < now) { flashes.delete(id); continue; }
+    if (board.fp.has(id)) boxes.push([board.fp.get(id), `rgba(255,214,90,${(until - now) / 1500})`, 3]);
+  }
+  for (const [f, col, w] of boxes) {
+    const [x0, y0, x1, y1] = f.bb, m = 4 * px;
+    ctx.strokeStyle = col; ctx.lineWidth = w * px;
+    ctx.strokeRect(x0 - m, y0 - m, x1 - x0 + 2 * m, y1 - y0 + 2 * m);
+  }
+
+  // Reference designators when large enough on screen
+  if (vis.refs) {
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    for (const f of board.fp.values()) {
+      const w = f.bb[2] - f.bb[0], h = f.bb[3] - f.bb[1];
+      if (Math.min(w, h) * s < 22 || w * s > W * 0.7) continue;
+      if (f.back ? !showB : !showF) continue;
+      const lifted = drag && drag.moved && drag.id === f.id;
+      const size = Math.min(Math.min(w, h) * 0.35, 16 * px * 3);
+      ctx.font = `600 ${size}px system-ui, sans-serif`;
+      ctx.fillStyle = f.back ? "rgba(140,200,255,.85)" : "rgba(255,255,255,.88)";
+      ctx.fillText(f.ref, (f.bb[0] + f.bb[2]) / 2 + (lifted ? drag.dx : 0), (f.bb[1] + f.bb[3]) / 2 + (lifted ? drag.dy : 0));
+    }
+  }
+
+  // DRC markers
+  for (const d of drcMarks) {
+    const r = 10 * px;
+    ctx.strokeStyle = "#ff5d5d"; ctx.lineWidth = 2 * px;
+    ctx.beginPath(); ctx.arc(d.x, d.y, r, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(d.x - r * .6, d.y - r * .6); ctx.lineTo(d.x + r * .6, d.y + r * .6);
+    ctx.moveTo(d.x + r * .6, d.y - r * .6); ctx.lineTo(d.x - r * .6, d.y + r * .6); ctx.stroke();
+  }
+  if (flashes.size) dirty = true;      // keep animating fades
+}
+
+function frame() {
+  if (dirty) { dirty = false; draw(); }
+  requestAnimationFrame(frame);
+}
+
+// ---------------------------------------------------------------------------------------------
+// View
+
+function resize() {
+  const dpr = window.devicePixelRatio || 1, r = cv.getBoundingClientRect();
+  cv.width = Math.max(1, Math.round(r.width * dpr)); cv.height = Math.max(1, Math.round(r.height * dpr));
+  dirty = true;
+}
+
+function boardBounds() {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  const add = (x, y) => { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); };
+  for (const o of board.outline) for (let i = 0; i < o.length; i += 2) add(o[i], o[i + 1]);
+  if (!isFinite(x0)) for (const f of board.fp.values()) { add(f.bb[0], f.bb[1]); add(f.bb[2], f.bb[3]); }
+  return isFinite(x0) ? [x0, y0, x1, y1] : [0, 0, 100000, 100000];
+}
+
+function fit(bounds) {
+  const [x0, y0, x1, y1] = bounds || boardBounds();
+  const r = cv.getBoundingClientRect(), pad = 30;
+  view.s = Math.min((r.width - 2 * pad) / (x1 - x0 || 1), (r.height - 2 * pad) / (y1 - y0 || 1));
+  view.ox = (r.width - (x1 - x0) * view.s) / 2 - x0 * view.s;
+  view.oy = (r.height - (y1 - y0) * view.s) / 2 - y0 * view.s;
+  dirty = true;
+}
+
+function toWorld(ev) {
+  const r = cv.getBoundingClientRect();
+  return [(ev.clientX - r.left - view.ox) / view.s, (ev.clientY - r.top - view.oy) / view.s];
+}
+
+const mm = (um) => (um / 1000).toFixed(3).replace(/\.?0+$/, "");
+
+// ---------------------------------------------------------------------------------------------
+// Hit testing
+
+function footprintAt(x, y) {
+  let best = null, bestArea = Infinity;
+  for (const f of board.fp.values()) {
+    const [x0, y0, x1, y1] = f.bb;
+    if (x < x0 || x > x1 || y < y0 || y > y1) continue;
+    if (f.back ? !vis.layers["B.Cu"] : !vis.layers["F.Cu"]) continue;
+    const area = (x1 - x0) * (y1 - y0) * (f.back ? 1.5 : 1);    // prefer the front side
+    if (area < bestArea) { best = f; bestArea = area; }
+  }
+  return best;
+}
+
+function padAt(f, x, y) {
+  if (!f) return null;
+  for (const p of f.pads) {
+    const r = Math.max(p.w, p.h) / 2;
+    if (Math.abs(x - p.x) <= r && Math.abs(y - p.y) <= r) return p;
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Edits
+
+function requestMove(f, dx, dy, rotDeg) {
+  if (!f) return;
+  if (f.lk) { log(`<b>${f.ref}</b> is locked`); return; }
+  // Optimistic: show the translation now; the server's delta replaces it with the truth.
+  if (dx || dy) {
+    for (const p of f.pads) { p.x += dx; p.y += dy; if (p.poly) for (let i = 0; i < p.poly.length; i++) p.poly[i] += i % 2 ? dy : dx; }
+    if (f.cy) for (let i = 0; i < f.cy.length; i++) f.cy[i] += i % 2 ? dy : dx;
+    f.bb = [f.bb[0] + dx, f.bb[1] + dy, f.bb[2] + dx, f.bb[3] + dy];
+    f.x += dx; f.y += dy;
+    fpCache.delete(f.id);
+    fpDirty = dirty = true;
+  }
+  pendingOwn.add(f.id);
+  moveSentAt = performance.now();
+  send({ t: "move", refs: [f.ref], dx: dx / 1000, dy: dy / 1000, rot: rotDeg || 0 });
+}
+let moveSentAt = 0;
+
+function onMoved(msg) {
+  const rtt = performance.now() - moveSentAt;
+  $("lat").textContent = msg.ok ? `move: ${rtt.toFixed(0)} ms round trip (server ${msg.ms} ms)` : "";
+  if (!msg.ok) { log(`<span style="color:var(--bad)">move failed: ${msg.error || msg.missing}</span>`); send({ t: "resync" }); return; }
+  drcMarks = msg.drc;
+  const list = $("drc");
+  $("drcCount").textContent = msg.drc.length ? `(${msg.drc.length})` : "";
+  if (!msg.drc.length) { list.className = "drc"; list.innerHTML = `<span style="color:var(--ok)">clean</span>`; }
+  else {
+    list.className = "drc";
+    list.innerHTML = "";
+    for (const d of msg.drc) {
+      const div = document.createElement("div");
+      div.className = "mono";
+      div.innerHTML = `<span class="t">${d.type}</span>${d.a} × ${d.b}` +
+        `<br><span style="color:var(--dim)">${d.ly}${d.type !== "courtyard" ? ` · need ${mm(d.need)} have ${mm(d.have)} mm` : ""}</span>`;
+      div.onclick = () => { const r = 1500; fit([d.x - r, d.y - r, d.x + r, d.y + r]); };
+      list.appendChild(div);
+    }
+  }
+  const pend = msg.pending.length ? ` (excl. ${msg.pending.join(", ")})` : "";
+  $("stats").dataset.unc = `unconnected ${msg.unconnected}${pend}`;
+  updateStats();
+  dirty = true;
+}
+
+// ---------------------------------------------------------------------------------------------
+// UI panels
+
+function buildLayerPanel() {
+  const box = $("layers");
+  box.innerHTML = "";
+  const item = (key, label, color, get, set) => {
+    const l = document.createElement("label");
+    const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = get();
+    cb.onchange = () => { set(cb.checked); dirty = true; };
+    l.append(cb);
+    if (color) { const sw = document.createElement("span"); sw.className = "sw"; sw.style.background = color; l.append(sw); }
+    l.append(label);
+    box.append(l);
+  };
+  for (const l of board.copper) {
+    if (!(l in vis.layers)) vis.layers[l] = (l === "F.Cu" || l === "B.Cu");
+    item(l, l, layerColor(l), () => vis.layers[l], v => vis.layers[l] = v);
+  }
+  item("zones", "Zone outlines", null, () => vis.zones, v => vis.zones = v);
+  item("vias", "Vias", null, () => vis.vias, v => vis.vias = v);
+  item("cy", "Courtyards", null, () => vis.courtyard, v => vis.courtyard = v);
+  item("refs", "References", null, () => vis.refs, v => vis.refs = v);
+}
+
+function showSelection() {
+  const f = board.fp.get(selected), box = $("sel");
+  if (!f) { box.className = "empty"; box.textContent = "Click a footprint"; return; }
+  const nets = new Set(f.pads.map(p => p.net).filter(Boolean));
+  box.className = "kv";
+  box.innerHTML = `<span>Ref</span><span class="mono">${f.ref}${f.lk ? " 🔒" : ""}</span>` +
+    `<span>Value</span><span>${f.val}</span><span>Side</span><span>${f.back ? "Back" : "Front"}</span>` +
+    `<span>Position</span><span class="mono">${mm(f.x)}, ${mm(f.y)} mm</span>` +
+    `<span>Rotation</span><span class="mono">${f.r}°</span>` +
+    `<span>Pads</span><span>${f.pads.length} · ${nets.size} nets</span>`;
+}
+
+function updateStats() {
+  const unc = $("stats").dataset.unc ? ` · ${$("stats").dataset.unc}` : "";
+  $("stats").textContent = `${board.fp.size} footprints · ${board.trk.size} tracks · ${board.via.size} vias${unc}`;
+  $("revl").textContent = `rev ${rev}`;
+}
+
+function log(html) {
+  const box = $("log"), div = document.createElement("div");
+  const t = new Date().toLocaleTimeString([], { hour12: false });
+  div.innerHTML = `<span class="mono">${t}</span> ${html}`;
+  box.prepend(div);
+  while (box.children.length > 40) box.lastChild.remove();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Input
+
+cv.addEventListener("contextmenu", e => e.preventDefault());
+cv.addEventListener("wheel", e => {
+  e.preventDefault();
+  const r = cv.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  const k = Math.exp(-e.deltaY * 0.0015);
+  view.ox = mx - (mx - view.ox) * k; view.oy = my - (my - view.oy) * k; view.s *= k;
+  dirty = true;
+}, { passive: false });
+
+cv.addEventListener("mousedown", e => {
+  const [x, y] = toWorld(e);
+  if (e.button === 0) {
+    const f = footprintAt(x, y);
+    if (f) {
+      selected = f.id; showSelection();
+      drag = { id: f.id, sx: x, sy: y, dx: 0, dy: 0, moved: false };
+      dirty = true;
+      return;
+    }
+    selected = null; showSelection();
+  }
+  pan = { x: e.clientX, y: e.clientY, ox: view.ox, oy: view.oy };
+  cv.classList.add("grab");
+});
+
+window.addEventListener("mousemove", e => {
+  const [x, y] = toWorld(e);
+  $("cursor").textContent = `${mm(x)}, ${mm(y)} mm`;
+  if (pan) {
+    view.ox = pan.ox + e.clientX - pan.x; view.oy = pan.oy + e.clientY - pan.y; dirty = true; return;
+  }
+  if (drag) {
+    let dx = x - drag.sx, dy = y - drag.sy;
+    if (!e.altKey) { dx = Math.round(dx / GRID) * GRID; dy = Math.round(dy / GRID) * GRID; }
+    if (!drag.moved && Math.hypot(x - drag.sx, y - drag.sy) * view.s > 3) {
+      const f = board.fp.get(drag.id);
+      if (f && f.lk) { log(`<b>${f.ref}</b> is locked`); drag = null; return; }
+      drag.moved = true; fpDirty = true;
+    }
+    drag.dx = dx; drag.dy = dy; dirty = true;
+    return;
+  }
+  // hover tooltip
+  const f = footprintAt(x, y), p = padAt(f, x, y), tip = $("tip");
+  if (f) {
+    tip.style.display = "block";
+    const r = cv.getBoundingClientRect();
+    tip.style.left = (e.clientX - r.left + 14) + "px"; tip.style.top = (e.clientY - r.top + 10) + "px";
+    tip.textContent = p ? `${f.ref}.${p.num}  ${p.net || "(no net)"}` : `${f.ref}  ${f.val}`;
+  } else tip.style.display = "none";
+});
+
+window.addEventListener("mouseup", () => {
+  if (pan) { pan = null; cv.classList.remove("grab"); }
+  if (drag) {
+    const d = drag; drag = null;
+    if (d.moved && (d.dx || d.dy)) requestMove(board.fp.get(d.id), d.dx, d.dy, 0);
+    fpDirty = dirty = true;
+  }
+});
+
+window.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT") return;
+  const f = selected ? board.fp.get(selected) : null;
+  const step = e.shiftKey ? 1000 : 100;
+  if (e.key === "f" || e.key === "F") fit();
+  else if (e.key === "Escape") { selected = null; showSelection(); drcMarks = []; dirty = true; }
+  else if (!f) return;
+  else if (e.key === "r" || e.key === "R") requestMove(f, 0, 0, e.shiftKey ? -90 : 90);
+  else if (e.key === "ArrowLeft") requestMove(f, -step, 0);
+  else if (e.key === "ArrowRight") requestMove(f, step, 0);
+  else if (e.key === "ArrowUp") requestMove(f, 0, -step);
+  else if (e.key === "ArrowDown") requestMove(f, 0, step);
+  else return;
+  e.preventDefault();
+});
+
+$("fit").onclick = () => fit();
+window.addEventListener("resize", resize);
+
+// ---------------------------------------------------------------------------------------------
+// Connection
+
+let ws = null, backoff = 500;
+function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
+
+function setConn(state, text) { const c = $("conn"); c.className = "pill " + state; c.textContent = text; }
+
+function connect() {
+  const token = new URLSearchParams(location.search).get("token");
+  const url = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws" +
+              (token ? "?token=" + encodeURIComponent(token) : "");
+  ws = new WebSocket(url);
+  setConn("warn", "connecting");
+  ws.onopen = () => { setConn("ok", "live"); backoff = 500; };
+  ws.onclose = () => { setConn("bad", "offline"); setTimeout(connect, backoff); backoff = Math.min(backoff * 2, 8000); };
+  ws.onmessage = (ev) => {
+    const msg = JSON.parse(ev.data);
+    if (msg.t === "snapshot") applySnapshot(msg);
+    else if (msg.t === "delta") applyDelta(msg);
+    else if (msg.t === "moved") onMoved(msg);
+    else if (msg.t === "error") log(`<span style="color:var(--bad)">${msg.error}</span>`);
+  };
+}
+
+resize();
+requestAnimationFrame(frame);
+connect();
+</script>
+</body>
+</html>

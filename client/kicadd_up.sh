@@ -3,7 +3,7 @@
 #
 #   client/kicadd_up.sh /path/board.kicad_pcb [PORT]
 #
-# MCP Streamable HTTP on 127.0.0.1:PORT/mcp (default 8765). Set KICADD_MCP_TOKEN to require
+# MCP Streamable HTTP on 127.0.0.1:PORT/mcp (default 8765), 2D view on 127.0.0.1:PORT/. Set KICADD_MCP_TOKEN to require
 # a bearer token, and KICADD_MCP_HOST to bind elsewhere (a token is then mandatory).
 # Ctrl-C stops both.
 set -eu
@@ -20,4 +20,5 @@ DAEMON=$!
 trap 'kill $DAEMON 2>/dev/null' EXIT INT TERM
 
 echo "daemon pid $DAEMON (log: $HERE/run/daemon.log), socket $SOCK"
+echo "2D view: http://$HOST:$PORT/${KICADD_MCP_TOKEN:+?token=...}   MCP: http://$HOST:$PORT/mcp"
 "$MCP" --socket "$SOCK" --http "$HOST:$PORT"

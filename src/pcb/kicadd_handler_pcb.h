@@ -14,15 +14,19 @@
 
 #include <api/api_handler.h>
 #include <kicadd/board.pb.h>
+#include <kicadd/render.pb.h>
 
 class BOARD;
 class PCB_CONTEXT;
+
+namespace kicadd { class RENDER_FEED; }
 
 
 class KICADD_HANDLER_PCB : public API_HANDLER
 {
 public:
     explicit KICADD_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext );
+    ~KICADD_HANDLER_PCB() override;
 
 private:
     BOARD* board() const;
@@ -54,7 +58,14 @@ private:
     HANDLER_RESULT<kicadd::board::FlushRatsnestResponse>
     handleFlushRatsnest( const HANDLER_CONTEXT<kicadd::board::FlushRatsnest>& aCtx );
 
+    HANDLER_RESULT<kicadd::render::RenderSnapshot>
+    handleGetRenderSnapshot( const HANDLER_CONTEXT<kicadd::render::GetRenderSnapshot>& aCtx );
+
+    HANDLER_RESULT<kicadd::render::RenderChanges>
+    handleGetChanges( const HANDLER_CONTEXT<kicadd::render::GetChanges>& aCtx );
+
     std::shared_ptr<PCB_CONTEXT> m_context;
+    std::unique_ptr<kicadd::RENDER_FEED> m_feed;
 
     bool m_deferLargeNets = true;
     int  m_deferMinPads = 50;

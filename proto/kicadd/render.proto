@@ -1,0 +1,138 @@
+/*
+ * KiCadD render / change-feed API (Phase 3: remote 2D view).
+ *
+ * The daemon journals every board change (via BOARD_LISTENER) under a monotonically
+ * increasing revision. A view takes a snapshot, then polls GetChanges(since = its revision)
+ * and applies upserts / removals. If it falls too far behind, `resync` asks for a snapshot.
+ *
+ * Coordinates: integer nm, like the rest of the KiCadD API.
+ *
+ * This file is part of KiCadD and is licensed GPL-3.0-or-later, like KiCad.
+ */
+
+syntax = "proto3";
+
+package kicadd.render;
+
+import "kicadd/board.proto";
+
+enum PadShape
+{
+  PS_CIRCLE    = 0;
+  PS_RECT      = 1;
+  PS_OVAL      = 2;
+  PS_ROUNDRECT = 3;
+  PS_POLY      = 4;   // trapezoid, chamfered, custom: see `poly`
+}
+
+enum PadSide
+{
+  SIDE_FRONT   = 0;
+  SIDE_BACK    = 1;
+  SIDE_THROUGH = 2;
+}
+
+message Polyline
+{
+  repeated sint64 xy = 1;   // x0, y0, x1, y1, ...  (closed)
+}
+
+message Pad
+{
+  string   number    = 1;
+  string   net       = 2;
+  PadShape shape     = 3;
+  PadSide  side      = 4;
+  kicadd.board.Point pos  = 5;
+  kicadd.board.Point size = 6;
+  int32    rot_decideg = 7;
+  float    rr_ratio  = 8;     // roundrect radius / min(size)
+  int32    drill     = 9;     // 0 = none
+  Polyline poly      = 10;    // PS_POLY only, absolute coordinates
+}
+
+message Footprint
+{
+  string   id    = 1;
+  string   ref   = 2;
+  string   value = 3;
+  bool     back  = 4;
+  kicadd.board.Point pos = 5;
+  int32    rot_decideg = 6;
+  bool     locked = 7;
+  repeated Pad pads = 8;
+  Polyline courtyard = 9;      // first outline of the courtyard on its side, may be empty
+  kicadd.board.Point bbox_min = 10;   // body, no text
+  kicadd.board.Point bbox_max = 11;
+}
+
+message Track
+{
+  string id    = 1;
+  string layer = 2;
+  string net   = 3;
+  kicadd.board.Point a = 4;
+  kicadd.board.Point b = 5;
+  int32  width = 6;
+  bool   arc   = 7;
+  kicadd.board.Point mid = 8;   // arcs only
+}
+
+message Via
+{
+  string id    = 1;
+  string net   = 2;
+  kicadd.board.Point pos = 3;
+  int32  diameter = 4;
+  int32  drill    = 5;
+}
+
+message Zone
+{
+  string   id    = 1;
+  string   net   = 2;
+  repeated string layers = 3;
+  repeated Polyline outlines = 4;   // zone outline (not fill)
+  bool     keepout = 5;
+}
+
+message LayerInfo
+{
+  string name = 1;
+  bool   copper = 2;
+  int32  order = 3;   // stack order, front = 0
+}
+
+message RenderItems
+{
+  repeated Footprint footprints = 1;
+  repeated Track     tracks     = 2;
+  repeated Via       vias       = 3;
+  repeated Zone      zones      = 4;
+}
+
+// Returns RenderSnapshot
+message GetRenderSnapshot {}
+
+message RenderSnapshot
+{
+  uint64            revision = 1;
+  string            file     = 2;
+  repeated LayerInfo layers  = 3;
+  repeated Polyline outline  = 4;   // board edge polygons (outer outlines and holes)
+  RenderItems       items    = 5;
+}
+
+// Returns RenderChanges
+message GetChanges
+{
+  uint64 since = 1;
+}
+
+message RenderChanges
+{
+  uint64          revision = 1;
+  bool            resync   = 2;     // journal no longer covers `since`: take a snapshot
+  RenderItems     upsert   = 3;     // current state of every item changed since `since`
+  repeated string removed  = 4;     // ids of items deleted since `since`
+}
