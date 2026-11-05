@@ -28,6 +28,10 @@ if pgrep -f -- "--socket $SOCK" >/dev/null; then
     echo "another KiCadD is still using $SOCK; stop it first" >&2
     exit 1
 fi
+# Nobody serves $SOCK, so a leftover socket file is orphaned (a daemon that was killed).
+# Upstream only removes it when it can take the directory's api.lock, which another daemon
+# in the same directory holds; it would then listen on api-<pid>.sock instead.
+[ -S "$SOCK" ] && rm -f "$SOCK"
 
 EXTRA=""
 TOKEN=${KICADD_MCP_TOKEN:-}
@@ -42,11 +46,11 @@ case "$HOST" in
         ;;
 esac
 
-KICADD_SOCK=$SOCK "$HERE/client/run_server.sh" "$BOARD" > "$HERE/run/daemon.log" 2>&1 &
+KICADD_SOCK=$SOCK "$HERE/client/run_server.sh" "$BOARD" > "${KICADD_LOG:-$HERE/run/daemon.log}" 2>&1 &
 DAEMON=$!
 trap 'kill $DAEMON 2>/dev/null' EXIT INT TERM
 
-echo "daemon pid $DAEMON (log: $HERE/run/daemon.log), socket $SOCK"
+echo "daemon pid $DAEMON (log: ${KICADD_LOG:-$HERE/run/daemon.log}), socket $SOCK"
 if [ -n "$EXTRA" ]; then
     for ip in $(hostname -I 2>/dev/null); do
         echo "remote 2D view: http://$ip:$PORT/?token=$TOKEN   (MCP: http://$ip:$PORT/mcp + Bearer token)"
