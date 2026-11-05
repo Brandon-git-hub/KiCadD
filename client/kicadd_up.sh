@@ -17,6 +17,18 @@ SOCK=${KICADD_SOCK:-$HERE/run/kicadd.sock}
 MCP="$HERE/../build/kicadd-mcp"
 mkdir -p "$HERE/run"
 
+# A daemon still shutting down on the same socket path would unlink our new socket when it
+# finally exits (it removes "its" socket file), leaving us unreachable. Wait for it.
+for i in $(seq 1 60); do
+    pgrep -f -- "--socket $SOCK" >/dev/null || break
+    [ "$i" = 1 ] && echo "waiting for the previous KiCadD on $SOCK to exit…"
+    sleep 0.5
+done
+if pgrep -f -- "--socket $SOCK" >/dev/null; then
+    echo "another KiCadD is still using $SOCK; stop it first" >&2
+    exit 1
+fi
+
 EXTRA=""
 TOKEN=${KICADD_MCP_TOKEN:-}
 case "$HOST" in

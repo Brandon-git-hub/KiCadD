@@ -440,7 +440,7 @@ index bece5fa8..5d11953f 100644
  
  private:
 diff --git a/pcbnew/connectivity/connectivity_data.cpp b/pcbnew/connectivity/connectivity_data.cpp
-index 2954a42c..f1da859f 100644
+index 2954a42c..492bb3e1 100644
 --- a/pcbnew/connectivity/connectivity_data.cpp
 +++ b/pcbnew/connectivity/connectivity_data.cpp
 @@ -28,6 +28,8 @@
@@ -501,7 +501,7 @@ index 2954a42c..f1da859f 100644
      const std::vector<std::shared_ptr<CN_CLUSTER>>& clusters = m_connAlgo->GetClusters();
  
      for( int net = 0; net < lastNet; net++ )
-@@ -282,6 +318,123 @@ void CONNECTIVITY_DATA::internalRecalculateRatsnest( BOARD_COMMIT* aCommit  )
+@@ -282,6 +318,142 @@ void CONNECTIVITY_DATA::internalRecalculateRatsnest( BOARD_COMMIT* aCommit  )
  }
  
  
@@ -602,6 +602,25 @@ index 2954a42c..f1da859f 100644
 +}
 +
 +
++void CONNECTIVITY_DATA::RunOnUnconnectedEdgesNoFlush(
++        const std::function<bool( int aNet, const CN_EDGE& )>& aFunc ) const
++{
++    for( size_t net = 0; net < m_nets.size(); ++net )
++    {
++        const RN_NET* rnNet = m_nets[net];
++
++        if( !rnNet )
++            continue;
++
++        for( const CN_EDGE& edge : rnNet->GetEdges() )
++        {
++            if( !aFunc( static_cast<int>( net ), edge ) )
++                return;
++        }
++    }
++}
++
++
 +unsigned int CONNECTIVITY_DATA::GetUnconnectedCountNoFlush( bool aVisibleOnly ) const
 +{
 +    unsigned int unconnected = 0;
@@ -625,7 +644,7 @@ index 2954a42c..f1da859f 100644
  void CONNECTIVITY_DATA::BlockRatsnestItems( const std::vector<BOARD_ITEM*>& aItems )
  {
      std::vector<BOARD_CONNECTED_ITEM*> citems;
-@@ -336,6 +489,8 @@ void CONNECTIVITY_DATA::ComputeLocalRatsnest( const std::vector<BOARD_ITEM*>& aI
+@@ -336,6 +508,8 @@ void CONNECTIVITY_DATA::ComputeLocalRatsnest( const std::vector<BOARD_ITEM*>& aI
      if( !aDynamicData )
          return;
  
@@ -634,7 +653,7 @@ index 2954a42c..f1da859f 100644
      m_dynamicRatsnest.clear();
      std::mutex dynamic_ratsnest_mutex;
  
-@@ -554,6 +709,8 @@ bool CONNECTIVITY_DATA::IsConnectedOnLayer( const BOARD_CONNECTED_ITEM *aItem, i
+@@ -554,6 +728,8 @@ bool CONNECTIVITY_DATA::IsConnectedOnLayer( const BOARD_CONNECTED_ITEM *aItem, i
  
  unsigned int CONNECTIVITY_DATA::GetUnconnectedCount( bool aVisibleOnly ) const
  {
@@ -643,7 +662,7 @@ index 2954a42c..f1da859f 100644
      unsigned int unconnected = 0;
  
      for( RN_NET* net : m_nets )
-@@ -687,6 +844,30 @@ const
+@@ -687,6 +863,30 @@ const
  }
  
  
@@ -674,7 +693,7 @@ index 2954a42c..f1da859f 100644
  void CONNECTIVITY_DATA::GetConnectedPadsAndVias( const BOARD_CONNECTED_ITEM* aItem, std::vector<PAD*>* pads,
                                                   std::vector<PCB_VIA*>* vias )
  {
-@@ -733,6 +914,8 @@ void CONNECTIVITY_DATA::GetZoneIslandConnections( const ZONE* aZone, PCB_LAYER_I
+@@ -733,6 +933,8 @@ void CONNECTIVITY_DATA::GetZoneIslandConnections( const ZONE* aZone, PCB_LAYER_I
  
  unsigned int CONNECTIVITY_DATA::GetNodeCount( int aNet ) const
  {
@@ -683,7 +702,7 @@ index 2954a42c..f1da859f 100644
      int sum = 0;
  
      if( aNet < 0 )      // Node count for all nets
-@@ -770,6 +953,8 @@ unsigned int CONNECTIVITY_DATA::GetPadCount( int aNet ) const
+@@ -770,6 +972,8 @@ unsigned int CONNECTIVITY_DATA::GetPadCount( int aNet ) const
  
  void CONNECTIVITY_DATA::RunOnUnconnectedEdges( std::function<bool( CN_EDGE& )> aFunc )
  {
@@ -692,7 +711,7 @@ index 2954a42c..f1da859f 100644
      for( RN_NET* rnNet : m_nets )
      {
          if( rnNet )
-@@ -981,6 +1166,8 @@ CONNECTIVITY_DATA::GetConnectedItemsAtAnchor( const BOARD_CONNECTED_ITEM* aItem,
+@@ -981,6 +1185,8 @@ CONNECTIVITY_DATA::GetConnectedItemsAtAnchor( const BOARD_CONNECTED_ITEM* aItem,
  
  RN_NET* CONNECTIVITY_DATA::GetRatsnestForNet( int aNet )
  {
@@ -702,7 +721,7 @@ index 2954a42c..f1da859f 100644
          return nullptr;
  
 diff --git a/pcbnew/connectivity/connectivity_data.h b/pcbnew/connectivity/connectivity_data.h
-index 124540f6..a17690a7 100644
+index 124540f6..0dd03aa8 100644
 --- a/pcbnew/connectivity/connectivity_data.h
 +++ b/pcbnew/connectivity/connectivity_data.h
 @@ -26,14 +26,18 @@
@@ -724,7 +743,7 @@ index 124540f6..a17690a7 100644
  
  class FROM_TO_CACHE;
  class NET_SETTINGS;
-@@ -185,6 +189,43 @@ public:
+@@ -185,6 +189,50 @@ public:
  
      void GetConnectedPads( const BOARD_CONNECTED_ITEM* aItem, std::set<PAD*>* pads ) const;
  
@@ -762,13 +781,20 @@ index 124540f6..a17690a7 100644
 +     */
 +    void SetRatsnestExclusions( std::set<std::pair<KIID, KIID>> aExclusions );
 +
++    /**
++     * Visit the unrouted edges of every net whose ratsnest is current, without rebuilding
++     * deferred nets (they have no edges until flushed). aFunc gets the net code; return
++     * false to stop.
++     */
++    void RunOnUnconnectedEdgesNoFlush( const std::function<bool( int aNet, const CN_EDGE& )>& aFunc ) const;
++
 +    /// Unconnected edge count over non-pending nets, without flushing.
 +    unsigned int GetUnconnectedCountNoFlush( bool aVisibleOnly ) const;
 +
      void GetConnectedPadsAndVias( const BOARD_CONNECTED_ITEM* aItem, std::vector<PAD*>* pads,
                                    std::vector<PCB_VIA*>* vias );
  
-@@ -298,6 +339,26 @@ private:
+@@ -298,6 +346,26 @@ private:
      std::vector<RN_DYNAMIC_LINE>    m_dynamicRatsnest;
      std::vector<RN_NET*>            m_nets;
  

@@ -102,7 +102,8 @@
 const board = { copper: [], outline: [], fp: new Map(), trk: new Map(), via: new Map(), zone: new Map() };
 let rev = 0;
 const view = { s: 0.01, ox: 0, oy: 0 };          // screen = world * s + o
-const vis = { zones: true, courtyard: true, refs: true, vias: true, layers: {} };
+const vis = { zones: true, courtyard: true, refs: true, vias: true, ratsnest: true, layers: {} };
+let rats = { xy: [], net: [], nets: [], pending: [], unconnected: 0, path: null };
 let selected = null;                                // footprint id
 let drag = null;                                    // {id, sx, sy, dx, dy, moved}
 let pan = null;
@@ -369,6 +370,26 @@ function draw() {
     ctx.globalAlpha = 1;
   }
 
+  // Ratsnest: thin lines above copper. Ends on the lifted footprint's pads follow the drag.
+  if (vis.ratsnest && rats.xy.length) {
+    if (!rats.path) {
+      rats.path = new Path2D();
+      for (let i = 0; i < rats.xy.length; i += 4) { rats.path.moveTo(rats.xy[i], rats.xy[i + 1]); rats.path.lineTo(rats.xy[i + 2], rats.xy[i + 3]); }
+    }
+    ctx.strokeStyle = "rgba(235,235,235,.75)"; ctx.lineWidth = 1 * px; ctx.lineCap = "butt";
+    if (drag && drag.moved && drag.pads) {
+      const p = new Path2D(), key = (x, y) => x + "," + y;
+      for (let i = 0; i < rats.xy.length; i += 4) {
+        let [x1, y1, x2, y2] = [rats.xy[i], rats.xy[i + 1], rats.xy[i + 2], rats.xy[i + 3]];
+        if (drag.pads.has(key(x1, y1))) { x1 += drag.dx; y1 += drag.dy; }
+        if (drag.pads.has(key(x2, y2))) { x2 += drag.dx; y2 += drag.dy; }
+        p.moveTo(x1, y1); p.lineTo(x2, y2);
+      }
+      ctx.stroke(p);
+    } else ctx.stroke(rats.path);
+    ctx.lineCap = "round";
+  }
+
   // Lifted footprint (being dragged) on top.
   if (drag && drag.moved) {
     const f = board.fp.get(drag.id);
@@ -438,8 +459,9 @@ function resize() {
 function boardBounds() {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   const add = (x, y) => { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); };
+  // Outline plus every footprint: on an unplaced board many parts sit outside the outline.
   for (const o of board.outline) for (let i = 0; i < o.length; i += 2) add(o[i], o[i + 1]);
-  if (!isFinite(x0)) for (const f of board.fp.values()) { add(f.bb[0], f.bb[1]); add(f.bb[2], f.bb[3]); }
+  for (const f of board.fp.values()) { add(f.bb[0], f.bb[1]); add(f.bb[2], f.bb[3]); }
   return isFinite(x0) ? [x0, y0, x1, y1] : [0, 0, 100000, 100000];
 }
 
@@ -536,6 +558,15 @@ function onMoved(msg) {
   dirty = true;
 }
 
+function onRatsnest(r) {
+  if (r.error) return;
+  rats = { xy: r.xy, net: r.net, nets: r.nets, pending: r.pending, unconnected: r.unconnected, path: null };
+  const pend = r.pending.length ? ` (+ ${r.pending.join(", ")} updating…)` : "";
+  $("stats").dataset.unc = `unconnected ${r.unconnected}${pend}`;
+  updateStats();
+  dirty = true;
+}
+
 function onHistory(h) {
   if (h.error) return;
   const u = $("undo"), r = $("redo"), sv = $("save");
@@ -577,6 +608,7 @@ function buildLayerPanel() {
   item("vias", "Vias", null, () => vis.vias, v => vis.vias = v);
   item("cy", "Courtyards", null, () => vis.courtyard, v => vis.courtyard = v);
   item("refs", "References", null, () => vis.refs, v => vis.refs = v);
+  item("rats", "Ratsnest", "#e8e8e8", () => vis.ratsnest, v => vis.ratsnest = v);
 }
 
 function showSelection() {
@@ -646,6 +678,7 @@ window.addEventListener("mousemove", e => {
       const f = board.fp.get(drag.id);
       if (f && f.lk) { log(`<b>${f.ref}</b> is locked`); drag = null; return; }
       drag.moved = true; fpDirty = true;
+      drag.pads = new Set(f.pads.map(p => p.x + "," + p.y));
     }
     drag.dx = dx; drag.dy = dy; dirty = true;
     return;
@@ -726,6 +759,7 @@ function connect() {
     else if (msg.t === "delta") applyDelta(msg);
     else if (msg.t === "moved") onMoved(msg);
     else if (msg.t === "history") onHistory(msg);
+    else if (msg.t === "ratsnest") onRatsnest(msg);
     else if (msg.t === "saved") log(msg.ok ? `saved <b>${msg.file}</b>` : `<span style="color:var(--bad)">save failed: ${msg.error}</span>`);
     else if (msg.t === "error") log(`<span style="color:var(--bad)">${msg.error}</span>`);
   };

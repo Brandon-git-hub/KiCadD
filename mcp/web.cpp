@@ -10,6 +10,8 @@
  *      "label":".."}
  *     {"t":"history","undo":N,"redo":N,"next_undo":"..","next_redo":"..","modified":bool}
  *     {"t":"saved","ok":bool,"file":"..","error":".."}
+ *     {"t":"ratsnest","xy":[x1,y1,x2,y2,..],"net":[i,..],"nets":[..],"pending":[..],"unconnected":N,
+ *      "final":bool}   (final=false: deferred large nets still missing, a final one follows)
  *     {"t":"error","error":".."}
  *   ITEMS = "nets":[..],"lys":[..]  (string tables; items reference them by index)
  *           "fp":[{id,ref,val,back,x,y,r,lk,bb:[x0,y0,x1,y1],cy:[..],
@@ -470,6 +472,15 @@ void WEB_HUB::workerLoop()
 
         if( !sessions().empty() )
             poll();
+
+        // Edits have gone quiet: rebuild the deferred large nets and send the full ratsnest.
+        if( m_flushDue != std::chrono::steady_clock::time_point{} && std::chrono::steady_clock::now() >= m_flushDue )
+        {
+            m_flushDue = {};
+
+            if( !sessions().empty() )
+                broadcast( ratsnestJson( true ) );
+        }
     }
 }
 
@@ -500,6 +511,10 @@ void WEB_HUB::runJob( const JOB& aJob )
 
         session->Send( std::make_shared<std::string>( snapshotJson( snap ).dump() ) );
         session->Send( std::make_shared<std::string>( historyJson() ) );
+
+        bool pending = false;
+        session->Send( std::make_shared<std::string>( ratsnestJson( false, &pending ) ) );
+        scheduleRatsnestFlush( pending );
         return;
     }
 
@@ -677,6 +692,57 @@ void WEB_HUB::poll()
     m_revision = r.revision();
     broadcast( out.dump() );
     broadcast( historyJson() );   // undo/redo availability and the unsaved flag changed too
+
+    bool pending = false;
+    broadcast( ratsnestJson( false, &pending ) );
+    scheduleRatsnestFlush( pending );
+}
+
+} // namespace kicadd::mcp
+
+
+namespace kicadd::mcp
+{
+
+std::string WEB_HUB::ratsnestJson( bool aFlush, bool* aPending )
+{
+    kr::GetRatsnest req;
+    req.set_flush( aFlush );
+
+    kr::Ratsnest r;
+    std::string  err;
+
+    if( !m_ipc.Call( req, r, err ) )
+        return json{ { "t", "ratsnest" }, { "error", err } }.dump();
+
+    json xy = json::array(), net = json::array(), nets = json::array(), pending = json::array();
+
+    for( int64_t v : r.xy() )
+        xy.push_back( um( v ) );
+
+    for( int n : r.net() )
+        net.push_back( n );
+
+    for( const std::string& n : r.nets() )
+        nets.push_back( n );
+
+    for( const std::string& n : r.pending() )
+        pending.push_back( n );
+
+    if( aPending )
+        *aPending = r.pending_size() > 0;
+
+    return json{ { "t", "ratsnest" }, { "xy", std::move( xy ) }, { "net", std::move( net ) },
+                 { "nets", std::move( nets ) }, { "pending", std::move( pending ) },
+                 { "unconnected", r.unconnected() }, { "final", r.pending_size() == 0 } }.dump();
+}
+
+
+void WEB_HUB::scheduleRatsnestFlush( bool aPending )
+{
+    // Every change pushes the deadline back, so the flush runs once edits stop.
+    m_flushDue = aPending ? std::chrono::steady_clock::now() + std::chrono::milliseconds( RATSNEST_IDLE_MS )
+                          : std::chrono::steady_clock::time_point{};
 }
 
 } // namespace kicadd::mcp

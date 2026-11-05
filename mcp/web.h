@@ -14,6 +14,7 @@
 #define KICADD_MCP_WEB_H
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <memory>
@@ -65,6 +66,9 @@ private:
     void poll();
     void broadcast( const std::string& aText );
     std::string historyJson();
+    /// Ratsnest message; aFlush rebuilds deferred large nets first. Sets aPending.
+    std::string ratsnestJson( bool aFlush, bool* aPending = nullptr );
+    void        scheduleRatsnestFlush( bool aPending );
     void sendMoveResult( const std::shared_ptr<WS_SESSION>& aSession, const char* aOp, bool aOk,
                          const std::string& aError, const void* aMoveResponse, double aMs,
                          const std::string& aLabel );
@@ -82,6 +86,8 @@ private:
     bool                    m_kick = false;
 
     uint64_t          m_revision = 0;   // worker thread only
+    std::chrono::steady_clock::time_point m_flushDue{};   // worker only; epoch = none
+    static constexpr int RATSNEST_IDLE_MS = 400;
     std::atomic<bool> m_running{ true };
     std::thread       m_ioThread;
     std::thread       m_worker;

@@ -136,3 +136,21 @@ message RenderChanges
   RenderItems     upsert   = 3;     // current state of every item changed since `since`
   repeated string removed  = 4;     // ids of items deleted since `since`
 }
+
+// Unrouted connections for display.
+// Without `flush`, large nets whose ratsnest is deferred (see SetRatsnestDeferral) are
+// listed in `pending` and have no edges; with `flush` they are rebuilt first.
+// Returns Ratsnest
+message GetRatsnest
+{
+  bool flush = 1;
+}
+
+message Ratsnest
+{
+  repeated sint64 xy      = 1;   // x1, y1, x2, y2 per edge
+  repeated int32  net     = 2;   // index into `nets`, one per edge
+  repeated string nets    = 3;
+  repeated string pending = 4;
+  int32           unconnected = 5;
+}

@@ -27,6 +27,7 @@
 #include <cmath>
 #include <netinfo.h>
 #include <connectivity/connectivity_data.h>
+#include <connectivity/connectivity_algo.h>
 #include <ratsnest/ratsnest_data.h>
 
 using namespace kicadd::board;
@@ -205,6 +206,8 @@ KICADD_HANDLER_PCB::KICADD_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext ) 
             &KICADD_HANDLER_PCB::handleGetRenderSnapshot );
     registerHandler<kicadd::render::GetChanges, kicadd::render::RenderChanges>(
             &KICADD_HANDLER_PCB::handleGetChanges );
+    registerHandler<kicadd::render::GetRatsnest, kicadd::render::Ratsnest>(
+            &KICADD_HANDLER_PCB::handleGetRatsnest );
 
     m_feed = std::make_unique<kicadd::RENDER_FEED>( board() );
 }
@@ -1028,5 +1031,46 @@ KICADD_HANDLER_PCB::handleGetChanges( const HANDLER_CONTEXT<kicadd::render::GetC
 
     kicadd::render::RenderChanges out;
     m_feed->Changes( aCtx.Request.since(), out );
+    return out;
+}
+
+
+HANDLER_RESULT<kicadd::render::Ratsnest>
+KICADD_HANDLER_PCB::handleGetRatsnest( const HANDLER_CONTEXT<kicadd::render::GetRatsnest>& aCtx )
+{
+    BOARD* b = board();
+
+    if( !b )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
+
+    std::shared_ptr<CONNECTIVITY_DATA> conn = b->GetConnectivity();
+
+    if( aCtx.Request.flush() )
+        conn->FlushDeferredRatsnest();
+
+    kicadd::render::Ratsnest           out;
+    std::unordered_map<int, int>       netIndex;
+
+    conn->RunOnUnconnectedEdgesNoFlush(
+            [&]( int aNet, const CN_EDGE& aEdge )
+            {
+                if( !aEdge.IsVisible() || !aEdge.GetSourceNode() || !aEdge.GetTargetNode() )
+                    return true;
+
+                auto [it, inserted] = netIndex.try_emplace( aNet, out.nets_size() );
+
+                if( inserted )
+                    out.add_nets( netName( b, aNet ) );
+
+                const VECTOR2I a = aEdge.GetSourcePos(), z = aEdge.GetTargetPos();
+                out.add_xy( a.x ); out.add_xy( a.y ); out.add_xy( z.x ); out.add_xy( z.y );
+                out.add_net( it->second );
+                return true;
+            } );
+
+    for( int net : conn->GetPendingRatsnestNets() )
+        out.add_pending( netName( b, net ) );
+
+    out.set_unconnected( static_cast<int>( conn->GetUnconnectedCountNoFlush( false ) ) );
     return out;
 }
