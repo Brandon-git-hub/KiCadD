@@ -13,22 +13,24 @@
  *     {"t":"fills","fills":[{"id","net","ly","polys":[[x0,y0,dx,dy,dx,dy,..],..]},..]}
  *          (polygon points delta-encoded: first point absolute, then differences, all µm)
  *     {"t":"refilled","ok":bool,"ms":..,"error":".."}
+ *     {"t":"art","rev":R,"layers":[..],"lys":[..],"fp":{id:GX,..},"dr":GX}   (silk / fab, see GX)
  *     {"t":"ratsnest","xy":[x1,y1,x2,y2,..],"net":[i,..],"nets":[..],"pending":[..],"unconnected":N,
  *      "final":bool}   (final=false: deferred large nets still missing, a final one follows)
  *     {"t":"error","error":".."}
  *   ITEMS = "nets":[..],"lys":[..]  (string tables; items reference them by index)
  *           "fp":[{id,ref,val,back,x,y,r,lk,bb:[x0,y0,x1,y1],cy:[..],
- *                  pads:[[num,net,shape,side,x,y,w,h,rot,rr,drill,poly|0],..]}]
+ *                  pads:[[num,net,shape,side,x,y,w,h,rot,rr,drill,poly|0],..],gx:GX}]
+ *           GX = [[ly,w,filled,x0,y0,dx,dy,..],..]  (silk / fab; only in deltas, see "art")
  *           "trk":[[id,ly,net,ax,ay,bx,by,w(,mx,my)],..]   (10 entries = arc)
  *           "via":[[id,net,x,y,d,drill],..]
  *           "zone":[{id,net,ly:[..],ko,ol:[[..],..]}]
  *   client -> server
- *     {"t":"move","refs":[..],"dx":mm,"dy":mm,"rot":deg,"flip":bool}
+ *     {"t":"move","refs":[..],"dx":mm,"dy":mm,"rot":deg,"flip":bool,"group":bool}
  *     {"t":"delete","refs":[..]}
  *     {"t":"add","footprint":"Lib:Name"|"like":"C12","ref":"C?","x":mm,"y":mm,"rot":deg,"back":bool,
  *      "value":"..","nets":{"1":"GND",..}}
  *     {"t":"undo"} / {"t":"redo"} / {"t":"save"}
- *     {"t":"fills","ids":[..]}   (ids empty = all)   /   {"t":"refill"}   /   {"t":"drc"}
+ *     {"t":"fills","ids":[..]}   (ids empty = all)   /   {"t":"art","layers":["F.SilkS",..]}   /   {"t":"refill"}   /   {"t":"drc"}
  *   server -> client (full DRC)
  *     {"t":"drcfull","ok":bool,"s":secs,"errors":{type:n},"warnings":{type:n},
  *      "items":[{"type","w","a","b","na","nb","ly","x","y","desc"},..]}
@@ -236,6 +238,32 @@ json deltaEncode( const kr::Polyline& aPoly )
 }
 
 
+/// Silk / fab graphics: [layer index, width µm, filled 0/1, x0, y0, dx, dy, ...] (µm).
+json graphics( const google::protobuf::RepeatedPtrField<kr::Graphic>& aGfx, TABLE& aLayers )
+{
+    json out = json::array();
+
+    for( const kr::Graphic& g : aGfx )
+    {
+        json    row = { aLayers.Index( g.layer() ), um( g.width() ), g.filled() ? 1 : 0 };
+        int64_t px = 0, py = 0;
+
+        for( int i = 0; i + 1 < g.xy_size(); i += 2 )
+        {
+            int64_t x = um( g.xy( i ) ), y = um( g.xy( i + 1 ) );
+            row.push_back( x - px );
+            row.push_back( y - py );
+            px = x;
+            py = y;
+        }
+
+        out.push_back( std::move( row ) );
+    }
+
+    return out;
+}
+
+
 json polyline( const kr::Polyline& aPoly )
 {
     json out = json::array();
@@ -279,6 +307,9 @@ void addItems( const kr::RenderItems& aItems, json& aOut )
                                    um( f.bbox_max().x() ), um( f.bbox_max().y() ) } },
                          { "cy", polyline( f.courtyard() ) },
                          { "pads", std::move( pads ) } } );
+
+        if( f.gfx_size() )
+            fps.back()["gx"] = graphics( f.gfx(), layers );
     }
 
     json trks = json::array();
@@ -454,7 +485,7 @@ void WEB_HUB::Received( const std::shared_ptr<WS_SESSION>& aSession, const std::
 
     if( t == "resync" )
         msg = json{ { "t", "snapshot" } };
-    else if( t != "move" && t != "delete" && t != "add" && t != "undo" && t != "redo" && t != "save" && t != "fills" && t != "refill"
+    else if( t != "move" && t != "delete" && t != "add" && t != "undo" && t != "redo" && t != "save" && t != "fills" && t != "art" && t != "refill"
              && t != "drc" )
     {
         aSession->Send( std::make_shared<std::string>( errorJson( "unknown message type '" + t + "'" ) ) );
@@ -540,7 +571,10 @@ void WEB_HUB::runJob( const JOB& aJob )
     {
         kr::RenderSnapshot snap;
 
-        if( !m_ipc.Call( kr::GetRenderSnapshot(), snap, err ) )
+        kr::GetRenderSnapshot req;
+        req.set_skip_art( true );   // silk / fab follow on request ("art"), like fills
+
+        if( !m_ipc.Call( req, snap, err ) )
         {
             session->Send( std::make_shared<std::string>( errorJson( err ) ) );
             return;
@@ -574,6 +608,40 @@ void WEB_HUB::runJob( const JOB& aJob )
             sendMoveResult( session, t.c_str(), true, "", &r.result(), ms, r.label() );
 
         poll();   // also broadcasts the new history state
+        return;
+    }
+
+    if( t == "art" )
+    {
+        kr::GetArt req;
+
+        if( aJob.message.contains( "layers" ) && aJob.message["layers"].is_array() )
+            for( const json& l : aJob.message["layers"] )
+                if( l.is_string() )
+                    req.add_layers( l.get<std::string>() );
+
+        kr::Art r;
+
+        if( !m_ipc.Call( req, r, err ) )
+        {
+            session->Send( std::make_shared<std::string>( errorJson( err ) ) );
+            return;
+        }
+
+        TABLE layers;
+        json  fps = json::object();
+
+        for( const kr::FootprintArt& fa : r.footprints() )
+        {
+            if( fa.gfx_size() )
+                fps[fa.id()] = graphics( fa.gfx(), layers );
+        }
+
+        json dr = graphics( r.drawings(), layers );
+        session->Send( std::make_shared<std::string>(
+                json{ { "t", "art" }, { "rev", r.revision() },
+                      { "layers", std::vector<std::string>( r.layers().begin(), r.layers().end() ) },
+                      { "lys", layers.Values() }, { "fp", std::move( fps ) }, { "dr", std::move( dr ) } }.dump() ) );
         return;
     }
 
@@ -719,6 +787,7 @@ void WEB_HUB::runJob( const JOB& aJob )
         req.set_dy( std::llround( num( "dy" ) * 1e6 ) );
         req.set_drot_decideg( static_cast<int>( std::lround( num( "rot" ) * 10 ) ) );
         req.set_flip( m.contains( "flip" ) && m["flip"].is_boolean() && m["flip"].get<bool>() );
+        req.set_group_pivot( m.contains( "group" ) && m["group"].is_boolean() && m["group"].get<bool>() );
 
         auto             t0 = std::chrono::steady_clock::now();
         kb::MoveResponse r;
@@ -871,7 +940,10 @@ void WEB_HUB::poll()
     {
         kr::RenderSnapshot snap;
 
-        if( m_ipc.Call( kr::GetRenderSnapshot(), snap, err ) )
+        kr::GetRenderSnapshot req;
+        req.set_skip_art( true );
+
+        if( m_ipc.Call( req, snap, err ) )
         {
             m_revision = snap.revision();
             broadcast( snapshotJson( snap ).dump() );

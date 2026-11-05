@@ -218,6 +218,7 @@ KICADD_HANDLER_PCB::KICADD_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext ) 
             &KICADD_HANDLER_PCB::handleGetRatsnest );
     registerHandler<kicadd::render::GetZoneFills, kicadd::render::ZoneFills>(
             &KICADD_HANDLER_PCB::handleGetZoneFills );
+    registerHandler<kicadd::render::GetArt, kicadd::render::Art>( &KICADD_HANDLER_PCB::handleGetArt );
 
     m_feed = std::make_unique<kicadd::RENDER_FEED>( board() );
 }
@@ -841,6 +842,20 @@ KICADD_HANDLER_PCB::handleMoveDelta( const HANDLER_CONTEXT<MoveDelta>& aCtx )
     for( const FOOTPRINT* fp : targets )
         entry.before.push_back( stateOf( fp ) );
 
+    // Group pivot: centre of the bodies after the move (the move applies first).
+    const bool group = req.group_pivot() && targets.size() > 1;
+    VECTOR2I   pivot;
+
+    if( group )
+    {
+        BOX2I box = targets.front()->GetBoundingBox( false );
+
+        for( const FOOTPRINT* fp : targets )
+            box.Merge( fp->GetBoundingBox( false ) );
+
+        pivot = box.Centre() + delta;
+    }
+
     applyFootprintEdit( changes ? targets : std::vector<FOOTPRINT*>(),
                         [&]( FOOTPRINT* fp )
                         {
@@ -848,12 +863,12 @@ KICADD_HANDLER_PCB::handleMoveDelta( const HANDLER_CONTEXT<MoveDelta>& aCtx )
                                 fp->Move( delta );
 
                             if( req.drot_decideg() != 0 )
-                                fp->Rotate( fp->GetPosition(), drot );
+                                fp->Rotate( group ? pivot : fp->GetPosition(), drot );
 
-                            // Mirrored around its own anchor: Flip swaps every layer of the
-                            // footprint (copper padstacks, silk, fab, courtyard, mask, paste).
+                            // Mirrored left-right: Flip swaps every layer of the footprint
+                            // (copper padstacks, silk, fab, courtyard, mask, paste).
                             if( req.flip() )
-                                fp->Flip( fp->GetPosition(), FLIP_DIRECTION::LEFT_RIGHT );
+                                fp->Flip( group ? pivot : fp->GetPosition(), FLIP_DIRECTION::LEFT_RIGHT );
                         },
                         wxS( "KiCadD MoveDelta" ), out );
 
@@ -1517,7 +1532,19 @@ KICADD_HANDLER_PCB::handleGetRenderSnapshot( const HANDLER_CONTEXT<kicadd::rende
         return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
 
     kicadd::render::RenderSnapshot out;
-    m_feed->Snapshot( out );
+    m_feed->Snapshot( out, !aCtx.Request.skip_art() );
+    return out;
+}
+
+
+HANDLER_RESULT<kicadd::render::Art>
+KICADD_HANDLER_PCB::handleGetArt( const HANDLER_CONTEXT<kicadd::render::GetArt>& aCtx )
+{
+    if( !board() || !m_feed )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
+
+    kicadd::render::Art out;
+    m_feed->GetArt( { aCtx.Request.layers().begin(), aCtx.Request.layers().end() }, out );
     return out;
 }
 

@@ -82,7 +82,8 @@ async def main(base):
     t_b = (time.perf_counter() - t0) * 1000
     f = fp_by_ref(delta_b, "U78") if delta_b else None
     check(f and f["x"] == x0 + 500, f"B receives the delta in {t_b:.1f} ms; U78.x {x0} -> {f and f['x']} µm")
-    check(delta_b and len(json.dumps(delta_b)) < 4000, f"delta is small ({len(json.dumps(delta_b))} bytes)")
+    # One footprint: pads, courtyard and its silk / fab graphics (stroke text is most of it).
+    check(delta_b and len(json.dumps(delta_b)) < 16000, f"delta is small ({len(json.dumps(delta_b))} bytes)")
     delta_a = await recv_until(a, lambda m: m["t"] == "delta" and fp_by_ref(m, "U78"))
     check(delta_a is not None, "A also receives the authoritative delta")
 

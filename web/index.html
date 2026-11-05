@@ -90,7 +90,8 @@
     </section>
     <section class="help">
       <kbd>drag</kbd> move footprint · <kbd>R</kbd>/<kbd>⇧R</kbd> rotate · <kbd>F</kbd> flip side ·
-      <kbd>Del</kbd> delete · <kbd>A</kbd> add at cursor ·
+      <kbd>Del</kbd> delete · <kbd>A</kbd> add at cursor · <kbd>⇧/Ctrl+click</kbd> or
+      <kbd>drag</kbd> on empty board: select several (→ enclosed, ← touched) ·
       <kbd>←↑→↓</kbd> nudge 0.1 mm (<kbd>⇧</kbd> 1 mm) · <kbd>wheel</kbd> zoom ·
       <kbd>right-drag</kbd> pan · <kbd>Home</kbd> fit · <kbd>Alt</kbd> no grid snap ·
       <kbd>Ctrl+Z</kbd>/<kbd>Ctrl+Y</kbd> undo/redo · <kbd>Ctrl+S</kbd> save
@@ -108,12 +109,26 @@
 const board = { copper: [], outline: [], fp: new Map(), trk: new Map(), via: new Map(), zone: new Map() };
 let rev = 0;
 const view = { s: 0.01, ox: 0, oy: 0 };          // screen = world * s + o
-const vis = { zones: true, fills: true, courtyard: true, refs: true, vias: true, ratsnest: true, layers: {} };
+const vis = { zones: true, fills: true, courtyard: true, refs: true, vias: true, ratsnest: true, layers: {},
+              art: { "F.SilkS": true, "B.SilkS": true, "F.Fab": false, "B.Fab": false } };
+// Silk / fab: drawn back to front, fetched per layer the first time it is shown ("art").
+const ART_LAYERS = ["B.Fab", "F.Fab", "B.SilkS", "F.SilkS"];
+const ART_COLOR = { "F.SilkS": "#f2f2f2", "B.SilkS": "#d79be0", "F.Fab": "#b8b8b8", "B.Fab": "#7d86b8" };
+const ART_ALPHA = { "F.SilkS": 0.9, "B.SilkS": 0.7, "F.Fab": 0.75, "B.Fab": 0.6 };
+const artLoaded = new Set(), artRequested = new Set();
+let drawings = [], artPaths = null;   // board-level silk / fab
 const fills = new Map();          // "zoneId|layer" -> {id, ly, net, polys:[[x,y,..]]}
 let fillPaths = null;             // layer -> Path2D, rebuilt when fills change
 let fillsRequested = false;
 let rats = { xy: [], net: [], nets: [], pending: [], unconnected: 0, path: null };
-let selected = null;                                // footprint id
+const selection = new Set();                        // selected footprint ids
+let boxSel = null;                                  // rubber band {x0,y0,x1,y1,add}
+function selFps() { return [...selection].map(id => board.fp.get(id)).filter(Boolean); }
+function select(ids, add) {
+  if (!add) selection.clear();
+  for (const id of ids) selection.add(id);
+  showSelection(); dirty = true;
+}
 let drag = null;                                    // {id, sx, sy, dx, dy, moved}
 let pan = null;
 let drcMarks = [];
@@ -145,9 +160,19 @@ const PAD_COLOR = ["#e0a33c", "#6aa8e8", "#c9b95a"];  // front, back, through
 // ---------------------------------------------------------------------------------------------
 // Ingest
 
+function decodeArt(rows, lys) {        // [[ly,w,filled,x0,y0,dx,dy,..]] -> [{ly,w,fill,pts}]
+  return rows.map(r => {
+    const pts = new Array(r.length - 3);
+    let x = 0, y = 0;
+    for (let i = 3; i < r.length; i += 2) { x += r[i]; y += r[i + 1]; pts[i - 3] = x; pts[i - 2] = y; }
+    return { ly: lys[r[0]], w: r[1], fill: r[2] === 1, pts };
+  });
+}
+
 function ingest(msg) {
   const nets = msg.nets || [], lys = msg.lys || [];
   for (const f of msg.fp || []) {
+    f.gx = f.gx ? decodeArt(f.gx, lys) : [];
     f.pads = f.pads.map(p => ({ num: p[0], net: nets[p[1]] || "", shape: p[2], side: p[3], x: p[4], y: p[5],
                                 w: p[6], h: p[7], rot: p[8], rr: p[9], drill: p[10], poly: p[11] || null }));
     board.fp.set(f.id, f);
@@ -181,6 +206,8 @@ function applySnapshot(msg) {
   updateStats();
   log(`snapshot <b>rev ${rev}</b>: ${board.fp.size} footprints, ${board.trk.size} tracks`);
   fills.clear(); fillPaths = null; fillsRequested = false;
+  artLoaded.clear(); artRequested.clear(); drawings = []; artPaths = null;
+  requestArt();
   if (vis.fills) requestFills();
 }
 
@@ -206,9 +233,9 @@ function applyDelta(msg) {
   rev = msg.rev;
   dirty = true;
   if (selectRef) {
-    for (const f of board.fp.values()) if (f.ref === selectRef) { selected = f.id; selectRef = null; break; }
+    for (const f of board.fp.values()) if (f.ref === selectRef) { select([f.id]); selectRef = null; break; }
   }
-  if (selected && !board.fp.has(selected)) selected = null;
+  for (const id of [...selection]) if (!board.fp.has(id)) selection.delete(id);
   showSelection();
   updateStats();
 }
@@ -283,12 +310,14 @@ function arcThrough(path, t) {          // circle through start, mid, end
 
 let cache = { tracks: new Map(), pads: [new Path2D(), new Path2D(), new Path2D()], holes: new Path2D(),
               vias: new Path2D(), viaHoles: new Path2D(), cyF: new Path2D(), cyB: new Path2D(),
-              zones: new Map(), outline: new Path2D() };
+              zones: new Map(), outline: new Path2D(), art: new Map() };
 
 function footprintPaths(f) {
   let e = fpCache.get(f.id);
   if (e) return e;
-  e = { pads: [new Path2D(), new Path2D(), new Path2D()], holes: new Path2D(), cy: new Path2D(), back: f.back };
+  e = { pads: [new Path2D(), new Path2D(), new Path2D()], holes: new Path2D(), cy: new Path2D(), back: f.back,
+        art: new Map() };
+  addArt(e.art, f.gx || []);
   for (const p of f.pads) {
     addPad(e.pads[p.side], p);
     if (p.drill > 0) { e.holes.moveTo(p.x + p.drill / 2, p.y); e.holes.arc(p.x, p.y, p.drill / 2, 0, Math.PI * 2); }
@@ -323,12 +352,17 @@ function buildCache() {
     trkDirty = false;
   }
   if (fpDirty) {
-    const lifted = drag && drag.moved ? drag.id : null;
+    const lifted = drag && drag.moved ? drag.ids : null;
     cache.pads = [new Path2D(), new Path2D(), new Path2D()];
-    cache.holes = new Path2D(); cache.cyF = new Path2D(); cache.cyB = new Path2D();
+    cache.holes = new Path2D(); cache.cyF = new Path2D(); cache.cyB = new Path2D(); cache.art = new Map();
     for (const f of board.fp.values()) {
-      if (f.id === lifted) continue;
+      if (lifted && lifted.has(f.id)) continue;
       const e = footprintPaths(f);
+      for (const [k, p] of e.art) {
+        let m = cache.art.get(k);
+        if (!m) cache.art.set(k, m = new Path2D());
+        m.addPath(p);
+      }
       for (let i = 0; i < 3; i++) cache.pads[i].addPath(e.pads[i]);
       cache.holes.addPath(e.holes);
       (f.back ? cache.cyB : cache.cyF).addPath(e.cy);
@@ -392,6 +426,9 @@ function draw() {
   if (vis.vias) { ctx.fillStyle = "#a9adb3"; ctx.fill(cache.vias); }
   ctx.fillStyle = "#0b0e11"; ctx.fill(cache.holes); if (vis.vias) ctx.fill(cache.viaHoles);
 
+  if (!artPaths) { artPaths = new Map(); addArt(artPaths, drawings); }
+  drawArt([cache.art, artPaths], px);
+
   if (vis.courtyard) {
     ctx.lineWidth = 1 * px;
     if (showB) { ctx.strokeStyle = "#3fb0c0"; ctx.globalAlpha = 0.6; ctx.stroke(cache.cyB); }
@@ -421,20 +458,25 @@ function draw() {
 
   // Lifted footprint (being dragged) on top.
   if (drag && drag.moved) {
-    const f = board.fp.get(drag.id);
-    if (f) {
-      const p = new Path2D(), cy = new Path2D();
+    const p = new Path2D(), cy = new Path2D(), art = new Map();
+    for (const id of drag.ids) {
+      const f = board.fp.get(id);
+      if (!f) continue;
       for (const pad of f.pads) addPad(p, pad, drag.dx, drag.dy);
       addPoly(cy, f.cy, drag.dx, drag.dy);
+      addArt(art, f.gx || [], drag.dx, drag.dy);
+    }
+    {
       ctx.fillStyle = "#ffd36a"; ctx.globalAlpha = 0.9; ctx.fill(p); ctx.globalAlpha = 1;
       ctx.strokeStyle = "#ffd36a"; ctx.lineWidth = 1.5 * px; ctx.stroke(cy);
+      drawArt([art], px);
     }
   }
 
   // Selection, flashes
   const now = performance.now();
   const boxes = [];
-  if (selected && board.fp.has(selected) && !(drag && drag.moved)) boxes.push([board.fp.get(selected), "#5aa0ff", 2]);
+  if (!(drag && drag.moved)) for (const f of selFps()) boxes.push([f, "#5aa0ff", 2]);
   for (const [id, until] of flashes) {
     if (until < now) { flashes.delete(id); continue; }
     if (board.fp.has(id)) boxes.push([board.fp.get(id), `rgba(255,214,90,${(until - now) / 1500})`, 3]);
@@ -444,6 +486,15 @@ function draw() {
     ctx.strokeStyle = col; ctx.lineWidth = w * px;
     ctx.strokeRect(x0 - m, y0 - m, x1 - x0 + 2 * m, y1 - y0 + 2 * m);
   }
+  if (boxSel) {   // left to right: enclosed parts (solid); right to left: touched parts (dashed)
+    const { x0, y0, x1, y1 } = boxSel, touch = x1 < x0;
+    ctx.fillStyle = touch ? "rgba(120,220,140,.08)" : "rgba(90,160,255,.08)";
+    ctx.strokeStyle = touch ? "#78dc8c" : "#5aa0ff"; ctx.lineWidth = 1 * px;
+    if (touch) ctx.setLineDash([5 * px, 4 * px]);
+    ctx.fillRect(Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0), Math.abs(y1 - y0));
+    ctx.strokeRect(Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0), Math.abs(y1 - y0));
+    ctx.setLineDash([]);
+  }
 
   // Reference designators when large enough on screen
   if (vis.refs) {
@@ -452,7 +503,7 @@ function draw() {
       const w = f.bb[2] - f.bb[0], h = f.bb[3] - f.bb[1];
       if (Math.min(w, h) * s < 22 || w * s > W * 0.7) continue;
       if (f.back ? !showB : !showF) continue;
-      const lifted = drag && drag.moved && drag.id === f.id;
+      const lifted = drag && drag.moved && drag.ids.has(f.id);
       const size = Math.min(Math.min(w, h) * 0.35, 16 * px * 3);
       ctx.font = `600 ${size}px system-ui, sans-serif`;
       ctx.fillStyle = f.back ? "rgba(140,200,255,.85)" : "rgba(255,255,255,.88)";
@@ -513,11 +564,32 @@ const mm = (um) => (um / 1000).toFixed(3).replace(/\.?0+$/, "");
 // ---------------------------------------------------------------------------------------------
 // Hit testing
 
+function insidePoly(xy, x, y) {
+  let inside = false;
+  for (let i = 0, j = xy.length - 2; i < xy.length; j = i, i += 2) {
+    const xi = xy[i], yi = xy[i + 1], xj = xy[j], yj = xy[j + 1];
+    if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+// A part is hit inside its courtyard; one without courtyard inside its box if it has pads;
+// a mechanical outline (no pads, no courtyard, e.g. an M.2 card) only near its box edge, so
+// the board inside it stays free for box selection.
+function hitsFootprint(f, x, y) {
+  const [x0, y0, x1, y1] = f.bb;
+  if (x < x0 || x > x1 || y < y0 || y > y1) return false;
+  if (f.cy && f.cy.length >= 6) return insidePoly(f.cy, x, y) || padAt(f, x, y) !== null;
+  if (f.pads.length) return true;
+  const m = 5 / view.s;
+  return x - x0 < m || x1 - x < m || y - y0 < m || y1 - y < m;
+}
+
 function footprintAt(x, y) {
   let best = null, bestArea = Infinity;
   for (const f of board.fp.values()) {
+    if (!hitsFootprint(f, x, y)) continue;
     const [x0, y0, x1, y1] = f.bb;
-    if (x < x0 || x > x1 || y < y0 || y > y1) continue;
     if (f.back ? !vis.layers["B.Cu"] : !vis.layers["F.Cu"]) continue;
     const area = (x1 - x0) * (y1 - y0) * (f.back ? 1.5 : 1);    // prefer the front side
     if (area < bestArea) { best = f; bestArea = area; }
@@ -537,28 +609,40 @@ function padAt(f, x, y) {
 // ---------------------------------------------------------------------------------------------
 // Edits
 
-function requestMove(f, dx, dy, rotDeg, flip) {
-  if (!f) return;
-  if (f.lk) { log(`<b>${f.ref}</b> is locked`); return; }
-  // Optimistic: show the translation now; the server's delta replaces it with the truth.
-  if (dx || dy) {
-    for (const p of f.pads) { p.x += dx; p.y += dy; if (p.poly) for (let i = 0; i < p.poly.length; i++) p.poly[i] += i % 2 ? dy : dx; }
-    if (f.cy) for (let i = 0; i < f.cy.length; i++) f.cy[i] += i % 2 ? dy : dx;
-    f.bb = [f.bb[0] + dx, f.bb[1] + dy, f.bb[2] + dx, f.bb[3] + dy];
-    f.x += dx; f.y += dy;
-    fpCache.delete(f.id);
-    fpDirty = dirty = true;
-  }
-  pendingOwn.add(f.id);
-  moveSentAt = performance.now();
-  send({ t: "move", refs: [f.ref], dx: dx / 1000, dy: dy / 1000, rot: rotDeg || 0, flip: !!flip });
+function editable(fps) {
+  fps = (Array.isArray(fps) ? fps : [fps]).filter(Boolean);
+  const locked = fps.filter(f => f.lk);
+  if (locked.length) { log(`<b>${locked.map(f => f.ref).join(", ")}</b> ${locked.length > 1 ? "are" : "is"} locked`); return []; }
+  return fps;
 }
 
-function requestDelete(f) {
-  if (!f) return;
-  if (f.lk) { log(`<b>${f.ref}</b> is locked`); return; }
+// One edit for all parts; several parts rotate / flip as a group around their common centre.
+function requestMove(fps, dx, dy, rotDeg, flip) {
+  fps = editable(fps);
+  if (!fps.length) return;
+  for (const f of fps) {
+    // Optimistic: show the translation now; the server's delta replaces it with the truth.
+    if (dx || dy) {
+      for (const p of f.pads) { p.x += dx; p.y += dy; if (p.poly) for (let i = 0; i < p.poly.length; i++) p.poly[i] += i % 2 ? dy : dx; }
+      if (f.cy) for (let i = 0; i < f.cy.length; i++) f.cy[i] += i % 2 ? dy : dx;
+      for (const g of f.gx || []) for (let i = 0; i < g.pts.length; i++) g.pts[i] += i % 2 ? dy : dx;
+      f.bb = [f.bb[0] + dx, f.bb[1] + dy, f.bb[2] + dx, f.bb[3] + dy];
+      f.x += dx; f.y += dy;
+      fpCache.delete(f.id);
+      fpDirty = dirty = true;
+    }
+    pendingOwn.add(f.id);
+  }
   moveSentAt = performance.now();
-  send({ t: "delete", refs: [f.ref] });
+  send({ t: "move", refs: fps.map(f => f.ref), dx: dx / 1000, dy: dy / 1000, rot: rotDeg || 0, flip: !!flip,
+         group: fps.length > 1 });
+}
+
+function requestDelete(fps) {
+  fps = editable(fps);
+  if (!fps.length) return;
+  moveSentAt = performance.now();
+  send({ t: "delete", refs: fps.map(f => f.ref) });
 }
 
 // Add: "Library:Name" from the footprint libraries, or an existing reference to copy.
@@ -592,7 +676,10 @@ function onMoved(msg) {
   }
   if (op !== "move") log(`${op}: <b>${msg.label}</b>${msg.source ? ` <span style="color:var(--dim)">from ${msg.source}</span>` : ""}`);
   if ((msg.new_nets || []).length) log(`new nets: ${msg.new_nets.join(", ")}`);
-  if (op === "delete" && (msg.removed || []).includes(board.fp.get(selected)?.ref)) { selected = null; showSelection(); }
+  if (op === "delete") {
+    for (const f of selFps()) if ((msg.removed || []).includes(f.ref)) selection.delete(f.id);
+    showSelection();
+  }
   if (op === "add" && (msg.added || []).length) selectRef = msg.added[0];
   drcMarks = msg.drc;
   $("drcSummary").textContent = op === "delete" ? "" : `local check of the ${op === "add" ? "new" : "moved"} footprint`;
@@ -615,6 +702,56 @@ function onMoved(msg) {
   $("stats").dataset.unc = `unconnected ${msg.unconnected}${pend}`;
   updateStats();
   dirty = true;
+}
+
+function requestArt() {
+  const want = ART_LAYERS.filter(l => vis.art[l] && !artLoaded.has(l) && !artRequested.has(l));
+  if (!want.length) return;
+  for (const l of want) artRequested.add(l);
+  send({ t: "art", layers: want });
+}
+
+function onArt(msg) {
+  const layers = new Set(msg.layers), lys = msg.lys || [];
+  for (const f of board.fp.values()) {
+    const fresh = msg.fp[f.id] ? decodeArt(msg.fp[f.id], lys) : [];
+    f.gx = (f.gx || []).filter(g => !layers.has(g.ly)).concat(fresh);
+    fpCache.delete(f.id);
+  }
+  drawings = drawings.filter(g => !layers.has(g.ly)).concat(decodeArt(msg.dr || [], lys));
+  for (const l of layers) { artLoaded.add(l); artRequested.delete(l); }
+  artPaths = null; fpDirty = dirty = true;
+  log(`silk / fab: ${msg.layers.join(", ")} loaded`);
+}
+
+function addArt(map, gx, dx = 0, dy = 0) {   // into Path2Ds keyed by layer|width|fill
+  for (const g of gx) {
+    const key = g.ly + "|" + g.w + "|" + (g.fill ? 1 : 0);
+    let p = map.get(key);
+    if (!p) map.set(key, p = new Path2D());
+    const pts = g.pts;
+    if (pts.length < 2) continue;
+    p.moveTo(pts[0] + dx, pts[1] + dy);
+    for (let i = 2; i < pts.length; i += 2) p.lineTo(pts[i] + dx, pts[i + 1] + dy);
+    if (g.fill) p.closePath();
+    else if (pts.length === 2) p.lineTo(pts[0] + dx + 0.01, pts[1] + dy);   // a dot
+  }
+}
+
+function drawArt(maps, px) {
+  for (const l of ART_LAYERS) {
+    if (!vis.art[l]) continue;
+    ctx.globalAlpha = ART_ALPHA[l]; ctx.strokeStyle = ctx.fillStyle = ART_COLOR[l];
+    for (const map of maps) {
+      for (const [key, p] of map) {
+        const [ly, w, fill] = key.split("|");
+        if (ly !== l) continue;
+        if (fill === "1") { ctx.fill(p); if (+w > 0) { ctx.lineWidth = Math.max(+w, px); ctx.stroke(p); } }
+        else { ctx.lineWidth = Math.max(+w, px); ctx.stroke(p); }
+      }
+    }
+  }
+  ctx.globalAlpha = 1;
 }
 
 function requestFills(ids) {
@@ -720,6 +857,8 @@ function buildLayerPanel() {
     if (!(l in vis.layers)) vis.layers[l] = (l === "F.Cu" || l === "B.Cu");
     item(l, l, layerColor(l), () => vis.layers[l], v => vis.layers[l] = v);
   }
+  for (const l of ["F.SilkS", "B.SilkS", "F.Fab", "B.Fab"])
+    item("art-" + l, l, ART_COLOR[l], () => vis.art[l], v => { vis.art[l] = v; if (v) requestArt(); });
   item("fills", "Copper fill", null, () => vis.fills, v => { vis.fills = v; if (v && !fillsRequested) requestFills(); });
   item("zones", "Zone outlines", null, () => vis.zones, v => vis.zones = v);
   item("vias", "Vias", null, () => vis.vias, v => vis.vias = v);
@@ -729,8 +868,19 @@ function buildLayerPanel() {
 }
 
 function showSelection() {
-  const f = board.fp.get(selected), box = $("sel");
-  if (!f) { box.className = "empty"; box.textContent = "Click a footprint"; return; }
+  const fps = selFps(), box = $("sel");
+  if (!fps.length) { box.className = "empty"; box.textContent = "Click a footprint (Shift/Ctrl+click or drag a box for several)"; return; }
+  if (fps.length > 1) {
+    const front = fps.filter(f => !f.back).length, pads = fps.reduce((n, f) => n + f.pads.length, 0);
+    const refs = fps.map(f => f.ref).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    box.className = "kv";
+    box.innerHTML = `<span>Selected</span><span>${fps.length} footprints</span>` +
+      `<span>Refs</span><span class="mono">${refs.slice(0, 12).join(" ")}${refs.length > 12 ? " …" : ""}</span>` +
+      `<span>Side</span><span>${front} front · ${fps.length - front} back</span>` +
+      `<span>Pads</span><span>${pads}</span>`;
+    return;
+  }
+  const f = fps[0];
   const nets = new Set(f.pads.map(p => p.net).filter(Boolean));
   box.className = "kv";
   box.innerHTML = `<span>Ref</span><span class="mono">${f.ref}${f.lk ? " 🔒" : ""}</span>` +
@@ -768,15 +918,22 @@ cv.addEventListener("wheel", e => {
 
 cv.addEventListener("mousedown", e => {
   const [x, y] = toWorld(e);
+  const additive = e.shiftKey || e.ctrlKey || e.metaKey;
   if (e.button === 0) {
     const f = footprintAt(x, y);
     if (f) {
-      selected = f.id; showSelection();
-      drag = { id: f.id, sx: x, sy: y, dx: 0, dy: 0, moved: false };
+      if (additive) {                       // toggle this part, no drag
+        if (selection.has(f.id)) selection.delete(f.id); else selection.add(f.id);
+        showSelection(); dirty = true;
+        return;
+      }
+      if (!selection.has(f.id)) select([f.id]);   // clicking a selected part drags the whole selection
+      drag = { ids: new Set(selection), sx: x, sy: y, dx: 0, dy: 0, moved: false };
       dirty = true;
       return;
     }
-    selected = null; showSelection();
+    boxSel = { x0: x, y0: y, x1: x, y1: y, add: additive };   // drag on empty board: box select
+    return;
   }
   pan = { x: e.clientX, y: e.clientY, ox: view.ox, oy: view.oy };
   cv.classList.add("grab");
@@ -790,14 +947,15 @@ window.addEventListener("mousemove", e => {
   if (pan) {
     view.ox = pan.ox + e.clientX - pan.x; view.oy = pan.oy + e.clientY - pan.y; dirty = true; return;
   }
+  if (boxSel) { boxSel.x1 = x; boxSel.y1 = y; dirty = true; return; }
   if (drag) {
     let dx = x - drag.sx, dy = y - drag.sy;
     if (!e.altKey) { dx = Math.round(dx / GRID) * GRID; dy = Math.round(dy / GRID) * GRID; }
     if (!drag.moved && Math.hypot(x - drag.sx, y - drag.sy) * view.s > 3) {
-      const f = board.fp.get(drag.id);
-      if (f && f.lk) { log(`<b>${f.ref}</b> is locked`); drag = null; return; }
+      const fps = [...drag.ids].map(id => board.fp.get(id)).filter(Boolean);
+      if (!editable(fps).length) { drag = null; return; }
       drag.moved = true; fpDirty = true;
-      drag.pads = new Set(f.pads.map(p => p.x + "," + p.y));
+      drag.pads = new Set(fps.flatMap(f => f.pads.map(p => p.x + "," + p.y)));
     }
     drag.dx = dx; drag.dy = dy; dirty = true;
     return;
@@ -814,9 +972,20 @@ window.addEventListener("mousemove", e => {
 
 window.addEventListener("mouseup", () => {
   if (pan) { pan = null; cv.classList.remove("grab"); }
+  if (boxSel) {
+    const b = boxSel; boxSel = null;
+    const [x0, x1] = [Math.min(b.x0, b.x1), Math.max(b.x0, b.x1)], [y0, y1] = [Math.min(b.y0, b.y1), Math.max(b.y0, b.y1)];
+    const touch = b.x1 < b.x0, showF = vis.layers["F.Cu"], showB = vis.layers["B.Cu"];
+    if ((x1 - x0) * view.s < 3 && (y1 - y0) * view.s < 3) { if (!b.add) select([]); return; }   // a click
+    const hit = [...board.fp.values()].filter(f => (f.back ? showB : showF) && (touch
+      ? f.bb[0] <= x1 && f.bb[2] >= x0 && f.bb[1] <= y1 && f.bb[3] >= y0
+      : f.bb[0] >= x0 && f.bb[2] <= x1 && f.bb[1] >= y0 && f.bb[3] <= y1));
+    select(hit.map(f => f.id), b.add);
+    return;
+  }
   if (drag) {
     const d = drag; drag = null;
-    if (d.moved && (d.dx || d.dy)) requestMove(board.fp.get(d.id), d.dx, d.dy, 0);
+    if (d.moved && (d.dx || d.dy)) requestMove([...d.ids].map(id => board.fp.get(id)), d.dx, d.dy, 0);
     fpDirty = dirty = true;
   }
 });
@@ -832,10 +1001,10 @@ window.addEventListener("keydown", e => {
     e.preventDefault();
     return;
   }
-  const f = selected ? board.fp.get(selected) : null;
+  const sel = selFps(), f = sel.length ? sel : null;
   const step = e.shiftKey ? 1000 : 100;
   if (e.key === "Home" || ((e.key === "f" || e.key === "F") && !f)) fit();
-  else if (e.key === "Escape") { selected = null; showSelection(); drcMarks = []; dirty = true; }
+  else if (e.key === "Escape") { boxSel = null; select([]); drcMarks = []; dirty = true; }
   else if (e.key === "a" || e.key === "A") requestAdd();
   else if (!f) return;
   else if (e.key === "f" || e.key === "F") requestMove(f, 0, 0, 0, true);
@@ -890,6 +1059,7 @@ function connect() {
     else if (msg.t === "history") onHistory(msg);
     else if (msg.t === "ratsnest") onRatsnest(msg);
     else if (msg.t === "fills") onFills(msg);
+    else if (msg.t === "art") onArt(msg);
     else if (msg.t === "drcfull") onDrcFull(msg);
     else if (msg.t === "refilled") {
       $("refill").disabled = false; $("refill").textContent = "Refill zones";

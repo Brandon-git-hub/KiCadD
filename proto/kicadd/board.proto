@@ -115,6 +115,9 @@ message MoveDelta
   bool   flip = 5;            // move to the other side (F.Cu <-> B.Cu), mirrored left-right
                               // around the footprint's own anchor: pads, padstacks, silk,
                               // fab and courtyard layers swap, geometry is mirrored
+  bool   group_pivot = 6;     // rotate / flip the refs as one group around the centre of
+                              // their combined body box (as the editor does for a selection)
+                              // instead of each around its own anchor
 }
 
 message MoveResult

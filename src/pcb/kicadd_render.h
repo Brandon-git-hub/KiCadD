@@ -30,7 +30,8 @@ public:
 
     uint64_t Revision() const { return m_revision; }
 
-    void Snapshot( render::RenderSnapshot& aOut ) const;
+    void Snapshot( render::RenderSnapshot& aOut, bool aWithArt = true ) const;
+    void GetArt( const std::vector<std::string>& aLayers, render::Art& aOut ) const;
     void Changes( uint64_t aSince, render::RenderChanges& aOut ) const;
 
     // BOARD_LISTENER

@@ -32,11 +32,11 @@ def main(base, shots):
              "x: f.x, y: f.y, side: f.pads.map(p => p.side)} : null; }"
         u0 = page.evaluate(fp, "U78")
         page.evaluate("""() => { const f = [...board.fp.values()].find(f => f.ref === 'U78');
-                                 selected = f.id; showSelection(); fit([f.bb[0]-3000, f.bb[1]-3000, f.bb[2]+3000, f.bb[3]+3000]); }""")
+                                 select([f.id]); fit([f.bb[0]-3000, f.bb[1]-3000, f.bb[2]+3000, f.bb[3]+3000]); }""")
         page.mouse.move(700, 450)
 
         page.keyboard.press("f")
-        page.wait_for_function("(() => { const f = board.fp.get(selected); return f && f.back; })()", timeout=10000)
+        page.wait_for_function("(() => { const f = selFps()[0]; return f && f.back; })()", timeout=10000)
         u1 = page.evaluate(fp, "U78")
         check(u1["back"] and (u1["x"], u1["y"]) == (u0["x"], u0["y"]) and set(u1["side"]) != set(u0["side"]),
               "F flips the selected part to the back (pads change side, anchor stays)")
@@ -59,9 +59,9 @@ def main(base, shots):
         answers[:] = ["Capacitor_SMD:C_0603_1608Metric", "C?"]
         page.mouse.move(650, 420)
         page.keyboard.press("a")
-        page.wait_for_function(f"board.fp.size === {n + 1} && selected && board.fp.get(selected).ref.startsWith('C')",
+        page.wait_for_function(f"board.fp.size === {n + 1} && selFps().length === 1 && selFps()[0].ref.startsWith('C')",
                                timeout=10000)
-        added = page.evaluate("board.fp.get(selected)")
+        added = page.evaluate("selFps()[0]")
         check(added["val"] and len(added["pads"]) == 2, f"A adds {added['ref']} ({added['val']}) at the cursor, selected")
         log = page.inner_text("#log")
         check("Capacitor_SMD.pretty" in log, "activity log names the library file")

@@ -373,6 +373,44 @@ board: 28 = 28. `verify_incremental.py` part B (12 random moves, all local DRC t
 matches full DRC exactly (seeds 7 / 3: 47 = 47, 79 = 79); run part B on a fresh board, since
 after part A's 60 random moves full DRC hits its per-type error limits (199 / 499).
 
+## Silkscreen / Fab, multi-select, faster local DRC (2026-11-06)
+
+**Silkscreen and Fab in the 2D view.** The daemon flattens each footprint's silk / fab
+graphics and visible text (KiCad's own `GetEffectiveShape`, so text is KiCad's stroke font)
+into polylines and polygons (`render.Graphic`), joining consecutive segments; board-level
+artwork comes too. The snapshot leaves them out (`GetRenderSnapshot.skip_art`): the page
+fetches each layer the first time it is shown (`GetArt` / `{"t":"art"}`), like copper fills.
+Edited footprints carry their graphics in the delta. Layers F.SilkS, B.SilkS (on by default),
+F.Fab, B.Fab (off: Fab is dense, e.g. Antmicro parts carry "License"/"Author" text).
+Jetson: silk ~7k graphics, fab ~89k / 600k points (fetched in ~0.5 s); merging them into the
+per-footprint path caches adds ~0.4 ms to a rebuild.
+
+**Multi-select.** Shift/Ctrl+click toggles parts; dragging on empty board draws a box (left to
+right: enclosed parts, right to left: touched parts). Dragging any selected part moves all of
+them; R / F / Del / arrows act on the selection; several parts rotate and flip as a group
+around their common centre (`MoveDelta.group_pivot`, MCP `move_footprints {pivot: "group"}`),
+one undo step. Hit testing uses the courtyard, so a mechanical outline (no pads, no
+courtyard, e.g. an M.2 card) is only picked at its edge and the board inside stays selectable.
+
+**Local DRC on large parts.** The moved footprint's pads go into a grid; candidate tracks come
+from the connectivity R-tree (`CN_LIST::QueryArea`, a small upstream helper) with its cached
+boxes; no LSET allocation per pair; rules are evaluated only for shapes within the worst
+CLEARANCE / HOLE_CLEARANCE of any rule. `KICADD_DRC_PROFILE=1` prints phase timings.
+
+| part | pads | before | after |
+|---|---|---|---|
+| J1 | 699 | 183 ms | 12.5 ms |
+| J18 | 564 | 51 ms | 6.2 ms |
+| U21 | 101 | 5.7 ms | 3.2 ms |
+| U78 | 24 | 1.75 ms | 0.6 ms |
+| C100 | 2 | 1.25 ms | 0.2 ms |
+
+Results unchanged: local == full DRC for J1 (238), J1+J18+U21+U30 (510), J18+J1 (263) and
+random parts (47, 79) (`KICADD_TEST_REFS=J1 verify_incremental.py SOCK 0 SEED B`).
+
+Verification: `client/browser_multiselect.py` (selection, group drag / rotate / flip / delete,
+undo, silk follows the parts), plus every earlier suite.
+
 ## License
 
 GPL-3.0-or-later (same as KiCad). Konnect (AGPL-3.0-only) is used as design reference only;

@@ -82,6 +82,9 @@ private:
     HANDLER_RESULT<kicadd::render::Ratsnest>
     handleGetRatsnest( const HANDLER_CONTEXT<kicadd::render::GetRatsnest>& aCtx );
 
+    HANDLER_RESULT<kicadd::render::Art>
+    handleGetArt( const HANDLER_CONTEXT<kicadd::render::GetArt>& aCtx );
+
     HANDLER_RESULT<kicadd::render::ZoneFills>
     handleGetZoneFills( const HANDLER_CONTEXT<kicadd::render::GetZoneFills>& aCtx );
 

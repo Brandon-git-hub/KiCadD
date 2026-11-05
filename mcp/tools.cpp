@@ -421,6 +421,8 @@ TOOL_RESULT moveFootprints( IPC_CLIENT& aIpc, const json& aArgs )
     req.set_dy( toNm( dy ) );
     req.set_drot_decideg( static_cast<int>( std::lround( rot * 10 ) ) );
     req.set_flip( flip );
+    req.set_group_pivot( aArgs.contains( "pivot" ) && aArgs["pivot"].is_string()
+                         && aArgs["pivot"].get<std::string>() == "group" );
 
     kb::MoveResponse r;
     std::string      err;
@@ -790,7 +792,7 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
 
     tools.push_back( { "move_footprints",
                        "Move/rotate/flip footprints as one undoable edit (move, then rotate, then flip; each "
-                       "around its own anchor). Returns new positions (B.Cu = bottom side), the "
+                       "around its own anchor, or as a group with pivot=group). Returns new positions (B.Cu = bottom side), the "
                        "unrouted-connection count and a local DRC of the moved parts (clearance, shorts, "
                        "hole clearance, courtyard overlap, board-edge clearance, copper outside the board). "
                        "Large nets (GND, power) skip ratsnest updates while you iterate; the count says which.",
@@ -799,7 +801,10 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                                  { "dy", { { "type", "number" }, { "description", "Delta Y, mm (down is +)" } } },
                                  { "rotate", { { "type", "number" }, { "description", "Rotation delta, degrees CCW" } } },
                                  { "flip", { { "type", "boolean" },
-                                             { "description", "Move to the other side (F.Cu <-> B.Cu), mirrored left-right" } } } },
+                                             { "description", "Move to the other side (F.Cu <-> B.Cu), mirrored left-right" } } },
+                                 { "pivot", { { "type", "string" }, { "enum", { "each", "group" } },
+                                              { "description", "Rotate/flip each part around its own anchor (default) or "
+                                                               "the parts as one group around their common centre" } } } },
                                { "refs" } ),
                        [&aIpc]( const json& a ) { return moveFootprints( aIpc, a ); } } );
 

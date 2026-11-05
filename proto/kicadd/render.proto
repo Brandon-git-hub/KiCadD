@@ -51,6 +51,16 @@ message Pad
   Polyline poly      = 10;    // PS_POLY only, absolute coordinates
 }
 
+// Silkscreen / fab artwork (lines, arcs, circles, polygons and text in KiCad's own font),
+// already flattened to absolute coordinates.
+message Graphic
+{
+  string          layer  = 1;   // "F.SilkS", "B.SilkS", "F.Fab", "B.Fab"
+  int32           width  = 2;   // stroke width (nm); 0 for a plain filled polygon
+  bool            filled = 3;   // closed polygon to fill; otherwise an open polyline to stroke
+  repeated sint64 xy     = 4;   // x0, y0, x1, y1, ...
+}
+
 message Footprint
 {
   string   id    = 1;
@@ -64,6 +74,7 @@ message Footprint
   Polyline courtyard = 9;      // first outline of the courtyard on its side, may be empty
   kicadd.board.Point bbox_min = 10;   // body, no text
   kicadd.board.Point bbox_max = 11;
+  repeated Graphic gfx = 12;   // silk / fab graphics and visible text of the footprint
 }
 
 message Track
@@ -112,7 +123,10 @@ message RenderItems
 }
 
 // Returns RenderSnapshot
-message GetRenderSnapshot {}
+message GetRenderSnapshot
+{
+  bool skip_art = 1;   // leave out silk / fab graphics (fetch them with GetArt when shown)
+}
 
 message RenderSnapshot
 {
@@ -121,6 +135,29 @@ message RenderSnapshot
   repeated LayerInfo layers  = 3;
   repeated Polyline outline  = 4;   // board edge polygons (outer outlines and holes)
   RenderItems       items    = 5;
+  repeated Graphic  drawings = 6;   // board-level silk / fab artwork (not journalled)
+}
+
+// Silk / fab graphics of every footprint plus the board's own artwork, for some layers.
+// Footprints changed later arrive with their graphics in RenderChanges.
+// Returns Art
+message GetArt
+{
+  repeated string layers = 1;   // "F.SilkS", "B.SilkS", "F.Fab", "B.Fab"; empty = all
+}
+
+message FootprintArt
+{
+  string           id  = 1;
+  repeated Graphic gfx = 2;
+}
+
+message Art
+{
+  uint64                revision   = 1;
+  repeated string       layers     = 2;
+  repeated FootprintArt footprints = 3;
+  repeated Graphic      drawings   = 4;
 }
 
 // Returns RenderChanges
