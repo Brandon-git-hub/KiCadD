@@ -56,7 +56,7 @@ jobs:
           restore-keys: |
             ${{ steps.key.outputs.key }}-
             vcpkg-win-x64-
-      - name: vcpkg install (lean: no OpenCASCADE / ngspice / Python)
+      - name: "vcpkg install (lean: no OpenCASCADE, ngspice, Python)"
         id: install
         shell: pwsh
         run: |
