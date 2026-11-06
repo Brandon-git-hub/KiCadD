@@ -4,5 +4,5 @@
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 BOARD=$1; shift
 mkdir -p "$HERE/run"
-exec env KICAD_RUN_FROM_BUILD_DIR=1 "$@" "$HERE/../build/kicad/kicad-cli" api-server \
+exec env KICAD_RUN_FROM_BUILD_DIR=1 "$@" "${KICADD_BUILD:-$HERE/../build}/kicad/kicad-cli" api-server \
     --socket "${KICADD_SOCK:-$HERE/run/kicadd.sock}" "$BOARD"

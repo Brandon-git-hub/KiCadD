@@ -411,6 +411,44 @@ random parts (47, 79) (`KICADD_TEST_REFS=J1 verify_incremental.py SOCK 0 SEED B`
 Verification: `client/browser_multiselect.py` (selection, group drag / rotate / flip / delete,
 undo, silk follows the parts), plus every earlier suite.
 
+## M1: trimmed build, pcbnew first (2026-11-06)
+
+Three switches in the upstream patch (top-level `CMakeLists.txt`), all `OFF` by default so a
+normal build is unchanged:
+
+| switch | effect |
+|---|---|
+| `KICADD_NO_OCC` | no OpenCASCADE: `pcbnew/exporters/step` + `u3d` and the STEP export dialog are not built; `kicad-cli pcb export 3d` (STEP, STEPZ, BREP, XAO, GLB, PLY, STL, U3D, 3D PDF) reports "not available"; the 3D model importer loads VRML / X3D only; the footprint panel's "export extruded body" is disabled |
+| `KICADD_NO_SPICE` | no ngspice; **eeschema is not built in this mode yet** (its simulator still needs ngspice; decoupling it is the eeschema half of M1) |
+| `KICADD_NO_PYTHON` | no Python interpreter at configure time or run time: Python API plugins are skipped, no interpreter lookup, no virtualenvs; executable plugins still load. SWIG bindings are already gone upstream |
+
+```sh
+cmake -S kicad -B build-lean -G Ninja -DCMAKE_BUILD_TYPE=Release -DKICADD_DIR=$PWD/KiCadD \
+      -DKICADD_NO_OCC=ON -DKICADD_NO_SPICE=ON -DKICADD_NO_PYTHON=ON -DKICAD_BUILD_QA_TESTS=OFF
+ninja -C build-lean kicad-cli pcbnew_kiface kicadd-mcp kicad_3d_import
+KICADD_BUILD=$PWD/build-lean KiCadD/client/kicadd_up.sh board.kicad_pcb 8765
+```
+
+Measured (Release, Jetson board, `kicad-cli api-server`):
+
+| | full | lean |
+|---|---|---|
+| OCC libraries linked by `_pcbnew.kiface` | 31 | **0** |
+| `_pcbnew.kiface` dependency closure (ldd) | 191 libs, 180 MB | **148 libs, 122 MB** |
+| `_pcbnew.kiface` itself | 71.4 MB | 70.5 MB |
+| shared libraries mapped at run time | 191 | **148** |
+| RSS with the board loaded | 828 MB | 810 MB |
+| ready (process start → board answers) | 1.50 s | 1.48 s |
+| `kicad-cli` process start | ~63 ms | ~63 ms |
+
+What this shows: the dependency footprint (what must be shipped and installed) drops by a
+third, but start-up time doesn't move: the process starts in ~60 ms either way and the 1.5 s
+is parsing an 81 MB board. Binary size is pcbnew's own code, not its dependencies.
+
+Verified on the lean build: `layout_e2e`, `history_e2e`, `web_e2e`, `mcp_e2e`,
+`browser_multiselect`, `browser_layout`, local == full DRC (J1+J18+U21+U30 510, random 79).
+All symbols resolve at load (`dlopen` with `RTLD_NOW`).
+
 ## License
 
 GPL-3.0-or-later (same as KiCad). Konnect (AGPL-3.0-only) is used as design reference only;

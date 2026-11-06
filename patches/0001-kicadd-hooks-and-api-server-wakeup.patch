@@ -1,8 +1,65 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index b4b5627b..8c64625e 100644
+index b4b5627b..9e478df3 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -1132,6 +1132,12 @@ endif()
+@@ -886,10 +886,34 @@ find_package( Fontconfig REQUIRED )
+ # Include MinGW resource compiler.
+ include( MinGWResourceCompiler )
+ 
++# KiCadD trimmed build: drop heavy dependencies (see KiCadD/README.md, M1).
++option( KICADD_NO_OCC
++    "Build without OpenCASCADE: no STEP/IGES/BREP/XAO/GLB/PLY/U3D export, no STEP/IGES 3D models (VRML only)"
++    OFF )
++option( KICADD_NO_SPICE
++    "Build without ngspice. The schematic editor (with its simulator) is not built in this mode yet."
++    OFF )
++option( KICADD_NO_PYTHON "Build without Python: no Python API plugins" OFF )
++
++if( KICADD_NO_OCC )
++    add_compile_definitions( KICADD_NO_OCC )
++endif()
++
++if( KICADD_NO_SPICE )
++    add_compile_definitions( KICADD_NO_SPICE )
++endif()
++
++if( KICADD_NO_PYTHON )
++    add_compile_definitions( KICADD_NO_PYTHON )
++endif()
++
+ # Find ngspice library, required for integrated circuit simulator
++if( NOT KICADD_NO_SPICE )
+ find_package( ngspice REQUIRED )
++endif()
+ 
+ # Find OpenCascade, required for STEP plugin and tools
++if( NOT KICADD_NO_OCC )
+ find_package(OCC)
+ if( NOT OCC_FOUND )
+     MESSAGE( FATAL_ERROR "================================================================\n"
+@@ -903,6 +927,7 @@ if( OCC_VERSION_STRING VERSION_LESS 7.5.0 )
+                          "================================================================\n")
+ endif()
+ include_directories( SYSTEM ${OCC_INCLUDE_DIR} )
++endif()   # NOT KICADD_NO_OCC
+ 
+ # Try to find Protobuf with modern approach first, fallback to legacy if needed
+ set( _protobuf_found FALSE )
+@@ -976,9 +1001,13 @@ set( INC_AFTER
+ 
+ set( PythonInterp_FIND_VERSION 3.6 )
+ 
++if( NOT KICADD_NO_PYTHON )
+ find_package( PythonInterp ${PythonInterp_FIND_VERSION} )
+ 
+ check_find_package_result( PYTHONINTERP_FOUND "Python Interpreter" )
++else()
++set( PYTHON_EXECUTABLE "" )
++endif()
+ 
+ #
+ # Find wxWidgets library, required
+@@ -1132,12 +1161,20 @@ endif()
  
  # Binaries ( CMake targets )
  add_subdirectory( api )
@@ -15,6 +72,36 @@ index b4b5627b..8c64625e 100644
  add_subdirectory( resources )
  add_subdirectory( thirdparty )
  add_subdirectory( libs )
+ add_subdirectory( common )
+ add_subdirectory( 3d-viewer )
++if( NOT KICADD_NO_SPICE )
+ add_subdirectory( eeschema )
++endif()
+ add_subdirectory( gerbview )
+ add_subdirectory( pcbnew )
+ add_subdirectory( pagelayout_editor )
+diff --git a/common/api/api_plugin_manager.cpp b/common/api/api_plugin_manager.cpp
+index 02e5f1c9..291f59df 100644
+--- a/common/api/api_plugin_manager.cpp
++++ b/common/api/api_plugin_manager.cpp
+@@ -227,6 +227,17 @@ void API_PLUGIN_MANAGER::ReloadPlugins( std::optional<wxString> aDirectoryToScan
+ 
+                 auto plugin = std::make_unique<API_PLUGIN>( aFile, *m_schema_validator );
+ 
++#ifdef KICADD_NO_PYTHON
++                // KiCadD trimmed build: no Python runtime, so Python plugins are never loaded
++                // (no interpreter lookup, no virtualenv creation). Executable plugins still are.
++                if( plugin->IsOk() && plugin->Runtime().type == PLUGIN_RUNTIME_TYPE::PYTHON )
++                {
++                    wxLogTrace( traceApi, wxString::Format( "Manager: skipping Python plugin %s (built without Python)",
++                                                            plugin->Identifier() ) );
++                    return;
++                }
++#endif
++
+                 if( plugin->IsOk() )
+                 {
+                     const wxString& id = plugin->Identifier();
 diff --git a/common/api/api_server.cpp b/common/api/api_server.cpp
 index 317ed06e..312169ef 100644
 --- a/common/api/api_server.cpp
@@ -29,6 +116,47 @@ index 317ed06e..312169ef 100644
  }
  
  
+diff --git a/common/api/python_manager.cpp b/common/api/python_manager.cpp
+index 15c2fe61..258afd0c 100644
+--- a/common/api/python_manager.cpp
++++ b/common/api/python_manager.cpp
+@@ -251,6 +251,10 @@ long PYTHON_MANAGER::ExecuteSync( const std::vector<wxString>& aArgs,
+ 
+ wxString PYTHON_MANAGER::FindPythonInterpreter()
+ {
++#ifdef KICADD_NO_PYTHON
++    return wxEmptyString;   // KiCadD trimmed build: never look for or launch a Python interpreter
++#endif
++
+     // First, attempt to use a Python we distribute with KiCad
+ #if defined( __WINDOWS__ )
+     wxFileName pythonExe = FindKicadFile( "pythonw.exe" );
+diff --git a/common/build_version.cpp b/common/build_version.cpp
+index b224822c..b58064f3 100644
+--- a/common/build_version.cpp
++++ b/common/build_version.cpp
+@@ -37,7 +37,9 @@
+ extern std::string GetKicadCurlVersion();
+ extern std::string GetCurlLibVersion();
+ 
++#ifndef KICADD_NO_OCC
+ #include <Standard_Version.hxx>
++#endif
+ 
+ #include <ngspice/sharedspice.h>
+ 
+@@ -301,7 +303,11 @@ wxString GetVersionInfoData( const wxString& aTitle, bool aHtml, bool aBrief )
+          << ( BOOST_VERSION / 100 % 1000 ) << wxT( "." )
+          << ( BOOST_VERSION % 100 ) << eol;
+ 
++#ifndef KICADD_NO_OCC
+     aMsg << indent4 << "OCC: " << OCC_VERSION_COMPLETE << eol;
++#else
++    aMsg << indent4 << "OCC: not built (KiCadD)" << eol;
++#endif
+     aMsg << indent4 << "Curl: " << GetCurlLibVersion() << eol;
+ 
+ #if defined( NGSPICE_BUILD_VERSION )
 diff --git a/include/api/api_server.h b/include/api/api_server.h
 index c5cd6f2a..a0f846b9 100644
 --- a/include/api/api_server.h
@@ -110,10 +238,22 @@ index e65d5b26..0314aab8 100644
  #ifdef SIGTERM
      std::signal( SIGTERM, oldSigTerm );
 diff --git a/pcbnew/CMakeLists.txt b/pcbnew/CMakeLists.txt
-index 0780a942..6cacce0d 100644
+index 0780a942..d3f966f4 100644
 --- a/pcbnew/CMakeLists.txt
 +++ b/pcbnew/CMakeLists.txt
-@@ -757,6 +757,13 @@ add_library( pcbnew_kiface_objects OBJECT
+@@ -311,6 +311,11 @@ set( PCBNEW_EXPORTERS
+     exporters/gerber_placefile_writer.cpp
+     )
+ 
++if( KICADD_NO_OCC )
++    list( FILTER PCBNEW_EXPORTERS EXCLUDE REGEX "exporters/(step|u3d)/" )
++    list( FILTER PCBNEW_DIALOGS EXCLUDE REGEX "dialogs/dialog_export_step" )
++endif()
++
+ set( PCBNEW_MICROWAVE_SRCS
+     microwave/microwave_footprint.cpp
+     microwave/microwave_inductor.cpp
+@@ -757,6 +762,13 @@ add_library( pcbnew_kiface_objects OBJECT
      ${PCBNEW_COMMON_SRCS}
      )
  
@@ -127,7 +267,7 @@ index 0780a942..6cacce0d 100644
  if( KICAD_USE_PCH )
      target_precompile_headers( pcbnew_kiface_objects
          PRIVATE
-@@ -799,6 +806,12 @@ add_library( pcbnew_kiface MODULE
+@@ -799,6 +811,12 @@ add_library( pcbnew_kiface MODULE
      pcbnew.cpp
      )
  
@@ -848,6 +988,38 @@ index 9dfdd070..8044b723 100644
      void SetHasInvalid( bool aInvalid = true ) { m_hasInvalid = aInvalid; }
  
      void SetDirty( bool aDirty = true ) { m_dirty = aDirty; }
+diff --git a/pcbnew/dialogs/panel_fp_properties_3d_model.cpp b/pcbnew/dialogs/panel_fp_properties_3d_model.cpp
+index c4623074..ba1a0d3a 100644
+--- a/pcbnew/dialogs/panel_fp_properties_3d_model.cpp
++++ b/pcbnew/dialogs/panel_fp_properties_3d_model.cpp
+@@ -49,7 +49,9 @@
+ #include <project_pcb.h>
+ #include <widgets/color_swatch.h>
+ #include <3d_rendering/3d_placeholder_utils.h>
++#ifndef KICADD_NO_OCC
+ #include <exporters/step/step_pcb_model.h>
++#endif
+ #include <geometry/shape_poly_set.h>
+ 
+ #include <reporter.h>
+@@ -1184,6 +1186,11 @@ void PANEL_FP_PROPERTIES_3D_MODEL::OnExportExtrudedModel( wxCommandEvent& event
+ 
+     uint32_t colorKey = EXTRUDED_3D_BODY::PackColorKey( c );
+ 
++#ifdef KICADD_NO_OCC
++    wxMessageBox( _( "Exporting an extruded body needs OpenCASCADE, which this build does not include." ),
++                  _( "Export Extruded Body" ), wxOK | wxICON_INFORMATION, this );
++    return;
++#else
+     NULL_REPORTER  reporter;
+     STEP_PCB_MODEL model( wxT( "extruded_body" ), &reporter );
+ 
+@@ -1215,4 +1222,5 @@ void PANEL_FP_PROPERTIES_3D_MODEL::OnExportExtrudedModel( wxCommandEvent& event
+     {
+         wxMessageBox( _( "Failed to write file." ), _( "Export Extruded Body" ), wxOK | wxICON_ERROR, this );
+     }
++#endif
+ }
 diff --git a/pcbnew/pcbnew.cpp b/pcbnew/pcbnew.cpp
 index 2282c07e..137019c6 100644
 --- a/pcbnew/pcbnew.cpp
@@ -911,6 +1083,63 @@ index 2282c07e..137019c6 100644
  
      return true;
  }
+diff --git a/pcbnew/pcbnew_jobs_handler.cpp b/pcbnew/pcbnew_jobs_handler.cpp
+index d95ea797..2a67d467 100644
+--- a/pcbnew/pcbnew_jobs_handler.cpp
++++ b/pcbnew/pcbnew_jobs_handler.cpp
+@@ -88,7 +88,9 @@
+ #include <lset.h>
+ #include <cli/exit_codes.h>
+ #include <exporters/place_file_exporter.h>
++#ifndef KICADD_NO_OCC
+ #include <exporters/step/exporter_step.h>
++#endif
+ #include <plotters/plotter_dxf.h>
+ #include <plotters/plotter_gerber.h>
+ #include <plotters/plotters_pslike.h>
+@@ -135,7 +137,9 @@
+ #include <dialogs/dialog_export_odbpp.h>
+ #include <pcb_io/ipc2581/ipc2581_export_job.h>
+ #include <pcb_io/odbpp/odb_export_job.h>
++#ifndef KICADD_NO_OCC
+ #include <dialogs/dialog_export_step.h>
++#endif
+ #include <dialogs/dialog_footprint_fields_table.h>
+ #include <dialogs/dialog_plot.h>
+ #include <dialogs/dialog_drc_job_config.h>
+@@ -197,8 +201,12 @@ PCBNEW_JOBS_HANDLER::PCBNEW_JOBS_HANDLER( KIWAY* aKiway ) :
+ 
+                   wxCHECK( svgJob && editFrame, false );
+ 
++#ifndef KICADD_NO_OCC
+                   DIALOG_EXPORT_STEP dlg( editFrame, aParent, "", svgJob );
+                   return dlg.ShowModal() == wxID_OK;
++#else
++                  return false;
++#endif
+               } );
+     Register( "render", std::bind( &PCBNEW_JOBS_HANDLER::JobExportRender, this, std::placeholders::_1 ),
+               []( JOB* job, wxWindow* aParent ) -> bool
+@@ -1153,6 +1161,11 @@ int PCBNEW_JOBS_HANDLER::JobExportStep( JOB* aJob )
+     }
+     else
+     {
++#ifdef KICADD_NO_OCC
++        m_reporter->Report( _( "3D export (STEP, GLB, STL, U3D, ...) is not available: built without OpenCASCADE" ),
++                            RPT_SEVERITY_ERROR );
++        return CLI::EXIT_CODES::ERR_UNKNOWN;
++#else
+         EXPORTER_STEP_PARAMS params = aStepJob->m_3dparams;
+ 
+         switch( aStepJob->m_format )
+@@ -1176,6 +1189,7 @@ int PCBNEW_JOBS_HANDLER::JobExportStep( JOB* aJob )
+ 
+         if( !stepExporter.Export() )
+             return CLI::EXIT_CODES::ERR_UNKNOWN;
++#endif
+     }
+ 
+     return CLI::EXIT_CODES::OK;
 diff --git a/pcbnew/teardrop/teardrop.cpp b/pcbnew/teardrop/teardrop.cpp
 index 6ffef0eb..01d669ee 100644
 --- a/pcbnew/teardrop/teardrop.cpp
@@ -1046,3 +1275,96 @@ index 41ebfb8d..8bf56b80 100644
                            const std::set<PCB_TRACK*>* dirtyTracks, bool aForceFullUpdate = false );
  
      /**
+diff --git a/pcbnew/tools/board_editor_control.cpp b/pcbnew/tools/board_editor_control.cpp
+index 39361891..fd9c2b7b 100644
+--- a/pcbnew/tools/board_editor_control.cpp
++++ b/pcbnew/tools/board_editor_control.cpp
+@@ -2397,7 +2397,9 @@ void BOARD_EDITOR_CONTROL::setTransitions()
+     Go( &BOARD_EDITOR_CONTROL::ExportGenCAD,           PCB_ACTIONS::exportGenCAD.MakeEvent() );
+     Go( &BOARD_EDITOR_CONTROL::ExportVRML,             PCB_ACTIONS::exportVRML.MakeEvent() );
+     Go( &BOARD_EDITOR_CONTROL::ExportIDF,              PCB_ACTIONS::exportIDF.MakeEvent() );
++#ifndef KICADD_NO_OCC
+     Go( &BOARD_EDITOR_CONTROL::ExportSTEP,             PCB_ACTIONS::exportSTEP.MakeEvent() );
++#endif
+     Go( &BOARD_EDITOR_CONTROL::ExportCmpFile,          PCB_ACTIONS::exportCmpFile.MakeEvent() );
+     Go( &BOARD_EDITOR_CONTROL::ExportHyperlynx,        PCB_ACTIONS::exportHyperlynx.MakeEvent() );
+ 
+diff --git a/plugins/3d/CMakeLists.txt b/plugins/3d/CMakeLists.txt
+index 0eba4671..a7ed2a4b 100644
+--- a/plugins/3d/CMakeLists.txt
++++ b/plugins/3d/CMakeLists.txt
+@@ -30,7 +30,6 @@ kicad_find_3d_import_wx_libraries( KICAD_3D_IMPORT_WX_LIBRARIES )
+ add_library( kicad_3d_import SHARED
+     model_import.cpp
+     model_import_queue.cpp
+-    oce/loadmodel.cpp
+     vrml/vrml.cpp
+     vrml/vrml_line_reader.cpp
+     vrml/x3d.cpp
+@@ -74,6 +73,10 @@ foreach( OCC_LIBRARY IN LISTS OCC_LIBRARIES )
+     endif()
+ endforeach()
+ 
++if( NOT KICADD_NO_OCC )
++    target_sources( kicad_3d_import PRIVATE oce/loadmodel.cpp )
++endif()
++
+ target_compile_definitions( kicad_3d_import PRIVATE COMPILE_3D_IMPORT )
+ target_link_libraries( kicad_3d_import PRIVATE kicad_3dsg
+     ${KICAD_3D_IMPORT_OCC_LIBRARIES} ${KICAD_3D_IMPORT_WX_LIBRARIES} ZLIB::ZLIB )
+diff --git a/plugins/3d/model_import.cpp b/plugins/3d/model_import.cpp
+index 02e9c926..28af15b6 100644
+--- a/plugins/3d/model_import.cpp
++++ b/plugins/3d/model_import.cpp
+@@ -23,7 +23,9 @@
+ #include <plugins/3dapi/ifsg_api.h>
+ #include <plugins/3dapi/ifsg_all.h>
+ 
++#ifndef KICADD_NO_OCC
+ #include "oce/loadmodel.h"
++#endif
+ #include "vrml/loadmodel.h"
+ #include "model_import_internal.h"
+ 
+@@ -44,7 +46,9 @@
+ 
+ #include <decompress.hpp>
+ 
++#ifndef KICADD_NO_OCC
+ #include <Standard_Failure.hxx>
++#endif
+ 
+ #ifdef _WIN32
+ namespace
+@@ -411,7 +415,15 @@ S3D::MODEL_IMPORT_RESULT S3D::ImportModel( const std::string& aFileName, const M
+         SCENEGRAPH*         scene = nullptr;
+ 
+         if( format == MODEL_IMPORT_FORMAT::STEP || format == MODEL_IMPORT_FORMAT::IGES )
++        {
++#ifdef KICADD_NO_OCC
++            result.m_error = MODEL_IMPORT_ERROR::UNSUPPORTED;
++            result.m_diagnostic = "STEP/IGES models need OpenCASCADE (not in this build); use VRML";
++            return result;
++#else
+             scene = LoadModel( aFileName.c_str(), &aOptions, &status );
++#endif
++        }
+         else if( format == MODEL_IMPORT_FORMAT::VRML || format == MODEL_IMPORT_FORMAT::X3D )
+             scene = LoadVRMLModel( aFileName.c_str(), &aOptions, &status );
+         else
+@@ -468,6 +480,7 @@ S3D::MODEL_IMPORT_RESULT S3D::ImportModel( const std::string& aFileName, const M
+         Destroy3DModel( &result.m_model );
+         result.m_error = MODEL_IMPORT_ERROR::CANCELED;
+     }
++#ifndef KICADD_NO_OCC
+     catch( const Standard_Failure& e )
+     {
+         Destroy3DModel( &result.m_model );
+@@ -481,6 +494,7 @@ S3D::MODEL_IMPORT_RESULT S3D::ImportModel( const std::string& aFileName, const M
+         {
+         }
+     }
++#endif
+     catch( const std::exception& e )
+     {
+         Destroy3DModel( &result.m_model );

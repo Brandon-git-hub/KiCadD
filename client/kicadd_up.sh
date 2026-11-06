@@ -14,7 +14,8 @@ BOARD=${1:?usage: kicadd_up.sh BOARD.kicad_pcb [PORT]}
 PORT=${2:-8765}
 HOST=${KICADD_MCP_HOST:-127.0.0.1}
 SOCK=${KICADD_SOCK:-$HERE/run/kicadd.sock}
-MCP="$HERE/../build/kicadd-mcp"
+BUILD=${KICADD_BUILD:-$HERE/../build}
+MCP="$BUILD/kicadd-mcp"
 mkdir -p "$HERE/run"
 
 # A daemon still shutting down on the same socket path would unlink our new socket when it
@@ -46,7 +47,7 @@ case "$HOST" in
         ;;
 esac
 
-KICADD_SOCK=$SOCK "$HERE/client/run_server.sh" "$BOARD" > "${KICADD_LOG:-$HERE/run/daemon.log}" 2>&1 &
+KICADD_BUILD=$BUILD KICADD_SOCK=$SOCK "$HERE/client/run_server.sh" "$BOARD" > "${KICADD_LOG:-$HERE/run/daemon.log}" 2>&1 &
 DAEMON=$!
 trap 'kill $DAEMON 2>/dev/null' EXIT INT TERM
 
