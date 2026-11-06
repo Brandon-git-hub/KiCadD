@@ -43,7 +43,7 @@ void setPoint( kicadd::board::Point* aOut, const VECTOR2I& aPt )
 }
 
 
-void addChain( const SHAPE_LINE_CHAIN& aChain, Polyline* aOut )
+void addChain( const SHAPE_LINE_CHAIN& aChain, kicadd::render::Polyline* aOut )
 {
     for( int i = 0; i < aChain.PointCount(); ++i )
     {

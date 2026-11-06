@@ -142,10 +142,10 @@ public:
             auto t1 = clk::now();
             tPads += std::chrono::duration<double, std::milli>( t1 - t0 ).count();
 
-            std::vector<std::pair<PCB_TRACK*, BOX2I>> near = tracksIn( area );
+            std::vector<std::pair<PCB_TRACK*, BOX2I>> nearby = tracksIn( area );
             tQuery += std::chrono::duration<double, std::milli>( clk::now() - t1 ).count();
 
-            for( const auto& [track, box] : near )
+            for( const auto& [track, box] : nearby )
             {
                 nTracks++;
                 grid.Visit( box, [&]( PAD* pad ) { testTrackPair( pad, track ); } );

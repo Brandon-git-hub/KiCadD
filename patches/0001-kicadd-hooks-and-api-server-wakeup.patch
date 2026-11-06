@@ -1580,7 +1580,7 @@ index 39361891..fd9c2b7b 100644
      Go( &BOARD_EDITOR_CONTROL::ExportHyperlynx,        PCB_ACTIONS::exportHyperlynx.MakeEvent() );
  
 diff --git a/plugins/3d/CMakeLists.txt b/plugins/3d/CMakeLists.txt
-index 0eba4671..a7ed2a4b 100644
+index 0eba4671..70a9e911 100644
 --- a/plugins/3d/CMakeLists.txt
 +++ b/plugins/3d/CMakeLists.txt
 @@ -30,7 +30,6 @@ kicad_find_3d_import_wx_libraries( KICAD_3D_IMPORT_WX_LIBRARIES )
@@ -1602,6 +1602,16 @@ index 0eba4671..a7ed2a4b 100644
  target_compile_definitions( kicad_3d_import PRIVATE COMPILE_3D_IMPORT )
  target_link_libraries( kicad_3d_import PRIVATE kicad_3dsg
      ${KICAD_3D_IMPORT_OCC_LIBRARIES} ${KICAD_3D_IMPORT_WX_LIBRARIES} ZLIB::ZLIB )
+@@ -108,4 +111,8 @@ if( KICAD_WIN32_INSTALL_PDBS )
+ endif()
+ 
+ add_subdirectory( vrml )
+-add_subdirectory( oce )
++
++# The STEP/IGES model plugin is OpenCASCADE; without it there is nothing to load
++if( NOT KICADD_NO_OCC )
++    add_subdirectory( oce )
++endif()
 diff --git a/plugins/3d/model_import.cpp b/plugins/3d/model_import.cpp
 index 02e9c926..28af15b6 100644
 --- a/plugins/3d/model_import.cpp
