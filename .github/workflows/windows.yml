@@ -1,16 +1,19 @@
 # KiCadD Windows x64 build (M3): upstream KiCad at patches/UPSTREAM_BASE + KiCadD patches,
 # MSVC + Ninja + vcpkg manifest, lean switches (no OpenCASCADE / ngspice / Python).
 #
-# Two jobs, because each GitHub job is capped at 6 h and a cold dependency build plus KiCad
-# can exceed that:
-#   deps   builds the vcpkg dependencies into a binary cache (saved even when it fails part way,
-#          so a re-run continues where it stopped)
-#   build  restores that cache, builds KiCadD, runs the smoke test, uploads a portable zip
+# deps and build are separate jobs because each GitHub job is capped at 6 h and a cold
+# dependency build plus KiCad can exceed that:
+#   deps     builds the vcpkg dependencies into a binary cache (saved even when it fails part way,
+#            so a re-run continues where it stopped)
+#   build    restores that cache, builds KiCadD, runs the smoke test, uploads a portable zip
+#   release  tags v* only: zips that artifact and publishes a GitHub release
+#            (a tag with a "-", e.g. v0.1.0-alpha.2, is marked as a pre-release)
 name: windows
 
 on:
   push:
     branches: [ main ]
+    tags: [ 'v*' ]
   pull_request:
   workflow_dispatch:
 
@@ -174,3 +177,37 @@ jobs:
           name: kicadd-windows-x64
           path: dist
           retention-days: 14
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: kicadd-windows-x64
+          path: kicadd-windows-x64
+      - name: Zip and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          zip -qr -9 kicadd-windows-x64.zip kicadd-windows-x64
+          sha=$(sha256sum kicadd-windows-x64.zip | cut -d' ' -f1)
+          read -r up_sha up_date _ < patches/UPSTREAM_BASE
+          {
+            sed -e '/^<!--/,/-->$/d' -e "s/{{UPSTREAM}}/\`${up_sha:0:8}\`，${up_date}/" ci/release-notes.md
+            echo
+            echo '---'
+            echo "建置：commit \`${GITHUB_SHA:0:7}\`，CI run [${GITHUB_RUN_ID}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})  "
+            echo "\`kicadd-windows-x64.zip\` SHA-256：\`${sha}\`"
+          } > notes.md
+          cat notes.md
+          pre=""
+          case "$TAG" in *-*) pre="--prerelease" ;; esac
+          gh release create "$TAG" kicadd-windows-x64.zip $pre --verify-tag \
+            --title "KiCadD ${TAG}（Windows x64 修剪版）" --notes-file notes.md

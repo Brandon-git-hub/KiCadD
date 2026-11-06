@@ -477,6 +477,16 @@ binary cache (`actions/cache`, saved even when the job fails part way, so a re-r
 `build` restores it and builds KiCadD. The first run builds every dependency from source and
 is slow; later runs only rebuild KiCadD.
 
+**Releases.** Pushing a `v*` tag runs the same build; a third job, `release`, zips the
+artifact and publishes a GitHub release with `ci/release-notes.md` (upstream base, commit,
+CI run and SHA-256 filled in). A tag with a `-` (`v0.1.0-alpha.2`) is a pre-release:
+
+    git tag v0.1.0-alpha.2 && git push origin v0.1.0-alpha.2
+
+The install prefix is set at configure time (`CMAKE_INSTALL_PREFIX`), not with
+`cmake --install --prefix`: on Windows `KICAD_DATA` is an absolute path baked at configure
+time, and `--prefix` would leave `share/kicad` (icons, templates, demos) out of the zip.
+
 ## License
 
 GPL-3.0-or-later (same as KiCad). Konnect (AGPL-3.0-only) is used as design reference only;
