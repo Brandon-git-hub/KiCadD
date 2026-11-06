@@ -85,6 +85,21 @@ index b4b5627b..ddd7b005 100644
  add_subdirectory( resources )
  add_subdirectory( thirdparty )
  add_subdirectory( libs )
+diff --git a/cmake/config.h.cmake b/cmake/config.h.cmake
+index 56f064f1..8618dc21 100644
+--- a/cmake/config.h.cmake
++++ b/cmake/config.h.cmake
+@@ -78,8 +78,10 @@
+ /// The install prefix defined during CMake configuration or fall back to CMAKE_INSTALL_PREFIX.
+ #define DEFAULT_INSTALL_PATH            "@DEFAULT_INSTALL_PATH@"
+ 
++#ifndef KICADD_NO_PYTHON     /* empty without Python; breaks #if tests (kiplatform/windows/app.cpp) */
+ #define PYTHON_VERSION_MAJOR             @PYTHON_VERSION_MAJOR@
+ #define PYTHON_VERSION_MINOR             @PYTHON_VERSION_MINOR@
++#endif
+ 
+ /// A file extension with a leading '.' is a suffix, and this one is used on
+ /// top level program modules which implement the KIFACE.
 diff --git a/common/api/api_plugin_manager.cpp b/common/api/api_plugin_manager.cpp
 index 02e5f1c9..291f59df 100644
 --- a/common/api/api_plugin_manager.cpp
@@ -173,7 +188,7 @@ index b224822c..eaec83c9 100644
  #elif defined( NGSPICE_HAVE_CONFIG_H )
      #undef HAVE_STRNCASECMP     /* is redefined in ngspice/config.h */
 diff --git a/eeschema/CMakeLists.txt b/eeschema/CMakeLists.txt
-index 5b6dbf2a..855e0bde 100644
+index 5b6dbf2a..1cb602e8 100644
 --- a/eeschema/CMakeLists.txt
 +++ b/eeschema/CMakeLists.txt
 @@ -15,6 +15,7 @@ if( CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang" )
@@ -206,6 +221,15 @@ index 5b6dbf2a..855e0bde 100644
  set( EESCHEMA_WIDGETS
      widgets/hierarchy_pane.cpp
      widgets/panel_sch_selection_filter_base.cpp
+@@ -763,7 +772,7 @@ target_link_libraries( eeschema_kiface
+         ${NGSPICE_LIBRARY}
+     )
+ 
+-if( MSVC )
++if( MSVC AND NOT KICADD_NO_SPICE )
+     # Allow for MSVC to debug ngspice from the build directory
+     add_custom_command( TARGET eeschema_kiface POST_BUILD
+         COMMAND ${CMAKE_COMMAND} -E copy_if_different "${NGSPICE_DLL}" "$<TARGET_FILE_DIR:eeschema_kiface>"
 diff --git a/eeschema/eeschema.cpp b/eeschema/eeschema.cpp
 index eae8cfde..7992cd3f 100644
 --- a/eeschema/eeschema.cpp
