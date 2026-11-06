@@ -1,8 +1,21 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index b4b5627b..9e478df3 100644
+index b4b5627b..ddd7b005 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -886,10 +886,34 @@ find_package( Fontconfig REQUIRED )
+@@ -130,6 +130,12 @@ cmake_dependent_option( KICAD_BUILD_NATIVE_MODEL_PREVIEW
+     OFF "MINGW"
+     ON )
+ 
++# KiCadD: the Windows previewer is an OpenCASCADE viewer, so KICADD_NO_OCC drops it there
++# (a normal variable shadows the forced cache option for the whole tree).
++if( WIN32 AND KICADD_NO_OCC )
++    set( KICAD_BUILD_NATIVE_MODEL_PREVIEW OFF )
++endif()
++
+ if( KICAD_BUILD_NATIVE_MODEL_PREVIEW )
+     add_compile_definitions( KICAD_NATIVE_MODEL_PREVIEW )
+ endif()
+@@ -886,10 +892,34 @@ find_package( Fontconfig REQUIRED )
  # Include MinGW resource compiler.
  include( MinGWResourceCompiler )
  
@@ -11,7 +24,7 @@ index b4b5627b..9e478df3 100644
 +    "Build without OpenCASCADE: no STEP/IGES/BREP/XAO/GLB/PLY/U3D export, no STEP/IGES 3D models (VRML only)"
 +    OFF )
 +option( KICADD_NO_SPICE
-+    "Build without ngspice. The schematic editor (with its simulator) is not built in this mode yet."
++    "Build without ngspice: the schematic editor has no simulator (SPICE models and netlist export stay)"
 +    OFF )
 +option( KICADD_NO_PYTHON "Build without Python: no Python API plugins" OFF )
 +
@@ -37,7 +50,7 @@ index b4b5627b..9e478df3 100644
  find_package(OCC)
  if( NOT OCC_FOUND )
      MESSAGE( FATAL_ERROR "================================================================\n"
-@@ -903,6 +927,7 @@ if( OCC_VERSION_STRING VERSION_LESS 7.5.0 )
+@@ -903,6 +933,7 @@ if( OCC_VERSION_STRING VERSION_LESS 7.5.0 )
                           "================================================================\n")
  endif()
  include_directories( SYSTEM ${OCC_INCLUDE_DIR} )
@@ -45,7 +58,7 @@ index b4b5627b..9e478df3 100644
  
  # Try to find Protobuf with modern approach first, fallback to legacy if needed
  set( _protobuf_found FALSE )
-@@ -976,9 +1001,13 @@ set( INC_AFTER
+@@ -976,9 +1007,13 @@ set( INC_AFTER
  
  set( PythonInterp_FIND_VERSION 3.6 )
  
@@ -59,7 +72,7 @@ index b4b5627b..9e478df3 100644
  
  #
  # Find wxWidgets library, required
-@@ -1132,12 +1161,20 @@ endif()
+@@ -1132,6 +1167,12 @@ endif()
  
  # Binaries ( CMake targets )
  add_subdirectory( api )
@@ -72,14 +85,6 @@ index b4b5627b..9e478df3 100644
  add_subdirectory( resources )
  add_subdirectory( thirdparty )
  add_subdirectory( libs )
- add_subdirectory( common )
- add_subdirectory( 3d-viewer )
-+if( NOT KICADD_NO_SPICE )
- add_subdirectory( eeschema )
-+endif()
- add_subdirectory( gerbview )
- add_subdirectory( pcbnew )
- add_subdirectory( pagelayout_editor )
 diff --git a/common/api/api_plugin_manager.cpp b/common/api/api_plugin_manager.cpp
 index 02e5f1c9..291f59df 100644
 --- a/common/api/api_plugin_manager.cpp
@@ -132,10 +137,10 @@ index 15c2fe61..258afd0c 100644
  #if defined( __WINDOWS__ )
      wxFileName pythonExe = FindKicadFile( "pythonw.exe" );
 diff --git a/common/build_version.cpp b/common/build_version.cpp
-index b224822c..b58064f3 100644
+index b224822c..eaec83c9 100644
 --- a/common/build_version.cpp
 +++ b/common/build_version.cpp
-@@ -37,7 +37,9 @@
+@@ -37,9 +37,13 @@
  extern std::string GetKicadCurlVersion();
  extern std::string GetCurlLibVersion();
  
@@ -143,9 +148,13 @@ index b224822c..b58064f3 100644
  #include <Standard_Version.hxx>
 +#endif
  
++#ifndef KICADD_NO_SPICE
  #include <ngspice/sharedspice.h>
++#endif
  
-@@ -301,7 +303,11 @@ wxString GetVersionInfoData( const wxString& aTitle, bool aHtml, bool aBrief )
+ // The include file version.h is always created even if the repo version cannot be
+ // determined.  In this case KICAD_VERSION_FULL will default to the KICAD_VERSION
+@@ -301,10 +305,16 @@ wxString GetVersionInfoData( const wxString& aTitle, bool aHtml, bool aBrief )
           << ( BOOST_VERSION / 100 % 1000 ) << wxT( "." )
           << ( BOOST_VERSION % 100 ) << eol;
  
@@ -156,7 +165,264 @@ index b224822c..b58064f3 100644
 +#endif
      aMsg << indent4 << "Curl: " << GetCurlLibVersion() << eol;
  
- #if defined( NGSPICE_BUILD_VERSION )
+-#if defined( NGSPICE_BUILD_VERSION )
++#if defined( KICADD_NO_SPICE )
++    aMsg << indent4 << "ngspice: not built (KiCadD)" << eol;
++#elif defined( NGSPICE_BUILD_VERSION )
+     aMsg << indent4 << "ngspice: " << NGSPICE_BUILD_VERSION << eol;
+ #elif defined( NGSPICE_HAVE_CONFIG_H )
+     #undef HAVE_STRNCASECMP     /* is redefined in ngspice/config.h */
+diff --git a/eeschema/CMakeLists.txt b/eeschema/CMakeLists.txt
+index 5b6dbf2a..855e0bde 100644
+--- a/eeschema/CMakeLists.txt
++++ b/eeschema/CMakeLists.txt
+@@ -15,6 +15,7 @@ if( CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang" )
+ endif()
+ 
+ # Add ngspice to eeschema
++if( NOT KICADD_NO_SPICE )
+ set( INC_AFTER ${INC_AFTER} ${NGSPICE_INCLUDE_DIR} )
+ 
+ # Find out the exact libngspice file name
+@@ -27,6 +28,7 @@ set_property( SOURCE sim/ngspice.cpp
+     NGSPICE_DLL_FILE="${NGSPICE_DLL_FILE}"
+     NGSPICE_DLL_DIR="${NGSPICE_DLL_DIR}"
+     )
++endif()
+ 
+ include_directories( BEFORE ${INC_BEFORE} )
+ include_directories(
+@@ -338,6 +340,13 @@ set( EESCHEMA_SIM_SRCS
+     widgets/tuner_slider_base.cpp
+     )
+ 
++# KiCadD: without ngspice, keep the SPICE models (symbol Sim.* fields, netlist export) and
++# drop the simulator itself: ngspice backend, simulator frame, plots, tuners, probes.
++if( KICADD_NO_SPICE )
++    list( FILTER EESCHEMA_SIM_SRCS EXCLUDE REGEX
++        "sim/(ngspice|simulator_frame.*|sim_plot_.*|sim_tab|toolbars_simulator_frame|legacy_workbook)\\.cpp$|widgets/tuner_slider.*|dialogs/dialog_(sim_command|user_defined_signals).*|tools/simulator_control" )
++endif()
++
+ set( EESCHEMA_WIDGETS
+     widgets/hierarchy_pane.cpp
+     widgets/panel_sch_selection_filter_base.cpp
+diff --git a/eeschema/eeschema.cpp b/eeschema/eeschema.cpp
+index eae8cfde..7992cd3f 100644
+--- a/eeschema/eeschema.cpp
++++ b/eeschema/eeschema.cpp
+@@ -85,7 +85,9 @@
+ #include <dialogs/panel_base_display_options.h>
+ #include <panel_eeschema_display_options.h>
+ #include <panel_sym_display_options.h>
++#ifndef KICADD_NO_SPICE
+ #include <sim/simulator_frame.h>
++#endif
+ 
+ #include <dialogs/panel_toolbar_customization.h>
+ #include <toolbars_sch_editor.h>
+@@ -549,6 +551,9 @@ static struct IFACE : public KIFACE_BASE, public UNITS_PROVIDER
+ 
+         case FRAME_SIMULATOR:
+         {
++#ifdef KICADD_NO_SPICE
++            return nullptr;     // built without ngspice: no simulator
++#else
+             try
+             {
+                 SIMULATOR_FRAME* frame = new SIMULATOR_FRAME( aKiway, aParent );
+@@ -560,6 +565,7 @@ static struct IFACE : public KIFACE_BASE, public UNITS_PROVIDER
+                 // its going to be some ngspice install issue but we don't want to log that
+                 return nullptr;
+             }
++#endif
+         }
+ 
+         case FRAME_SCH_VIEWER:
+diff --git a/eeschema/files-io.cpp b/eeschema/files-io.cpp
+index a219ae94..809b1645 100644
+--- a/eeschema/files-io.cpp
++++ b/eeschema/files-io.cpp
+@@ -62,7 +62,9 @@
+ #include <sch_sheet_path.h>
+ #include <schematic.h>
+ #include <settings/settings_manager.h>
++#ifndef KICADD_NO_SPICE
+ #include <sim/simulator_frame.h>
++#endif
+ #include <symbol_import_reconciler.h>
+ #include <tool/actions.h>
+ #include <tool/tool_manager.h>
+@@ -1751,12 +1753,14 @@ bool SCH_EDIT_FRAME::AskToSaveChanges()
+     // Save any currently open and modified project files.
+     for( SCH_SCREEN* screen = screenList.GetFirst(); screen; screen = screenList.GetNext() )
+     {
++#ifndef KICADD_NO_SPICE
+         SIMULATOR_FRAME* simFrame = (SIMULATOR_FRAME*) Kiway().Player( FRAME_SIMULATOR, false );
+ 
+         // Simulator must be closed before loading another schematic, otherwise it may crash.
+         // If there are any changes in the simulator the user will be prompted to save them.
+         if( simFrame && !simFrame->Close() )
+             return false;
++#endif
+ 
+         if( screen->IsContentModified() )
+         {
+diff --git a/eeschema/menubar.cpp b/eeschema/menubar.cpp
+index 1ecfc2e0..ae1dcf1f 100644
+--- a/eeschema/menubar.cpp
++++ b/eeschema/menubar.cpp
+@@ -297,8 +297,10 @@ void SCH_EDIT_FRAME::doReCreateMenuBar()
+     inspectMenu->AppendSeparator();
+     inspectMenu->Add( SCH_ACTIONS::diffSymbol );
+ 
++#ifndef KICADD_NO_SPICE
+     inspectMenu->AppendSeparator();
+     inspectMenu->Add( SCH_ACTIONS::showSimulator );
++#endif
+ 
+ 
+     //-- Tools menu -----------------------------------------------
+diff --git a/eeschema/sch_edit_frame.cpp b/eeschema/sch_edit_frame.cpp
+index f2bd4e10..7091fca2 100644
+--- a/eeschema/sch_edit_frame.cpp
++++ b/eeschema/sch_edit_frame.cpp
+@@ -71,7 +71,11 @@
+ #include <settings/settings_manager.h>
+ #include <advanced_config.h>
+ #include <connectivity/conn_facade.h>
++#ifndef KICADD_NO_SPICE
+ #include <sim/simulator_frame.h>
++#endif
++#include <sim/sim_lib_mgr.h>
++#include <sim/spice_generator.h>
+ #include <tool/action_manager.h>
+ #include <tool/action_toolbar.h>
+ #include <tool/common_control.h>
+diff --git a/eeschema/sim/spice_simulator.cpp b/eeschema/sim/spice_simulator.cpp
+index dc6d8c4d..8915841b 100644
+--- a/eeschema/sim/spice_simulator.cpp
++++ b/eeschema/sim/spice_simulator.cpp
+@@ -23,11 +23,18 @@
+ 
+ // Include simulator headers after wxWidgets headers to avoid conflicts with Windows headers
+ // (especially on msys2 + wxWidgets 3.0.x)
++#ifndef KICADD_NO_SPICE
+ #include "ngspice.h"
++#else
++#include "spice_simulator.h"
++#endif
+ #include "macros.h"
+ 
+ std::shared_ptr<SPICE_SIMULATOR> SIMULATOR::CreateInstance( const std::string& )
+ {
++#ifdef KICADD_NO_SPICE
++    return nullptr;     // built without ngspice; callers treat this as "no simulator"
++#else
+     try
+     {
+         static std::shared_ptr<SPICE_SIMULATOR> ngspiceInstance;
+@@ -43,6 +50,7 @@ std::shared_ptr<SPICE_SIMULATOR> SIMULATOR::CreateInstance( const std::string& )
+     }
+ 
+     return nullptr;
++#endif
+ }
+ 
+ 
+diff --git a/eeschema/toolbars_sch_editor.cpp b/eeschema/toolbars_sch_editor.cpp
+index e95360b6..fa8f0e6e 100644
+--- a/eeschema/toolbars_sch_editor.cpp
++++ b/eeschema/toolbars_sch_editor.cpp
+@@ -209,7 +209,9 @@ std::optional<TOOLBAR_CONFIGURATION> SCH_EDIT_TOOLBAR_SETTINGS::DefaultToolbarCo
+         config.AppendSeparator()
+               .AppendAction( SCH_ACTIONS::annotate )
+               .AppendAction( SCH_ACTIONS::runERC )
++#ifndef KICADD_NO_SPICE
+               .AppendAction( SCH_ACTIONS::showSimulator )
++#endif
+               .AppendAction( SCH_ACTIONS::assignFootprints )
+               .AppendAction( SCH_ACTIONS::editSymbolFields )
+               .AppendAction( SCH_ACTIONS::generateBOM );
+diff --git a/eeschema/tools/sch_editor_control.cpp b/eeschema/tools/sch_editor_control.cpp
+index b296c572..a804cc8d 100644
+--- a/eeschema/tools/sch_editor_control.cpp
++++ b/eeschema/tools/sch_editor_control.cpp
+@@ -87,7 +87,9 @@
+ #include <sch_tablecell.h>
+ #include <sch_label.h>
+ #include <sch_commit.h>
++#ifndef KICADD_NO_SPICE
+ #include <sim/simulator_frame.h>
++#endif
+ #include <symbol_library_manager.h>
+ #include <symbol_viewer_frame.h>
+ #include <tool/picker_tool.h>
+@@ -712,6 +714,9 @@ int SCH_EDITOR_CONTROL::ExportSymbolsToLibrary( const TOOL_EVENT& aEvent )
+ 
+ int SCH_EDITOR_CONTROL::SimProbe( const TOOL_EVENT& aEvent )
+ {
++#ifdef KICADD_NO_SPICE
++    return 0;   // built without ngspice
++#else
+     static const std::vector<KICAD_T> voltageProbeTypes = {
+         SCH_ITEM_LOCATE_WIRE_T, SCH_JUNCTION_T, SCH_LABEL_T,
+         SCH_GLOBAL_LABEL_T, SCH_HIER_LABEL_T, SCH_SHEET_PIN_T
+@@ -908,11 +913,15 @@ int SCH_EDITOR_CONTROL::SimProbe( const TOOL_EVENT& aEvent )
+     m_toolMgr->RunAction( ACTIONS::pickerTool, &aEvent );
+ 
+     return 0;
++#endif
+ }
+ 
+ 
+ int SCH_EDITOR_CONTROL::SimTune( const TOOL_EVENT& aEvent )
+ {
++#ifdef KICADD_NO_SPICE
++    return 0;   // built without ngspice
++#else
+     PICKER_TOOL* picker = m_toolMgr->GetTool<PICKER_TOOL>();
+ 
+     // Deactivate other tools; particularly important if another PICKER is currently running
+@@ -1002,6 +1011,7 @@ int SCH_EDITOR_CONTROL::SimTune( const TOOL_EVENT& aEvent )
+     m_toolMgr->RunAction( ACTIONS::pickerTool, &aEvent );
+ 
+     return 0;
++#endif
+ }
+ 
+ 
+diff --git a/eeschema/tools/sch_inspection_tool.cpp b/eeschema/tools/sch_inspection_tool.cpp
+index e0506f67..b119b806 100644
+--- a/eeschema/tools/sch_inspection_tool.cpp
++++ b/eeschema/tools/sch_inspection_tool.cpp
+@@ -34,7 +34,9 @@
+ #include <tools/sch_actions.h>
+ #include <tools/sch_selection_tool.h>
+ #include <tools/sch_selection.h>
++#ifndef KICADD_NO_SPICE
+ #include <sim/simulator_frame.h>
++#endif
+ #include <sch_edit_frame.h>
+ #include <symbol_edit_frame.h>
+ #include <symbol_viewer_frame.h>
+@@ -1295,6 +1297,9 @@ int SCH_INSPECTION_TOOL::CompareSchematicWithHistory( const TOOL_EVENT& aEvent )
+ 
+ int SCH_INSPECTION_TOOL::RunSimulation( const TOOL_EVENT& aEvent )
+ {
++#ifdef KICADD_NO_SPICE
++    return 0;   // built without ngspice
++#else
+     SIMULATOR_FRAME* simFrame = (SIMULATOR_FRAME*) m_frame->Kiway().Player( FRAME_SIMULATOR, true );
+ 
+     if( !simFrame )
+@@ -1312,6 +1317,7 @@ int SCH_INSPECTION_TOOL::RunSimulation( const TOOL_EVENT& aEvent )
+     simFrame->Raise();
+ 
+     return 0;
++#endif
+ }
+ 
+ 
 diff --git a/include/api/api_server.h b/include/api/api_server.h
 index c5cd6f2a..a0f846b9 100644
 --- a/include/api/api_server.h
@@ -1368,3 +1634,119 @@ index 02e9c926..28af15b6 100644
      catch( const std::exception& e )
      {
          Destroy3DModel( &result.m_model );
+diff --git a/vcpkg.json b/vcpkg.json
+index a3d02989..4295ef1a 100644
+--- a/vcpkg.json
++++ b/vcpkg.json
+@@ -6,6 +6,7 @@
+   "dependencies": [
+     "boost-algorithm",
+     "boost-bimap",
++    "boost-beast",
+     "boost-filesystem",
+     "boost-functional",
+     "boost-graph",
+@@ -23,34 +24,41 @@
+     "cairo",
+     {
+       "name": "wxwidgets-33",
+-      "features": [ "webview" ]
++      "features": [
++        "webview"
++      ]
+     },
+     "curl",
+     {
+       "name": "gettext",
+-      "features": [ "tools" ],
++      "features": [
++        "tools"
++      ],
+       "host": true
+     },
+     "harfbuzz",
+     "libiconv",
+     "libpng",
+     "glm",
+-    {
+-      "name": "opencascade",
+-      "features": [ "rapidjson" ]
+-    },
+     "opengl",
+-    "python3",
+     "openssl",
+     {
+       "name": "sqlite3",
+-      "features": [ "fts5", "fts4", "fts3", "rtree", "session" ]
++      "features": [
++        "fts5",
++        "fts4",
++        "fts3",
++        "rtree",
++        "session"
++      ]
+     },
+     "icu",
+-    "ngspice",
+     {
+       "name": "libgit2",
+-      "features": [ "ssh", "winhttp" ]
++      "features": [
++        "ssh",
++        "winhttp"
++      ]
+     },
+     "nng",
+     "protobuf",
+@@ -61,15 +69,49 @@
+     },
+     {
+       "name": "glslang",
+-      "features": [ "tools" ],
++      "features": [
++        "tools"
++      ],
+       "host": true
+     },
+     {
+       "name": "spirv-tools",
+-      "features": [ "tools" ],
++      "features": [
++        "tools"
++      ],
+       "host": true
+     }
+   ],
++  "default-features": [
++    "occ",
++    "spice",
++    "python"
++  ],
++  "features": {
++    "occ": {
++      "description": "OpenCASCADE: STEP/IGES models and 3D export (KiCadD: off with KICADD_NO_OCC)",
++      "dependencies": [
++        {
++          "name": "opencascade",
++          "features": [
++            "rapidjson"
++          ]
++        }
++      ]
++    },
++    "spice": {
++      "description": "ngspice simulator (KiCadD: off with KICADD_NO_SPICE)",
++      "dependencies": [
++        "ngspice"
++      ]
++    },
++    "python": {
++      "description": "Python for API plugins (KiCadD: off with KICADD_NO_PYTHON)",
++      "dependencies": [
++        "python3"
++      ]
++    }
++  },
+   "overrides": [
+     {
+       "name": "glm",

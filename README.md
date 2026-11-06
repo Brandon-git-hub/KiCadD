@@ -23,7 +23,7 @@ Built as a thin extension of upstream `kicad-cli api-server`, not a fork of the 
 | `web/index.html` | 2D view (vanilla JS + Canvas 2D), embedded into `kicadd-mcp` at build time |
 | `client/` | Python IPC client, benchmark, verification + A/B scripts, `run_server.sh` |
 
-### Upstream patch (~320 lines, 13 files)
+### Upstream patch (~1750 lines incl. context, 33 files; see the M1 and M3 sections for the newest parts)
 
 - **Hooks** (guarded by `KICADD_DIR` / `#ifdef KICADD`): `CMakeLists.txt`, `pcbnew/CMakeLists.txt`,
   `pcbnew/pcbnew.cpp` register `KICADD_HANDLER_PCB` next to `API_HANDLER_PCB`.
@@ -411,7 +411,7 @@ random parts (47, 79) (`KICADD_TEST_REFS=J1 verify_incremental.py SOCK 0 SEED B`
 Verification: `client/browser_multiselect.py` (selection, group drag / rotate / flip / delete,
 undo, silk follows the parts), plus every earlier suite.
 
-## M1: trimmed build, pcbnew first (2026-11-06)
+## M1: trimmed build (2026-11-06)
 
 Three switches in the upstream patch (top-level `CMakeLists.txt`), all `OFF` by default so a
 normal build is unchanged:
@@ -419,13 +419,13 @@ normal build is unchanged:
 | switch | effect |
 |---|---|
 | `KICADD_NO_OCC` | no OpenCASCADE: `pcbnew/exporters/step` + `u3d` and the STEP export dialog are not built; `kicad-cli pcb export 3d` (STEP, STEPZ, BREP, XAO, GLB, PLY, STL, U3D, 3D PDF) reports "not available"; the 3D model importer loads VRML / X3D only; the footprint panel's "export extruded body" is disabled |
-| `KICADD_NO_SPICE` | no ngspice; **eeschema is not built in this mode yet** (its simulator still needs ngspice; decoupling it is the eeschema half of M1) |
+| `KICADD_NO_SPICE` | no ngspice: eeschema builds without the simulator. `eeschema/CMakeLists.txt` filters out the ngspice backend, simulator frame, plot/tab widgets, tuners, probe/sim dialogs and `SIMULATOR_CONTROL`; the call sites (frame factory, probe/tune tools, *Inspect → Simulator*, toolbar button) are `#ifdef`'d out; `SIMULATOR::CreateInstance()` is a static stub returning `nullptr` (IBIS model generation then reports "no simulator"). The SPICE **models** stay (symbol `Sim.*` fields, the model dialog, SPICE netlist export) since they are schematic data, not simulation |
 | `KICADD_NO_PYTHON` | no Python interpreter at configure time or run time: Python API plugins are skipped, no interpreter lookup, no virtualenvs; executable plugins still load. SWIG bindings are already gone upstream |
 
 ```sh
 cmake -S kicad -B build-lean -G Ninja -DCMAKE_BUILD_TYPE=Release -DKICADD_DIR=$PWD/KiCadD \
       -DKICADD_NO_OCC=ON -DKICADD_NO_SPICE=ON -DKICADD_NO_PYTHON=ON -DKICAD_BUILD_QA_TESTS=OFF
-ninja -C build-lean kicad-cli pcbnew_kiface kicadd-mcp kicad_3d_import
+ninja -C build-lean kicad-cli pcbnew_kiface eeschema_kiface eeschema kicadd-mcp kicad_3d_import
 KICADD_BUILD=$PWD/build-lean KiCadD/client/kicadd_up.sh board.kicad_pcb 8765
 ```
 
@@ -447,7 +447,35 @@ is parsing an 81 MB board. Binary size is pcbnew's own code, not its dependencie
 
 Verified on the lean build: `layout_e2e`, `history_e2e`, `web_e2e`, `mcp_e2e`,
 `browser_multiselect`, `browser_layout`, local == full DRC (J1+J18+U21+U30 510, random 79).
-All symbols resolve at load (`dlopen` with `RTLD_NOW`).
+All symbols resolve at load (`dlopen` with `RTLD_NOW`) for both `_pcbnew.kiface` and
+`_eeschema.kiface`; no object in the lean tree has an `ngspice/` header dependency
+(`ninja -t deps`), and the lean `_eeschema.kiface` has 0 `SIMULATOR_FRAME` symbols (full: 151).
+
+`client/smoke.py` (standard library only; Linux build tree or Windows install) checks the build
+end to end: `kicad-cli version`, DRC on `demos/pic_programmer`, a SPICE netlist from
+`demos/simulation/rectifier` (eeschema + SPICE models without ngspice), and the API server
+answering `board_summary` through `kicadd-mcp --stdio`. Passes on the full and the lean build.
+
+## M3: Windows CI (2026-11-06)
+
+`.github/workflows/windows.yml` builds KiCadD for Windows x64 on GitHub-hosted runners:
+
+1. `ci/fetch_upstream.sh` checks out upstream at `patches/UPSTREAM_BASE` (shallow fetch by
+   SHA, ~16 s) and applies `patches/*.patch`. Also usable locally for a clean tree.
+2. vcpkg at the manifest's baseline, KiCad's own `vcpkg.json`. The patch makes OpenCASCADE,
+   ngspice and Python **default features** (`occ`, `spice`, `python`), so an upstream-style
+   build is unchanged and the lean build passes `--x-no-default-features`. It also adds
+   `boost-beast` for `kicadd-mcp`.
+3. `ci/vcpkg-triplets/x64-windows.cmake`: upstream's triplet, release only.
+4. MSVC + Ninja, `Release`, `KICADD_NO_OCC/NO_SPICE/NO_PYTHON=ON`. On Windows `KICADD_NO_OCC`
+   also drops the native 3D model previewer (an OpenCASCADE viewer).
+5. `cmake --install` into a portable folder with the vcpkg DLLs, `client/smoke.py` against it,
+   uploaded as the `kicadd-windows-x64` artifact (14 days).
+
+Two jobs because each GitHub job is capped at 6 h: `deps` builds the vcpkg packages into a
+binary cache (`actions/cache`, saved even when the job fails part way, so a re-run resumes),
+`build` restores it and builds KiCadD. The first run builds every dependency from source and
+is slow; later runs only rebuild KiCadD.
 
 ## License
 

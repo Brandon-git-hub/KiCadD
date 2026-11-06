@@ -1,0 +1,171 @@
+# KiCadD Windows x64 build (M3): upstream KiCad at patches/UPSTREAM_BASE + KiCadD patches,
+# MSVC + Ninja + vcpkg manifest, lean switches (no OpenCASCADE / ngspice / Python).
+#
+# Two jobs, because each GitHub job is capped at 6 h and a cold dependency build plus KiCad
+# can exceed that:
+#   deps   builds the vcpkg dependencies into a binary cache (saved even when it fails part way,
+#          so a re-run continues where it stopped)
+#   build  restores that cache, builds KiCadD, runs the smoke test, uploads a portable zip
+name: windows
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+  VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}\vcpkg-bincache,readwrite
+  VCPKG_DISABLE_METRICS: 1
+
+jobs:
+  deps:
+    runs-on: windows-2022
+    timeout-minutes: 350
+    outputs:
+      key: ${{ steps.key.outputs.key }}
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          path: kicadd
+      - name: Upstream KiCad + KiCadD patches
+        shell: bash
+        run: kicadd/ci/fetch_upstream.sh kicad
+      - name: Cache key
+        id: key
+        shell: bash
+        run: echo "key=vcpkg-win-x64-${{ hashFiles('kicad/vcpkg.json', 'kicad/vcpkg-configuration.json', 'kicadd/ci/vcpkg-triplets/*') }}" >> "$GITHUB_OUTPUT"
+      - name: vcpkg at the manifest baseline
+        shell: bash
+        run: |
+          baseline=$(python -c "import json; print(json.load(open('kicad/vcpkg-configuration.json'))['default-registry']['baseline'])")
+          git init -q vcpkg
+          git -C vcpkg fetch -q --depth 1 https://github.com/microsoft/vcpkg "$baseline"
+          git -C vcpkg checkout -q FETCH_HEAD
+          vcpkg/bootstrap-vcpkg.bat -disableMetrics
+      - uses: actions/cache/restore@v4
+        with:
+          path: vcpkg-bincache
+          key: ${{ steps.key.outputs.key }}-${{ github.run_id }}
+          restore-keys: |
+            ${{ steps.key.outputs.key }}-
+            vcpkg-win-x64-
+      - name: vcpkg install (lean: no OpenCASCADE / ngspice / Python)
+        id: install
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force vcpkg-bincache | Out-Null
+          $before = (Get-ChildItem -Recurse -File vcpkg-bincache).Count
+          try {
+            & "$env:VCPKG_ROOT\vcpkg.exe" install `
+              --x-manifest-root=kicad --x-install-root=vcpkg_installed `
+              --overlay-triplets=kicadd/ci/vcpkg-triplets `
+              --triplet=x64-windows --host-triplet=x64-windows `
+              --x-no-default-features --x-abi-tools-use-exact-versions --clean-after-build
+            if ($LASTEXITCODE -ne 0) { throw "vcpkg install failed ($LASTEXITCODE)" }
+          } finally {
+            $after = (Get-ChildItem -Recurse -File vcpkg-bincache).Count
+            "new=$($after - $before)" >> $env:GITHUB_OUTPUT
+            Write-Host "binary cache: $before -> $after packages"
+          }
+      - name: Show vcpkg logs on failure
+        if: failure()
+        shell: pwsh
+        run: |
+          Get-ChildItem -Recurse vcpkg/buildtrees -Filter *.log -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime | Select-Object -Last 6 |
+            ForEach-Object { "== $($_.FullName)"; Get-Content $_.FullName -Tail 60 }
+      - uses: actions/cache/save@v4
+        if: always() && steps.install.outputs.new != '0' && steps.install.outputs.new != ''
+        with:
+          path: vcpkg-bincache
+          key: ${{ steps.key.outputs.key }}-${{ github.run_id }}
+
+  build:
+    needs: deps
+    runs-on: windows-2022
+    timeout-minutes: 350
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          path: kicadd
+      - name: Upstream KiCad + KiCadD patches
+        shell: bash
+        run: kicadd/ci/fetch_upstream.sh kicad
+      - name: vcpkg at the manifest baseline
+        shell: bash
+        run: |
+          baseline=$(python -c "import json; print(json.load(open('kicad/vcpkg-configuration.json'))['default-registry']['baseline'])")
+          git init -q vcpkg
+          git -C vcpkg fetch -q --depth 1 https://github.com/microsoft/vcpkg "$baseline"
+          git -C vcpkg checkout -q FETCH_HEAD
+          vcpkg/bootstrap-vcpkg.bat -disableMetrics
+      - uses: actions/cache/restore@v4
+        with:
+          path: vcpkg-bincache
+          key: ${{ needs.deps.outputs.key }}-${{ github.run_id }}
+          restore-keys: ${{ needs.deps.outputs.key }}-
+          fail-on-cache-miss: true
+      - name: vcpkg install (from the binary cache)
+        shell: pwsh
+        run: |
+          & "$env:VCPKG_ROOT\vcpkg.exe" install `
+            --x-manifest-root=kicad --x-install-root=vcpkg_installed `
+            --overlay-triplets=kicadd/ci/vcpkg-triplets `
+            --triplet=x64-windows --host-triplet=x64-windows `
+            --x-no-default-features --x-abi-tools-use-exact-versions --clean-after-build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Configure
+        shell: pwsh
+        run: |
+          $ws = $env:GITHUB_WORKSPACE -replace '\\', '/'
+          cmake -S kicad -B build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_TOOLCHAIN_FILE="$ws/vcpkg/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_MANIFEST_INSTALL=OFF `
+            -DVCPKG_INSTALLED_DIR="$ws/vcpkg_installed" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows `
+            -DVCPKG_OVERLAY_TRIPLETS="$ws/kicadd/ci/vcpkg-triplets" `
+            -DVCPKG_MANIFEST_NO_DEFAULT_FEATURES=ON `
+            -DKICADD_DIR="$ws/kicadd" `
+            -DKICADD_NO_OCC=ON -DKICADD_NO_SPICE=ON -DKICADD_NO_PYTHON=ON `
+            -DKICAD_BUILD_QA_TESTS=OFF -DKICAD_BUILD_I18N=OFF `
+            -DKICAD_UPDATE_CHECK=OFF -DKICAD_USE_SENTRY=OFF
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build
+        shell: pwsh
+        run: |
+          cmake --build build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Install (portable folder)
+        shell: pwsh
+        run: |
+          cmake --install build --prefix dist
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item build/kicadd-mcp.exe dist/bin/ -ErrorAction SilentlyContinue
+          if (-not (Test-Path dist/bin/kicadd-mcp.exe)) {
+            Get-ChildItem -Recurse build -Filter kicadd-mcp.exe | Select-Object -First 1 | Copy-Item -Destination dist/bin/
+          }
+          # vcpkg runtime DLLs next to the executables
+          Copy-Item vcpkg_installed/x64-windows/bin/*.dll dist/bin/ -Force
+          "{0:N0} MB in dist" -f ((Get-ChildItem -Recurse -File dist | Measure-Object Length -Sum).Sum / 1MB)
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          python -I kicadd/client/smoke.py --bin dist/bin --demos kicad/demos --work "$env:RUNNER_TEMP/smoke"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kicadd-windows-x64
+          path: dist
+          retention-days: 14
