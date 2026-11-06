@@ -131,6 +131,7 @@ jobs:
           $ws = $env:GITHUB_WORKSPACE -replace '\\', '/'
           cmake -S kicad -B build -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_INSTALL_PREFIX="$ws/dist" `
             -DCMAKE_TOOLCHAIN_FILE="$ws/vcpkg/scripts/buildsystems/vcpkg.cmake" `
             -DVCPKG_MANIFEST_INSTALL=OFF `
             -DVCPKG_INSTALLED_DIR="$ws/vcpkg_installed" `
@@ -151,7 +152,10 @@ jobs:
       - name: Install (portable folder)
         shell: pwsh
         run: |
-          cmake --install build --prefix dist
+          # the prefix is set at configure time: on Windows KICAD_DATA (share/kicad: icons,
+          # templates, schemas) is an absolute path baked from CMAKE_INSTALL_PREFIX, so
+          # --prefix here would relocate bin/ but leave share/ in C:/Program Files (x86)
+          cmake --install build
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Copy-Item build/kicadd-mcp.exe dist/bin/ -ErrorAction SilentlyContinue
           if (-not (Test-Path dist/bin/kicadd-mcp.exe)) {

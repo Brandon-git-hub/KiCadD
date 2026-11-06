@@ -109,6 +109,12 @@ def main():
         line = next((l.strip() for l in about.splitlines() if l.strip().startswith(lib)), "")
         print(f"         {line}")
 
+    if not a.build_tree:
+        print("[install layout]")
+        root = os.path.dirname(os.path.dirname(cli))
+        for rel in (("share", "kicad", "resources", "images.tar.gz"), ("share", "kicad", "template")):
+            check(os.path.exists(os.path.join(root, *rel)), "/".join(rel))
+
     print("[pcbnew: board + DRC]")
     board_dir = os.path.join(a.work, "pic_programmer")
     shutil.copytree(os.path.join(a.demos, "pic_programmer"), board_dir)
