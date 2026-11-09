@@ -602,8 +602,11 @@ void WEB_HUB::runJob( const JOB& aJob )
 
         if( !ok )
             sendMoveResult( session, t.c_str(), false, err, nullptr, ms, "" );
-        else if( !r.ok() )
+        else if( !r.ok() && r.label().empty() )
             sendMoveResult( session, t.c_str(), false, "nothing to " + t, nullptr, ms, "" );
+        else if( !r.ok() )
+            sendMoveResult( session, t.c_str(), false, "not " + t + "ne: changed since (" + r.label() + ")",
+                            nullptr, ms, "" );
         else
             sendMoveResult( session, t.c_str(), true, "", &r.result(), ms, r.label() );
 

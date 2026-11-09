@@ -12,6 +12,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include <kiid.h>
@@ -37,8 +38,25 @@ public:
     explicit KICADD_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext );
     ~KICADD_HANDLER_PCB() override;
 
+    /// The editor is about to replace (and delete) its board: stop listening to it and drop
+    /// the history, whose item ids belong to it. The next request attaches to the new board.
+    void DetachBoard();
+
 private:
     BOARD* board() const;
+
+    /// Change feed for remote views; created on first use for the current board.
+    kicadd::RENDER_FEED* feed();
+
+    /// Set when an edit must wait: in the desktop editor, while the user is in the middle of
+    /// an interactive operation (routing, dragging, a modal dialog).
+    std::optional<kiapi::common::ApiResponseStatus> busy() const;
+
+    /// True in the desktop editor: commits go on its undo list, which then owns removed items.
+    bool editorOwnsUndo() const;
+
+    /// Desktop only: repaint the canvas and tell the user in the status bar what the agent did.
+    void announce( const wxString& aWhat ) const;
 
     HANDLER_RESULT<kicadd::board::BoardSummaryResponse>
     handleGetBoardSummary( const HANDLER_CONTEXT<kicadd::board::GetBoardSummary>& aCtx );

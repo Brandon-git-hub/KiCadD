@@ -1,6 +1,7 @@
 /*
  * kicadd-mcp: MCP server for a running KiCadD (kicad-cli api-server).
  *
+ *   kicadd-mcp --stdio                     the desktop editor (pcbnew) on this machine
  *   kicadd-mcp --socket /path/kicadd.sock --stdio
  *   kicadd-mcp --socket /path/kicadd.sock --http 127.0.0.1:8765 [--token T] [--allow-origin O]
  *
@@ -24,20 +25,59 @@ using namespace kicadd::mcp;
 namespace
 {
 
+/// The socket KiCad's GUI serves its API on (KICAD_API_SERVER::StandardSocketPath):
+/// <temp dir>/kicad/api.sock, with wx's temp dir rules. On Windows NNG turns the ipc:// path
+/// into a named pipe of the same name.
+std::string desktopSocket()
+{
+    std::string dir;
+#if defined( _WIN32 )
+    for( const char* v : { "TMP", "TEMP", "USERPROFILE" } )
+#elif defined( __APPLE__ )
+    for( const char* v : { "" } )
+#else
+    for( const char* v : { "TMPDIR", "TMP", "TEMP", "TEMPDIR" } )
+#endif
+    {
+        if( const char* d = *v ? std::getenv( v ) : nullptr; d && *d )
+        {
+            dir = d;
+            break;
+        }
+    }
+
+#if defined( _WIN32 )
+    const char sep = '\\';
+#else
+    const char sep = '/';
+
+    if( dir.empty() )
+        dir = "/tmp";
+#endif
+
+    while( dir.size() > 1 && ( dir.back() == '/' || dir.back() == '\\' ) )
+        dir.pop_back();
+
+    return dir + sep + "kicad" + sep + "api.sock";
+}
+
+
 void usage()
 {
     std::fprintf( stderr,
-                  "usage: kicadd-mcp --socket PATH (--stdio | --http [HOST:]PORT)\n"
+                  "usage: kicadd-mcp [--socket PATH] (--stdio | --http [HOST:]PORT)\n"
                   "                  [--path /mcp] [--token TOKEN] [--allow-origin ORIGIN]...\n"
                   "                  [--timeout-ms MS]\n"
-                  "  --socket   KiCadD API socket (plain path or ipc:// URL); env KICADD_SOCK\n"
+                  "  --socket   KiCadD API socket (plain path or ipc:// URL); env KICADD_SOCK;\n"
+                  "             default: the desktop editor's socket, %s\n"
                   "  --stdio    MCP over stdin/stdout (spawned by the client, e.g. via ssh)\n"
                   "  --http     MCP Streamable HTTP; binds 127.0.0.1 unless HOST is given\n"
                   "  --token    require Authorization: Bearer TOKEN; env KICADD_MCP_TOKEN\n"
                   "  --trust-loopback  with --token: let peers on 127.0.0.1/::1 in without it\n"
                   "                    (same machine/container, e.g. a local agent or code-server proxy)\n"
                   "  --no-web   don't serve the 2D view (/ and /ws) in --http mode\n"
-                  "  --web-root DIR  serve DIR/index.html instead of the embedded page\n" );
+                  "  --web-root DIR  serve DIR/index.html instead of the embedded page\n",
+                  desktopSocket().c_str() );
 }
 
 } // namespace
@@ -111,7 +151,10 @@ int main( int argc, char** argv )
         }
     }
 
-    if( socket.empty() || stdio == httpMode )
+    if( socket.empty() )
+        socket = desktopSocket();
+
+    if( stdio == httpMode )
     {
         usage();
         return 2;

@@ -516,8 +516,19 @@ TOOL_RESULT history( IPC_CLIENT& aIpc, bool aUndo )
 
     const char* verb = aUndo ? "undo" : "redo";
 
-    if( !r.ok() )
+    if( !r.ok() && r.label().empty() )
         return { std::string( "nothing to " ) + verb + "\n" + renderHistory( r ) };
+
+    if( !r.ok() )   // the entry was there, but everything in it had been changed by someone else
+    {
+        std::string why;
+
+        for( const std::string& m : r.result().missing() )
+            why += ( why.empty() ? "" : "; " ) + m;
+
+        return { std::string( "did not " ) + verb + " \"" + r.label() + "\": " + why + "\n"
+                 + renderHistory( r ) };
+    }
 
     return { std::string( aUndo ? "undid: " : "redid: " ) + r.label() + "\n" + renderMoveResult( r.result() )
              + renderHistory( r ) };

@@ -6,6 +6,8 @@
 
 #include "ipc_client.h"
 
+#include <algorithm>
+
 #include <chrono>
 #include <thread>
 
@@ -49,7 +51,9 @@ bool IPC_CLIENT::Connect( std::string& aError )
 
     m_open = true;
     nng_socket_set_ms( m_socket, NNG_OPT_RECVTIMEO, m_timeoutMs );
-    nng_socket_set_ms( m_socket, NNG_OPT_SENDTIMEO, m_timeoutMs );
+    // A send only waits for a connection (the request itself is tiny): with no KiCadD up
+    // (desktop editor not open yet), fail in seconds instead of the long reply timeout.
+    nng_socket_set_ms( m_socket, NNG_OPT_SENDTIMEO, std::min( m_timeoutMs, 5000 ) );
 
     // Render snapshots of large boards are several MB; NNG's default cap is 1 MB.
     nng_socket_set_size( m_socket, NNG_OPT_RECVMAXSZ, 0 );
@@ -83,12 +87,14 @@ bool IPC_CLIENT::Call( const google::protobuf::Message& aRequest, google::protob
 
     constexpr int MAX_ATTEMPTS = 50;   // ~10 s of NOT_READY/BUSY (board still loading, task)
 
+    std::string lastBusy;
+
     for( int attempt = 0; attempt < MAX_ATTEMPTS; ++attempt )
     {
         if( int rv = nng_send( m_socket, const_cast<char*>( wire.data() ), wire.size(), 0 ); rv != 0 )
         {
             aError = std::string( "send to KiCad failed: " ) + nng_strerror( rv )
-                     + " (is kicad-cli api-server running on " + m_url + "?)";
+                     + " (is KiCadD running? desktop: pcbnew with a board open; server: kicad-cli api-server; socket " + m_url + ")";
             return false;
         }
 
@@ -115,6 +121,7 @@ bool IPC_CLIENT::Call( const google::protobuf::Message& aRequest, google::protob
 
         if( status == ApiStatusCode::AS_NOT_READY || status == ApiStatusCode::AS_BUSY )
         {
+            lastBusy = reply.status().error_message();
             std::this_thread::sleep_for( std::chrono::milliseconds( 200 ) );
             continue;
         }
@@ -138,7 +145,9 @@ bool IPC_CLIENT::Call( const google::protobuf::Message& aRequest, google::protob
         return true;
     }
 
-    aError = "KiCad stayed busy / not ready";
+    aError = "KiCad stayed busy / not ready for 10 s"
+             + ( lastBusy.empty() ? std::string() : " (" + lastBusy + ")" )
+             + "; try again once the user has finished";
     return false;
 }
 

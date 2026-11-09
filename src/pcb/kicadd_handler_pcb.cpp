@@ -15,6 +15,10 @@
 #include <unordered_map>
 
 #include <api/pcb_context.h>
+#include <eda_draw_frame.h>
+#include <pcb_base_frame.h>
+#include <class_draw_panel_gal.h>
+#include <tool/tool_manager.h>
 #include <board_design_settings.h>
 #include <lib_id.h>
 #include <netlist_reader/pcb_netlist_utils.h>
@@ -220,11 +224,63 @@ KICADD_HANDLER_PCB::KICADD_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext ) 
             &KICADD_HANDLER_PCB::handleGetZoneFills );
     registerHandler<kicadd::render::GetArt, kicadd::render::Art>( &KICADD_HANDLER_PCB::handleGetArt );
 
-    m_feed = std::make_unique<kicadd::RENDER_FEED>( board() );
+    if( board() )
+        m_feed = std::make_unique<kicadd::RENDER_FEED>( board() );
 }
 
 
 KICADD_HANDLER_PCB::~KICADD_HANDLER_PCB() = default;
+
+
+void KICADD_HANDLER_PCB::DetachBoard()
+{
+    m_feed.reset();
+    m_undo.clear();
+    m_redo.clear();
+    m_pendingNets.clear();
+}
+
+
+kicadd::RENDER_FEED* KICADD_HANDLER_PCB::feed()
+{
+    if( !m_feed && board() )
+        m_feed = std::make_unique<kicadd::RENDER_FEED>( board() );
+
+    return m_feed.get();
+}
+
+
+std::optional<ApiResponseStatus> KICADD_HANDLER_PCB::busy() const
+{
+    if( !m_context || m_context->CanAcceptApiCommands() )
+        return std::nullopt;
+
+    return makeError( ApiStatusCode::AS_BUSY,
+                      "the editor is busy: the user is in an interactive tool (routing, moving, a "
+                      "dialog); the edit was not applied" );
+}
+
+
+bool KICADD_HANDLER_PCB::editorOwnsUndo() const
+{
+    // Same test as BOARD_COMMIT::Push, which keeps an undo list only with an editor frame
+    TOOL_MANAGER* mgr = m_context ? m_context->GetToolManager() : nullptr;
+    return mgr && dynamic_cast<PCB_BASE_FRAME*>( mgr->GetToolHolder() );
+}
+
+
+void KICADD_HANDLER_PCB::announce( const wxString& aWhat ) const
+{
+    TOOL_MANAGER* mgr = m_context ? m_context->GetToolManager() : nullptr;
+
+    // The commit has updated the view items; an API request (unlike a tool event) does not
+    // repaint the canvas by itself.
+    if( EDA_DRAW_FRAME* frame = mgr ? dynamic_cast<EDA_DRAW_FRAME*>( mgr->GetToolHolder() ) : nullptr )
+    {
+        frame->SetStatusText( aWhat );
+        frame->GetCanvas()->Refresh();
+    }
+}
 
 
 BOARD* KICADD_HANDLER_PCB::board() const
@@ -496,6 +552,7 @@ void KICADD_HANDLER_PCB::runCommit( const std::function<std::vector<KIID>( BOARD
 
         commit.Push( aCommitMessage );
         m_context->SetContentModified();
+        announce( aCommitMessage );
 
         for( const KIID& id : ids )
         {
@@ -686,6 +743,7 @@ std::string refList( const std::vector<FOOTPRINT*>& aTargets )
 }
 
 
+/// Label of a move/rotate/flip, computed before it is applied.
 std::string describeMove( const std::vector<FOOTPRINT*>& aTargets, const VECTOR2I& aDelta, int aDrotDecideg,
                           bool aFlip )
 {
@@ -704,10 +762,11 @@ std::string describeMove( const std::vector<FOOTPRINT*>& aTargets, const VECTOR2
 
     if( aFlip )
     {
-        // Side after the flip, when all targets end up on the same one.
-        bool        back = !aTargets.empty() && aTargets.front()->IsFlipped();
+        // Side after the flip (called before it: the label is the commit message), when all
+        // targets end up on the same one.
+        bool        back = !aTargets.empty() && !aTargets.front()->IsFlipped();
         bool        same = std::all_of( aTargets.begin(), aTargets.end(),
-                                        [&]( const FOOTPRINT* fp ) { return fp->IsFlipped() == back; } );
+                                        [&]( const FOOTPRINT* fp ) { return !fp->IsFlipped() == back; } );
         std::string side = same ? ( back ? " to B.Cu" : " to F.Cu" ) : "";
         label += ( label.empty() ? "flip " + refs : ", flip" ) + side;
     }
@@ -812,6 +871,9 @@ std::unique_ptr<FOOTPRINT> copyAsNew( const FOOTPRINT* aSource )
 HANDLER_RESULT<MoveResponse>
 KICADD_HANDLER_PCB::handleMoveDelta( const HANDLER_CONTEXT<MoveDelta>& aCtx )
 {
+    if( std::optional<ApiResponseStatus> wait = busy() )
+        return tl::unexpected( *wait );
+
     BOARD* b = board();
 
     if( !b )
@@ -856,6 +918,9 @@ KICADD_HANDLER_PCB::handleMoveDelta( const HANDLER_CONTEXT<MoveDelta>& aCtx )
         pivot = box.Centre() + delta;
     }
 
+    const std::string label = changes ? describeMove( targets, delta, req.drot_decideg(), req.flip() )
+                                      : std::string();
+
     applyFootprintEdit( changes ? targets : std::vector<FOOTPRINT*>(),
                         [&]( FOOTPRINT* fp )
                         {
@@ -870,14 +935,14 @@ KICADD_HANDLER_PCB::handleMoveDelta( const HANDLER_CONTEXT<MoveDelta>& aCtx )
                             if( req.flip() )
                                 fp->Flip( group ? pivot : fp->GetPosition(), FLIP_DIRECTION::LEFT_RIGHT );
                         },
-                        wxS( "KiCadD MoveDelta" ), out );
+                        wxString::FromUTF8( "Agent: " + label ), out );
 
     if( !targets.empty() && changes )
     {
         for( const FOOTPRINT* fp : targets )
             entry.after.push_back( stateOf( fp ) );
 
-        entry.label = describeMove( targets, delta, req.drot_decideg(), req.flip() );
+        entry.label = label;
         out.set_history_label( entry.label );
         record( std::move( entry ) );
     }
@@ -889,6 +954,9 @@ KICADD_HANDLER_PCB::handleMoveDelta( const HANDLER_CONTEXT<MoveDelta>& aCtx )
 HANDLER_RESULT<MoveResponse>
 KICADD_HANDLER_PCB::handleDeleteFootprints( const HANDLER_CONTEXT<DeleteFootprints>& aCtx )
 {
+    if( std::optional<ApiResponseStatus> wait = busy() )
+        return tl::unexpected( *wait );
+
     BOARD* b = board();
 
     if( !b )
@@ -927,12 +995,14 @@ KICADD_HANDLER_PCB::handleDeleteFootprints( const HANDLER_CONTEXT<DeleteFootprin
 
                 return std::vector<KIID>();
             },
-            wxS( "KiCadD DeleteFootprints" ), out );
+            wxString::FromUTF8( "Agent: " + entry.label ), out );
 
     // Headless commits keep no undo list, so the removed footprints are ours now: off the
     // board and out of connectivity (BOARD::Remove), they become the history's snapshots.
+    // In the desktop editor the commit hands them to the editor's undo list (Ctrl+Z puts that
+    // very object back), so the history keeps a copy instead.
     for( FOOTPRINT* fp : targets )
-        entry.removed.push_back( detach( fp ) );
+        entry.removed.push_back( detach( editorOwnsUndo() ? static_cast<FOOTPRINT*>( fp->Clone() ) : fp ) );
 
     out.set_history_label( entry.label );
     record( std::move( entry ) );
@@ -943,6 +1013,9 @@ KICADD_HANDLER_PCB::handleDeleteFootprints( const HANDLER_CONTEXT<DeleteFootprin
 HANDLER_RESULT<MoveResponse>
 KICADD_HANDLER_PCB::handleAddFootprint( const HANDLER_CONTEXT<AddFootprint>& aCtx )
 {
+    if( std::optional<ApiResponseStatus> wait = busy() )
+        return tl::unexpected( *wait );
+
     BOARD* b = board();
 
     if( !b )
@@ -1069,6 +1142,7 @@ KICADD_HANDLER_PCB::handleAddFootprint( const HANDLER_CONTEXT<AddFootprint>& aCt
     MoveResponse out;
     out.set_source( source );
     FOOTPRINT* placed = fp.release();
+    const std::string label = "add " + ref.ToStdString() + " (" + placed->GetFPID().Format().wx_str().ToStdString() + ")";
 
     runCommit(
             [&]( BOARD_COMMIT& aCommit )
@@ -1084,13 +1158,13 @@ KICADD_HANDLER_PCB::handleAddFootprint( const HANDLER_CONTEXT<AddFootprint>& aCt
                 out.add_added( ref.ToStdString() );
                 return std::vector<KIID>{ placed->m_Uuid };
             },
-            wxS( "KiCadD AddFootprint" ), out );
+            wxString::FromUTF8( "Agent: " + label ), out );
 
     m_pendingNets.clear();
 
     // Redo puts this exact footprint back; keep a detached copy of it.
     HISTORY_ENTRY entry;
-    entry.label = "add " + ref.ToStdString() + " (" + placed->GetFPID().Format().wx_str().ToStdString() + ")";
+    entry.label = label;
     entry.added.push_back( detach( static_cast<FOOTPRINT*>( placed->Clone() ) ) );
     out.set_history_label( entry.label );
     record( std::move( entry ) );
@@ -1132,12 +1206,37 @@ bool KICADD_HANDLER_PCB::applyHistory( const HISTORY_ENTRY& aEntry, bool aUndo, 
             adding.push_back( &snap );
     }
 
+    // A footprint someone else changed after this entry (the user in the editor or the web
+    // view) is left alone: undo/redo only takes back the agent's own edit.
+    const std::vector<FP_STATE>& expected = aUndo ? aEntry.after : aEntry.before;
+
+    auto unchanged = [&]( const FOOTPRINT* aFp )
+    {
+        for( const FP_STATE& e : expected )
+        {
+            if( e.id == aFp->m_Uuid )
+            {
+                FP_STATE now = stateOf( aFp );
+                return now.pos == e.pos && now.orient == e.orient && now.back == e.back;
+            }
+        }
+
+        return true;
+    };
+
     for( const FP_STATE& st : states )
     {
         if( FOOTPRINT* fp = resolve( st.id ) )
-            modifying.emplace_back( fp, &st );
+        {
+            if( unchanged( fp ) )
+                modifying.emplace_back( fp, &st );
+            else
+                aOut.add_missing( fp->GetReference().ToStdString() + " (changed since; left as is)" );
+        }
         else
+        {
             aOut.add_missing( st.id.AsStdString() );
+        }
     }
 
     if( removing.empty() && adding.empty() && modifying.empty() )
@@ -1171,7 +1270,7 @@ bool KICADD_HANDLER_PCB::applyHistory( const HISTORY_ENTRY& aEntry, bool aUndo, 
 
                 return ids;
             },
-            wxString::FromUTF8( std::string( "KiCadD " ) + ( aUndo ? "undo " : "redo " ) + aEntry.label ),
+            wxString::FromUTF8( std::string( "Agent: " ) + ( aUndo ? "undo " : "redo " ) + aEntry.label ),
             aOut );
 
     m_pendingNets.clear();
@@ -1200,6 +1299,9 @@ void KICADD_HANDLER_PCB::fillHistory( HistoryResponse& aOut ) const
 HANDLER_RESULT<HistoryResponse>
 KICADD_HANDLER_PCB::handleUndo( const HANDLER_CONTEXT<Undo>& aCtx )
 {
+    if( std::optional<ApiResponseStatus> wait = busy() )
+        return tl::unexpected( *wait );
+
     if( !board() )
         return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
 
@@ -1225,6 +1327,9 @@ KICADD_HANDLER_PCB::handleUndo( const HANDLER_CONTEXT<Undo>& aCtx )
 HANDLER_RESULT<HistoryResponse>
 KICADD_HANDLER_PCB::handleRedo( const HANDLER_CONTEXT<Redo>& aCtx )
 {
+    if( std::optional<ApiResponseStatus> wait = busy() )
+        return tl::unexpected( *wait );
+
     if( !board() )
         return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
 
@@ -1341,6 +1446,9 @@ std::string handleOf( const BOARD_CONNECTED_ITEM* aItem )
 HANDLER_RESULT<VerifyConnectivityResponse>
 KICADD_HANDLER_PCB::handleVerifyConnectivity( const HANDLER_CONTEXT<VerifyConnectivity>& aCtx )
 {
+    if( std::optional<ApiResponseStatus> wait = busy() )
+        return tl::unexpected( *wait );
+
     BOARD* b = board();
 
     if( !b )
@@ -1508,6 +1616,9 @@ KICADD_HANDLER_PCB::handleSetRatsnestDeferral( const HANDLER_CONTEXT<SetRatsnest
 HANDLER_RESULT<FlushRatsnestResponse>
 KICADD_HANDLER_PCB::handleFlushRatsnest( const HANDLER_CONTEXT<FlushRatsnest>& aCtx )
 {
+    if( std::optional<ApiResponseStatus> wait = busy() )
+        return tl::unexpected( *wait );
+
     BOARD* b = board();
 
     if( !b )
@@ -1528,7 +1639,7 @@ KICADD_HANDLER_PCB::handleFlushRatsnest( const HANDLER_CONTEXT<FlushRatsnest>& a
 HANDLER_RESULT<kicadd::render::RenderSnapshot>
 KICADD_HANDLER_PCB::handleGetRenderSnapshot( const HANDLER_CONTEXT<kicadd::render::GetRenderSnapshot>& aCtx )
 {
-    if( !board() || !m_feed )
+    if( !board() || !feed() )
         return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
 
     kicadd::render::RenderSnapshot out;
@@ -1540,7 +1651,7 @@ KICADD_HANDLER_PCB::handleGetRenderSnapshot( const HANDLER_CONTEXT<kicadd::rende
 HANDLER_RESULT<kicadd::render::Art>
 KICADD_HANDLER_PCB::handleGetArt( const HANDLER_CONTEXT<kicadd::render::GetArt>& aCtx )
 {
-    if( !board() || !m_feed )
+    if( !board() || !feed() )
         return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
 
     kicadd::render::Art out;
@@ -1552,7 +1663,7 @@ KICADD_HANDLER_PCB::handleGetArt( const HANDLER_CONTEXT<kicadd::render::GetArt>&
 HANDLER_RESULT<kicadd::render::RenderChanges>
 KICADD_HANDLER_PCB::handleGetChanges( const HANDLER_CONTEXT<kicadd::render::GetChanges>& aCtx )
 {
-    if( !board() || !m_feed )
+    if( !board() || !feed() )
         return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
 
     kicadd::render::RenderChanges out;

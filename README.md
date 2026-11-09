@@ -21,9 +21,9 @@ Built as a thin extension of upstream `kicad-cli api-server`, not a fork of the 
 | `mcp/` | `kicadd-mcp`: MCP server (C++; stdio + Streamable HTTP via Boost.Beast) + web view hub |
 | `src/pcb/kicadd_render.*` | Change journal (`BOARD_LISTENER`) + render snapshot for remote views |
 | `web/index.html` | 2D view (vanilla JS + Canvas 2D), embedded into `kicadd-mcp` at build time |
-| `client/` | Python IPC client, benchmark, verification + A/B scripts, `run_server.sh` |
+| `client/` | Python IPC client, benchmark, verification + A/B scripts, `run_server.sh`, `desktop_e2e.py` (M2) |
 
-### Upstream patch (~1750 lines incl. context, 33 files; see the M1 and M3 sections for the newest parts)
+### Upstream patch (~1890 lines incl. context, 37 files; see the M1, M2 and M3 sections for the newest parts)
 
 - **Hooks** (guarded by `KICADD_DIR` / `#ifdef KICADD`): `CMakeLists.txt`, `pcbnew/CMakeLists.txt`,
   `pcbnew/pcbnew.cpp` register `KICADD_HANDLER_PCB` next to `API_HANDLER_PCB`.
@@ -455,6 +455,69 @@ All symbols resolve at load (`dlopen` with `RTLD_NOW`) for both `_pcbnew.kiface`
 end to end: `kicad-cli version`, DRC on `demos/pic_programmer`, a SPICE netlist from
 `demos/simulation/rectifier` (eeschema + SPICE models without ngspice), and the API server
 answering `board_summary` through `kicadd-mcp --stdio`. Passes on the full and the lean build.
+
+## M2: desktop co-pilot (2026-11-09)
+
+The agent edits the board **open in the desktop editor** (pcbnew), live, next to the user. Same
+board, same undo stack, same canvas; the user keeps routing (push-and-shove, diff pairs, length
+tuning) while the agent places.
+
+```
+Claude Desktop / Cursor / Claude Code
+   │  MCP over stdio
+kicadd-mcp --stdio            (no --socket: finds the editor by itself)
+   │  protobuf over NNG: <temp>/kicad/api.sock (Windows: a named pipe of that name)
+pcbnew (KiCadD build) ── PCB_EDIT_FRAME ── KICADD_HANDLER_PCB + upstream API_HANDLER_PCB
+```
+
+MCP client config (Claude Desktop `claude_desktop_config.json`, Cursor `mcp.json`):
+
+```json
+{ "mcpServers": { "kicadd": { "command": "/path/to/kicadd-mcp", "args": ["--stdio"] } } }
+```
+
+Claude Code: `claude mcp add kicadd -- /path/to/kicadd-mcp --stdio`. The order does not
+matter: with no editor open a tool call fails within 5 s ("is KiCadD running?"), and the next
+call after pcbnew opens a board goes through (NNG redials in the background).
+
+What changed:
+
+- **Handler in the editor** (`pcb_edit_frame.*`, under `#ifdef KICADD`): `PCB_EDIT_FRAME`
+  registers `KICADD_HANDLER_PCB` on `CreatePcbFrameContext( this )`, next to upstream's handler.
+  Commits use the frame's tool manager, so they land on the editor's undo stack, update the
+  view and the ratsnest. The canvas is repainted after each agent commit (an API request is no
+  tool event, nothing else repaints it), and the status bar says what the agent did
+  ("Agent: move U3 +0.00,-10.00 mm"); the same text is the Undo menu entry.
+- **API server on by default**: the editor starts it even with the preference off (it is the
+  co-pilot's transport); `KICADD_NO_API=1` opts out. Socket: KiCad's standard
+  `<temp>/kicad/api.sock`, which is also `kicadd-mcp`'s default now.
+- **Busy**: edits (move/flip/rotate, add, delete, undo/redo, ratsnest flush, connectivity check)
+  are refused with `AS_BUSY` while the user is in an interactive operation (router, drag, a
+  point edit, a modal dialog; upstream's `CanAcceptApiCommands`). kicadd-mcp retries for 10 s,
+  then tells the agent the user is busy and nothing was applied. Reads still answer.
+- **Board swap**: File → Open replaces (deletes) the board; `PCB_EDIT_FRAME::SetBoard` calls
+  `DetachBoard()` first (drops the change feed's listener and the agent history), the feed
+  re-attaches on the next request.
+- **Agent undo/redo never overwrites the user**: a footprint changed since the agent's edit (by
+  the user, or anyone) is left alone and reported (`did not undo "move U3 …": U3 (changed
+  since; left as is)`). The user's Ctrl+Z / Ctrl+Y work on agent edits like on their own.
+- **Ownership of deleted footprints**: with an editor, `BOARD_COMMIT::Push` hands a removed
+  footprint to the undo list (Ctrl+Z puts that object back), so the agent history keeps a
+  copy; headless it keeps the original as before.
+- kicadd-mcp waits at most 5 s for a connection (the reply timeout stays 120 s, for full DRC).
+- Commit messages are the history labels ("Agent: …") instead of "KiCadD MoveDelta".
+- The STEP/GLB export menu entry is hidden without OpenCASCADE (left over from M1).
+
+Verification: `client/desktop_e2e.py --build build-lean --demos kicad/demos --work DIR` runs the
+real editor under Xvfb (xdotool for the user's keys, screenshots in DIR), 13 checks: API server
+up with no preference set, agent move → canvas + status bar, user Ctrl+Z, agent undo after a user
+change left alone, edits refused while the router is active and applied after Escape, agent
+delete → user Ctrl+Z / Ctrl+Y → agent undo, clean exit (no double free). The headless suites
+(`layout_e2e`, `history_e2e`, `web_e2e`, `mcp_e2e`, `smoke.py`) still pass.
+
+Not yet: the Windows desktop path (same code, built by M3 CI, but not run on Windows: the named
+pipe name must match between `wxStandardPaths::GetTempDir` and `%TMP%`), and a co-pilot panel in
+the editor (agent activity log, pause switch); for now the status bar and the Undo menu show it.
 
 ## M3: Windows CI (2026-11-06)
 
