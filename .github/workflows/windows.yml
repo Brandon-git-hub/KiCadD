@@ -46,12 +46,22 @@ jobs:
         run: echo "key=vcpkg-win-x64-${{ hashFiles('kicad/vcpkg.json', 'kicad/vcpkg-configuration.json', 'kicadd/ci/vcpkg-triplets/*') }}" >> "$GITHUB_OUTPUT"
       - name: vcpkg at the manifest baseline
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           baseline=$(python -c "import json; print(json.load(open('kicad/vcpkg-configuration.json'))['default-registry']['baseline'])")
           git init -q vcpkg
           git -C vcpkg fetch -q --depth 1 https://github.com/microsoft/vcpkg "$baseline"
           git -C vcpkg checkout -q FETCH_HEAD
-          vcpkg/bootstrap-vcpkg.bat -disableMetrics
+          # vcpkg.exe through the API with the job token: anonymous release downloads (what
+          # bootstrap-vcpkg.bat does) can time out when GitHub throttles anonymous traffic
+          tag=$(sed -n 's/^VCPKG_TOOL_RELEASE_TAG=//p' vcpkg/scripts/vcpkg-tool-metadata.txt | tr -d '\r')
+          for i in 1 2 3; do
+            gh release download "$tag" -R microsoft/vcpkg-tool -p vcpkg.exe -D vcpkg --clobber && break
+            sleep 20
+          done
+          [ -f vcpkg/vcpkg.exe ] || vcpkg/bootstrap-vcpkg.bat -disableMetrics
+          vcpkg/vcpkg.exe version | head -1
       - uses: actions/cache/restore@v4
         with:
           path: vcpkg-bincache
@@ -104,12 +114,22 @@ jobs:
         run: kicadd/ci/fetch_upstream.sh kicad
       - name: vcpkg at the manifest baseline
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           baseline=$(python -c "import json; print(json.load(open('kicad/vcpkg-configuration.json'))['default-registry']['baseline'])")
           git init -q vcpkg
           git -C vcpkg fetch -q --depth 1 https://github.com/microsoft/vcpkg "$baseline"
           git -C vcpkg checkout -q FETCH_HEAD
-          vcpkg/bootstrap-vcpkg.bat -disableMetrics
+          # vcpkg.exe through the API with the job token: anonymous release downloads (what
+          # bootstrap-vcpkg.bat does) can time out when GitHub throttles anonymous traffic
+          tag=$(sed -n 's/^VCPKG_TOOL_RELEASE_TAG=//p' vcpkg/scripts/vcpkg-tool-metadata.txt | tr -d '\r')
+          for i in 1 2 3; do
+            gh release download "$tag" -R microsoft/vcpkg-tool -p vcpkg.exe -D vcpkg --clobber && break
+            sleep 20
+          done
+          [ -f vcpkg/vcpkg.exe ] || vcpkg/bootstrap-vcpkg.bat -disableMetrics
+          vcpkg/vcpkg.exe version | head -1
       - uses: actions/cache/restore@v4
         with:
           path: vcpkg-bincache
