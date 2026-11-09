@@ -39,6 +39,19 @@
 #include <connectivity/connectivity_data.h>
 #include <connectivity/connectivity_algo.h>
 #include <ratsnest/ratsnest_data.h>
+#include <netlist_reader/board_netlist_updater.h>
+#include "pcb/kicadd_autoplace.h"
+#include <project/net_settings.h>
+#include <netclass.h>
+#include <pcb_text.h>
+#include <pcb_field.h>
+#include <trigo.h>
+#include <netlist_reader/pcb_netlist.h>
+#include <kiface_ids.h>
+#include <kiface_services.h>
+#include <kiway.h>
+#include <reporter.h>
+#include <wx/ffile.h>
 
 using namespace kicadd::board;
 
@@ -205,6 +218,8 @@ KICADD_HANDLER_PCB::KICADD_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext ) 
     registerHandler<DeleteFootprints, MoveResponse>( &KICADD_HANDLER_PCB::handleDeleteFootprints );
     registerHandler<AddFootprint, MoveResponse>( &KICADD_HANDLER_PCB::handleAddFootprint );
     registerHandler<FetchLcsc, FetchLcscResponse>( &KICADD_HANDLER_PCB::handleFetchLcsc );
+    registerHandler<SyncFromSchematic, SyncFromSchematicResponse>( &KICADD_HANDLER_PCB::handleSyncFromSchematic );
+    registerHandler<AutoPlace, AutoPlaceResponse>( &KICADD_HANDLER_PCB::handleAutoPlace );
     registerHandler<Undo, HistoryResponse>( &KICADD_HANDLER_PCB::handleUndo );
     registerHandler<Redo, HistoryResponse>( &KICADD_HANDLER_PCB::handleRedo );
     registerHandler<GetHistory, HistoryResponse>( &KICADD_HANDLER_PCB::handleGetHistory );
@@ -2020,5 +2035,343 @@ KICADD_HANDLER_PCB::handleDescribeItems( const HANDLER_CONTEXT<DescribeItems>& a
         }
     }
 
+    return out;
+}
+
+
+HANDLER_RESULT<SyncFromSchematicResponse>
+KICADD_HANDLER_PCB::handleSyncFromSchematic( const HANDLER_CONTEXT<SyncFromSchematic>& aCtx )
+{
+    BOARD* b = board();
+
+    if( !b || b->GetFileName().IsEmpty() )
+        return tl::unexpected( makeError( ApiStatusCode::AS_UNHANDLED, "no saved board loaded" ) );
+
+    if( auto err = busy() )
+        return tl::unexpected( *err );
+
+    // The project's root schematic: next to the board, same name
+    wxFileName sch( b->GetFileName() );
+    sch.SetExt( wxS( "kicad_sch" ) );
+
+    if( !sch.FileExists() )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
+                                          "no schematic " + sch.GetFullName().ToStdString() + " next to the board" ) );
+
+    KIWAY*                                 kiway = m_context->GetKiway();
+    KIFACE_NETLIST_SCHEMATIC_SERVICE::Type netlister = nullptr;
+
+    try
+    {
+        if( kiway )
+            netlister = GetKifaceService<KIFACE_NETLIST_SCHEMATIC_SERVICE>( kiway->KiFACE( KIWAY::FACE_SCH ) );
+    }
+    catch( const IO_ERROR& e )
+    {
+        return tl::unexpected( makeError( ApiStatusCode::AS_UNIMPLEMENTED,
+                                          "the schematic module could not be loaded: " + e.What().ToStdString() ) );
+    }
+
+    if( !netlister )
+        return tl::unexpected( makeError( ApiStatusCode::AS_UNIMPLEMENTED, "no schematic netlister available" ) );
+
+    std::string text;
+
+    if( !( *netlister )( sch.GetFullPath(), text, kiway ) || text.empty() )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
+                                          "the schematic could not be netlisted: " + text.substr( 0, 300 ) ) );
+
+    // The netlist reader (and its footprint preloading) works from a file
+    wxString netFile = wxFileName::CreateTempFileName( wxS( "kicadd-netlist" ) );
+
+    {
+        wxFFile f( netFile, wxS( "wb" ) );
+
+        if( !f.IsOpened() || !f.Write( text.data(), text.size() ) )
+            return tl::unexpected( makeError( ApiStatusCode::AS_UNKNOWN, "cannot write a temporary netlist" ) );
+    }
+
+    WX_STRING_REPORTER reporter;
+    NETLIST            netlist;
+    netlist.SetFindByTimeStamp( true );
+    netlist.SetReplaceFootprints( aCtx.Request.update_footprints() );
+
+    bool read = m_context->ReadNetlistFromFile( netFile, netlist, reporter );
+    wxRemoveFile( netFile );
+
+    if( !read )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
+                                          "reading the netlist failed: " + reporter.GetMessages().ToStdString() ) );
+
+    std::unique_ptr<BOARD_NETLIST_UPDATER> updater = m_context->MakeNetlistUpdater();
+    updater->SetReporter( &reporter );
+    updater->SetIsDryRun( aCtx.Request.dry_run() );
+    updater->SetWillDrag( false );
+    updater->SetLookupByTimestamp( true );
+    updater->SetDeleteUnusedFootprints( aCtx.Request.delete_extra() );
+    updater->SetReplaceFootprints( aCtx.Request.update_footprints() );
+    updater->SetTransferGroups( false );
+    updater->SetOverrideLocks( false );
+    updater->SetUpdateFields( true );
+
+    bool ok = updater->UpdateNetlist( netlist );
+
+    SyncFromSchematicResponse out;
+
+    if( !aCtx.Request.dry_run() && ok )
+    {
+        m_context->OnNetlistChanged( *updater );
+
+        for( FOOTPRINT* fp : updater->GetAddedFootprints() )
+            out.add_new_refs( fp->GetReference().ToStdString() );
+    }
+
+    out.set_added( updater->GetNewFootprintCount() );
+    out.set_errors( updater->GetErrorCount() );
+    out.set_warnings( updater->GetWarningCount() );
+    out.set_report( reporter.GetMessages().ToStdString( wxConvUTF8 ) );
+    out.set_footprints( (int) b->Footprints().size() );
+    out.set_nets( (int) b->GetNetCount() - 1 );
+    return out;
+}
+
+
+HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HANDLER_CONTEXT<AutoPlace>& aCtx )
+{
+    namespace ap = kicadd::autoplace;
+
+    if( auto err = busy() )
+        return tl::unexpected( *err );
+
+    BOARD* b = board();
+
+    if( !b )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
+
+    SHAPE_POLY_SET outline;
+
+    if( !b->GetBoardPolygonOutlines( outline, false ) || outline.OutlineCount() == 0 )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
+                                          "the board has no closed outline on Edge.Cuts to place into" ) );
+
+    const AutoPlace&      req = aCtx.Request;
+    AutoPlaceResponse     out;
+    std::set<wxString>    asked, fixed;
+
+    for( const std::string& r : req.refs() )
+        asked.insert( wxString::FromUTF8( r ) );
+
+    for( const std::string& r : req.fixed() )
+        fixed.insert( wxString::FromUTF8( r ) );
+
+    for( const wxString& r : asked )
+    {
+        if( !b->FindFootprintByReference( r ) )
+            return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no footprint " + r.ToStdString() ) );
+    }
+
+    // The model: every footprint, with its courtyard (or body) and its pads' nets
+    std::vector<ap::PART>   parts;
+    std::vector<FOOTPRINT*> fps;
+    std::map<int, int>      netIndex;
+
+    auto inside = [&]( FOOTPRINT* fp )
+    {
+        BOX2I box = fp->GetBoundingBox( false );
+        return outline.Contains( box.GetOrigin() ) && outline.Contains( box.GetEnd() )
+               && outline.Contains( VECTOR2I( box.GetRight(), box.GetTop() ) )
+               && outline.Contains( VECTOR2I( box.GetLeft(), box.GetBottom() ) );
+    };
+
+    for( FOOTPRINT* fp : b->Footprints() )
+    {
+        ap::PART  part;
+        EDA_ANGLE orient = fp->GetOrientation();
+        VECTOR2I  anchor = fp->GetPosition();
+        double    quarter = orient.AsDegrees() / 90.0;
+        bool      square = std::abs( quarter - std::round( quarter ) ) < 1e-6;
+
+        part.ref = fp->GetReference().ToStdString();
+        part.pos = anchor;
+        part.rot = ( ( (int) std::lround( quarter ) % 4 ) + 4 ) % 4;
+
+        bool wanted = !asked.empty() ? asked.count( fp->GetReference() ) > 0
+                                     : ( req.all() || !inside( fp ) );
+
+        part.movable = wanted && !fixed.count( fp->GetReference() );
+
+        if( part.movable && ( fp->IsLocked() || fp->IsFlipped() || !square ) )
+        {
+            part.movable = false;
+            out.add_skipped( part.ref + ( fp->IsLocked() ? " (locked)" : fp->IsFlipped() ? " (on the back)"
+                                                                                           : " (not at a right angle)" ) );
+        }
+
+        // shape at rotation 0, relative to the anchor
+        auto toLocal = [&]( const VECTOR2I& aWorld )
+        {
+            VECTOR2I p = aWorld - anchor;
+            RotatePoint( p, -orient );
+            return p;
+        };
+
+        const SHAPE_POLY_SET& crt = fp->GetCourtyard( F_CrtYd );
+
+        if( crt.OutlineCount() > 0 )
+        {
+            for( auto it = crt.CIterate(); it; ++it )
+                part.outline.push_back( toLocal( *it ) );
+        }
+        else
+        {
+            BOX2I box = fp->GetBoundingBox( false );
+
+            for( const VECTOR2I& c : { box.GetOrigin(), box.GetEnd(), VECTOR2I( box.GetRight(), box.GetTop() ),
+                                       VECTOR2I( box.GetLeft(), box.GetBottom() ) } )
+                part.outline.push_back( toLocal( c ) );
+        }
+
+        // Silkscreen (outline, polarity marks, the visible reference) often sticks out of the
+        // courtyard: keep it clear of the neighbours' silk too (DRC silk_clearance).
+        auto addSilk = [&]( const BOARD_ITEM* aItem )
+        {
+            if( !aItem->IsOnLayer( F_SilkS ) )
+                return;
+
+            if( const PCB_TEXT* text = dynamic_cast<const PCB_TEXT*>( aItem ); text && !text->IsVisible() )
+                return;
+
+            BOX2I box = aItem->GetBoundingBox();
+
+            for( const VECTOR2I& c : { box.GetOrigin(), box.GetEnd(), VECTOR2I( box.GetRight(), box.GetTop() ),
+                                       VECTOR2I( box.GetLeft(), box.GetBottom() ) } )
+                part.outline.push_back( toLocal( c ) );
+        };
+
+        for( const BOARD_ITEM* item : fp->GraphicalItems() )
+            addSilk( item );
+
+        for( const PCB_FIELD* field : fp->GetFields() )
+            addSilk( field );
+
+        for( PAD* pad : fp->Pads() )
+        {
+            ap::PAD p;
+            p.offset = toLocal( pad->GetPosition() );
+
+            BOX2I padBox = pad->GetBoundingBox();
+
+            for( const VECTOR2I& c : { padBox.GetOrigin(), padBox.GetEnd(), VECTOR2I( padBox.GetRight(), padBox.GetTop() ),
+                                       VECTOR2I( padBox.GetLeft(), padBox.GetBottom() ) } )
+                part.copper.push_back( toLocal( c ) );
+
+            if( pad->GetNetCode() > 0 )
+            {
+                auto [it, added] = netIndex.emplace( pad->GetNetCode(), (int) netIndex.size() );
+                p.net = it->second;
+            }
+
+            part.pads.push_back( p );
+        }
+
+        parts.push_back( std::move( part ) );
+        fps.push_back( fp );
+    }
+
+    ap::OPTIONS opt;
+
+    if( req.spacing() > 0 )
+        opt.spacing = (int) req.spacing();
+
+    if( req.edge() > 0 )
+        opt.edge = (int) req.edge();
+
+    opt.rotate = !req.no_rotate();
+
+    // Board items the parts must keep clear of: copper drawings and text, tracks, vias (grown
+    // by the default clearance), keep-outs that forbid footprints.
+    {
+        int clearance = b->GetDesignSettings().m_MinClearance;
+
+        if( std::shared_ptr<NETCLASS> nc = b->GetDesignSettings().m_NetSettings->GetDefaultNetclass() )
+            clearance = std::max( clearance, nc->GetClearance() );
+
+        for( BOARD_ITEM* item : b->Drawings() )
+        {
+            if( ( item->GetLayerSet() & LSET::AllCuMask() ).any() )
+            {
+                BOX2I box = item->GetBoundingBox();
+                box.Inflate( clearance );
+                opt.obstacles.push_back( box );
+            }
+        }
+
+        for( PCB_TRACK* track : b->Tracks() )
+        {
+            BOX2I box = track->GetBoundingBox();
+            box.Inflate( clearance );
+            opt.obstacles.push_back( box );
+        }
+
+        for( ZONE* zone : b->Zones() )
+        {
+            if( zone->GetIsRuleArea() && zone->GetDoNotAllowFootprints() )
+                opt.obstacles.push_back( zone->GetBoundingBox() );
+        }
+    }
+
+    // a finer grid for small boards, a coarser one for big ones
+    BOX2I area = outline.BBox();
+    opt.grid = std::max( 100000, (int) ( std::max( area.GetWidth(), area.GetHeight() ) / 800 ) / 50000 * 50000 );
+
+    ap::RESULT res = ap::Place( parts, (int) netIndex.size(), outline, opt );
+
+    std::vector<FOOTPRINT*> targets;
+    std::set<std::string>   unplaced( res.unplaced.begin(), res.unplaced.end() );
+    std::map<FOOTPRINT*, size_t> index;
+
+    for( size_t i = 0; i < parts.size(); ++i )
+    {
+        if( parts[i].movable && !unplaced.count( parts[i].ref ) )
+        {
+            targets.push_back( fps[i] );
+            index[fps[i]] = i;
+            out.add_refs( parts[i].ref );
+        }
+    }
+
+    HISTORY_ENTRY entry;
+
+    for( const FOOTPRINT* fp : targets )
+        entry.before.push_back( stateOf( fp ) );
+
+    std::string label = "auto-place " + std::to_string( targets.size() ) + " part" + ( targets.size() == 1 ? "" : "s" );
+
+    applyFootprintEdit( targets,
+                        [&]( FOOTPRINT* fp )
+                        {
+                            const ap::PART& p = parts[index[fp]];
+                            fp->SetOrientation( EDA_ANGLE( 90.0 * p.rot, DEGREES_T ) );
+                            fp->SetPosition( p.pos );
+                        },
+                        wxString::FromUTF8( "Agent: " + label ), *out.mutable_edit() );
+
+    if( !targets.empty() )
+    {
+        for( const FOOTPRINT* fp : targets )
+            entry.after.push_back( stateOf( fp ) );
+
+        entry.label = label;
+        out.mutable_edit()->set_history_label( label );
+        record( std::move( entry ) );
+    }
+
+    out.set_moved( (int) targets.size() );
+
+    for( const std::string& r : res.unplaced )
+        out.add_unplaced( r );
+
+    out.set_hpwl_before_mm( res.hpwlBefore );
+    out.set_hpwl_after_mm( res.hpwlAfter );
     return out;
 }

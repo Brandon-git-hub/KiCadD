@@ -47,6 +47,7 @@ set( KICADD_PCB_SRCS
     ${KICADD_DIR}/src/pcb/kicadd_render.cpp
     ${KICADD_DIR}/src/lcsc/kicadd_lcsc.cpp
     ${KICADD_DIR}/src/pcb/kicadd_lcsc_tool.cpp
+    ${KICADD_DIR}/src/pcb/kicadd_autoplace.cpp
     )
 set( KICADD_INCLUDE_DIRS ${KICADD_DIR}/src ${KICADD_CPP_OUT} )
 # eeschema kiface: LCSC symbols (M4b), reached from pcbnew through KIFACE_KICADD_LCSC_SYMBOL

@@ -699,6 +699,64 @@ connects a 3.3 V regulator circuit by net name and checks the netlist pin by pin
 disconnect, delete (labels go with the part), then saves, restarts and finds the same netlist
 (PASS). Rendered with `kicad-cli sch export svg`: stubs and labels as intended.
 
+## M5b + M5c: schematic to placed board, headless (2026-11-10)
+
+```
+sch_add_part / sch_connect ...   -> the schematic
+sync_pcb                         -> 5 footprint(s) added: U1 R1 R2 C1 C2; board now 5 footprints, 5 nets
+auto_place                       -> placed 5 part(s); wire length (half-perimeter) 43.9 -> 25.04 mm
+run_drc                          -> errors: unconnected_items 7   (nothing routed yet: the human's turn)
+```
+
+**`sync_pcb`** (Update PCB from Schematic): saves the schematic, gets its netlist from eeschema's
+export (`KIFACE_NETLIST_SCHEMATIC`), and runs KiCad's own netlist updater exactly as
+`ImportNetlist` does (match by symbol UUID): new footprints from each symbol's Footprint field,
+nets on the pads, changed values. `dry_run`, `delete_extra`, `update_footprints`. The report
+keeps only what isn't routine. New footprints land near the origin, outside the board, until
+placed.
+
+**`auto_place`** (`src/pcb/kicadd_autoplace.cpp`, a plain model with no BOARD in it):
+
+1. *Global:* parts off the board are pulled to the weighted centre of the pins they connect to
+   (clique weights 1/(k-1); nets on more than 30 % of the parts, typically GND and the main
+   supply, are left out so everything doesn't collapse into one point). Small passives are also
+   pulled to the nearest pin of the biggest part sharing a non-ground net with them, so
+   decoupling caps go to their supply pin and pull-ups to their signal. Parts already on the
+   board keep their place as the target, so `all` improves a layout instead of starting over.
+2. *Legal:* big parts first, each to the free spot nearest its target (square rings on a grid of
+   0.1 to 0.2 mm), in its rotation or, failing that, the other three. Footprint areas
+   (courtyard + silkscreen) stay `spacing` (0.25 mm) apart and `edge` (0.5 mm) inside the
+   Edge.Cuts outline; pads stay clear of copper drawings/text, tracks, vias and footprint
+   keep-outs (silk may go over board text). Parts on no net (mounting holes, logos) go last, to
+   the corners and then the middles of the edges.
+3. *Refine:* each part tries the legal spot nearest its connection centre in all four
+   rotations, then same-size parts try swapping; kept only if the wire length goes down.
+   Unanchored groups are centred on the board.
+4. Four starts (spiral phase, order by size or by connectivity) run in parallel threads; the
+   one placing the most parts with the shortest wire length wins. The result is one undoable
+   edit in the agent's history.
+
+Locked parts, parts on the back and parts not at a right angle are kept where they are and
+named; `fixed` keeps more (place connectors first, then the rest).
+
+Measured (`client/autoplace_bench.py`, KiCad's pic_programmer demo, tracks stripped, all 62
+movable parts moved off the board): **10 s, half-perimeter wire length 1584 mm against the
+human layout's 1489 mm (+6 %)**, every part placed, full DRC: no courtyard, clearance, hole or
+silkscreen errors (only the 125 unrouted connections). The first versions taught what matters:
+silkscreen in the footprint area (20 silk_clearance errors otherwise), copper obstacles checked
+against pads only (otherwise the 40-pin ZIF socket found no room under the board's copper
+text), mounting holes to the corners, and several starts, since one start can land 15 % worse.
+
+Verification: `m5_e2e.py` continues from the drawn schematic: `sync_pcb` (dry run changes
+nothing; 5 footprints with every net pad by pad; a second sync adds nothing), `auto_place` (all
+inside the outline, wire length down, DRC only unrouted, both caps within 8 mm of the regulator,
+undo takes it back), save. PASS, together with mcp_e2e (25 tools), layout, history, lcsc,
+desktop and smoke.
+
+Not yet: the schematic tools in the desktop Schematic Editor (headless only so far; `sync_pcb`
+and `auto_place` work in the PCB Editor too), hierarchical sheets, placing on the back side,
+keep-together groups / placement rules from the agent, routing.
+
 ## M3: Windows CI (2026-11-06)
 
 `.github/workflows/windows.yml` builds KiCadD for Windows x64 on GitHub-hosted runners:

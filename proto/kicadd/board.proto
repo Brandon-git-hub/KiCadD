@@ -182,6 +182,52 @@ message AddFootprint
 // LCSC parts (M4a): an LCSC number -> a KiCad footprint in the project library LCSC
 // (${KIPRJMOD}/lcsc.pretty), from the JLCEDA/EasyEDA Official Library, cached per user.
 
+// M5b: Update PCB from Schematic, headless. The schematic is read from its saved file (the
+// MCP tool saves it first). New footprints land outside the board (KiCad spreads them near the
+// origin) until they are placed (auto_place).
+// Returns SyncFromSchematicResponse
+message SyncFromSchematic
+{
+  bool delete_extra      = 1;   // remove footprints the schematic no longer has
+  bool update_footprints = 2;   // replace footprints whose library link changed
+  bool dry_run           = 3;
+}
+
+message SyncFromSchematicResponse
+{
+  int32  added    = 1;
+  int32  errors   = 2;
+  int32  warnings = 3;
+  string report   = 4;
+  repeated string new_refs = 5;
+  int32  footprints = 6;        // on the board afterwards
+  int32  nets       = 7;
+}
+
+// M5c: automatic placement (src/pcb/kicadd_autoplace.h). Moves the chosen parts inside the
+// board outline: connection-driven, courtyards apart, one undoable edit.
+// Returns AutoPlaceResponse
+message AutoPlace
+{
+  repeated string refs  = 1;   // these parts; default: the parts outside the board outline
+  bool   all            = 2;   // every unlocked part
+  int64  spacing        = 3;   // courtyard to courtyard, nm (0 = 0.25 mm)
+  int64  edge           = 4;   // courtyard to board edge, nm (0 = 0.5 mm)
+  bool   no_rotate      = 5;
+  repeated string fixed = 6;   // keep these where they are (in addition to locked parts)
+}
+
+message AutoPlaceResponse
+{
+  int32  moved          = 1;
+  repeated string unplaced = 2;   // no room on the board
+  double hpwl_before_mm = 3;      // half-perimeter wire length, all nets
+  double hpwl_after_mm  = 4;
+  repeated string refs  = 5;      // the parts it placed
+  MoveResponse edit     = 6;      // positions after, history label
+  repeated string skipped = 7;    // asked for but kept: locked, back side, not at 0/90/180/270
+}
+
 message FetchLcsc
 {
   string lcsc    = 1;      // "C8734"

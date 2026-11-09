@@ -10,10 +10,15 @@ come from the cache) and, through kicadd-mcp:
   * connects them by net name and checks the netlist pin by pin
   * a pin already on another net is refused, NC flags, disconnect, delete with its labels
   * saves, restarts the server and finds the same netlist in the saved file
+  * M5b: sync_pcb brings the 5 footprints onto the board with the schematic's nets (pad by pad)
+  * M5c: auto_place puts them inside the outline: full DRC has no courtyard, clearance or
+    silkscreen errors (only the unrouted connections), the regulator's caps sit next to it,
+    and undo takes the placement back
 """
 
 import argparse
 import json
+import math
 import os
 import re
 import shutil
@@ -268,6 +273,51 @@ def main():
         text = open(os.path.join(proj, "blank.kicad_sch"), encoding="utf-8").read()
         check(text.count('(lib_id "LCSC:') == 4 and text.count('(lib_id "Device:R")') == 1,
               "saved file: 4 LCSC symbols, 1 Device:R")
+
+        print("[M5b: sync_pcb]")
+        err, t = mcp.tool("sync_pcb", {"dry_run": True})
+        check(not err and t.startswith("dry run: 5 footprint(s) added"), "dry run: " + t.splitlines()[0][:70])
+        err, t = mcp.tool("board_summary")
+        check("footprints=0" in t, "dry run changed nothing")
+        err, t = mcp.tool("sync_pcb")
+        check(not err and re.match(r"5 footprint\(s\) added: (\S+ ?){5}; board now 5 footprints", t),
+              "sync_pcb: " + t.splitlines()[0][:100])
+        for net, pins in after.items():
+            pins = {p for p in pins}
+            if len(pins) < 2:
+                continue
+            err, q = mcp.tool("query_net", {"net": "/" + net if not net.startswith("/") else net})
+            have = {m.group(1) for m in re.finditer(r"^PAD (\S+) ", q, re.M)}
+            check(have == pins, f"board net {net}: {sorted(have)}")
+        err, t = mcp.tool("sync_pcb")
+        check(not err and t.startswith("0 footprint(s) added"), "a second sync adds nothing")
+
+        print("[M5c: auto_place]")
+        err, t = mcp.tool("auto_place")
+        m = re.search(r"placed (\d+) part\(s\).*?wire length \(half-perimeter\) ([\d.]+) -> ([\d.]+) mm", t)
+        check(not err and m and m.group(1) == "5" and float(m.group(3)) < float(m.group(2)),
+              "auto_place: " + t.splitlines()[0][:120])
+        err, t = mcp.tool("run_drc", {"include_warnings": False})
+        kinds = re.search(r"errors: (.*)", t).group(1) if "errors:" in t else t
+        check(set(re.findall(r"(\w+) \d+", kinds)) <= {"unconnected_items"},
+              "DRC after placement: only unrouted connections (" + kinds[:80] + ")")
+        err, t = mcp.tool("board_summary")
+        outline = re.search(r"outline=([\d.]+),([\d.]+)\.\.([\d.]+),([\d.]+)mm", t)
+        x0, y0, x1, y1 = (float(v) for v in outline.groups())
+        err, q = mcp.tool("query_area", {"x": (x0 + x1) / 2, "y": (y0 + y1) / 2, "radius": 60, "kinds": ["footprint"]})
+        fps = {mm.group(1): (float(mm.group(2)), float(mm.group(3)))
+               for mm in re.finditer(r"^FP (\S+) \S+ @(-?[\d.]+),(-?[\d.]+)", q, re.M)}
+        check(len(fps) == 5 and all(x0 < x < x1 and y0 < y < y1 for x, y in fps.values()),
+              f"all 5 inside the outline {sorted(fps)}")
+        u1 = fps.get("U1")
+        near = [c for c in ("C1", "C2") if u1 and c in fps and math.dist(u1, fps[c]) < 8]
+        check(near == ["C1", "C2"], f"the regulator's caps within 8 mm of U1: {near}")
+        err, t = mcp.tool("undo")
+        err, q = mcp.tool("query_area", {"x": (x0 + x1) / 2, "y": (y0 + y1) / 2, "radius": 60, "kinds": ["footprint"]})
+        check(not err and "FP U1" not in q, "undo takes the placement back (parts outside again)")
+        mcp.tool("redo")
+        err, t = mcp.tool("save_board")
+        check(not err, "board saved")
     finally:
         if mcp:
             mcp.close()

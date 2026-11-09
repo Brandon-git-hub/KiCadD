@@ -9,9 +9,12 @@
 #include "tools.h"
 #include "ipc_client.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 
 #include <kicadd/schematic.pb.h>
+#include <kicadd/board.pb.h>
 
 using json = nlohmann::json;
 namespace ks = kicadd::schematic;
@@ -341,6 +344,148 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                     return fail( err );
 
                 return connectResult( r, "part(s) deleted" );
+            } } );
+
+    aTools.push_back( { "sync_pcb",
+            "Update PCB from Schematic: saves the schematic, then brings the board in line with it "
+            "(new footprints from each symbol's Footprint field, nets on the pads, changed values). "
+            "New footprints land outside the board outline until placed (auto_place). dry_run "
+            "reports without changing anything; delete_extra removes footprints the schematic no "
+            "longer has.",
+            obj( { { "dry_run", { { "type", "boolean" } } },
+                   { "delete_extra", { { "type", "boolean" } } },
+                   { "update_footprints", { { "type", "boolean" },
+                                            { "description", "Replace footprints whose library link changed" } } } } ),
+            [&aIpc]( const json& a )
+            {
+                std::string err;
+                ks::SchSave save;
+                ks::SchConnectResponse saved;
+
+                if( !aIpc.Call( save, saved, err ) )
+                    return fail( "saving the schematic first: " + err );
+
+                kicadd::board::SyncFromSchematic req;
+                req.set_dry_run( a.value( "dry_run", false ) );
+                req.set_delete_extra( a.value( "delete_extra", false ) );
+                req.set_update_footprints( a.value( "update_footprints", false ) );
+                kicadd::board::SyncFromSchematicResponse r;
+
+                if( !aIpc.Call( req, r, err ) )
+                    return fail( err );
+
+                std::string t = std::string( req.dry_run() ? "dry run: " : "" ) + std::to_string( r.added() )
+                                + " footprint(s) added";
+
+                if( r.new_refs_size() )
+                {
+                    t += ":";
+
+                    for( const std::string& ref : r.new_refs() )
+                        t += " " + ref;
+                }
+
+                t += "; board now " + std::to_string( r.footprints() ) + " footprints, " + std::to_string( r.nets() )
+                     + " nets; " + std::to_string( r.errors() ) + " errors, " + std::to_string( r.warnings() )
+                     + " warnings";
+
+                // the updater's report, without its routine lines
+                int shown = 0;
+                size_t from = 0;
+
+                while( from < r.report().size() && shown < 25 )
+                {
+                    size_t      to = r.report().find( '\n', from );
+                    std::string line = r.report().substr( from, to == std::string::npos ? std::string::npos : to - from );
+                    from = to == std::string::npos ? r.report().size() : to + 1;
+
+                    // routine bookkeeping of new parts: the summary line above says it
+                    static const char* routine[] = { "Processing symbol", "Updated ", "Changed REF**",
+                                                     "Connected ", "Add net ", "Added " };
+
+                    if( line.empty() || std::any_of( std::begin( routine ), std::end( routine ),
+                                                     [&]( const char* r ) { return line.rfind( r, 0 ) == 0; } ) )
+                        continue;
+
+                    t += "\n  " + line;
+                    shown++;
+                }
+
+                return TOOL_RESULT{ t, r.errors() > 0 };
+            } } );
+
+    aTools.push_back( { "auto_place",
+            "Place parts automatically inside the board outline: each part goes near what it "
+            "connects to (decoupling caps and pull-ups next to their IC pin), courtyards kept apart, "
+            "rotations tried, as one undoable edit. Default: the parts outside the board (new from "
+            "sync_pcb); refs for chosen parts, all for every unlocked part; fixed keeps parts where "
+            "they are (place connectors first, then lock or fix them). Reports wire length before/after.",
+            obj( { { "refs", { { "type", "array" }, { "items", { { "type", "string" } } } } },
+                   { "all", { { "type", "boolean" } } },
+                   { "fixed", { { "type", "array" }, { "items", { { "type", "string" } } } } },
+                   { "spacing", { { "type", "number" }, { "description", "courtyard gap, mm (default 0.25)" } } },
+                   { "edge", { { "type", "number" }, { "description", "courtyard to board edge, mm (default 0.5)" } } },
+                   { "rotate", { { "type", "boolean" }, { "description", "try 90/180/270 (default true)" } } } } ),
+            [&aIpc]( const json& a )
+            {
+                kicadd::board::AutoPlace req;
+
+                for( const json& r : a.value( "refs", json::array() ) )
+                    if( r.is_string() )
+                        req.add_refs( r.get<std::string>() );
+
+                for( const json& r : a.value( "fixed", json::array() ) )
+                    if( r.is_string() )
+                        req.add_fixed( r.get<std::string>() );
+
+                req.set_all( a.value( "all", false ) );
+                req.set_no_rotate( !a.value( "rotate", true ) );
+
+                if( a.contains( "spacing" ) && a["spacing"].is_number() )
+                    req.set_spacing( (int64_t) std::llround( a["spacing"].get<double>() * 1e6 ) );
+
+                if( a.contains( "edge" ) && a["edge"].is_number() )
+                    req.set_edge( (int64_t) std::llround( a["edge"].get<double>() * 1e6 ) );
+
+                kicadd::board::AutoPlaceResponse r;
+                std::string                      err;
+
+                if( !aIpc.Call( req, r, err ) )
+                    return fail( err );
+
+                std::string t = "placed " + std::to_string( r.moved() ) + " part(s)";
+
+                if( r.moved() )
+                {
+                    t += ":";
+
+                    for( const std::string& ref : r.refs() )
+                        t += " " + ref;
+                }
+
+                t += "; wire length (half-perimeter) " + num( r.hpwl_before_mm() ) + " -> " + num( r.hpwl_after_mm() )
+                     + " mm";
+
+                if( !r.edit().history_label().empty() )
+                    t += "; undo: \"" + r.edit().history_label() + "\"";
+
+                if( r.unplaced_size() )
+                {
+                    t += "\n  no room for:";
+
+                    for( const std::string& ref : r.unplaced() )
+                        t += " " + ref;
+                }
+
+                if( r.skipped_size() )
+                {
+                    t += "\n  kept:";
+
+                    for( const std::string& ref : r.skipped() )
+                        t += " " + ref;
+                }
+
+                return TOOL_RESULT{ t, r.moved() == 0 && r.unplaced_size() > 0 };
             } } );
 
     aTools.push_back( { "sch_save",

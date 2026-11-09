@@ -79,6 +79,12 @@ private:
     HANDLER_RESULT<kicadd::board::FetchLcscResponse>
     handleFetchLcsc( const HANDLER_CONTEXT<kicadd::board::FetchLcsc>& aCtx );
 
+    HANDLER_RESULT<kicadd::board::AutoPlaceResponse>
+    handleAutoPlace( const HANDLER_CONTEXT<kicadd::board::AutoPlace>& aCtx );
+
+    HANDLER_RESULT<kicadd::board::SyncFromSchematicResponse>
+    handleSyncFromSchematic( const HANDLER_CONTEXT<kicadd::board::SyncFromSchematic>& aCtx );
+
     HANDLER_RESULT<kicadd::board::LocalDrcResponse>
     handleCheckLocalDrc( const HANDLER_CONTEXT<kicadd::board::CheckLocalDrc>& aCtx );
 
