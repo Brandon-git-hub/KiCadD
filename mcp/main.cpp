@@ -10,6 +10,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <string>
 
 #include "ipc_client.h"
@@ -19,6 +20,10 @@
 #include "web.h"
 
 #include <boost/asio/io_context.hpp>
+
+#if defined( _WIN32 )
+#include <windows.h>
+#endif
 
 using namespace kicadd::mcp;
 
@@ -30,16 +35,19 @@ namespace
 /// into a named pipe of the same name.
 std::string desktopSocket()
 {
+    // wxFileName::GetTempDir: TMPDIR, TMP, TEMP (each only if that folder exists), then the
+    // system default (Windows GetTempPath, which itself reads TMP/TEMP/USERPROFILE)
     std::string dir;
-#if defined( _WIN32 )
-    for( const char* v : { "TMP", "TEMP", "USERPROFILE" } )
-#elif defined( __APPLE__ )
+#if defined( __APPLE__ )
     for( const char* v : { "" } )
 #else
-    for( const char* v : { "TMPDIR", "TMP", "TEMP", "TEMPDIR" } )
+    for( const char* v : { "TMPDIR", "TMP", "TEMP" } )
 #endif
     {
-        if( const char* d = *v ? std::getenv( v ) : nullptr; d && *d )
+        std::error_code ec;
+
+        if( const char* d = *v ? std::getenv( v ) : nullptr;
+            d && *d && std::filesystem::is_directory( d, ec ) )
         {
             dir = d;
             break;
@@ -48,6 +56,14 @@ std::string desktopSocket()
 
 #if defined( _WIN32 )
     const char sep = '\\';
+
+    if( dir.empty() )
+    {
+        char buf[MAX_PATH + 1];
+
+        if( DWORD n = GetTempPathA( sizeof( buf ), buf ); n > 0 && n < sizeof( buf ) )
+            dir.assign( buf, n );
+    }
 #else
     const char sep = '/';
 
