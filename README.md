@@ -23,7 +23,7 @@ Built as a thin extension of upstream `kicad-cli api-server`, not a fork of the 
 | `web/index.html` | 2D view (vanilla JS + Canvas 2D), embedded into `kicadd-mcp` at build time |
 | `client/` | Python IPC client, benchmark, verification + A/B scripts, `run_server.sh`, `desktop_e2e.py` (M2) |
 
-### Upstream patch (~1890 lines incl. context, 37 files; see the M1, M2 and M3 sections for the newest parts)
+### Upstream patch (~2000 lines incl. context, 41 files; see the M1–M4 sections for the newest parts)
 
 - **Hooks** (guarded by `KICADD_DIR` / `#ifdef KICADD`): `CMakeLists.txt`, `pcbnew/CMakeLists.txt`,
   `pcbnew/pcbnew.cpp` register `KICADD_HANDLER_PCB` next to `API_HANDLER_PCB`.
@@ -585,8 +585,43 @@ All pass. Full DRC on a board with all 13: only the C2765186 USB-C's locating ho
 `KICADD_LCSC_CACHE` set adds an editor step (agent places C25804, user Ctrl+Z). `smoke.py` (CI)
 checks the offline path only.
 
-Not yet (M4b–d): symbols, search / stock / price (`lcsc_search`), 3D models (EasyEDA OBJ →
-VRML), a "place by LCSC number" entry in the editor.
+## M4b: LCSC symbols (2026-11-10)
+
+`lcsc_fetch` (and `add_footprint lcsc=`) now saves the part's schematic symbol too, so the
+schematic side has it when it gets there (M5) and a human can place it from the symbol chooser:
+
+```
+  symbol LCSC:STM32F103C8T6 (<project>/lcsc.kicad_sym), reference U, 48 pins; LCSC library added to the project sym-lib-table
+```
+
+- **Where it runs:** symbols are eeschema code and `lcsc_fetch` runs in pcbnew (the server, or
+  the PCB Editor). The patch adds a kiface export, `KIFACE_KICADD_LCSC_SYMBOL`
+  (`include/kiface_ids.h`, `kiface_services.h`, `eeschema/eeschema.cpp`), the same mechanism
+  KiCad uses for the schematic netlist; pcbnew loads `_eeschema.kiface` through its KIWAY on the
+  first fetch. Both sides exchange a small JSON request/answer. If eeschema can't be loaded, the
+  footprint is still saved and the note says why the symbol wasn't.
+- **Conversion:** `src/sch/kicadd_lcsc_sym.cpp` feeds the cached answer to KiCad's EasyEDA
+  Standard symbol parser (`eeschema/sch_io/easyeda`). Multi-unit parts (EasyEDA `subparts`)
+  become one symbol with a unit per subpart.
+- **Fields:** Footprint = the footprint's `LCSC:<package>`; `LCSC` = C number; Datasheet;
+  Description with the source named and a `Source` field; Manufacturer / Manufacturer Part /
+  Supplier Part from EasyEDA; Reference prefix without "?" ("U", "R", "USBC" ...); Reference
+  above the body and Value below (the parser left both at the origin).
+- **Library:** `<project>/lcsc.kicad_sym`, nickname `LCSC`, added once to the project
+  `sym-lib-table`. Symbol name = part title; a different part with the same title gets
+  `_<C number>` appended instead of overwriting it.
+- **Check:** the answer lists symbol pins without a pad and pads without a pin (a WARNING for
+  the former).
+
+Verification: `lcsc_e2e.py` now also checks, for all 13 parts, that the symbol's pin numbers
+equal the EasyEDA symbol's P records and the footprint's numbered pads, the Footprint field, the
+LCSC field, the attribution, the reference prefix, and the sym-lib-table row (252 checks, PASS).
+`desktop_e2e.py` step 5b saves a symbol from inside the PCB Editor. Multi-unit conversion was
+checked with a synthetic two-unit entry only (none of the 13 parts, nor LM358DR2G, has
+subparts on EasyEDA).
+
+Not yet (M4c–d): search / stock / price (`lcsc_search`), 3D models (EasyEDA OBJ → VRML), a
+"place by LCSC number" entry in the editor.
 
 ## M3: Windows CI (2026-11-06)
 

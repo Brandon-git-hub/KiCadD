@@ -26,6 +26,9 @@
 #include <pcb_io/easyeda/pcb_io_easyeda_plugin.h>
 #include <pcb_io/kicad_sexpr/pcb_io_kicad_sexpr.h>
 #include <ki_exception.h>
+#include <kiway.h>
+#include <kiface_ids.h>
+#include <kiface_services.h>
 
 #include <json_common.h>   // not <nlohmann/json.hpp>: kicommon exports basic_json (LNK2005 without PCH)
 
@@ -381,6 +384,90 @@ bool convert( const json& aResult, const std::string& aLcsc, PART& aPart, std::s
     return true;
 }
 
+
+/// The folder of the board's project (or of the board file); empty when there is none.
+wxString projectDir( BOARD* aBoard )
+{
+    wxString dir;
+
+    if( PROJECT* prj = aBoard->GetProject(); prj && !prj->GetProjectPath().IsEmpty() )
+        dir = prj->GetProjectPath();
+    else if( !aBoard->GetFileName().IsEmpty() )
+        dir = wxFileName( aBoard->GetFileName() ).GetPath();
+
+    return wxFileName::DirExists( dir ) ? dir : wxString();
+}
+
+
+/**
+ * Add the LCSC row to the project fp-lib-table (or sym-lib-table) once, then reload that table.
+ * @return true when the row was added now.
+ */
+bool registerLibrary( const wxString& aDir, bool aSymbols, PROJECT* aProject, std::string& aNote )
+{
+    const char* tableName = aSymbols ? "sym-lib-table" : "fp-lib-table";
+    const char* root = aSymbols ? "sym_lib_table" : "fp_lib_table";
+    const char* uri = aSymbols ? "${KIPRJMOD}/lcsc.kicad_sym" : "${KIPRJMOD}/lcsc.pretty";
+
+    wxFileName  table( aDir, wxString::FromUTF8( tableName ) );
+    std::string text;
+    bool        exists = table.FileExists() && readFile( table.GetFullPath(), text );
+
+    static const std::regex hasRow( "\\(name\\s+\"?LCSC\"?\\s*\\)" );
+
+    if( exists && std::regex_search( text, hasRow ) )
+        return false;
+
+    const std::string row = "  (lib (name \"LCSC\")(type \"KiCad\")(uri \"" + std::string( uri )
+                            + "\")(options \"\")(descr \"LCSC parts fetched by KiCadD; "
+                            + std::string( ATTRIBUTION ) + "\"))\n";
+
+    if( !exists )
+    {
+        text = "(" + std::string( root ) + "\n  (version 7)\n" + row + ")\n";
+    }
+    else
+    {
+        size_t close = text.find_last_of( ')' );
+
+        if( close == std::string::npos )
+        {
+            aNote = std::string( tableName ) + " not understood; add " + LIB_NICKNAME + " by hand";
+            return false;
+        }
+
+        if( close > 0 && text[close - 1] != '\n' )
+            text.insert( close, "\n" );
+
+        text.insert( text.find_last_of( ')' ), row );
+    }
+
+    if( !writeFile( table.GetFullPath(), text ) )
+    {
+        aNote = "cannot write " + table.GetFullPath().ToStdString();
+        return false;
+    }
+
+    try
+    {
+        Pgm().GetLibraryManager().ReloadTables( LIBRARY_TABLE_SCOPE::PROJECT,
+                                                { aSymbols ? LIBRARY_TABLE_TYPE::SYMBOL
+                                                           : LIBRARY_TABLE_TYPE::FOOTPRINT } );
+
+        if( !aSymbols && aProject )
+        {
+            if( FOOTPRINT_LIBRARY_ADAPTER* adapter = PROJECT_PCB::FootprintLibAdapter( aProject ) )
+                adapter->LoadOne( wxString::FromUTF8( LIB_NICKNAME ) );
+        }
+    }
+    catch( ... )
+    {
+        aNote = std::string( "added to " ) + tableName + "; reopen the project to see it in the library browser";
+    }
+
+    return true;
+}
+
 } // namespace
 
 
@@ -494,14 +581,9 @@ bool SaveToProjectLibrary( BOARD* aBoard, const PART& aPart, SAVED& aSaved, std:
         return false;
     }
 
-    wxString dir;
+    wxString dir = projectDir( aBoard );
 
-    if( PROJECT* prj = aBoard->GetProject(); prj && !prj->GetProjectPath().IsEmpty() )
-        dir = prj->GetProjectPath();
-    else if( !aBoard->GetFileName().IsEmpty() )
-        dir = wxFileName( aBoard->GetFileName() ).GetPath();
-
-    if( dir.IsEmpty() || !wxFileName::DirExists( dir ) )
+    if( dir.IsEmpty() )
     {
         aError = "the board is not saved in a folder yet, so there is no project library";
         return false;
@@ -532,63 +614,83 @@ bool SaveToProjectLibrary( BOARD* aBoard, const PART& aPart, SAVED& aSaved, std:
                           .GetFullPath()
                           .ToStdString();
 
-    // The project fp-lib-table: add the LCSC row once.
-    wxFileName  table( dir, wxS( "fp-lib-table" ) );
-    std::string text;
-    bool        exists = table.FileExists() && readFile( table.GetFullPath(), text );
+    aSaved.registered = registerLibrary( dir, false, aBoard->GetProject(), aSaved.note );
+    return true;
+}
 
-    static const std::regex hasRow( "\\(name\\s+\"?LCSC\"?\\s*\\)" );
 
-    if( exists && std::regex_search( text, hasRow ) )
-        return true;
+bool SaveSymbolToProjectLibrary( BOARD* aBoard, KIWAY* aKiway, const PART& aPart,
+                                 SAVED_SYMBOL& aSaved, std::string& aError )
+{
+    aSaved = SAVED_SYMBOL();
+    wxString dir = projectDir( aBoard );
 
-    const std::string row = "  (lib (name \"LCSC\")(type \"KiCad\")(uri \"${KIPRJMOD}/lcsc.pretty\")"
-                            "(options \"\")(descr \"LCSC parts fetched by KiCadD; "
-                            + std::string( ATTRIBUTION ) + "\"))\n";
-
-    if( !exists )
+    if( dir.IsEmpty() )
     {
-        text = "(fp_lib_table\n  (version 7)\n" + row + ")\n";
-    }
-    else
-    {
-        size_t close = text.find_last_of( ')' );
-
-        if( close == std::string::npos )
-        {
-            aSaved.note = "fp-lib-table not understood; add " + std::string( LIB_NICKNAME ) + " by hand";
-            return true;
-        }
-
-        if( close > 0 && text[close - 1] != '\n' )
-            text.insert( close, "\n" );
-
-        text.insert( text.find_last_of( ')' ), row );
+        aError = "the board is not saved in a folder yet, so there is no project library";
+        return false;
     }
 
-    if( !writeFile( table.GetFullPath(), text ) )
-    {
-        aSaved.note = "cannot write " + table.GetFullPath().ToStdString();
-        return true;
-    }
-
-    aSaved.registered = true;
+    KIFACE_KICADD_LCSC_SYMBOL_SERVICE::Type service = nullptr;
 
     try
     {
-        Pgm().GetLibraryManager().ReloadTables( LIBRARY_TABLE_SCOPE::PROJECT, { LIBRARY_TABLE_TYPE::FOOTPRINT } );
-
-        if( PROJECT* prj = aBoard->GetProject() )
-        {
-            if( FOOTPRINT_LIBRARY_ADAPTER* adapter = PROJECT_PCB::FootprintLibAdapter( prj ) )
-                adapter->LoadOne( wxString::FromUTF8( LIB_NICKNAME ) );
-        }
+        // loads _eeschema.kiface on first use; throws when it can't
+        if( aKiway )
+            service = GetKifaceService<KIFACE_KICADD_LCSC_SYMBOL_SERVICE>( aKiway->KiFACE( KIWAY::FACE_SCH ) );
     }
-    catch( ... )
+    catch( const IO_ERROR& e )
     {
-        aSaved.note = "added to fp-lib-table; reopen the project to see it in the library browser";
+        aError = "the schematic module (eeschema) could not be loaded: " + e.What().ToStdString( wxConvUTF8 );
+        return false;
     }
 
+    if( !service )
+    {
+        aError = "the schematic module (eeschema) is not available";
+        return false;
+    }
+
+    wxFileName source( cacheDir(), wxString::FromUTF8( aPart.lcsc ), wxS( "json" ) );
+    wxFileName lib( dir, wxS( "lcsc" ), wxS( "kicad_sym" ) );
+
+    std::string desc = aPart.title + " (LCSC " + aPart.lcsc + ")";
+
+    if( !aPart.description.empty() )
+        desc += ", " + aPart.description;
+
+    if( !aPart.datasheet.empty() )
+        desc += ", " + aPart.datasheet;
+
+    desc += ". " + std::string( ATTRIBUTION );
+
+    json req = { { "source", source.GetFullPath().ToStdString( wxConvUTF8 ) },
+                 { "library", lib.GetFullPath().ToStdString( wxConvUTF8 ) },
+                 { "lcsc", aPart.lcsc },
+                 { "footprint", std::string( LIB_NICKNAME ) + ":" + aPart.package },
+                 { "datasheet", aPart.datasheet },
+                 { "description", desc },
+                 { "keywords", aPart.lcsc + " " + aPart.title + " LCSC EasyEDA" },
+                 { "attribution", ATTRIBUTION } };
+
+    json ans = json::parse( ( *service )( wxString::FromUTF8( req.dump() ) ).ToStdString( wxConvUTF8 ),
+                            nullptr, false );
+
+    if( ans.is_discarded() || !ans.value( "ok", false ) )
+    {
+        aError = ans.is_discarded() ? "no answer from the symbol converter" : str( ans, "error" );
+        return false;
+    }
+
+    aSaved.libId = std::string( LIB_NICKNAME ) + ":" + str( ans, "name" );
+    aSaved.file = lib.GetFullPath().ToStdString( wxConvUTF8 );
+    aSaved.reference = str( ans, "reference" );
+    aSaved.units = ans.value( "units", 1 );
+
+    for( const json& p : ans.value( "pins", json::array() ) )
+        aSaved.pins.push_back( p.get<std::string>() );
+
+    aSaved.registered = registerLibrary( dir, true, aBoard->GetProject(), aSaved.note );
     return true;
 }
 

@@ -279,7 +279,7 @@ index 383869d8..6ab48405 100644
  }
  
 diff --git a/eeschema/CMakeLists.txt b/eeschema/CMakeLists.txt
-index 5b6dbf2a..1cb602e8 100644
+index 5b6dbf2a..136ab6bc 100644
 --- a/eeschema/CMakeLists.txt
 +++ b/eeschema/CMakeLists.txt
 @@ -15,6 +15,7 @@ if( CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang" )
@@ -312,7 +312,30 @@ index 5b6dbf2a..1cb602e8 100644
  set( EESCHEMA_WIDGETS
      widgets/hierarchy_pane.cpp
      widgets/panel_sch_selection_filter_base.cpp
-@@ -763,7 +772,7 @@ target_link_libraries( eeschema_kiface
+@@ -739,6 +748,11 @@ target_link_libraries( eeschema_kiface_objects
+ # declare the dependency
+ add_dependencies( eeschema_kiface_objects common )
+ 
++if( KICADD_DIR )
++    target_sources( eeschema_kiface_objects PRIVATE ${KICADD_SCH_SRCS} )
++    target_compile_definitions( eeschema_kiface_objects PRIVATE KICADD )
++endif()
++
+ message( STATUS "Including 3Dconnexion SpaceMouse navigation support in eeschema" )
+ add_subdirectory( navlib )
+ 
+@@ -750,6 +764,10 @@ add_library( eeschema_kiface MODULE
+     eeschema.cpp
+     )
+ 
++if( KICADD_DIR )
++    target_compile_definitions( eeschema_kiface PRIVATE KICADD )
++endif()
++
+ target_link_libraries( eeschema_kiface
+     PRIVATE
+         common
+@@ -763,7 +781,7 @@ target_link_libraries( eeschema_kiface
          ${NGSPICE_LIBRARY}
      )
  
@@ -322,7 +345,7 @@ index 5b6dbf2a..1cb602e8 100644
      add_custom_command( TARGET eeschema_kiface POST_BUILD
          COMMAND ${CMAKE_COMMAND} -E copy_if_different "${NGSPICE_DLL}" "$<TARGET_FILE_DIR:eeschema_kiface>"
 diff --git a/eeschema/eeschema.cpp b/eeschema/eeschema.cpp
-index eae8cfde..7992cd3f 100644
+index eae8cfde..96a4a1df 100644
 --- a/eeschema/eeschema.cpp
 +++ b/eeschema/eeschema.cpp
 @@ -85,7 +85,9 @@
@@ -335,7 +358,18 @@ index eae8cfde..7992cd3f 100644
  
  #include <dialogs/panel_toolbar_customization.h>
  #include <toolbars_sch_editor.h>
-@@ -549,6 +551,9 @@ static struct IFACE : public KIFACE_BASE, public UNITS_PROVIDER
+@@ -100,6 +102,10 @@
+ SCH_SHEET*  g_RootSheet = nullptr;
+ 
+ 
++#ifdef KICADD
++wxString KicaddLcscSymbol( const wxString& aRequest );   // KiCadD/src/sch/kicadd_lcsc_sym.cpp
++#endif
++
+ namespace SCH {
+ 
+ // Non-job kiface exports for diff/merge (returned by IfaceOrAddress). Defined
+@@ -549,6 +555,9 @@ static struct IFACE : public KIFACE_BASE, public UNITS_PROVIDER
  
          case FRAME_SIMULATOR:
          {
@@ -345,7 +379,7 @@ index eae8cfde..7992cd3f 100644
              try
              {
                  SIMULATOR_FRAME* frame = new SIMULATOR_FRAME( aKiway, aParent );
-@@ -560,6 +565,7 @@ static struct IFACE : public KIFACE_BASE, public UNITS_PROVIDER
+@@ -560,6 +569,7 @@ static struct IFACE : public KIFACE_BASE, public UNITS_PROVIDER
                  // its going to be some ngspice install issue but we don't want to log that
                  return nullptr;
              }
@@ -353,6 +387,18 @@ index eae8cfde..7992cd3f 100644
          }
  
          case FRAME_SCH_VIEWER:
+@@ -766,6 +776,11 @@ static struct IFACE : public KIFACE_BASE, public UNITS_PROVIDER
+ 
+         case KIFACE_ATTACH_DIFF_CANVASES:
+             return KifaceServiceAddress<KIFACE_ATTACH_DIFF_CANVASES_SERVICE>( &eeschemaAttachDiffCanvasesExport );
++
++#ifdef KICADD
++        case KIFACE_KICADD_LCSC_SYMBOL:
++            return KifaceServiceAddress<KIFACE_KICADD_LCSC_SYMBOL_SERVICE>( &::KicaddLcscSymbol );
++#endif
+         }
+ 
+         return nullptr;
 diff --git a/eeschema/files-io.cpp b/eeschema/files-io.cpp
 index a219ae94..809b1645 100644
 --- a/eeschema/files-io.cpp
@@ -569,6 +615,38 @@ index c5cd6f2a..a0f846b9 100644
      wxString m_socketPathOverride;
  
      static wxString s_logFileName;
+diff --git a/include/kiface_ids.h b/include/kiface_ids.h
+index 1ffb2ad6..85c77a41 100644
+--- a/include/kiface_ids.h
++++ b/include/kiface_ids.h
+@@ -92,7 +92,12 @@ enum KIFACE_ADDR_ID : int
+     /// Function pointer type: void (*)( const wxString& aFootprint, PROJECT* aProject,
+     ///                                  std::set<wxString>& aPadNumbers )
+     /// Fills aPadNumbers with the numbered pads of aFootprint.
+-    KIFACE_FOOTPRINT_PAD_NUMBERS
++    KIFACE_FOOTPRINT_PAD_NUMBERS,
++
++    /// KiCadD: wxString (*)( const wxString& aRequestJson )
++    /// LCSC part (cached EasyEDA answer) -> symbol saved in a .kicad_sym library.
++    /// See KiCadD/src/sch/kicadd_lcsc_sym.cpp for the request and answer.
++    KIFACE_KICADD_LCSC_SYMBOL
+ };
+ 
+ #endif // KIFACE_IDS
+diff --git a/include/kiface_services.h b/include/kiface_services.h
+index 928f9a0f..39d47948 100644
+--- a/include/kiface_services.h
++++ b/include/kiface_services.h
+@@ -98,6 +98,9 @@ using KIFACE_FOOTPRINT_PAD_NUMBERS_SERVICE =
+         KIFACE_SERVICE<KIFACE_FOOTPRINT_PAD_NUMBERS,
+                        void (*)( const wxString&, PROJECT*, std::set<wxString>& )>;
+ 
++using KIFACE_KICADD_LCSC_SYMBOL_SERVICE =
++        KIFACE_SERVICE<KIFACE_KICADD_LCSC_SYMBOL, wxString (*)( const wxString& )>;
++
+ /**
+  * Return a service address for IfaceOrAddress().
+  *
 diff --git a/kicad/cli/command_api_server.cpp b/kicad/cli/command_api_server.cpp
 index e65d5b26..0314aab8 100644
 --- a/kicad/cli/command_api_server.cpp

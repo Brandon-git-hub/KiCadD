@@ -1,5 +1,5 @@
 /*
- * KiCadD M4a: LCSC part number -> KiCad footprint, on demand.
+ * KiCadD M4a/M4b: LCSC part number -> KiCad footprint and symbol, on demand.
  *
  * The part comes from the JLCEDA/EasyEDA component API (the data behind the LCSC catalogue),
  * is cached per user, converted with KiCad's own EasyEDA Standard importer
@@ -16,9 +16,11 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 class BOARD;
 class FOOTPRINT;
+class KIWAY;
 
 namespace kicadd::lcsc
 {
@@ -67,5 +69,24 @@ struct SAVED
  * has the LCSC library. Needs a board that lives in a folder (a saved board or a project).
  */
 bool SaveToProjectLibrary( BOARD* aBoard, const PART& aPart, SAVED& aSaved, std::string& aError );
+
+struct SAVED_SYMBOL
+{
+    std::string              libId;        ///< "LCSC:<symbol>"
+    std::string              file;         ///< the project's lcsc.kicad_sym
+    std::string              reference;    ///< "U", "R", ...
+    int                      units = 1;
+    std::vector<std::string> pins;         ///< pin numbers, sorted
+    bool                     registered = false;   ///< the LCSC row was added to sym-lib-table now
+    std::string              note;
+};
+
+/**
+ * M4b: convert the part's schematic symbol (eeschema, through KIFACE_KICADD_LCSC_SYMBOL) into
+ * <project dir>/lcsc.kicad_sym, its Footprint field pointing at LCSC:<package>, and make sure
+ * the project sym-lib-table has the LCSC library. Call after FetchPart (it reads the cache).
+ */
+bool SaveSymbolToProjectLibrary( BOARD* aBoard, KIWAY* aKiway, const PART& aPart,
+                                 SAVED_SYMBOL& aSaved, std::string& aError );
 
 } // namespace kicadd::lcsc

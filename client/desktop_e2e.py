@@ -13,6 +13,7 @@ The agent and the user share one board, one undo stack and one canvas:
   3. agent undo after the user has changed the part again -> left alone, reported
   4. user in an interactive tool (router) -> agent edits are refused as busy, not applied
   5. agent delete -> user Ctrl+Z restores it, Ctrl+Y removes it again (one owner: the undo list)
+     (5b, with KICADD_LCSC_CACHE: an LCSC part placed and taken back, its symbol saved)
   6. the editor closes cleanly (no double free of the deleted footprint)
 Screenshots go to WORK/shot-*.png.
 """
@@ -246,6 +247,14 @@ def main():
             d.keys(main_win, "ctrl+z")
             time.sleep(1)
             check(ref and pos(ref.group(1)) is None, "user Ctrl+Z removed it")
+            # M4b: the symbol goes through the eeschema kiface, loaded into the editor's process
+            err, text = mcp.tool("lcsc_fetch", {"lcsc": "C25804"})
+            stable = os.path.join(board_dir, "sym-lib-table")
+            check(not err and "symbol LCSC:0603WAF1002T5E" in text
+                  and os.path.exists(os.path.join(board_dir, "lcsc.kicad_sym"))
+                  and os.path.exists(stable) and '(name "LCSC")' in open(stable, encoding="utf-8").read(),
+                  "lcsc_fetch in the editor saved the symbol too: "
+                  + " ".join(l for l in text.splitlines() if "symbol" in l or "not saved" in l)[:110])
 
     except SkipRest:
         pass

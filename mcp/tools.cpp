@@ -537,6 +537,31 @@ TOOL_RESULT lcscFetch( IPC_CLIENT& aIpc, const json& aArgs )
            + mm( r.courtyard().x() ) + "x" + mm( r.courtyard().y() ) + " mm, " + std::to_string( r.pads_size() )
            + " pads" + ( tht ? " (" + std::to_string( tht ) + " through-hole)" : " (SMD)" );
 
+    if( r.has_symbol() )
+    {
+        const kb::LcscSymbol& s = r.symbol();
+        out += "\n  symbol " + s.lib_id() + " (" + s.file() + "), reference " + s.reference() + ", "
+               + std::to_string( s.pins_size() ) + " pins"
+               + ( s.units() > 1 ? ", " + std::to_string( s.units() ) + " units" : "" )
+               + ( s.registered() ? "; LCSC library added to the project sym-lib-table" : "" );
+
+        auto list = []( const auto& aItems )
+        {
+            std::string t;
+
+            for( const std::string& i : aItems )
+                t += ( t.empty() ? "" : " " ) + i;
+
+            return t;
+        };
+
+        if( s.pins_without_pad_size() )
+            out += "\n  WARNING: symbol pins with no pad on the footprint: " + list( s.pins_without_pad() );
+
+        if( s.pads_without_pin_size() )
+            out += "\n  note: footprint pads no symbol pin uses: " + list( s.pads_without_pin() );
+    }
+
     if( !r.description().empty() )
         out += "\n  " + r.description();
 
@@ -886,10 +911,12 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        [&aIpc]( const json& a ) { return moveFootprints( aIpc, a ); } } );
 
     tools.push_back( { "lcsc_fetch",
-                       "Get the footprint of an LCSC part (e.g. C8734) from the JLCEDA/EasyEDA Official "
-                       "Library: converted to KiCad, saved to the project library LCSC "
-                       "(lcsc.pretty, added to fp-lib-table), cached for offline use. Returns its lib_id, "
-                       "size and pad numbers/positions. add_footprint with lcsc does this by itself.",
+                       "Get the footprint and schematic symbol of an LCSC part (e.g. C8734) from the "
+                       "JLCEDA/EasyEDA Official Library: converted to KiCad, saved to the project "
+                       "library LCSC (lcsc.pretty + lcsc.kicad_sym, added to fp-lib-table and "
+                       "sym-lib-table; the symbol's Footprint field points at the footprint), cached for "
+                       "offline use. Returns both lib_ids, size, pad numbers/positions and any pin/pad "
+                       "mismatch. add_footprint with lcsc does this by itself.",
                        schema( { { "lcsc", { { "type", "string" }, { "description", "LCSC part number, e.g. C8734" } } },
                                  { "refresh", { { "type", "boolean" }, { "description", "Fetch again even if cached" } } } },
                                { "lcsc" } ),

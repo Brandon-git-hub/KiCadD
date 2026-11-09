@@ -1067,7 +1067,15 @@ KICADD_HANDLER_PCB::handleAddFootprint( const HANDLER_CONTEXT<AddFootprint>& aCt
         source = "LCSC " + part.lcsc + " (" + part.title + "; JLCEDA/EasyEDA Official Library";
 
         if( kicadd::lcsc::SaveToProjectLibrary( b, part, saved, err ) )
+        {
             source += ", saved as " + saved.libId + ( saved.registered ? ", LCSC library added to fp-lib-table" : "" );
+
+            // the symbol too, so the schematic side finds the part later (best effort)
+            kicadd::lcsc::SAVED_SYMBOL sym;
+
+            if( kicadd::lcsc::SaveSymbolToProjectLibrary( b, m_context->GetKiway(), part, sym, err ) )
+                source += ", symbol " + sym.libId;
+        }
         else
             source += ", not saved: " + err;
 
@@ -1259,6 +1267,50 @@ KICADD_HANDLER_PCB::handleFetchLcsc( const HANDLER_CONTEXT<FetchLcsc>& aCtx )
 
             if( !saved.note.empty() )
                 note += ( note.empty() ? "" : "; " ) + saved.note;
+
+            // M4b: the schematic symbol, into the project's lcsc.kicad_sym
+            kicadd::lcsc::SAVED_SYMBOL sym;
+
+            if( kicadd::lcsc::SaveSymbolToProjectLibrary( b, m_context->GetKiway(), part, sym, err ) )
+            {
+                LcscSymbol* s = out.mutable_symbol();
+                s->set_lib_id( sym.libId );
+                s->set_file( sym.file );
+                s->set_reference( sym.reference );
+                s->set_units( sym.units );
+                s->set_registered( sym.registered );
+
+                std::set<std::string> pads;
+
+                for( const PAD* pad : part.footprint->Pads() )
+                {
+                    if( !pad->GetNumber().IsEmpty() )
+                        pads.insert( pad->GetNumber().ToStdString() );
+                }
+
+                std::set<std::string> pins( sym.pins.begin(), sym.pins.end() );
+
+                for( const std::string& p : sym.pins )
+                {
+                    s->add_pins( p );
+
+                    if( !pads.count( p ) )
+                        s->add_pins_without_pad( p );
+                }
+
+                for( const std::string& p : pads )
+                {
+                    if( !pins.count( p ) )
+                        s->add_pads_without_pin( p );
+                }
+
+                if( !sym.note.empty() )
+                    note += ( note.empty() ? "" : "; " ) + sym.note;
+            }
+            else
+            {
+                note += ( note.empty() ? "" : "; " ) + std::string( "symbol not saved: " ) + err;
+            }
         }
         else
         {

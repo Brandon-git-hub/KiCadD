@@ -48,6 +48,10 @@ set( KICADD_PCB_SRCS
     ${KICADD_DIR}/src/lcsc/kicadd_lcsc.cpp
     )
 set( KICADD_INCLUDE_DIRS ${KICADD_DIR}/src ${KICADD_CPP_OUT} )
+# eeschema kiface: LCSC symbols (M4b), reached from pcbnew through KIFACE_KICADD_LCSC_SYMBOL
+set( KICADD_SCH_SRCS
+    ${KICADD_DIR}/src/sch/kicadd_lcsc_sym.cpp
+    )
 
 # Python client stubs (for tests / plugins; no SWIG anywhere).
 set( KICADD_PY_OUT ${CMAKE_BINARY_DIR}/kicadd/python )

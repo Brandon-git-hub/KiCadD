@@ -211,6 +211,19 @@ message FetchLcscResponse
   Point  courtyard   = 11; // courtyard size, nm
   repeated LcscPad pads = 12;
   string description = 13;
+  LcscSymbol symbol  = 14; // M4b: the schematic symbol, when it could be saved
+}
+
+message LcscSymbol
+{
+  string lib_id     = 1;   // "LCSC:<symbol>"
+  string file       = 2;   // the project's lcsc.kicad_sym
+  string reference  = 3;   // "U", "R", ...
+  int32  units      = 4;
+  repeated string pins = 5;          // pin numbers
+  bool   registered = 6;   // the LCSC row was just added to the project sym-lib-table
+  repeated string pins_without_pad = 7;   // symbol pins the footprint has no pad for
+  repeated string pads_without_pin = 8;   // numbered footprint pads no symbol pin uses
 }
 
 // ---------------------------------------------------------------------------

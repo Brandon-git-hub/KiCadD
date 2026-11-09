@@ -1,4 +1,5 @@
-"""M4a end to end: LCSC part number -> KiCad footprint, checked against the raw EasyEDA data.
+"""M4a/M4b end to end: LCSC part number -> KiCad footprint and symbol, checked against the raw
+EasyEDA data.
 
 usage: python3 -I lcsc_e2e.py --mcp KICADD_MCP --socket SOCK --cache DIR --project DIR [PART...]
 
@@ -9,8 +10,11 @@ The server (kicad-cli api-server) must have a board from DIR loaded and KICADD_L
     answer, parsed here on its own (position, size, drill, SMD/THT): the importer is not
     trusted to check itself
   * a courtyard and the attribution are there, no STEP model is referenced
+  * M4b: the symbol is in DIR/lcsc.kicad_sym; its pin numbers are the P records of the EasyEDA
+    symbol (subparts for multi-unit parts) and the footprint's numbered pads, its Footprint field
+    is the footprint's LCSC:<package>, it carries the LCSC number and the attribution
   * add_footprint lcsc=... places it on the board, then undo takes it off again
-Then: the LCSC row is in DIR/fp-lib-table once, a second fetch comes from the cache, an
+Then: the LCSC row is in DIR/fp-lib-table and DIR/sym-lib-table once, a second fetch comes from the cache, an
 unknown part and a malformed number are refused.
 """
 
@@ -87,6 +91,57 @@ def easyeda_pads(cache, part):
             pads.append({"num": "", "x": (x - ox) * UNIT, "y": (y - oy) * UNIT, "w": 2 * r * UNIT, "h": 2 * r * UNIT,
                          "tht": True, "drill": 2 * r * UNIT, "slot": 0, "poly": False})
     return pads
+
+
+def easyeda_pins(cache, part):
+    """Pin numbers of the cached EasyEDA symbol (all units)."""
+    res = json.load(open(os.path.join(cache, part + ".json"), encoding="utf-8"))["result"]
+    docs = [sp["dataStr"] for sp in res.get("subparts") or []] or [res["dataStr"]]
+    pins = set()
+    for d in docs:
+        d = json.loads(d) if isinstance(d, str) else d
+        for sh in d["shape"]:
+            f = sh.split("~")
+            if f[0] == "P":
+                pins.add(f[3])
+    return pins
+
+
+def kicad_symbol(path, name):
+    """(properties, pin numbers) of one symbol in a .kicad_sym."""
+    text = open(path, encoding="utf-8").read()
+    blocks = re.split(r'\n\t\(symbol ', text)
+    for b in blocks[1:]:
+        if b.startswith(json.dumps(name)):
+            props = dict(re.findall(r'\(property "([^"]*)" "((?:[^"\\]|\\.)*)"', b))
+            pins = set(re.findall(r'\(number "([^"]*)"', b))
+            return props, pins
+    return None, None
+
+
+def check_symbol(part, cache, text, pads_file):
+    m = re.search(r"symbol (LCSC:.+?) \((.+?\.kicad_sym)\)", text)
+    check(m is not None, f"{part}: symbol saved")
+    if not m:
+        return
+    props, pins = kicad_symbol(m.group(2), m.group(1).split(":", 1)[1])
+    check(props is not None, f"{part}: {m.group(1)} is in {os.path.basename(m.group(2))}")
+    if props is None:
+        return
+    want = easyeda_pins(cache, part)
+    check(pins == want, f"{part}: symbol pins = EasyEDA pins ({len(pins)})"
+          + ("" if pins == want else f" -- only KiCad {sorted(pins - want)[:8]}, only EasyEDA {sorted(want - pins)[:8]}"))
+    pads = {p["num"] for p in kicad_pads(pads_file)[0] if p["num"]}
+    check(pins == pads, f"{part}: symbol pins = footprint pads"
+          + ("" if pins == pads else f" -- pins only {sorted(pins - pads)[:8]}, pads only {sorted(pads - pins)[:8]}"))
+    fp = re.search(r"saved as (LCSC:\S+)", text).group(1)
+    check(props.get("Footprint") == fp, f"{part}: Footprint field {props.get('Footprint')} = {fp}")
+    check(props.get("LCSC") == part, f"{part}: LCSC field")
+    check("JLCEDA/EasyEDA Official Library" in props.get("Description", "")
+          and "JLCEDA/EasyEDA Official Library" in props.get("Source", ""), f"{part}: symbol names its source")
+    check(props.get("Reference", "") and not re.search(r"[0-9?]", props["Reference"]),
+          f"{part}: reference prefix {props.get('Reference')!r}")
+    check("WARNING" not in text, f"{part}: no pin/pad mismatch reported")
 
 
 def kicad_pads(path):
@@ -169,6 +224,7 @@ def main():
             if not saved:
                 continue
             compare(part, a.cache, saved.group(2))
+            check_symbol(part, a.cache, text, saved.group(2))
 
             err, text = m.tool("add_footprint", {"lcsc": part, "ref": "X?", "x": 20 + 25 * (i % 6),
                                                   "y": -60 - 25 * (i // 6)})
@@ -180,10 +236,14 @@ def main():
         print("[library table, cache, errors]")
         table = open(os.path.join(a.project, "fp-lib-table"), encoding="utf-8").read()
         check(table.count('(name "LCSC")') == 1, "LCSC row in the project fp-lib-table exactly once")
+        stable = open(os.path.join(a.project, "sym-lib-table"), encoding="utf-8").read()
+        check(stable.count('(name "LCSC")') == 1, "LCSC row in the project sym-lib-table exactly once")
         err, text = m.tool("lcsc_fetch", {"lcsc": parts[0].lower()})
         check(not err and "from the cache" in text, "second fetch (lower case) comes from the cache")
         err, text = m.tool("lcsc_fetch", {"lcsc": "C999999999"})
-        check(err and ("not found" in text or "rate-limits" in text), "unknown part refused: " + text.strip()[:90])
+        offline = os.environ.get("KICADD_LCSC_OFFLINE")   # the server's environment, as this test is run
+        check(err and ("not found" in text or "rate-limits" in text or (offline and "not in the cache" in text)),
+              "unknown part refused: " + text.strip()[:90])
         err, text = m.tool("lcsc_fetch", {"lcsc": "STM32"})
         check(err and "not an LCSC part number" in text, "malformed number refused")
         err, text = m.tool("add_footprint", {"lcsc": "C25804", "ref": "R?", "x": 0, "y": -50,
