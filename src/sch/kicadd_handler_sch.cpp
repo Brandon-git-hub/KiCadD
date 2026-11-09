@@ -612,12 +612,12 @@ int KICADD_HANDLER_SCH::disconnectPin( const PIN_AT& aPin, SCH_COMMIT& aCommit )
     for( SCH_LINE* wire : wiresEndingAt( aPin.screen, aPin.pos ) )
     {
         gone.insert( wire );
-        VECTOR2I far = wire->GetStartPoint() == aPin.pos ? wire->GetEndPoint() : wire->GetStartPoint();
+        VECTOR2I farEnd = wire->GetStartPoint() == aPin.pos ? wire->GetEndPoint() : wire->GetStartPoint();
 
         // the stub's label, unless something else still uses that point
-        if( wiresEndingAt( aPin.screen, far ).size() == 1 )
+        if( wiresEndingAt( aPin.screen, farEnd ).size() == 1 )
         {
-            for( SCH_LABEL_BASE* label : labelsAt( aPin.screen, far ) )
+            for( SCH_LABEL_BASE* label : labelsAt( aPin.screen, farEnd ) )
                 gone.insert( label );
         }
     }
