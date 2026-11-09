@@ -744,7 +744,13 @@ TOOL_RESULT openBoard( IPC_CLIENT& aIpc, const json& aArgs )
     std::string                                   err;
 
     if( !aIpc.Call( req, r, err ) )
+    {
+        if( err.starts_with( "AS_UNIMPLEMENTED" ) )
+            err += " (in the desktop editor, open the file in pcbnew; the agent works on the "
+                   "board that is open there)";
+
         return error( err );
+    }
 
     return boardSummary( aIpc );
 }
@@ -886,7 +892,8 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        [&aIpc]( const json& ) { return refillZones( aIpc ); } } );
 
     tools.push_back( { "open_board",
-                       "Open a .kicad_pcb (or .kicad_pro) on the server, replacing the current board.",
+                       "Open a .kicad_pcb (or .kicad_pro) on the server (kicad-cli api-server), replacing the current board. "
+                       "Not available with the desktop editor: there the user opens the file in pcbnew.",
                        schema( { { "path", { { "type", "string" }, { "description", "Absolute path on the server" } } } },
                                { "path" } ),
                        [&aIpc]( const json& a ) { return openBoard( aIpc, a ); } } );

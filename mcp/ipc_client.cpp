@@ -133,6 +133,14 @@ bool IPC_CLIENT::Call( const google::protobuf::Message& aRequest, google::protob
             if( !reply.status().error_message().empty() )
                 aError += ": " + reply.status().error_message();
 
+            if( status == ApiStatusCode::AS_UNHANDLED
+                && aRequest.GetDescriptor()->full_name().starts_with( "kicadd." ) )
+            {
+                aError += " (this KiCad has no KiCadD handler: a stock KiCad, or a KiCadD pcbnew "
+                          "older than the M2 desktop co-pilot, e.g. v0.1.0-alpha.1 with the API "
+                          "enabled by hand; use a newer KiCadD pcbnew or kicad-cli api-server)";
+            }
+
             return false;
         }
 
