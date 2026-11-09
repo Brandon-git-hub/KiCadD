@@ -27,7 +27,7 @@
 #include <pcb_io/kicad_sexpr/pcb_io_kicad_sexpr.h>
 #include <ki_exception.h>
 
-#include <nlohmann/json.hpp>
+#include <json_common.h>   // not <nlohmann/json.hpp>: kicommon exports basic_json (LNK2005 without PCH)
 
 #include <wx/dir.h>
 #include <wx/ffile.h>

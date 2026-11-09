@@ -97,6 +97,23 @@ index b4b5627b..321d27be 100644
  add_subdirectory( resources )
  add_subdirectory( thirdparty )
  add_subdirectory( libs )
+diff --git a/cmake/Warnings.cmake b/cmake/Warnings.cmake
+index 0b117db8..2220dce1 100644
+--- a/cmake/Warnings.cmake
++++ b/cmake/Warnings.cmake
+@@ -235,6 +235,12 @@ if( MSVC )
+     # Warnings for C are not enabled since C files are mostly generated
+     # set( WARN_FLAGS_C   "/external:W0 /external:env:INCLUDE /external:I${CMAKE_SOURCE_DIR}/thirdparty /Wall" )
+     set( WARN_FLAGS_CXX "/external:W0 /external:env:INCLUDE /external:I${CMAKE_SOURCE_DIR}/thirdparty /Wall" )
++    # KiCadD: sccache (CI check builds) does not know /external:env:INCLUDE and takes it for a
++    # second input file, which makes every C++ compile uncacheable; quiet the SDK/STL headers
++    # with /external:anglebrackets instead
++    if( CMAKE_CXX_COMPILER_LAUNCHER MATCHES "sccache" )
++        string( REPLACE "/external:env:INCLUDE" "/external:anglebrackets" WARN_FLAGS_CXX "${WARN_FLAGS_CXX}" )
++    endif()
+ 
+     # disable 'type' : class 'type1' needs to have dll-interface to be used by clients of class 'type2'
+     string( APPEND WARN_FLAGS_CXX " /wd4251" )
 diff --git a/cmake/config.h.cmake b/cmake/config.h.cmake
 index 56f064f1..8618dc21 100644
 --- a/cmake/config.h.cmake
@@ -397,16 +414,17 @@ index f2bd4e10..7091fca2 100644
  #include <tool/action_toolbar.h>
  #include <tool/common_control.h>
 diff --git a/eeschema/sim/spice_simulator.cpp b/eeschema/sim/spice_simulator.cpp
-index dc6d8c4d..8915841b 100644
+index dc6d8c4d..62bb3f57 100644
 --- a/eeschema/sim/spice_simulator.cpp
 +++ b/eeschema/sim/spice_simulator.cpp
-@@ -23,11 +23,18 @@
+@@ -23,11 +23,19 @@
  
  // Include simulator headers after wxWidgets headers to avoid conflicts with Windows headers
  // (especially on msys2 + wxWidgets 3.0.x)
 +#ifndef KICADD_NO_SPICE
  #include "ngspice.h"
 +#else
++#include <wx/intl.h>     // _(); ngspice.h brings it in otherwise
 +#include "spice_simulator.h"
 +#endif
  #include "macros.h"
@@ -419,7 +437,7 @@ index dc6d8c4d..8915841b 100644
      try
      {
          static std::shared_ptr<SPICE_SIMULATOR> ngspiceInstance;
-@@ -43,6 +50,7 @@ std::shared_ptr<SPICE_SIMULATOR> SIMULATOR::CreateInstance( const std::string& )
+@@ -43,6 +51,7 @@ std::shared_ptr<SPICE_SIMULATOR> SIMULATOR::CreateInstance( const std::string& )
      }
  
      return nullptr;
