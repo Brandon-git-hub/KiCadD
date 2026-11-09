@@ -632,11 +632,15 @@ time, and `--prefix` would leave `share/kicad` (icons, templates, demos) out of 
   sccache can't cache.
 - Not the whole `build/` folder: checkout resets file times and Ninja would rebuild everything;
   sccache keys on content.
-- One sccache entry (≤ 4 GB, about 1 GB expected without debug info) next to the 445 MB vcpkg
+- One sccache entry (≤ 4 GB; 206 MB measured, no debug info) next to the 445 MB vcpkg
   cache stays well inside the 10 GB repo quota; pruning older entries keeps LRU eviction from
   ever dropping the vcpkg cache (rebuilding it takes hours).
-- The first check build after this change is cold, and slower than before because the
-  precompiled headers are off. Later ones only compile what changed.
+- Measured: cold cache 1 h 41 min (no precompiled headers), warm cache 15 min for the build
+  step and about 18 min for the whole job (2434 of 2436 compiles from the cache, the rest is
+  linking). A change to a widely included header or to the patch recompiles more.
+- sccache doesn't know MSVC's `/external:env:INCLUDE` and counts it as a second input file,
+  which made every C++ compile uncacheable; under sccache the patch swaps it for
+  `/external:anglebrackets` (`cmake/Warnings.cmake`).
 - Trade-off: a docs-only push no longer proves Windows still builds; anything touching code
   still does.
 - `vcpkg.exe` is fetched with the job token (`gh release download`); anonymous downloads timed
