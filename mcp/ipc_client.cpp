@@ -139,7 +139,7 @@ bool IPC_CLIENT::Call( const google::protobuf::Message& aRequest, google::protob
                 aError += " (nothing here handles KiCadD requests: open the board in the PCB Editor "
                           "window; the KiCad project window alone does not serve them. A stock "
                           "KiCad, or a KiCadD older than the M2 desktop co-pilot (v0.1.0-alpha.1), "
-                          "also gives this)"; use a newer KiCadD pcbnew or kicad-cli api-server)";
+                          "also gives this)";
             }
 
             return false;
