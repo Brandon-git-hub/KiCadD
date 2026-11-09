@@ -466,12 +466,13 @@ TOOL_RESULT addFootprint( IPC_CLIENT& aIpc, const json& aArgs )
     };
 
     req.set_lib_id( str( "footprint" ) );
+    req.set_lcsc( str( "lcsc" ) );
     req.set_like( str( "like" ) );
     req.set_ref( str( "ref" ) );
     req.set_value( str( "value" ) );
 
-    if( req.lib_id().empty() && req.like().empty() )
-        return error( "give footprint (\"Library:Name\") or like (an existing ref to copy)" );
+    if( req.lib_id().empty() && req.like().empty() && req.lcsc().empty() )
+        return error( "give footprint (\"Library:Name\"), lcsc (\"C8734\") or like (an existing ref to copy)" );
 
     double x = 0, y = 0, rot = 0;
 
@@ -502,6 +503,65 @@ TOOL_RESULT addFootprint( IPC_CLIENT& aIpc, const json& aArgs )
         return error( err );
 
     return { renderMoveResult( r ), r.added().empty() };
+}
+
+
+TOOL_RESULT lcscFetch( IPC_CLIENT& aIpc, const json& aArgs )
+{
+    kb::FetchLcsc req;
+
+    if( !aArgs.contains( "lcsc" ) || !aArgs["lcsc"].is_string() )
+        return error( "lcsc (an LCSC part number, e.g. \"C8734\") is required" );
+
+    req.set_lcsc( aArgs["lcsc"].get<std::string>() );
+    req.set_refresh( aArgs.contains( "refresh" ) && aArgs["refresh"].is_boolean() && aArgs["refresh"].get<bool>() );
+
+    kb::FetchLcscResponse r;
+    std::string           err;
+
+    if( !aIpc.Call( req, r, err ) )
+        return error( err );
+
+    int tht = 0;
+
+    for( const kb::LcscPad& p : r.pads() )
+        tht += p.tht() ? 1 : 0;
+
+    std::string out = r.lcsc() + " " + r.title() + ": footprint " + r.package();
+
+    if( !r.lib_id().empty() )
+        out += "\n  saved as " + r.lib_id() + " (" + r.file() + ")"
+               + ( r.registered() ? "; LCSC library added to the project fp-lib-table" : "" );
+
+    out += std::string( "\n  " ) + ( r.from_cache() ? "from the cache" : "fetched" ) + ", courtyard "
+           + mm( r.courtyard().x() ) + "x" + mm( r.courtyard().y() ) + " mm, " + std::to_string( r.pads_size() )
+           + " pads" + ( tht ? " (" + std::to_string( tht ) + " through-hole)" : " (SMD)" );
+
+    if( !r.description().empty() )
+        out += "\n  " + r.description();
+
+    out += "\n  pads (number@x,y mm):";
+    int shown = 0;
+
+    for( const kb::LcscPad& p : r.pads() )
+    {
+        if( ++shown > 120 )
+        {
+            out += " ... " + std::to_string( r.pads_size() - 120 ) + " more";
+            break;
+        }
+
+        out += " " + p.number() + "@" + pt( p.pos() );
+    }
+
+    if( !r.datasheet().empty() )
+        out += "\n  datasheet: " + r.datasheet();
+
+    if( !r.note().empty() )
+        out += "\n  note: " + r.note();
+
+    out += "\n  " + r.attribution();
+    return { out };
 }
 
 
@@ -825,13 +885,25 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                                { "refs" } ),
                        [&aIpc]( const json& a ) { return moveFootprints( aIpc, a ); } } );
 
+    tools.push_back( { "lcsc_fetch",
+                       "Get the footprint of an LCSC part (e.g. C8734) from the JLCEDA/EasyEDA Official "
+                       "Library: converted to KiCad, saved to the project library LCSC "
+                       "(lcsc.pretty, added to fp-lib-table), cached for offline use. Returns its lib_id, "
+                       "size and pad numbers/positions. add_footprint with lcsc does this by itself.",
+                       schema( { { "lcsc", { { "type", "string" }, { "description", "LCSC part number, e.g. C8734" } } },
+                                 { "refresh", { { "type", "boolean" }, { "description", "Fetch again even if cached" } } } },
+                               { "lcsc" } ),
+                       [&aIpc]( const json& a ) { return lcscFetch( aIpc, a ); } } );
+
     tools.push_back( { "add_footprint",
                        "Place a new footprint as one undoable edit: from a library (footprint = "
-                       "\"Library:Name\", e.g. \"Capacitor_SMD:C_0603_1608Metric\") or as a copy of a part "
-                       "already on the board (like = \"C12\"). ref \"C?\" takes the next free number. "
+                       "\"Library:Name\", e.g. \"Capacitor_SMD:C_0603_1608Metric\"), from an LCSC part "
+                       "number (lcsc = \"C8734\", fetched and saved to the project library), or as a copy "
+                       "of a part already on the board (like = \"C12\"). ref \"C?\" takes the next free number. "
                        "nets maps pad numbers to nets; unknown nets are created and reported. Returns the "
                        "placement, unrouted count and local DRC.",
                        schema( { { "footprint", { { "type", "string" }, { "description", "Library:Name" } } },
+                                 { "lcsc", { { "type", "string" }, { "description", "LCSC part number, e.g. C8734 (instead of footprint)" } } },
                                  { "like", { { "type", "string" }, { "description", "Copy the footprint of this ref instead" } } },
                                  { "ref", { { "type", "string" }, { "description", "Reference, e.g. C301 or C? (default: prefix of like)" } } },
                                  { "value", { { "type", "string" }, { "description", "Value, e.g. 100nF" } } },

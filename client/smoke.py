@@ -136,7 +136,10 @@ def main():
     sock = a.sock or os.path.join(a.work, "api.sock")
     if os.path.exists(sock):
         os.remove(sock)
-    server = subprocess.Popen([cli, "api-server", "--socket", sock, board], env=env,
+    lcsc_cache = os.path.join(a.work, "lcsc-cache")
+    os.makedirs(lcsc_cache, exist_ok=True)
+    server = subprocess.Popen([cli, "api-server", "--socket", sock, board],
+                              env=dict(env, KICADD_LCSC_OFFLINE="1", KICADD_LCSC_CACHE=lcsc_cache),
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     out = []
     threading.Thread(target=lambda: out.extend(server.stdout), daemon=True).start()
@@ -168,6 +171,11 @@ def main():
         tools = m.call("tools/list").get("result", {}).get("tools", [])
         check(len(tools) >= 10, f"tools/list: {len(tools)} tools")
         check(True, f"board_summary via the API server (ready after {ready:.1f} s): {text.splitlines()[0]}")
+        # M4a LCSC path, offline (no requests to easyeda.com from CI): the handler is there and
+        # refuses cleanly when the part is not cached
+        res = m.call("tools/call", {"name": "lcsc_fetch", "arguments": {"lcsc": "C25804"}}).get("result", {})
+        text = "".join(c.get("text", "") for c in res.get("content", []))
+        check(res.get("isError") and "not in the cache" in text, f"lcsc_fetch offline, empty cache: {text.strip()[:80]}")
         m.close()
     except Exception as e:
         check(False, f"MCP session: {e}")

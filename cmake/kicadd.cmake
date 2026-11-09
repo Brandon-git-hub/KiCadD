@@ -45,6 +45,7 @@ set( KICADD_PCB_SRCS
     ${KICADD_DIR}/src/pcb/kicadd_handler_pcb.cpp
     ${KICADD_DIR}/src/pcb/kicadd_local_drc.cpp
     ${KICADD_DIR}/src/pcb/kicadd_render.cpp
+    ${KICADD_DIR}/src/lcsc/kicadd_lcsc.cpp
     )
 set( KICADD_INCLUDE_DIRS ${KICADD_DIR}/src ${KICADD_CPP_OUT} )
 

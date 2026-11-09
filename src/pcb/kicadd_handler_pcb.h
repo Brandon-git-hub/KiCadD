@@ -76,6 +76,9 @@ private:
     HANDLER_RESULT<kicadd::board::MoveResponse>
     handleAddFootprint( const HANDLER_CONTEXT<kicadd::board::AddFootprint>& aCtx );
 
+    HANDLER_RESULT<kicadd::board::FetchLcscResponse>
+    handleFetchLcsc( const HANDLER_CONTEXT<kicadd::board::FetchLcsc>& aCtx );
+
     HANDLER_RESULT<kicadd::board::LocalDrcResponse>
     handleCheckLocalDrc( const HANDLER_CONTEXT<kicadd::board::CheckLocalDrc>& aCtx );
 

@@ -187,6 +187,68 @@ index b224822c..eaec83c9 100644
      aMsg << indent4 << "ngspice: " << NGSPICE_BUILD_VERSION << eol;
  #elif defined( NGSPICE_HAVE_CONFIG_H )
      #undef HAVE_STRNCASECMP     /* is redefined in ngspice/config.h */
+diff --git a/common/text_eval/text_eval_vcs.cpp b/common/text_eval/text_eval_vcs.cpp
+index 383869d8..6ab48405 100644
+--- a/common/text_eval/text_eval_vcs.cpp
++++ b/common/text_eval/text_eval_vcs.cpp
+@@ -36,22 +36,36 @@ namespace TEXT_EVAL_VCS
+ // loaded project directory). When empty, repo discovery falls back to the process cwd.
+ namespace
+ {
+-    thread_local wxString tl_contextPath;
++    // KiCadD: the path lives behind a trivially destructible thread_local pointer and is never
++    // freed. A thread_local wxString is destroyed when the main thread's thread_locals are,
++    // which is before static objects: ~PGM_BASE -> ~SETTINGS_MANAGER -> SetContextPath()
++    // then wrote into the freed string and corrupted the heap on exit (random SIGABRT /
++    // SIGSEGV when closing pcbnew). One small string per thread that used it is kept.
++    thread_local wxString* tl_contextPathPtr = nullptr;
+     thread_local bool tl_contextIsFile = false;
++
++    wxString& contextPath()
++    {
++        if( !tl_contextPathPtr )
++            tl_contextPathPtr = new wxString();
++
++        return *tl_contextPathPtr;
++    }
+ }
+ 
+ 
+ void SetContextPath( const wxString& aPath )
+ {
+     const bool isFile = !aPath.IsEmpty() && wxFileName( aPath ).FileExists();
+-    tl_contextPath = aPath;
++    contextPath() = aPath;
+     tl_contextIsFile = isFile;
+ }
+ 
+ 
+ wxString GetContextPath()
+ {
+-    return tl_contextPath.IsEmpty() ? wxString( wxT( "." ) ) : tl_contextPath;
++    const wxString& path = contextPath();
++    return path.IsEmpty() ? wxString( wxT( "." ) ) : path;
+ }
+ 
+ 
+@@ -62,7 +76,7 @@ bool GetContextIsFile()
+ 
+ 
+ CONTEXT_PATH_SCOPE::CONTEXT_PATH_SCOPE( const wxString& aPath ) :
+-        m_previous( tl_contextPath ),
++        m_previous( contextPath() ),
+         m_previousIsFile( tl_contextIsFile )
+ {
+     SetContextPath( aPath );
+@@ -71,7 +85,7 @@ CONTEXT_PATH_SCOPE::CONTEXT_PATH_SCOPE( const wxString& aPath ) :
+ 
+ CONTEXT_PATH_SCOPE::~CONTEXT_PATH_SCOPE()
+ {
+-    tl_contextPath = m_previous;
++    contextPath() = m_previous;
+     tl_contextIsFile = m_previousIsFile;
+ }
+ 
 diff --git a/eeschema/CMakeLists.txt b/eeschema/CMakeLists.txt
 index 5b6dbf2a..1cb602e8 100644
 --- a/eeschema/CMakeLists.txt

@@ -515,9 +515,78 @@ change left alone, edits refused while the router is active and applied after Es
 delete → user Ctrl+Z / Ctrl+Y → agent undo, clean exit (no double free). The headless suites
 (`layout_e2e`, `history_e2e`, `web_e2e`, `mcp_e2e`, `smoke.py`) still pass.
 
-Not yet: the Windows desktop path (same code, built by M3 CI, but not run on Windows: the named
-pipe name must match between `wxStandardPaths::GetTempDir` and `%TMP%`), and a co-pilot panel in
-the editor (agent activity log, pause switch); for now the status bar and the Undo menu show it.
+Run on real Windows by the user (2026-11-09): `board_summary` answers from the editor. KiCadD
+requests are served while the **PCB Editor** window is open; the `kicad.exe` project window alone
+answers only the common API (kicadd-mcp says so). kicadd-mcp finds the socket with wx's temp-dir
+rules (TMPDIR, TMP, TEMP, then GetTempPath).
+
+Exit crash fixed later (M4a work): pcbnew aborted on exit in about one run in three
+("corrupted double-linked list"), with or without the agent. valgrind: upstream
+`TEXT_EVAL_VCS` keeps its context path in a `thread_local wxString`, destroyed before the static
+`PGM_BASE` whose `~SETTINGS_MANAGER` then assigns to it. The patch keeps it behind a never-freed
+pointer; 8/8 desktop runs exit 0 since (`desktop_e2e.py --upto N --wrap "valgrind ..."` bisects).
+
+Not yet: a co-pilot panel in the editor (agent activity log, pause switch); for now the status
+bar and the Undo menu show it.
+
+## M4a: LCSC part number → footprint (2026-11-09)
+
+An LCSC number is enough to place a part: `add_footprint lcsc="C8734"` (or `lcsc_fetch` to look
+first) fetches the part, converts its footprint to KiCad, saves it to the project library and
+places it, as one undoable edit. Headless and in the desktop editor alike.
+
+```
+lcsc_fetch {"lcsc": "C8734"}
+C8734 STM32F103C8T6: footprint LQFP-48_L7.0-W7.0-P0.50-LS9.0-BL
+  saved as LCSC:LQFP-48_L7.0-W7.0-P0.50-LS9.0-BL (<project>/lcsc.pretty/...kicad_mod); LCSC library added to the project fp-lib-table
+  fetched, courtyard 10.55x10.55 mm, 48 pads (SMD)
+  pads (number@x,y mm): 1@-2.75,4.25 2@-2.25,4.25 ...
+  Source: JLCEDA/EasyEDA Official Library (https://lceda.cn/, https://easyeda.com)
+```
+
+How (`src/lcsc/kicadd_lcsc.cpp`, handler `FetchLcsc` and `AddFootprint.lcsc`):
+
+- **Source:** the JLCEDA/EasyEDA component API (`easyeda.com/api/products/<C>/components`), the
+  data behind the LCSC catalogue, through KiCad's curl wrapper.
+- **Conversion:** KiCad's own EasyEDA Standard importer (`pcbnew/pcb_io/easyeda`, GPL like
+  KiCad); no third-party converter code (easyeda2kicad is AGPL). KiCadD then tidies the result:
+  - solid regions on paste/mask (EasyEDA's stencil and mask openings) become filled shapes;
+    pads that EasyEDA gives a −100 mm paste margin for that reason lose their paste layer
+    instead (same output, no DRC "questionable padstack")
+  - component-shape → F.Fab body outline, polarity mark → F.Fab, lead shapes dropped
+  - courtyard = pads + body + 0.25 mm, on a 0.01 mm grid
+  - no STEP model is referenced (no OpenCASCADE); the EasyEDA 3D model id stays in a field
+  - fields: `LCSC` = C number (for JLC BOM/CPL), Datasheet; the description names the source
+- **Orientation:** kept as EasyEDA draws it (e.g. LQFP pin 1 bottom-left, the "-BL" in the
+  name), which is what JLC assembly rotations are based on.
+- **Project library:** `<project>/lcsc.pretty`, nickname `LCSC`, added once to the project
+  `fp-lib-table` as `${KIPRJMOD}/lcsc.pretty`, so the project carries its parts and
+  Update PCB from Schematic finds `LCSC:...`.
+- **Cache:** `KICADD_LCSC_CACHE` or `<KiCad user cache>/kicadd/lcsc/<C>.json` (the raw answer).
+  A cached part never touches the network unless `refresh`; when the network fails the cache is
+  used with a note; `KICADD_LCSC_OFFLINE=1` is cache-only.
+- **Rate limit:** easyeda.com's CDN answers HTTP 403 for a while after a burst (~30 requests in
+  a few minutes from one address). Requests are spaced ≥ 1.5 s and the error says what happened.
+- The fetch runs on the editor's main thread (about a second, once per part).
+
+Licensing: the EasyEDA data carries a notice asking for its source to be named (done in every
+footprint's description and the library description) and grants commercial use "when used in
+JLCEDA/EasyEDA". Fetching on demand for your own boards is the same use easyeda2kicad and others
+make; redistributing a bundle of converted parts would be a different question, so KiCadD ships
+none and CI does not fetch.
+
+Verification: `client/lcsc_e2e.py` (13 parts: 0603/0805 R/C, tantalum, SOD-123F, SOT-23, SOT-223,
+LQFP-48, QFN-56 + EP, two USB-C with slots and polygon pads, 1x40 header) compares every pad of
+the written `.kicad_mod` with the raw EasyEDA PAD/HOLE records parsed on its own (position, size,
+drill, SMD/THT within 2 µm), checks courtyard, attribution, no STEP, nothing left on User layers,
+places each part and undoes it, then the fp-lib-table row, the cache, unknown/malformed numbers.
+All pass. Full DRC on a board with all 13: only the C2765186 USB-C's locating holes sit
+0.17–0.21 mm from its outer pads (as designed by the part's land pattern). `desktop_e2e.py` with
+`KICADD_LCSC_CACHE` set adds an editor step (agent places C25804, user Ctrl+Z). `smoke.py` (CI)
+checks the offline path only.
+
+Not yet (M4b–d): symbols, search / stock / price (`lcsc_search`), 3D models (EasyEDA OBJ →
+VRML), a "place by LCSC number" entry in the editor.
 
 ## M3: Windows CI (2026-11-06)
 

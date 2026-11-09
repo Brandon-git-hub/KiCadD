@@ -36,6 +36,10 @@ def check(cond, label):
         FAILS.append(label)
 
 
+class SkipRest(Exception):
+    pass
+
+
 class Mcp:
     def __init__(self, cmd, env):
         self.p = subprocess.Popen(cmd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -106,6 +110,9 @@ def main():
     ap.add_argument("--work", required=True)
     ap.add_argument("--display", default=":55")
     ap.add_argument("--keep", action="store_true", help="leave pcbnew running at the end")
+    ap.add_argument("--timeout", type=float, default=120, help="seconds to wait for the editor (raise under valgrind)")
+    ap.add_argument("--upto", type=int, default=5, help="run steps 1..N, then close (bisecting)")
+    ap.add_argument("--wrap", default="", help="prefix pcbnew's command, e.g. \"gdb -q -batch -ex run -ex bt --args\"")
     a = ap.parse_args()
 
     for tool in ("Xvfb", "xdotool"):
@@ -132,7 +139,7 @@ def main():
     time.sleep(1)
     d = Desktop(a.display, env)
     log = open(os.path.join(work, "pcbnew.log"), "w")
-    gui = subprocess.Popen([os.path.join(a.build, "pcbnew", "pcbnew"),
+    gui = subprocess.Popen(a.wrap.split() + [os.path.join(a.build, "pcbnew", "pcbnew"),
                             os.path.join(board_dir, "pic_programmer.kicad_pcb")],
                            env=d.env, stdout=log, stderr=subprocess.STDOUT)
     mcp = None
@@ -141,7 +148,7 @@ def main():
         print("[1] editor starts its API server")
         t0 = time.time()
         main_win = None
-        while time.time() - t0 < 120 and gui.poll() is None:
+        while time.time() - t0 < a.timeout and gui.poll() is None:
             if (w := d.window("KiCad Setup")):          # first-run wizard: cancel, then "Yes"
                 d.keys(w, "Escape")
                 time.sleep(1)
@@ -153,9 +160,11 @@ def main():
         check(main_win is not None, f"pcbnew opened the board ({time.time() - t0:.0f} s)")
         check(os.path.exists(sock), f"API socket at {os.path.relpath(sock, work)} with no preference set")
         if not main_win:
-            return 1
+            raise SkipRest()
         time.sleep(3)
         d.shot(os.path.join(work, "shot-0-start.png"))
+        if a.upto < 1:
+            raise SkipRest()
 
         mcp = Mcp([os.path.join(a.build, "kicadd-mcp"), "--stdio"], env)   # default socket
 
@@ -172,6 +181,8 @@ def main():
         err, text = mcp.tool("board_summary")
         check(not err and "footprints=63" in text, "agent reads the editor's board: " + text.splitlines()[0])
 
+        if a.upto < 2:
+            raise SkipRest()
         print("[2] agent move, user Ctrl+Z")
         u3 = pos("U3")
         err, text = mcp.tool("move_footprints", {"refs": ["U3"], "dx": 0, "dy": -10})
@@ -184,11 +195,15 @@ def main():
         check(near(pos("U3"), u3), "user Ctrl+Z put U3 back (one undo stack)")
         d.shot(os.path.join(work, "shot-2-user-undo.png"))
 
+        if a.upto < 3:
+            raise SkipRest()
         print("[3] agent undo does not overwrite the user")
         err, text = mcp.tool("undo")
         check("changed since" in text and near(pos("U3"), u3),
               "agent undo left U3 alone: " + " ".join(text.split())[:120])
 
+        if a.upto < 4:
+            raise SkipRest()
         print("[4] user in the router: agent edits wait")
         d.x("mousemove", "--sync", "700", "400")
         d.keys(main_win, "x")
@@ -202,6 +217,8 @@ def main():
         err, text = mcp.tool("move_footprints", {"refs": ["U3"], "dx": 5, "dy": 0})
         check(not err and near(pos("U3"), (u3[0] + 5, u3[1])), "after the user leaves the router it applies")
 
+        if a.upto < 5:
+            raise SkipRest()
         print("[5] agent delete, user Ctrl+Z / Ctrl+Y")
         err, text = mcp.tool("delete_footprints", {"refs": ["C1"]})
         check(not err and pos("C1") is None, "agent deleted C1")
@@ -215,12 +232,35 @@ def main():
         check(pos("C1") is not None, "agent undo (from its own copy) restored C1")
         d.shot(os.path.join(work, "shot-3-end.png"))
 
-        mcp.close()
+        cache = os.environ.get("KICADD_LCSC_CACHE", "")
+        if cache and os.path.exists(os.path.join(cache, "C25804.json")):
+            print("[5b] agent places an LCSC part (from the cache), user Ctrl+Z")
+            err, text = mcp.tool("add_footprint", {"lcsc": "C25804", "ref": "R?", "x": 150, "y": 60,
+                                                   "nets": {"1": "GND"}})
+            ref = re.search(r"(R\d+) added", text)
+            check(not err and ref and pos(ref.group(1)) is not None,
+                  "add_footprint lcsc=C25804 in the editor: " + " ".join(text.split())[:100])
+            table = open(os.path.join(board_dir, "fp-lib-table"), encoding="utf-8").read()
+            check('(name "LCSC")' in table and os.path.exists(os.path.join(board_dir, "lcsc.pretty", "R0603.kicad_mod")),
+                  "project library LCSC written and registered")
+            d.keys(main_win, "ctrl+z")
+            time.sleep(1)
+            check(ref and pos(ref.group(1)) is None, "user Ctrl+Z removed it")
+
+    except SkipRest:
+        pass
+    except Exception as e:
+        check(False, f"exception: {e}")
+    try:
+        if mcp:
+            mcp.close()
         mcp = None
         if a.keep:
             print(f"pcbnew left running on {a.display}")
             return 1 if FAILS else 0
 
+        if not main_win:
+            raise RuntimeError("pcbnew did not open the board")
         print("[6] editor closes cleanly")
         d.keys(main_win, "ctrl+q")
         time.sleep(2)
@@ -228,7 +268,7 @@ def main():
             if t and "pic_programmer" not in t and t != "pcbnew":
                 d.keys(w, "alt+d")
         try:
-            rc = gui.wait(30)
+            rc = gui.wait(max(30, a.timeout / 2))
         except subprocess.TimeoutExpired:
             rc = None
         check(rc == 0, f"pcbnew exit code {rc}")

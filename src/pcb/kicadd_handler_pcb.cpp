@@ -7,6 +7,7 @@
 #include "kicadd_handler_pcb.h"
 #include "kicadd_local_drc.h"
 #include "kicadd_render.h"
+#include "lcsc/kicadd_lcsc.h"
 
 #include <algorithm>
 #include <chrono>
@@ -203,6 +204,7 @@ KICADD_HANDLER_PCB::KICADD_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext ) 
     registerHandler<MoveDelta, MoveResponse>( &KICADD_HANDLER_PCB::handleMoveDelta );
     registerHandler<DeleteFootprints, MoveResponse>( &KICADD_HANDLER_PCB::handleDeleteFootprints );
     registerHandler<AddFootprint, MoveResponse>( &KICADD_HANDLER_PCB::handleAddFootprint );
+    registerHandler<FetchLcsc, FetchLcscResponse>( &KICADD_HANDLER_PCB::handleFetchLcsc );
     registerHandler<Undo, HistoryResponse>( &KICADD_HANDLER_PCB::handleUndo );
     registerHandler<Redo, HistoryResponse>( &KICADD_HANDLER_PCB::handleRedo );
     registerHandler<GetHistory, HistoryResponse>( &KICADD_HANDLER_PCB::handleGetHistory );
@@ -804,10 +806,37 @@ wxString referencePrefix( const wxString& aRef )
 }
 
 
-/// A footprint from a .pretty directory: KICADD_FOOTPRINT_DIRS, then the system library.
-std::unique_ptr<FOOTPRINT> loadFromDirectories( const LIB_ID& aLibId, std::string& aSource )
+/// A footprint from a .pretty directory: the project's lcsc.pretty for LCSC:..., then
+/// KICADD_FOOTPRINT_DIRS, then the system library.
+std::unique_ptr<FOOTPRINT> loadFromDirectories( const BOARD* aBoard, const LIB_ID& aLibId, std::string& aSource )
 {
     std::vector<wxString> dirs;
+
+    if( aLibId.GetLibNickname().compare( kicadd::lcsc::LIB_NICKNAME ) == 0 && aBoard
+        && !aBoard->GetFileName().IsEmpty() )
+    {
+        wxFileName lib( wxFileName( aBoard->GetFileName() ).GetPath(), wxEmptyString );
+        lib.AppendDir( wxS( "lcsc.pretty" ) );
+        wxFileName file( lib.GetPath(), aLibId.GetLibItemName().wx_str(), wxS( "kicad_mod" ) );
+
+        if( file.FileExists() )
+        {
+            try
+            {
+                PCB_IO_KICAD_SEXPR         io;
+                std::unique_ptr<FOOTPRINT> fp = io.FootprintLoad( lib.GetPath(), aLibId.GetLibItemName().wx_str() );
+
+                if( fp )
+                {
+                    aSource = file.GetFullPath().ToStdString();
+                    return fp;
+                }
+            }
+            catch( const IO_ERROR& )
+            {
+            }
+        }
+    }
 
     if( const char* env = std::getenv( "KICADD_FOOTPRINT_DIRS" ) )
     {
@@ -1026,7 +1055,34 @@ KICADD_HANDLER_PCB::handleAddFootprint( const HANDLER_CONTEXT<AddFootprint>& aCt
     std::string                source;
     const FOOTPRINT*           like = nullptr;
 
-    if( !req.like().empty() )
+    if( !req.lcsc().empty() )
+    {
+        kicadd::lcsc::PART  part;
+        kicadd::lcsc::SAVED saved;
+        std::string         err;
+
+        if( !kicadd::lcsc::FetchPart( req.lcsc(), false, part, err ) )
+            return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, err ) );
+
+        source = "LCSC " + part.lcsc + " (" + part.title + "; JLCEDA/EasyEDA Official Library";
+
+        if( kicadd::lcsc::SaveToProjectLibrary( b, part, saved, err ) )
+            source += ", saved as " + saved.libId + ( saved.registered ? ", LCSC library added to fp-lib-table" : "" );
+        else
+            source += ", not saved: " + err;
+
+        source += ")";
+
+        if( !part.note.empty() )
+            source += "; " + part.note;
+
+        fp.reset( static_cast<FOOTPRINT*>( part.footprint->Duplicate( IGNORE_PARENT_GROUP ) ) );
+        fp->SetFPID( part.footprint->GetFPID() );
+        BOARD_DESIGN_SETTINGS& bds = b->GetDesignSettings();
+        fp->ApplyDefaultSettings( *b, bds.m_StyleFPFields, bds.m_StyleFPText, bds.m_StyleFPShapes,
+                                  bds.m_StyleFPDimensions, bds.m_StyleFPBarcodes );
+    }
+    else if( !req.like().empty() )
     {
         like = b->FindFootprintByReference( wxString::FromUTF8( req.like() ) );
 
@@ -1052,7 +1108,7 @@ KICADD_HANDLER_PCB::handleAddFootprint( const HANDLER_CONTEXT<AddFootprint>& aCt
             fp.reset( loaded );
             source = "library table";
         }
-        else if( ( fp = loadFromDirectories( libId, source ) ) )
+        else if( ( fp = loadFromDirectories( b, libId, source ) ) )
         {
             fp->ClearAllNets();
             BOARD_DESIGN_SETTINGS& bds = b->GetDesignSettings();
@@ -1084,7 +1140,7 @@ KICADD_HANDLER_PCB::handleAddFootprint( const HANDLER_CONTEXT<AddFootprint>& aCt
     }
     else
     {
-        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "AddFootprint needs lib_id or like" ) );
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "AddFootprint needs lib_id, lcsc or like" ) );
     }
 
     // Reference designator.
@@ -1121,7 +1177,7 @@ KICADD_HANDLER_PCB::handleAddFootprint( const HANDLER_CONTEXT<AddFootprint>& aCt
                 valid += ( valid.empty() ? "" : "," ) + n.ToStdString();
 
             return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
-                                              "no pad " + number + " on " + req.lib_id() + req.like()
+                                              "no pad " + number + " on " + req.lib_id() + req.like() + req.lcsc()
                                                       + " (pads: " + valid + ")" ) );
         }
     }
@@ -1168,6 +1224,73 @@ KICADD_HANDLER_PCB::handleAddFootprint( const HANDLER_CONTEXT<AddFootprint>& aCt
     entry.added.push_back( detach( static_cast<FOOTPRINT*>( placed->Clone() ) ) );
     out.set_history_label( entry.label );
     record( std::move( entry ) );
+    return out;
+}
+
+
+HANDLER_RESULT<FetchLcscResponse>
+KICADD_HANDLER_PCB::handleFetchLcsc( const HANDLER_CONTEXT<FetchLcsc>& aCtx )
+{
+    kicadd::lcsc::PART part;
+    std::string        err;
+
+    if( !kicadd::lcsc::FetchPart( aCtx.Request.lcsc(), aCtx.Request.refresh(), part, err ) )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, err ) );
+
+    FetchLcscResponse out;
+    out.set_lcsc( part.lcsc );
+    out.set_title( part.title );
+    out.set_package( part.package );
+    out.set_description( part.description );
+    out.set_datasheet( part.datasheet );
+    out.set_from_cache( part.fromCache );
+    out.set_attribution( kicadd::lcsc::ATTRIBUTION );
+    std::string note = part.note;
+
+    if( BOARD* b = board() )
+    {
+        kicadd::lcsc::SAVED saved;
+
+        if( kicadd::lcsc::SaveToProjectLibrary( b, part, saved, err ) )
+        {
+            out.set_lib_id( saved.libId );
+            out.set_file( saved.file );
+            out.set_registered( saved.registered );
+
+            if( !saved.note.empty() )
+                note += ( note.empty() ? "" : "; " ) + saved.note;
+        }
+        else
+        {
+            note += ( note.empty() ? "" : "; " ) + std::string( "not saved: " ) + err;
+        }
+    }
+
+    out.set_note( note );
+
+    for( const BOARD_ITEM* item : part.footprint->GraphicalItems() )
+    {
+        if( item->GetLayer() == F_CrtYd )
+        {
+            BOX2I box = item->GetBoundingBox();
+            out.mutable_courtyard()->set_x( box.GetWidth() );
+            out.mutable_courtyard()->set_y( box.GetHeight() );
+            break;
+        }
+    }
+
+    for( const PAD* pad : part.footprint->Pads() )
+    {
+        LcscPad* p = out.add_pads();
+        p->set_number( pad->GetNumber().ToStdString() );
+        p->mutable_pos()->set_x( pad->GetPosition().x );
+        p->mutable_pos()->set_y( pad->GetPosition().y );
+        BOX2I box = pad->GetBoundingBox();
+        p->mutable_size()->set_x( box.GetWidth() );
+        p->mutable_size()->set_y( box.GetHeight() );
+        p->set_tht( pad->GetAttribute() == PAD_ATTRIB::PTH || pad->GetAttribute() == PAD_ATTRIB::NPTH );
+    }
+
     return out;
 }
 
