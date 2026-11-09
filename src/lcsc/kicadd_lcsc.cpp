@@ -420,11 +420,31 @@ wxString projectDir( BOARD* aBoard )
 }
 
 
+/// Make an open editor see what was just written: reload the LCSC library (both kinds of
+/// libraries are cached by the library manager).
+void refreshLibrary( bool aSymbols, std::string& aNote )
+{
+    LIBRARY_TABLE_TYPE type = aSymbols ? LIBRARY_TABLE_TYPE::SYMBOL : LIBRARY_TABLE_TYPE::FOOTPRINT;
+
+    try
+    {
+        LIBRARY_MANAGER& mgr = Pgm().GetLibraryManager();
+        mgr.ReloadLibraryEntry( type, wxString::FromUTF8( LIB_NICKNAME ), LIBRARY_TABLE_SCOPE::PROJECT );
+        mgr.LoadLibraryEntry( type, wxString::FromUTF8( LIB_NICKNAME ) );
+    }
+    catch( ... )
+    {
+        aNote = "saved; reopen the project if the library browser doesn't show it yet";
+    }
+}
+
+
 /**
- * Add the LCSC row to the project fp-lib-table (or sym-lib-table) once, then reload that table.
+ * Add the LCSC row to the project fp-lib-table (or sym-lib-table) once, then reload that table
+ * and the library itself.
  * @return true when the row was added now.
  */
-bool registerLibrary( const wxString& aDir, bool aSymbols, PROJECT* aProject, std::string& aNote )
+bool registerLibrary( const wxString& aDir, bool aSymbols, std::string& aNote )
 {
     const char* tableName = aSymbols ? "sym-lib-table" : "fp-lib-table";
     const char* root = aSymbols ? "sym_lib_table" : "fp_lib_table";
@@ -437,7 +457,10 @@ bool registerLibrary( const wxString& aDir, bool aSymbols, PROJECT* aProject, st
     static const std::regex hasRow( "\\(name\\s+\"?LCSC\"?\\s*\\)" );
 
     if( exists && std::regex_search( text, hasRow ) )
+    {
+        refreshLibrary( aSymbols, aNote );
         return false;
+    }
 
     const std::string row = "  (lib (name \"LCSC\")(type \"KiCad\")(uri \"" + std::string( uri )
                             + "\")(options \"\")(descr \"LCSC parts fetched by KiCadD; "
@@ -474,18 +497,14 @@ bool registerLibrary( const wxString& aDir, bool aSymbols, PROJECT* aProject, st
         Pgm().GetLibraryManager().ReloadTables( LIBRARY_TABLE_SCOPE::PROJECT,
                                                 { aSymbols ? LIBRARY_TABLE_TYPE::SYMBOL
                                                            : LIBRARY_TABLE_TYPE::FOOTPRINT } );
-
-        if( !aSymbols && aProject )
-        {
-            if( FOOTPRINT_LIBRARY_ADAPTER* adapter = PROJECT_PCB::FootprintLibAdapter( aProject ) )
-                adapter->LoadOne( wxString::FromUTF8( LIB_NICKNAME ) );
-        }
     }
     catch( ... )
     {
         aNote = std::string( "added to " ) + tableName + "; reopen the project to see it in the library browser";
+        return true;
     }
 
+    refreshLibrary( aSymbols, aNote );
     return true;
 }
 
@@ -598,9 +617,7 @@ bool FetchPart( const std::string& aLcsc, bool aRefresh, PART& aPart, std::strin
 
 bool SaveToProjectLibrary( BOARD* aBoard, const PART& aPart, SAVED& aSaved, std::string& aError )
 {
-    aSaved = SAVED();
-
-    if( !aBoard || !aPart.footprint )
+    if( !aBoard )
     {
         aError = "nothing to save";
         return false;
@@ -611,6 +628,20 @@ bool SaveToProjectLibrary( BOARD* aBoard, const PART& aPart, SAVED& aSaved, std:
     if( dir.IsEmpty() )
     {
         aError = "the board is not saved in a folder yet, so there is no project library";
+        return false;
+    }
+
+    return SaveToProjectLibrary( dir, aPart, aSaved, aError );
+}
+
+
+bool SaveToProjectLibrary( const wxString& dir, const PART& aPart, SAVED& aSaved, std::string& aError )
+{
+    aSaved = SAVED();
+
+    if( !aPart.footprint )
+    {
+        aError = "nothing to save";
         return false;
     }
 
@@ -639,7 +670,7 @@ bool SaveToProjectLibrary( BOARD* aBoard, const PART& aPart, SAVED& aSaved, std:
                           .GetFullPath()
                           .ToStdString();
 
-    aSaved.registered = registerLibrary( dir, false, aBoard->GetProject(), aSaved.note );
+    aSaved.registered = registerLibrary( dir, false, aSaved.note );
     return true;
 }
 
@@ -647,14 +678,22 @@ bool SaveToProjectLibrary( BOARD* aBoard, const PART& aPart, SAVED& aSaved, std:
 bool SaveSymbolToProjectLibrary( BOARD* aBoard, KIWAY* aKiway, const PART& aPart,
                                  SAVED_SYMBOL& aSaved, std::string& aError )
 {
-    aSaved = SAVED_SYMBOL();
-    wxString dir = projectDir( aBoard );
+    wxString dir = aBoard ? projectDir( aBoard ) : wxString();
 
     if( dir.IsEmpty() )
     {
         aError = "the board is not saved in a folder yet, so there is no project library";
         return false;
     }
+
+    return SaveSymbolToProjectLibrary( dir, aKiway, aPart, aSaved, aError );
+}
+
+
+bool SaveSymbolToProjectLibrary( const wxString& dir, KIWAY* aKiway, const PART& aPart,
+                                 SAVED_SYMBOL& aSaved, std::string& aError )
+{
+    aSaved = SAVED_SYMBOL();
 
     KIFACE_KICADD_LCSC_SYMBOL_SERVICE::Type service = nullptr;
 
@@ -715,8 +754,94 @@ bool SaveSymbolToProjectLibrary( BOARD* aBoard, KIWAY* aKiway, const PART& aPart
     for( const json& p : ans.value( "pins", json::array() ) )
         aSaved.pins.push_back( p.get<std::string>() );
 
-    aSaved.registered = registerLibrary( dir, true, aBoard->GetProject(), aSaved.note );
+    aSaved.registered = registerLibrary( dir, true, aSaved.note );
     return true;
 }
 
+bool FetchAndSave( const wxString& aProjectDir, KIWAY* aKiway, const std::string& aLcsc, bool aRefresh,
+                   FETCHED& aOut, std::string& aError )
+{
+    aOut = FETCHED();
+
+    if( !FetchPart( aLcsc, aRefresh, aOut.part, aError ) )
+        return false;
+
+    auto addNote = [&]( const std::string& aText )
+    {
+        if( !aText.empty() )
+            aOut.note += ( aOut.note.empty() ? "" : "; " ) + aText;
+    };
+
+    addNote( aOut.part.note );
+
+    if( aProjectDir.IsEmpty() || !wxFileName::DirExists( aProjectDir ) )
+    {
+        addNote( "not saved: the project is not saved in a folder yet" );
+        return true;
+    }
+
+    std::string err;
+    aOut.footprintSaved = SaveToProjectLibrary( aProjectDir, aOut.part, aOut.footprint, err );
+    addNote( aOut.footprintSaved ? aOut.footprint.note : "footprint not saved: " + err );
+
+    err.clear();
+    aOut.symbolSaved = SaveSymbolToProjectLibrary( aProjectDir, aKiway, aOut.part, aOut.symbol, err );
+    addNote( aOut.symbolSaved ? aOut.symbol.note : "symbol not saved: " + err );
+    return true;
+}
+
+
+std::string Summary( const PART& aPart )
+{
+    std::string s = aPart.lcsc + " " + aPart.title + ":";
+
+    if( aPart.stock >= 0 )
+        s += " LCSC stock " + std::to_string( aPart.stock ) + ",";
+
+    if( aPart.priceUsd >= 0 )
+    {
+        char price[48];
+        std::snprintf( price, sizeof( price ), " US$%.4g,", aPart.priceUsd );
+        s += price;
+    }
+
+    s += aPart.jlcSmt ? " JLC assembly" + ( aPart.jlcClass.empty() ? "" : " (" + aPart.jlcClass + ")" )
+                      : std::string( " no JLC assembly" );
+    s += " -- as of " + aPart.asOf;
+    return s;
+}
+
 } // namespace kicadd::lcsc
+
+
+wxString KicaddLcscFetchService( const wxString& aRequest, KIWAY* aKiway )
+{
+    using namespace kicadd::lcsc;
+
+    json req = json::parse( aRequest.ToStdString( wxConvUTF8 ), nullptr, false );
+    json out;
+
+    if( req.is_discarded() || !req.is_object() )
+        return wxS( "{\"ok\":false,\"error\":\"bad request\"}" );
+
+    FETCHED     got;
+    std::string err;
+
+    if( !FetchAndSave( wxString::FromUTF8( str( req, "project_dir" ) ), aKiway, str( req, "lcsc" ),
+                       req.value( "refresh", false ), got, err ) )
+    {
+        out = { { "ok", false }, { "error", err } };
+    }
+    else
+    {
+        out = { { "ok", true },
+                { "lcsc", got.part.lcsc },
+                { "title", got.part.title },
+                { "summary", Summary( got.part ) },
+                { "footprint", got.footprintSaved ? got.footprint.libId : std::string() },
+                { "symbol", got.symbolSaved ? got.symbol.libId : std::string() },
+                { "note", got.note } };
+    }
+
+    return wxString::FromUTF8( out.dump() );
+}

@@ -279,7 +279,7 @@ index 383869d8..6ab48405 100644
  }
  
 diff --git a/eeschema/CMakeLists.txt b/eeschema/CMakeLists.txt
-index 5b6dbf2a..136ab6bc 100644
+index 5b6dbf2a..07a46bbb 100644
 --- a/eeschema/CMakeLists.txt
 +++ b/eeschema/CMakeLists.txt
 @@ -15,6 +15,7 @@ if( CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang" )
@@ -312,19 +312,20 @@ index 5b6dbf2a..136ab6bc 100644
  set( EESCHEMA_WIDGETS
      widgets/hierarchy_pane.cpp
      widgets/panel_sch_selection_filter_base.cpp
-@@ -739,6 +748,11 @@ target_link_libraries( eeschema_kiface_objects
+@@ -739,6 +748,12 @@ target_link_libraries( eeschema_kiface_objects
  # declare the dependency
  add_dependencies( eeschema_kiface_objects common )
  
 +if( KICADD_DIR )
 +    target_sources( eeschema_kiface_objects PRIVATE ${KICADD_SCH_SRCS} )
 +    target_compile_definitions( eeschema_kiface_objects PRIVATE KICADD )
++    target_include_directories( eeschema_kiface_objects PRIVATE ${KICADD_DIR}/src )
 +endif()
 +
  message( STATUS "Including 3Dconnexion SpaceMouse navigation support in eeschema" )
  add_subdirectory( navlib )
  
-@@ -750,6 +764,10 @@ add_library( eeschema_kiface MODULE
+@@ -750,6 +765,10 @@ add_library( eeschema_kiface MODULE
      eeschema.cpp
      )
  
@@ -335,7 +336,7 @@ index 5b6dbf2a..136ab6bc 100644
  target_link_libraries( eeschema_kiface
      PRIVATE
          common
-@@ -763,7 +781,7 @@ target_link_libraries( eeschema_kiface
+@@ -763,7 +782,7 @@ target_link_libraries( eeschema_kiface
          ${NGSPICE_LIBRARY}
      )
  
@@ -429,10 +430,30 @@ index a219ae94..809b1645 100644
          if( screen->IsContentModified() )
          {
 diff --git a/eeschema/menubar.cpp b/eeschema/menubar.cpp
-index 1ecfc2e0..ae1dcf1f 100644
+index 1ecfc2e0..40188f5f 100644
 --- a/eeschema/menubar.cpp
 +++ b/eeschema/menubar.cpp
-@@ -297,8 +297,10 @@ void SCH_EDIT_FRAME::doReCreateMenuBar()
+@@ -21,6 +21,9 @@
+  */
+ 
+ #include <bitmaps.h>
++#ifdef KICADD
++#include <sch/kicadd_lcsc_sch_tool.h>
++#endif
+ #include <file_history.h>
+ #include <kiface_base.h>
+ #include <pgm_base.h>
+@@ -249,6 +252,9 @@ void SCH_EDIT_FRAME::doReCreateMenuBar()
+     ACTION_MENU* placeMenu = new ACTION_MENU( false, selTool );
+ 
+     placeMenu->Add( SCH_ACTIONS::placeSymbol );
++#ifdef KICADD
++    placeMenu->Add( KICADD_LCSC_SCH_TOOL::placeLcscSymbol );
++#endif
+     placeMenu->Add( SCH_ACTIONS::placePower );
+     placeMenu->Add( SCH_ACTIONS::drawWire );
+     placeMenu->Add( SCH_ACTIONS::drawBus );
+@@ -297,8 +303,10 @@ void SCH_EDIT_FRAME::doReCreateMenuBar()
      inspectMenu->AppendSeparator();
      inspectMenu->Add( SCH_ACTIONS::diffSymbol );
  
@@ -444,21 +465,34 @@ index 1ecfc2e0..ae1dcf1f 100644
  
      //-- Tools menu -----------------------------------------------
 diff --git a/eeschema/sch_edit_frame.cpp b/eeschema/sch_edit_frame.cpp
-index f2bd4e10..7091fca2 100644
+index f2bd4e10..7700a010 100644
 --- a/eeschema/sch_edit_frame.cpp
 +++ b/eeschema/sch_edit_frame.cpp
-@@ -71,7 +71,11 @@
+@@ -71,7 +71,14 @@
  #include <settings/settings_manager.h>
  #include <advanced_config.h>
  #include <connectivity/conn_facade.h>
 +#ifndef KICADD_NO_SPICE
  #include <sim/simulator_frame.h>
 +#endif
++#ifdef KICADD
++#include <sch/kicadd_lcsc_sch_tool.h>
++#endif
 +#include <sim/sim_lib_mgr.h>
 +#include <sim/spice_generator.h>
  #include <tool/action_manager.h>
  #include <tool/action_toolbar.h>
  #include <tool/common_control.h>
+@@ -741,6 +748,9 @@ void SCH_EDIT_FRAME::setupTools()
+     m_toolManager->RegisterTool( new SCH_SELECTION_TOOL );
+     m_toolManager->RegisterTool( new PICKER_TOOL );
+     m_toolManager->RegisterTool( new SCH_DRAWING_TOOLS );
++#ifdef KICADD
++    m_toolManager->RegisterTool( new KICADD_LCSC_SCH_TOOL );    // Place > Add LCSC Symbol...
++#endif
+     m_toolManager->RegisterTool( new EE_GRAPHIC_TOOL );
+     m_toolManager->RegisterTool( new SCH_LINE_WIRE_BUS_TOOL );
+     m_toolManager->RegisterTool( new SCH_MOVE_TOOL );
 diff --git a/eeschema/sim/spice_simulator.cpp b/eeschema/sim/spice_simulator.cpp
 index dc6d8c4d..62bb3f57 100644
 --- a/eeschema/sim/spice_simulator.cpp
@@ -616,10 +650,10 @@ index c5cd6f2a..a0f846b9 100644
  
      static wxString s_logFileName;
 diff --git a/include/kiface_ids.h b/include/kiface_ids.h
-index 1ffb2ad6..85c77a41 100644
+index 1ffb2ad6..909203b3 100644
 --- a/include/kiface_ids.h
 +++ b/include/kiface_ids.h
-@@ -92,7 +92,12 @@ enum KIFACE_ADDR_ID : int
+@@ -92,7 +92,17 @@ enum KIFACE_ADDR_ID : int
      /// Function pointer type: void (*)( const wxString& aFootprint, PROJECT* aProject,
      ///                                  std::set<wxString>& aPadNumbers )
      /// Fills aPadNumbers with the numbered pads of aFootprint.
@@ -629,20 +663,28 @@ index 1ffb2ad6..85c77a41 100644
 +    /// KiCadD: wxString (*)( const wxString& aRequestJson )
 +    /// LCSC part (cached EasyEDA answer) -> symbol saved in a .kicad_sym library.
 +    /// See KiCadD/src/sch/kicadd_lcsc_sym.cpp for the request and answer.
-+    KIFACE_KICADD_LCSC_SYMBOL
++    KIFACE_KICADD_LCSC_SYMBOL,
++
++    /// KiCadD: wxString (*)( const wxString& aRequestJson, KIWAY* aKiway )
++    /// pcbnew fetches an LCSC part and saves footprint + symbol to a project folder (for the
++    /// schematic editor's "Add LCSC Symbol"). See KiCadD/src/lcsc/kicadd_lcsc.h.
++    KIFACE_KICADD_LCSC_FETCH
  };
  
  #endif // KIFACE_IDS
 diff --git a/include/kiface_services.h b/include/kiface_services.h
-index 928f9a0f..39d47948 100644
+index 928f9a0f..fab84eea 100644
 --- a/include/kiface_services.h
 +++ b/include/kiface_services.h
-@@ -98,6 +98,9 @@ using KIFACE_FOOTPRINT_PAD_NUMBERS_SERVICE =
+@@ -98,6 +98,12 @@ using KIFACE_FOOTPRINT_PAD_NUMBERS_SERVICE =
          KIFACE_SERVICE<KIFACE_FOOTPRINT_PAD_NUMBERS,
                         void (*)( const wxString&, PROJECT*, std::set<wxString>& )>;
  
 +using KIFACE_KICADD_LCSC_SYMBOL_SERVICE =
 +        KIFACE_SERVICE<KIFACE_KICADD_LCSC_SYMBOL, wxString (*)( const wxString& )>;
++
++using KIFACE_KICADD_LCSC_FETCH_SERVICE =
++        KIFACE_SERVICE<KIFACE_KICADD_LCSC_FETCH, wxString (*)( const wxString&, KIWAY* )>;
 +
  /**
   * Return a service address for IfaceOrAddress().
@@ -1481,10 +1523,20 @@ index c4623074..ba1a0d3a 100644
 +#endif
  }
 diff --git a/pcbnew/menubar_pcb_editor.cpp b/pcbnew/menubar_pcb_editor.cpp
-index eda0f8cb..c4a0248f 100644
+index eda0f8cb..bd574deb 100644
 --- a/pcbnew/menubar_pcb_editor.cpp
 +++ b/pcbnew/menubar_pcb_editor.cpp
-@@ -134,7 +134,9 @@ void PCB_EDIT_FRAME::doReCreateMenuBar()
+@@ -20,6 +20,9 @@
+  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+  */
+ 
++#ifdef KICADD
++#include <pcb/kicadd_lcsc_tool.h>
++#endif
+ #include <advanced_config.h>
+ #include <bitmaps.h>
+ #include <file_history.h>
+@@ -134,7 +137,9 @@ void PCB_EDIT_FRAME::doReCreateMenuBar()
      submenuExport->Add( PCB_ACTIONS::exportGenCAD,      ACTION_MENU::NORMAL, _( "GenCAD..." ) );
      submenuExport->Add( PCB_ACTIONS::exportVRML,        ACTION_MENU::NORMAL, _( "VRML..." ) );
      submenuExport->Add( PCB_ACTIONS::exportIDF,         ACTION_MENU::NORMAL, _( "IDFv3..." ) );
@@ -1494,22 +1546,33 @@ index eda0f8cb..c4a0248f 100644
      submenuExport->Add( PCB_ACTIONS::exportCmpFile,     ACTION_MENU::NORMAL, _( "Footprint Association (.cmp) File..." ) );
      submenuExport->Add( PCB_ACTIONS::exportHyperlynx,   ACTION_MENU::NORMAL, _( "Hyperlynx..." ) );
  
+@@ -302,6 +307,9 @@ void PCB_EDIT_FRAME::doReCreateMenuBar()
+     ACTION_MENU* placeMenu = new ACTION_MENU( false, selTool );
+ 
+     placeMenu->Add( PCB_ACTIONS::placeFootprint );
++#ifdef KICADD
++    placeMenu->Add( KICADD_LCSC_TOOL::placeLcscPart );
++#endif
+     placeMenu->Add( PCB_ACTIONS::drawVia );
+     placeMenu->Add( PCB_ACTIONS::placeViaStack );
+     placeMenu->Add( PCB_ACTIONS::makeViaStack );
 diff --git a/pcbnew/pcb_edit_frame.cpp b/pcbnew/pcb_edit_frame.cpp
-index e6b786c0..0ad0454f 100644
+index e6b786c0..c99a45b2 100644
 --- a/pcbnew/pcb_edit_frame.cpp
 +++ b/pcbnew/pcb_edit_frame.cpp
-@@ -45,6 +45,10 @@
+@@ -45,6 +45,11 @@
  #include <api/api_handler_common.h>
  #include <api/api_handler_libraries.h>
  #include <api/api_handler_pcb.h>
 +#ifdef KICADD
 +#include <api/pcb_context.h>
 +#include <pcb/kicadd_handler_pcb.h>
++#include <pcb/kicadd_lcsc_tool.h>
 +#endif
  #include <api/api_plugin_manager.h>
  #include <api/api_server.h>
  #include <api/api_utils.h>
-@@ -561,6 +565,17 @@ PCB_EDIT_FRAME::PCB_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
+@@ -561,6 +566,17 @@ PCB_EDIT_FRAME::PCB_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
      m_apiHandler = std::make_unique<API_HANDLER_PCB>( this );
      Pgm().GetApiServer().RegisterHandler( m_apiHandler.get() );
  
@@ -1527,7 +1590,7 @@ index e6b786c0..0ad0454f 100644
      if( Kiface().IsSingle() )
      {
          m_apiHandlerCommon = std::make_unique<API_HANDLER_COMMON>();
-@@ -807,6 +822,9 @@ PCB_EDIT_FRAME::~PCB_EDIT_FRAME()
+@@ -807,6 +823,9 @@ PCB_EDIT_FRAME::~PCB_EDIT_FRAME()
      // every cached TEXT_VAR_TRACKER* before the tracker is freed.
      detachTextVarTracker();
  
@@ -1537,7 +1600,7 @@ index e6b786c0..0ad0454f 100644
      if( Kiface().IsSingle() )
      {
          Pgm().GetApiServer().DeregisterHandler( m_apiHandlerCommon.get() );
-@@ -893,6 +911,12 @@ void PCB_EDIT_FRAME::SetBoard( BOARD* aBoard, bool aBuildConnectivity, PROGRESS_
+@@ -893,6 +912,12 @@ void PCB_EDIT_FRAME::SetBoard( BOARD* aBoard, bool aBuildConnectivity, PROGRESS_
          Kiway().LocalHistory().UnregisterSaver( m_pcb );
      }
  
@@ -1550,7 +1613,17 @@ index e6b786c0..0ad0454f 100644
      PCB_BASE_EDIT_FRAME::SetBoard( aBoard, aReporter );
  
      aBoard->AddListener( this );
-@@ -1773,6 +1797,10 @@ void PCB_EDIT_FRAME::doCloseWindow()
+@@ -1121,6 +1146,9 @@ void PCB_EDIT_FRAME::setupTools()
+     m_toolManager->RegisterTool( new PCB_SELECTION_TOOL );
+     m_toolManager->RegisterTool( new ZOOM_TOOL );
+     m_toolManager->RegisterTool( new PCB_PICKER_TOOL );
++#ifdef KICADD
++    m_toolManager->RegisterTool( new KICADD_LCSC_TOOL );     // Place > Add LCSC Part...
++#endif
+     m_toolManager->RegisterTool( new ROUTER_TOOL );
+     m_toolManager->RegisterTool( new EDIT_TOOL );
+     m_toolManager->RegisterTool( new PCB_EDIT_TABLE_TOOL );
+@@ -1773,6 +1801,10 @@ void PCB_EDIT_FRAME::doCloseWindow()
      GetCanvas()->StopDrawing();
  
      Pgm().GetApiServer().DeregisterHandler( m_apiHandler.get() );
@@ -1585,20 +1658,33 @@ index f5fe4baa..11ccafd3 100644
  
  #endif  // __PCB_EDIT_FRAME_H__
 diff --git a/pcbnew/pcbnew.cpp b/pcbnew/pcbnew.cpp
-index 2282c07e..137019c6 100644
+index 2282c07e..1a62eca5 100644
 --- a/pcbnew/pcbnew.cpp
 +++ b/pcbnew/pcbnew.cpp
-@@ -27,6 +27,9 @@
+@@ -27,6 +27,10 @@
  #include <api/api_handler_footprint.h>
  #include <api/api_handler_fp_libraries.h>
  #include <api/api_handler_pcb.h>
 +#ifdef KICADD
 +#include <pcb/kicadd_handler_pcb.h>
++#include <lcsc/kicadd_lcsc.h>
 +#endif
  #include <api/api_server.h>
  #include <api/api_utils.h>
  #include <api/cross_probe_client.h>
-@@ -706,6 +709,9 @@ private:
+@@ -650,6 +654,11 @@ static struct IFACE : public KIFACE_BASE, public UNITS_PROVIDER
+         case KIFACE_ATTACH_DIFF_CANVASES:
+             return KifaceServiceAddress<KIFACE_ATTACH_DIFF_CANVASES_SERVICE>( &pcbnewAttachDiffCanvasesExport );
+ 
++#ifdef KICADD
++        case KIFACE_KICADD_LCSC_FETCH:
++            return KifaceServiceAddress<KIFACE_KICADD_LCSC_FETCH_SERVICE>( &::KicaddLcscFetchService );
++#endif
++
+         default:
+             return nullptr;
+         }
+@@ -706,6 +715,9 @@ private:
      KIWAY* m_kiway = nullptr;
      std::shared_ptr<HEADLESS_PCB_CONTEXT>       m_openContext;
      std::unique_ptr<API_HANDLER_PCB>            m_openHandler;
@@ -1608,7 +1694,7 @@ index 2282c07e..137019c6 100644
      std::shared_ptr<HEADLESS_FOOTPRINT_CONTEXT> m_openFpContext;
      std::unique_ptr<API_HANDLER_FOOTPRINT>      m_openFpHandler;
      std::unique_ptr<API_HANDLER_FP_LIBRARIES>   m_apiHandlerFpLibs;
-@@ -978,6 +984,16 @@ void IFACE::closeBoard( KICAD_API_SERVER* aServer )
+@@ -978,6 +990,16 @@ void IFACE::closeBoard( KICAD_API_SERVER* aServer )
          m_openHandler.reset();
      }
  
@@ -1625,7 +1711,7 @@ index 2282c07e..137019c6 100644
      m_openContext.reset();
  
      // The jobs handler caches the last-loaded board. Clear it so the next job
-@@ -1201,6 +1217,10 @@ bool IFACE::handleOpenPcb( const wxString& aPath, KICAD_API_SERVER* aServer, wxS
+@@ -1201,6 +1223,10 @@ bool IFACE::handleOpenPcb( const wxString& aPath, KICAD_API_SERVER* aServer, wxS
  
      m_openHandler = std::make_unique<API_HANDLER_PCB>( m_openContext, nullptr );
      aServer->RegisterHandler( m_openHandler.get() );
@@ -1636,7 +1722,7 @@ index 2282c07e..137019c6 100644
  
      return true;
  }
-@@ -1279,6 +1299,10 @@ bool IFACE::handleCreatePcb( const wxString& aPath, KICAD_API_SERVER* aServer, w
+@@ -1279,6 +1305,10 @@ bool IFACE::handleCreatePcb( const wxString& aPath, KICAD_API_SERVER* aServer, w
  
      m_openHandler = std::make_unique<API_HANDLER_PCB>( m_openContext, nullptr );
      aServer->RegisterHandler( m_openHandler.get() );

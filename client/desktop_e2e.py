@@ -13,7 +13,8 @@ The agent and the user share one board, one undo stack and one canvas:
   3. agent undo after the user has changed the part again -> left alone, reported
   4. user in an interactive tool (router) -> agent edits are refused as busy, not applied
   5. agent delete -> user Ctrl+Z restores it, Ctrl+Y removes it again (one owner: the undo list)
-     (5b, with KICADD_LCSC_CACHE: an LCSC part placed and taken back, its symbol saved)
+     (5b, with KICADD_LCSC_CACHE: an LCSC part placed and taken back, its symbol saved;
+      5c: the user's Place > Add LCSC Part... with the part on the cursor, placed, undone)
   6. the editor closes cleanly (no double free of the deleted footprint)
 Screenshots go to WORK/shot-*.png.
 """
@@ -255,6 +256,48 @@ def main():
                   and os.path.exists(stable) and '(name "LCSC")' in open(stable, encoding="utf-8").read(),
                   "lcsc_fetch in the editor saved the symbol too: "
                   + " ".join(l for l in text.splitlines() if "symbol" in l or "not saved" in l)[:110])
+
+            # M4d: the user's own entry, Place > Add LCSC Part... (second item of the Place menu)
+            print("[5c] user: Place > Add LCSC Part..., C8734, click to place, Ctrl+Z")
+            def count():
+                err, text = mcp.tool("board_summary")
+                m = re.search(r"footprints=(\d+)", text)
+                return int(m.group(1)) if m else -1
+            before = count()
+            def on_board(r):      # LQFP-48: pad 1 is 5 mm from the centre, past pos()'s 3 mm
+                err, text = mcp.tool("query_area", {"ref": r, "radius": 8, "kinds": ["pad"]})
+                return not err and f"PAD {r}.1 " in text
+            # the tool numbers it after the highest U on the board (the symbol's prefix)
+            ref = next(f"U{n}" for n in range(1, 100) if not on_board(f"U{n}"))
+            d.keys(main_win, "alt+p")
+            d.x("key", "Down")
+            d.x("key", "Return")
+            dlg = None
+            for _ in range(20):
+                dlg = d.window("Add LCSC Part")
+                if dlg:
+                    break
+                time.sleep(0.3)
+            check(dlg is not None, "Add LCSC Part dialog opened from the Place menu")
+            if dlg:
+                d.x("windowfocus", "--sync", dlg)
+                d.x("type", "--delay", "30", "C8734")
+                d.x("key", "Return")
+                time.sleep(3)
+                d.x("mousemove", "600", "400")
+                time.sleep(0.3)
+                d.x("mousemove", "620", "420")
+                time.sleep(1)
+                d.shot(os.path.join(work, "shot-4-lcsc-part.png"))
+                d.x("click", "1")
+                time.sleep(1)
+                d.x("key", "Escape")
+                time.sleep(0.5)
+                check(count() == before + 1 and on_board(ref),
+                      f"user placed C8734 as {ref} (footprints {before} -> {count()})")
+                d.keys(main_win, "ctrl+z")
+                time.sleep(1)
+                check(count() == before and not on_board(ref), "user Ctrl+Z took the LCSC part back")
 
     except SkipRest:
         pass

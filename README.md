@@ -23,7 +23,7 @@ Built as a thin extension of upstream `kicad-cli api-server`, not a fork of the 
 | `web/index.html` | 2D view (vanilla JS + Canvas 2D), embedded into `kicadd-mcp` at build time |
 | `client/` | Python IPC client, benchmark, verification + A/B scripts, `run_server.sh`, `desktop_e2e.py` (M2) |
 
-### Upstream patch (~2000 lines incl. context, 41 files; see the M1–M4 sections for the newest parts)
+### Upstream patch (~2100 lines incl. context, 41 files; see the M1–M4 sections for the newest parts)
 
 - **Hooks** (guarded by `KICADD_DIR` / `#ifdef KICADD`): `CMakeLists.txt`, `pcbnew/CMakeLists.txt`,
   `pcbnew/pcbnew.cpp` register `KICADD_HANDLER_PCB` next to `API_HANDLER_PCB`.
@@ -635,9 +635,34 @@ cached parts show their cache date, `refresh` gets today's. Some parts (e.g. C20
 without LCSC stock data and show `?`. `lcsc_e2e.py` checks the reported stock and JLC flag
 against the raw answer.
 
-Not yet: keyword search (`lcsc_search`): needs a search source (to be decided: an official
-JLCPCB/LCSC API with a key, or an unofficial endpoint); 3D models (EasyEDA OBJ → VRML); a "place
-by LCSC number" entry in the editor.
+Not yet: keyword search (`lcsc_search`): to use the official JLCPCB Components API with each
+user's own key (applied for; its auth/endpoints are only documented in the developer portal);
+3D models (EasyEDA OBJ → VRML).
+
+## M4d: "Add LCSC Part" in the editors (2026-11-10)
+
+The human gets the same thing the agent has, from the Place menu:
+
+- **PCB Editor → Place → Add LCSC Part...**: enter a C number; the part is fetched (cache
+  first), footprint and symbol go to the project's LCSC libraries, and the footprint is handed
+  to KiCad's own footprint placement tool: it follows the cursor (rotate/flip keys work), a click
+  places it, Esc takes it back, Ctrl+Z undoes it. The reference is the symbol's prefix + the
+  next free number (U7). The infobar shows stock, price, JLC Basic/Extended and the data date.
+  (`src/pcb/kicadd_lcsc_tool.cpp`, the same insert-then-place hand-over as the footprint
+  browser's "Insert Footprint".)
+- **Schematic Editor → Place → Add LCSC Symbol...**: same prompt; the symbol is placed with
+  KiCad's symbol placement (annotated, Footprint field = `LCSC:<package>`), so Update PCB from
+  Schematic later finds the footprint. Fetching is board code, so pcbnew exports
+  `KIFACE_KICADD_LCSC_FETCH` and eeschema calls it, the reverse of M4b
+  (`src/sch/kicadd_lcsc_sch_tool.cpp`).
+- Every save now reloads the LCSC library entry in the library manager, so an editor that
+  already has `lcsc.pretty` / `lcsc.kicad_sym` open sees the new part at once.
+
+Verification: `desktop_e2e.py` step 5c drives the PCB Editor menu under Xvfb (Place > Add LCSC
+Part..., C8734, click, Ctrl+Z) and checks through the agent that U7 appeared and went again
+(PASS). The schematic side was checked by hand under Xvfb: C5446 placed as U7 with
+`LCSC:SOT-23-3_L2.9-W1.6-P1.90-LS2.8-BR`, saved, `lib_id "LCSC:XC6206P332MR"` in the file; a
+second part in the same session (C25804 → R22) came from the refreshed library.
 
 ## M3: Windows CI (2026-11-06)
 

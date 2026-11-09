@@ -21,6 +21,7 @@
 class BOARD;
 class FOOTPRINT;
 class KIWAY;
+class wxString;
 
 namespace kicadd::lcsc
 {
@@ -79,6 +80,10 @@ struct SAVED
  */
 bool SaveToProjectLibrary( BOARD* aBoard, const PART& aPart, SAVED& aSaved, std::string& aError );
 
+/// The same for a project folder (e.g. from the schematic editor, which has no BOARD).
+bool SaveToProjectLibrary( const wxString& aProjectDir, const PART& aPart, SAVED& aSaved,
+                           std::string& aError );
+
 struct SAVED_SYMBOL
 {
     std::string              libId;        ///< "LCSC:<symbol>"
@@ -97,5 +102,36 @@ struct SAVED_SYMBOL
  */
 bool SaveSymbolToProjectLibrary( BOARD* aBoard, KIWAY* aKiway, const PART& aPart,
                                  SAVED_SYMBOL& aSaved, std::string& aError );
+bool SaveSymbolToProjectLibrary( const wxString& aProjectDir, KIWAY* aKiway, const PART& aPart,
+                                 SAVED_SYMBOL& aSaved, std::string& aError );
+
+/// M4d: everything the editors' "Add LCSC part" commands need, in one call.
+struct FETCHED
+{
+    PART         part;
+    SAVED        footprint;
+    SAVED_SYMBOL symbol;
+    bool         footprintSaved = false;
+    bool         symbolSaved = false;
+    std::string  note;         ///< why something was not saved, cache notes
+};
+
+/**
+ * Fetch a part and save footprint and symbol to the project in @a aProjectDir. Fails only when
+ * the part itself can't be had; save problems end up in aOut.note.
+ */
+bool FetchAndSave( const wxString& aProjectDir, KIWAY* aKiway, const std::string& aLcsc, bool aRefresh,
+                   FETCHED& aOut, std::string& aError );
+
+/// One line for a status bar: "C8734 STM32F103C8T6: LCSC stock 10693, US$2.398, JLC Extended Part (2026-11-09)"
+std::string Summary( const PART& aPart );
 
 } // namespace kicadd::lcsc
+
+/**
+ * pcbnew export KIFACE_KICADD_LCSC_FETCH, for the schematic editor:
+ * request {"lcsc": "C8734", "project_dir": "...", "refresh": false}
+ * answer  {"ok": true, "lcsc", "title", "summary", "footprint": "LCSC:...", "symbol": "LCSC:...",
+ *          "note"}  or {"ok": false, "error": "..."}
+ */
+wxString KicaddLcscFetchService( const wxString& aRequest, KIWAY* aKiway );
