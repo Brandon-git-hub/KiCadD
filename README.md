@@ -619,6 +619,29 @@ The install prefix is set at configure time (`CMAKE_INSTALL_PREFIX`), not with
 `cmake --install --prefix`: on Windows `KICAD_DATA` is an absolute path baked at configure
 time, and `--prefix` would leave `share/kicad` (icons, templates, demos) out of the zip.
 
+**Build modes (2026-11-09).** The compile step was 53–71 min on every push. Now:
+
+| | check (push to main, PR, manual) | release (`v*` tag) |
+|---|---|---|
+| runs when | the push touches `src/ mcp/ proto/ web/ cmake/ patches/ ci/`, `client/smoke.py` or the workflow | always |
+| compiler cache | sccache (local folder, one `actions/cache` entry, older ones deleted) | none: clean build |
+| precompiled headers | off (sccache can't cache MSVC `/Yu`) | on |
+| debug info | none (`KICADD_MSVC_DEBUG_FORMAT=`) | `/Zi`; link PDBs as `kicadd-windows-x64-pdb.zip` on the release |
+
+- The patch adds `KICADD_MSVC_DEBUG_FORMAT` because KiCad's CMake otherwise forces `/Zi`, which
+  sccache can't cache.
+- Not the whole `build/` folder: checkout resets file times and Ninja would rebuild everything;
+  sccache keys on content.
+- One sccache entry (≤ 4 GB, about 1 GB expected without debug info) next to the 445 MB vcpkg
+  cache stays well inside the 10 GB repo quota; pruning older entries keeps LRU eviction from
+  ever dropping the vcpkg cache (rebuilding it takes hours).
+- The first check build after this change is cold, and slower than before because the
+  precompiled headers are off. Later ones only compile what changed.
+- Trade-off: a docs-only push no longer proves Windows still builds; anything touching code
+  still does.
+- `vcpkg.exe` is fetched with the job token (`gh release download`); anonymous downloads timed
+  out (HTTP 504) during GitHub's 2026-11-09 incident.
+
 ## License
 
 GPL-3.0-or-later (same as KiCad). Konnect (AGPL-3.0-only) is used as design reference only;

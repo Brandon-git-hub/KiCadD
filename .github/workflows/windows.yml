@@ -8,13 +8,40 @@
 #   build    restores that cache, builds KiCadD, runs the smoke test, uploads a portable zip
 #   release  tags v* only: zips that artifact and publishes a GitHub release
 #            (a tag with a "-", e.g. v0.1.0-alpha.2, is marked as a pre-release)
+#
+# Two build modes:
+#   check    (push / PR / manual): sccache, no PCH (sccache can't cache MSVC /Yu), no debug info;
+#            the sccache folder is one actions/cache entry (older ones are pruned). It answers
+#            "does Windows still build", fast when few files changed.
+#   release  (tags v*): clean build, PCH on, /Zi, the PDBs go out with the release.
+# Pushes that touch only docs or Linux-only tests don't build (tags always do).
 name: windows
 
 on:
   push:
     branches: [ main ]
     tags: [ 'v*' ]
+    paths:
+      - 'src/**'
+      - 'mcp/**'
+      - 'proto/**'
+      - 'web/**'
+      - 'cmake/**'
+      - 'patches/**'
+      - 'ci/**'
+      - 'client/smoke.py'
+      - '.github/workflows/windows.yml'
   pull_request:
+    paths:
+      - 'src/**'
+      - 'mcp/**'
+      - 'proto/**'
+      - 'web/**'
+      - 'cmake/**'
+      - 'patches/**'
+      - 'ci/**'
+      - 'client/smoke.py'
+      - '.github/workflows/windows.yml'
   workflow_dispatch:
 
 concurrency:
@@ -104,6 +131,13 @@ jobs:
     needs: deps
     runs-on: windows-2022
     timeout-minutes: 350
+    permissions:
+      contents: read
+      actions: write            # prune old sccache entries
+    env:
+      RELEASE: ${{ startsWith(github.ref, 'refs/tags/v') }}
+      SCCACHE_DIR: ${{ github.workspace }}\sccache
+      SCCACHE_CACHE_SIZE: 4G
     steps:
       - run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
@@ -148,11 +182,38 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
+      - name: sccache (check builds)
+        if: env.RELEASE != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v0.19.0 -R mozilla/sccache -p 'sccache-v0.19.0-x86_64-pc-windows-msvc.zip' -D "$RUNNER_TEMP"
+          unzip -q -j "$RUNNER_TEMP/sccache-v0.19.0-x86_64-pc-windows-msvc.zip" '*/sccache.exe' -d "$RUNNER_TEMP/sccache-bin"
+          echo "$RUNNER_TEMP/sccache-bin" >> "$GITHUB_PATH"
+      - name: Restore the sccache folder
+        if: env.RELEASE != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: sccache
+          key: sccache-win-${{ needs.deps.outputs.key }}-${{ github.run_id }}
+          restore-keys: |
+            sccache-win-${{ needs.deps.outputs.key }}-
+            sccache-win-
       - name: Configure
+        id: configure
         shell: pwsh
         run: |
           $ws = $env:GITHUB_WORKSPACE -replace '\\', '/'
-          cmake -S kicad -B build -G Ninja `
+          if ($env:RELEASE -eq 'true') {
+            # clean build with PDBs (/Zi), precompiled headers on
+            $mode = @("-DKICADD_MSVC_DEBUG_FORMAT=ProgramDatabase", "-DKICAD_USE_PCH=ON")
+          } else {
+            $mode = @("-DCMAKE_C_COMPILER_LAUNCHER=sccache", "-DCMAKE_CXX_COMPILER_LAUNCHER=sccache",
+                      "-DKICADD_MSVC_DEBUG_FORMAT=", "-DKICAD_USE_PCH=OFF")
+          }
+          "build mode: $(if ($env:RELEASE -eq 'true') {'release'} else {'check (sccache)'}) $mode"
+          cmake -S kicad -B build -G Ninja @mode `
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_INSTALL_PREFIX="$ws/dist" `
             -DCMAKE_TOOLCHAIN_FILE="$ws/vcpkg/scripts/buildsystems/vcpkg.cmake" `
@@ -171,7 +232,27 @@ jobs:
         run: |
           # -k 0: keep going, so one run shows every compile error
           cmake --build build -- -k 0
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $rc = $LASTEXITCODE
+          if ($env:RELEASE -ne 'true') { sccache --show-stats; sccache --stop-server | Out-Null }
+          if ($rc -ne 0) { exit $rc }
+      - name: Save the sccache folder
+        if: always() && env.RELEASE != 'true' && steps.configure.outcome != 'skipped'
+        uses: actions/cache/save@v4
+        with:
+          path: sccache
+          key: sccache-win-${{ needs.deps.outputs.key }}-${{ github.run_id }}
+      - name: Prune older sccache entries
+        if: always() && env.RELEASE != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP: sccache-win-${{ needs.deps.outputs.key }}-${{ github.run_id }}
+        run: |
+          # one sccache entry (~1 GB) is enough; keep the 10 GB repo quota for the vcpkg cache
+          gh cache list -R "$GITHUB_REPOSITORY" --key sccache-win- --limit 100 --json key --jq '.[].key' |
+            while read -r k; do
+              [ "$k" = "$KEEP" ] || gh cache delete "$k" -R "$GITHUB_REPOSITORY" || true
+            done
       - name: Install (portable folder)
         shell: pwsh
         run: |
@@ -197,6 +278,23 @@ jobs:
           name: kicadd-windows-x64
           path: dist
           retention-days: 14
+      - name: Collect PDBs (release)
+        if: env.RELEASE == 'true'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force pdb | Out-Null
+          # the link PDB next to each shipped binary (compile PDBs share names, not needed)
+          Get-ChildItem -Recurse build -Include *.exe, *.dll |
+            ForEach-Object { Join-Path $_.DirectoryName ($_.BaseName + '.pdb') } |
+            Where-Object { Test-Path $_ } |
+            Copy-Item -Destination pdb -Force
+          "{0} PDBs, {1:N0} MB" -f (Get-ChildItem pdb).Count, ((Get-ChildItem pdb | Measure-Object Length -Sum).Sum / 1MB)
+      - uses: actions/upload-artifact@v4
+        if: env.RELEASE == 'true'
+        with:
+          name: kicadd-windows-x64-pdb
+          path: pdb
+          retention-days: 14
 
   release:
     needs: build
@@ -210,6 +308,10 @@ jobs:
         with:
           name: kicadd-windows-x64
           path: kicadd-windows-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: kicadd-windows-x64-pdb
+          path: kicadd-windows-x64-pdb
       - name: Zip and publish
         env:
           GH_TOKEN: ${{ github.token }}
@@ -218,6 +320,14 @@ jobs:
         run: |
           zip -qr -9 kicadd-windows-x64.zip kicadd-windows-x64
           sha=$(sha256sum kicadd-windows-x64.zip | cut -d' ' -f1)
+          # debug symbols for crash reports, as a separate asset (release assets max out at 2 GiB)
+          zip -qr -9 kicadd-windows-x64-pdb.zip kicadd-windows-x64-pdb
+          assets=(kicadd-windows-x64.zip)
+          if [ "$(stat -c %s kicadd-windows-x64-pdb.zip)" -lt 2000000000 ]; then
+            assets+=(kicadd-windows-x64-pdb.zip)
+          else
+            echo "::warning::PDB zip is over 2 GB, not attached (it stays a workflow artifact for 14 days)"
+          fi
           read -r up_sha up_date _ < patches/UPSTREAM_BASE
           {
             sed -e '/^<!--/,/-->$/d' -e "s/{{UPSTREAM}}/\`${up_sha:0:8}\`，${up_date}/" ci/release-notes.md
@@ -229,5 +339,5 @@ jobs:
           cat notes.md
           pre=""
           case "$TAG" in *-*) pre="--prerelease" ;; esac
-          gh release create "$TAG" kicadd-windows-x64.zip $pre --verify-tag \
+          gh release create "$TAG" "${assets[@]}" $pre --verify-tag \
             --title "KiCadD ${TAG}（Windows x64 修剪版）" --notes-file notes.md
