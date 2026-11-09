@@ -664,6 +664,41 @@ Part..., C8734, click, Ctrl+Z) and checks through the agent that U7 appeared and
 `LCSC:SOT-23-3_L2.9-W1.6-P1.90-LS2.8-BR`, saved, `lib_id "LCSC:XC6206P332MR"` in the file; a
 second part in the same session (C25804 → R22) came from the refreshed library.
 
+## M5a: the agent draws the schematic (2026-11-10)
+
+The headless server now holds the whole project: `kicad-cli api-server` given a board (or a
+`.kicad_pro`) also opens the `.kicad_sch` next to it, and `KICADD_HANDLER_SCH` (eeschema
+kiface, next to KiCad's own schematic handler) gives the agent eight tools:
+
+| tool | |
+|---|---|
+| `sch_summary` | parts (ref, value, symbol, footprint, position), nets, unconnected pins; `with_pins` |
+| `sch_add_part` | `lib_id` ("Device:R") or `lcsc` ("C6186", fetched like `lcsc_fetch`); `ref` "R?" numbered; value / footprint override; x/y or the next free spot; rotation; unit |
+| `sch_part` | one part, every pin: number, name, type, side, position, net |
+| `sch_connect` | `{"nets": {"GND": ["U1.1", "C1.2"], "+3V3": ["U1.VOUT"]}}`; "NC" = no-connect flag |
+| `sch_disconnect` | pins off their nets |
+| `sch_netlist` | nets with "REF.PIN" members, unconnected pins |
+| `sch_delete` | parts, with their stubs and labels |
+| `sch_save` | |
+
+- **Connections without routing:** each pin gets a 2.54 mm wire stub away from the body and a
+  net label at its end (text pointing outward; global labels with `global`). The agent names
+  every net and never draws wires; the result is an ordinary, readable KiCad schematic.
+  A pin already on another net is refused (disconnect first); the same net again is a no-op;
+  a stub end that would land on something else is pushed further out.
+- **Placement:** parts without x/y go to the first free slot on the sheet (scanning rows, body +
+  12.7 mm / 7.62 mm clearance for stubs and labels); explicit positions snap to the 1.27 mm grid.
+- **Libraries:** headless, nothing loads symbol libraries in the background, so the one asked
+  for is loaded on the spot (the LCSC one reloaded after pcbnew has just written a part).
+- Net names are KiCad's (`/+3V3` for a label "+3V3" on the root sheet), the same names the board
+  will get. A pin alone is reported as unconnected, not as its `unconnected-(...)` net.
+
+Verification: `client/m5_e2e.py` builds a blank project (empty schematic, 60 x 40 mm board),
+starts its own server, places 4 LCSC parts and a `Device:R` (value, LCSC footprint, rotation),
+connects a 3.3 V regulator circuit by net name and checks the netlist pin by pin, refusals, NC,
+disconnect, delete (labels go with the part), then saves, restarts and finds the same netlist
+(PASS). Rendered with `kicad-cli sch export svg`: stubs and labels as intended.
+
 ## M3: Windows CI (2026-11-06)
 
 `.github/workflows/windows.yml` builds KiCadD for Windows x64 on GitHub-hosted runners:

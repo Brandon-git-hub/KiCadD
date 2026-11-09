@@ -1,0 +1,141 @@
+// KiCadD M5a: schematic generation for agents.
+//
+// Served by KICADD_HANDLER_SCH next to KiCad's own schematic handler, on the schematic the
+// api-server (or the Schematic Editor) has open. Coordinates are mm on the sheet, Y down,
+// snapped to the 1.27 mm (50 mil) connection grid. A connection is a short wire stub from the
+// pin plus a net label, so nothing has to be routed and every net is named. Each edit request
+// is one commit.
+//
+// This file is part of KiCadD and is licensed GPL-3.0-or-later, like KiCad.
+
+syntax = "proto3";
+
+package kicadd.schematic;
+
+message SchPin
+{
+  string number = 1;
+  string name   = 2;
+  string type   = 3;       // input, output, bidirectional, power_in, passive, ...
+  double x      = 4;       // connection point, mm
+  double y      = 5;
+  string side   = 6;       // where a wire leaves it: left, right, up, down
+  string net    = 7;       // "" when not connected yet
+  int32  unit   = 8;
+}
+
+message SchSymbol
+{
+  string ref       = 1;
+  string value     = 2;
+  string lib_id    = 3;
+  string footprint = 4;
+  double x         = 5;    // anchor, mm
+  double y         = 6;
+  int32  rotation  = 7;    // degrees
+  int32  unit      = 8;
+  int32  units     = 9;    // units the part has
+  string lcsc      = 10;
+  repeated SchPin pins = 11;
+}
+
+// Returns SchSummary
+message GetSchSummary
+{
+  bool with_pins = 1;
+}
+
+message SchSummary
+{
+  string file             = 1;
+  int32  sheets           = 2;
+  int32  nets             = 3;
+  int32  unconnected_pins = 4;   // pins on no named net and not marked no-connect
+  repeated SchSymbol symbols = 5;
+}
+
+// Place a symbol: from a library (lib_id "Device:R") or an LCSC part (lcsc "C25804": fetched,
+// symbol + footprint into the project's LCSC libraries). Without x/y it goes to the next free
+// slot on the sheet. ref "R?" (or empty) is annotated; "R5" is taken as is.
+// Returns SchPartResponse
+message SchAddPart
+{
+  string lib_id    = 1;
+  string lcsc      = 2;
+  string ref       = 3;
+  string value     = 4;    // overrides the library's Value
+  string footprint = 5;    // overrides the library's Footprint
+  optional double x = 6;
+  optional double y = 7;
+  int32  rotation  = 8;    // 0, 90, 180, 270
+  int32  unit      = 9;    // multi-unit parts: which unit (default 1)
+}
+
+// Returns SchPartResponse
+message SchGetPart
+{
+  string ref = 1;
+}
+
+message SchPartResponse
+{
+  SchSymbol symbol = 1;
+  string    note   = 2;
+}
+
+message SchPinNet
+{
+  string ref = 1;
+  string pin = 2;          // pin number ("1", "A3") or a unique pin name ("VDD")
+  string net = 3;          // net name; "NC" puts a no-connect flag instead
+}
+
+// Connect pins to nets: wire stub + label (global label with `global`). A pin that already has
+// a different net is refused (disconnect it first); the same net again is a no-op.
+// Returns SchConnectResponse
+message SchConnect
+{
+  repeated SchPinNet links = 1;
+  bool global = 2;
+}
+
+// Take the stub/label/no-connect off pins (net ignored).
+// Returns SchConnectResponse
+message SchDisconnect
+{
+  repeated SchPinNet pins = 1;
+}
+
+message SchConnectResponse
+{
+  int32 done = 1;
+  repeated string errors = 2;
+  string history_label = 3;
+}
+
+// Returns SchNetlist
+message GetSchNetlist
+{
+  string net = 1;          // only this net ("" = all)
+}
+
+message SchNet
+{
+  string name = 1;
+  repeated string pins = 2;   // "R1.2"
+}
+
+message SchNetlist
+{
+  repeated SchNet nets        = 1;
+  repeated string unconnected = 2;   // "U1.7": on no net, no no-connect flag
+}
+
+// Returns SchConnectResponse (done = parts deleted, with their stubs and labels)
+message SchDeleteParts
+{
+  repeated string refs = 1;
+}
+
+// Returns SchConnectResponse
+message SchSave {}

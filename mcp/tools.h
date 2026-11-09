@@ -38,6 +38,9 @@ struct TOOL
 /// Build the tool set bound to aIpc (which must outlive the tools).
 std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc );
 
+/// M5a schematic tools (sch_tools.cpp)
+void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc );
+
 } // namespace kicadd::mcp
 
 #endif // KICADD_MCP_TOOLS_H

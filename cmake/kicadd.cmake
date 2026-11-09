@@ -7,7 +7,7 @@
 #   KICADD_INCLUDE_DIRS - include dirs for the above
 
 set( KICADD_PROTO_DIR ${KICADD_DIR}/proto )
-set( KICADD_PROTO_SRCS kicadd/board.proto kicadd/render.proto )
+set( KICADD_PROTO_SRCS kicadd/board.proto kicadd/render.proto kicadd/schematic.proto )
 set( KICADD_CPP_OUT ${CMAKE_BINARY_DIR}/kicadd/cpp )
 
 set( _kicadd_cpp )
@@ -53,6 +53,7 @@ set( KICADD_INCLUDE_DIRS ${KICADD_DIR}/src ${KICADD_CPP_OUT} )
 set( KICADD_SCH_SRCS
     ${KICADD_DIR}/src/sch/kicadd_lcsc_sym.cpp
     ${KICADD_DIR}/src/sch/kicadd_lcsc_sch_tool.cpp
+    ${KICADD_DIR}/src/sch/kicadd_handler_sch.cpp
     )
 
 # Python client stubs (for tests / plugins; no SWIG anywhere).
@@ -88,6 +89,7 @@ add_executable( kicadd-mcp
     ${KICADD_DIR}/mcp/ipc_client.cpp
     ${KICADD_DIR}/mcp/mcp_server.cpp
     ${KICADD_DIR}/mcp/tools.cpp
+    ${KICADD_DIR}/mcp/sch_tools.cpp
     ${KICADD_DIR}/mcp/drc.cpp
     ${KICADD_DIR}/mcp/transports.cpp
     )

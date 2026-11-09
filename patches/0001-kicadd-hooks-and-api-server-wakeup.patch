@@ -279,7 +279,7 @@ index 383869d8..6ab48405 100644
  }
  
 diff --git a/eeschema/CMakeLists.txt b/eeschema/CMakeLists.txt
-index 5b6dbf2a..07a46bbb 100644
+index 5b6dbf2a..2eb2155c 100644
 --- a/eeschema/CMakeLists.txt
 +++ b/eeschema/CMakeLists.txt
 @@ -15,6 +15,7 @@ if( CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang" )
@@ -312,31 +312,33 @@ index 5b6dbf2a..07a46bbb 100644
  set( EESCHEMA_WIDGETS
      widgets/hierarchy_pane.cpp
      widgets/panel_sch_selection_filter_base.cpp
-@@ -739,6 +748,12 @@ target_link_libraries( eeschema_kiface_objects
+@@ -739,6 +748,13 @@ target_link_libraries( eeschema_kiface_objects
  # declare the dependency
  add_dependencies( eeschema_kiface_objects common )
  
 +if( KICADD_DIR )
 +    target_sources( eeschema_kiface_objects PRIVATE ${KICADD_SCH_SRCS} )
 +    target_compile_definitions( eeschema_kiface_objects PRIVATE KICADD )
-+    target_include_directories( eeschema_kiface_objects PRIVATE ${KICADD_DIR}/src )
++    target_include_directories( eeschema_kiface_objects PRIVATE ${KICADD_INCLUDE_DIRS} )
++    target_link_libraries( eeschema_kiface_objects PRIVATE kicadd_proto )
 +endif()
 +
  message( STATUS "Including 3Dconnexion SpaceMouse navigation support in eeschema" )
  add_subdirectory( navlib )
  
-@@ -750,6 +765,10 @@ add_library( eeschema_kiface MODULE
+@@ -750,6 +766,11 @@ add_library( eeschema_kiface MODULE
      eeschema.cpp
      )
  
 +if( KICADD_DIR )
 +    target_compile_definitions( eeschema_kiface PRIVATE KICADD )
++    target_include_directories( eeschema_kiface PRIVATE ${KICADD_INCLUDE_DIRS} )
 +endif()
 +
  target_link_libraries( eeschema_kiface
      PRIVATE
          common
-@@ -763,7 +782,7 @@ target_link_libraries( eeschema_kiface
+@@ -763,7 +784,7 @@ target_link_libraries( eeschema_kiface
          ${NGSPICE_LIBRARY}
      )
  
@@ -346,7 +348,7 @@ index 5b6dbf2a..07a46bbb 100644
      add_custom_command( TARGET eeschema_kiface POST_BUILD
          COMMAND ${CMAKE_COMMAND} -E copy_if_different "${NGSPICE_DLL}" "$<TARGET_FILE_DIR:eeschema_kiface>"
 diff --git a/eeschema/eeschema.cpp b/eeschema/eeschema.cpp
-index eae8cfde..96a4a1df 100644
+index eae8cfde..9b74f316 100644
 --- a/eeschema/eeschema.cpp
 +++ b/eeschema/eeschema.cpp
 @@ -85,7 +85,9 @@
@@ -359,18 +361,19 @@ index eae8cfde..96a4a1df 100644
  
  #include <dialogs/panel_toolbar_customization.h>
  #include <toolbars_sch_editor.h>
-@@ -100,6 +102,10 @@
+@@ -100,6 +102,11 @@
  SCH_SHEET*  g_RootSheet = nullptr;
  
  
 +#ifdef KICADD
++#include <sch/kicadd_handler_sch.h>
 +wxString KicaddLcscSymbol( const wxString& aRequest );   // KiCadD/src/sch/kicadd_lcsc_sym.cpp
 +#endif
 +
  namespace SCH {
  
  // Non-job kiface exports for diff/merge (returned by IfaceOrAddress). Defined
-@@ -549,6 +555,9 @@ static struct IFACE : public KIFACE_BASE, public UNITS_PROVIDER
+@@ -549,6 +556,9 @@ static struct IFACE : public KIFACE_BASE, public UNITS_PROVIDER
  
          case FRAME_SIMULATOR:
          {
@@ -380,7 +383,7 @@ index eae8cfde..96a4a1df 100644
              try
              {
                  SIMULATOR_FRAME* frame = new SIMULATOR_FRAME( aKiway, aParent );
-@@ -560,6 +569,7 @@ static struct IFACE : public KIFACE_BASE, public UNITS_PROVIDER
+@@ -560,6 +570,7 @@ static struct IFACE : public KIFACE_BASE, public UNITS_PROVIDER
                  // its going to be some ngspice install issue but we don't want to log that
                  return nullptr;
              }
@@ -388,7 +391,7 @@ index eae8cfde..96a4a1df 100644
          }
  
          case FRAME_SCH_VIEWER:
-@@ -766,6 +776,11 @@ static struct IFACE : public KIFACE_BASE, public UNITS_PROVIDER
+@@ -766,6 +777,11 @@ static struct IFACE : public KIFACE_BASE, public UNITS_PROVIDER
  
          case KIFACE_ATTACH_DIFF_CANVASES:
              return KifaceServiceAddress<KIFACE_ATTACH_DIFF_CANVASES_SERVICE>( &eeschemaAttachDiffCanvasesExport );
@@ -400,6 +403,55 @@ index eae8cfde..96a4a1df 100644
          }
  
          return nullptr;
+@@ -822,6 +838,9 @@ private:
+     std::shared_ptr<HEADLESS_SYMBOL_EDITOR_CONTEXT> m_openSymbolContext;
+     std::unique_ptr<API_HANDLER_SYMBOL>             m_openSymbolHandler;
+     std::unique_ptr<API_HANDLER_SCH>          m_openHandler;
++#ifdef KICADD
++    std::unique_ptr<KICADD_HANDLER_SCH>       m_kicaddSchHandler;   // M5a agent schematic tools
++#endif
+     std::unique_ptr<API_HANDLER_SCH_LIBRARIES> m_apiHandlerSchLibs;
+ 
+ } kiface( "eeschema", KIWAY::FACE_SCH );
+@@ -1190,6 +1209,16 @@ bool IFACE::HandleJobConfig( JOB* aJob, wxWindow* aParent )
+ // TODO(JE) some of the below methods can probably be factored out and shared between sch/pcb
+ void IFACE::closeSchematic( KICAD_API_SERVER* aServer )
+ {
++#ifdef KICADD
++    if( m_kicaddSchHandler )
++    {
++        if( aServer )
++            aServer->DeregisterHandler( m_kicaddSchHandler.get() );
++
++        m_kicaddSchHandler.reset();
++    }
++#endif
++
+     if( m_openHandler )
+     {
+         if( aServer )
+@@ -1322,6 +1351,10 @@ bool IFACE::HandleApiOpenDocument( const DOCUMENT_SPEC& aSpec,
+ 
+     m_openHandler = std::make_unique<API_HANDLER_SCH>( m_openContext );
+     aServer->RegisterHandler( m_openHandler.get() );
++#ifdef KICADD
++    m_kicaddSchHandler = std::make_unique<KICADD_HANDLER_SCH>( m_openContext );
++    aServer->RegisterHandler( m_kicaddSchHandler.get() );
++#endif
+ 
+     return true;
+ }
+@@ -1386,6 +1419,10 @@ bool IFACE::handleCreateSchematic( const wxString& aPath, KICAD_API_SERVER* aSer
+ 
+     m_openHandler = std::make_unique<API_HANDLER_SCH>( m_openContext );
+     aServer->RegisterHandler( m_openHandler.get() );
++#ifdef KICADD
++    m_kicaddSchHandler = std::make_unique<KICADD_HANDLER_SCH>( m_openContext );
++    aServer->RegisterHandler( m_kicaddSchHandler.get() );
++#endif
+ 
+     return true;
+ }
 diff --git a/eeschema/files-io.cpp b/eeschema/files-io.cpp
 index a219ae94..809b1645 100644
 --- a/eeschema/files-io.cpp
@@ -690,7 +742,7 @@ index 928f9a0f..fab84eea 100644
   * Return a service address for IfaceOrAddress().
   *
 diff --git a/kicad/cli/command_api_server.cpp b/kicad/cli/command_api_server.cpp
-index e65d5b26..0314aab8 100644
+index e65d5b26..e171c79f 100644
 --- a/kicad/cli/command_api_server.cpp
 +++ b/kicad/cli/command_api_server.cpp
 @@ -38,6 +38,10 @@
@@ -704,7 +756,36 @@ index e65d5b26..0314aab8 100644
  #define ARG_PATH "path"
  #define ARG_SOCKET "--socket"
  
-@@ -692,12 +696,33 @@ int CLI::API_SERVER_COMMAND::doPerform( KIWAY& aKiway )
+@@ -678,6 +682,28 @@ int CLI::API_SERVER_COMMAND::doPerform( KIWAY& aKiway )
+             server->DeregisterHandler( &designBlockLibrariesHandler );
+             return EXIT_CODES::ERR_ARGS;
+         }
++
++        // KiCadD: the server holds the whole project, so the agent can work on the schematic
++        // and the board together: open the project's other documents that exist next to the
++        // preloaded one (a .kicad_pro opens both). A failure there is reported, not fatal.
++        auto openSibling = [&]( const wxString& aExt, types::DocumentType aType )
++        {
++            wxFileName sibling( preloadFile );
++            sibling.SetExt( aExt );
++
++            if( preloadType == aType || !sibling.FileExists() )
++                return;
++
++            commands::OpenDocument also;
++            also.set_type( aType );
++            also.set_path( sibling.GetFullPath().ToStdString() );
++
++            if( auto r = openDocument( also ); !r )
++                wxFprintf( stderr, "also opening %s: %s\n", sibling.GetFullName(), r.error().error_message() );
++        };
++
++        openSibling( FILEEXT::KiCadPcbFileExtension, types::DOCTYPE_PCB );
++        openSibling( FILEEXT::KiCadSchematicFileExtension, types::DOCTYPE_SCHEMATIC );
+     }
+ 
+     server->SetReadyToReply( true );
+@@ -692,12 +718,33 @@ int CLI::API_SERVER_COMMAND::doPerform( KIWAY& aKiway )
  
      g_apiServerExitRequested.store( false );
  

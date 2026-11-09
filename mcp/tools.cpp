@@ -1016,6 +1016,7 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        schema( json::object() ),
                        [&aIpc]( const json& ) { return saveBoard( aIpc ); } } );
 
+    AddSchematicTools( tools, aIpc );     // M5a, sch_tools.cpp
     return tools;
 }
 
