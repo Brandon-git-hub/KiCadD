@@ -620,8 +620,24 @@ LCSC field, the attribution, the reference prefix, and the sym-lib-table row (25
 checked with a synthetic two-unit entry only (none of the 13 parts, nor LM358DR2G, has
 subparts on EasyEDA).
 
-Not yet (M4c–d): search / stock / price (`lcsc_search`), 3D models (EasyEDA OBJ → VRML), a
-"place by LCSC number" entry in the editor.
+## M4c (part 1): stock and price in `lcsc_fetch` (2026-11-10)
+
+The EasyEDA component answer already carries the catalogue data, so `lcsc_fetch` reports it at
+no extra request:
+
+```
+  LCSC stock 10693, US$2.398 each (min 1); JLC assembly: yes (Extended Part) -- as of 2026-11-09 (cached; refresh=true for today's)
+```
+
+Stock, unit price at the minimum quantity, JLC assembly availability (`SMT` + `jlcOnSale`) and
+Basic/Extended (the symbol's "JLCPCB Part Class"). The date is when the answer was fetched:
+cached parts show their cache date, `refresh` gets today's. Some parts (e.g. C2040 RP2040) come
+without LCSC stock data and show `?`. `lcsc_e2e.py` checks the reported stock and JLC flag
+against the raw answer.
+
+Not yet: keyword search (`lcsc_search`): needs a search source (to be decided: an official
+JLCPCB/LCSC API with a key, or an unofficial endpoint); 3D models (EasyEDA OBJ → VRML); a "place
+by LCSC number" entry in the editor.
 
 ## M3: Windows CI (2026-11-06)
 

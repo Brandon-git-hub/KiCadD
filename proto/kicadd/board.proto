@@ -212,6 +212,18 @@ message FetchLcscResponse
   repeated LcscPad pads = 12;
   string description = 13;
   LcscSymbol symbol  = 14; // M4b: the schematic symbol, when it could be saved
+  LcscStock  stock   = 15; // M4c: catalogue data from the same answer
+}
+
+message LcscStock
+{
+  int64  stock     = 1;    // LCSC stock; -1 unknown
+  double price_usd = 2;    // unit price at min_qty, USD; < 0 unknown
+  int32  min_qty   = 3;
+  string url       = 4;    // LCSC product page
+  bool   jlc_smt   = 5;    // JLCPCB assembly can place it
+  string jlc_class = 6;    // "Basic Part" / "Extended Part"
+  string as_of     = 7;    // date of the data (when fetched or cached), not live
 }
 
 message LcscSymbol

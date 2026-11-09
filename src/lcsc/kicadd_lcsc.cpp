@@ -32,6 +32,7 @@
 
 #include <json_common.h>   // not <nlohmann/json.hpp>: kicommon exports basic_json (LNK2005 without PCH)
 
+#include <wx/datetime.h>
 #include <wx/dir.h>
 #include <wx/ffile.h>
 #include <wx/filename.h>
@@ -324,6 +325,26 @@ bool convert( const json& aResult, const std::string& aLcsc, PART& aPart, std::s
 
     aPart.description = str( aResult, "description" );
 
+    if( auto l = aResult.find( "lcsc" ); l != aResult.end() && l->is_object() )
+    {
+        if( auto v = l->find( "stock" ); v != l->end() && v->is_number() )
+            aPart.stock = v->get<long long>();
+
+        if( auto v = l->find( "price" ); v != l->end() && v->is_number() )
+            aPart.priceUsd = v->get<double>();
+
+        if( auto v = l->find( "min" ); v != l->end() && v->is_number() )
+            aPart.minQty = v->get<int>();
+
+        aPart.url = str( *l, "url" );
+    }
+
+    aPart.jlcSmt = aResult.value( "SMT", false ) && aResult.value( "jlcOnSale", 0 ) != 0;
+
+    if( auto sym = aResult.find( "dataStr" ); sym != aResult.end() && sym->is_object() )
+        aPart.jlcClass = str( sym->value( "head", json::object() ).value( "c_para", json::object() ),
+                              "JLCPCB Part Class" );
+
     // The importer reads EasyEDA Standard documents from a file.
     wxFileName file( cacheDir(), wxString::FromUTF8( aLcsc ) + wxS( ".footprint" ), wxS( "json" ) );
 
@@ -543,6 +564,10 @@ bool FetchPart( const std::string& aLcsc, bool aRefresh, PART& aPart, std::strin
             return false;
         }
     }
+
+    aPart.asOf = ( aPart.fromCache && cached.FileExists() ? cached.GetModificationTime() : wxDateTime::Now() )
+                         .FormatISODate()
+                         .ToStdString();
 
     json doc = json::parse( body, nullptr, false );
 

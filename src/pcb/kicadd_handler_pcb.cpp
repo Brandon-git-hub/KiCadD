@@ -1253,6 +1253,16 @@ KICADD_HANDLER_PCB::handleFetchLcsc( const HANDLER_CONTEXT<FetchLcsc>& aCtx )
     out.set_datasheet( part.datasheet );
     out.set_from_cache( part.fromCache );
     out.set_attribution( kicadd::lcsc::ATTRIBUTION );
+
+    LcscStock* st = out.mutable_stock();
+    st->set_stock( part.stock );
+    st->set_price_usd( part.priceUsd );
+    st->set_min_qty( part.minQty );
+    st->set_url( part.url );
+    st->set_jlc_smt( part.jlcSmt );
+    st->set_jlc_class( part.jlcClass );
+    st->set_as_of( part.asOf );
+
     std::string note = part.note;
 
     if( BOARD* b = board() )

@@ -10,6 +10,7 @@ The server (kicad-cli api-server) must have a board from DIR loaded and KICADD_L
     answer, parsed here on its own (position, size, drill, SMD/THT): the importer is not
     trusted to check itself
   * a courtyard and the attribution are there, no STEP model is referenced
+  * M4c: the LCSC stock and JLC assembly flag reported are the ones in the answer
   * M4b: the symbol is in DIR/lcsc.kicad_sym; its pin numbers are the P records of the EasyEDA
     symbol (subparts for multi-unit parts) and the footprint's numbered pads, its Footprint field
     is the footprint's LCSC:<package>, it carries the LCSC number and the attribution
@@ -224,6 +225,11 @@ def main():
             if not saved:
                 continue
             compare(part, a.cache, saved.group(2))
+            raw = json.load(open(os.path.join(a.cache, part + ".json"), encoding="utf-8"))["result"]
+            st = re.search(r"LCSC stock (\d+|\?).*JLC assembly: (yes|no)", text)
+            check(st is not None and st.group(1) == str((raw.get("lcsc") or {}).get("stock", "?"))
+                  and (st.group(2) == "yes") == bool(raw.get("SMT") and raw.get("jlcOnSale")),
+                  f"{part}: stock / JLC assembly as in the EasyEDA answer: " + (st.group(0)[:70] if st else "missing"))
             check_symbol(part, a.cache, text, saved.group(2))
 
             err, text = m.tool("add_footprint", {"lcsc": part, "ref": "X?", "x": 20 + 25 * (i % 6),

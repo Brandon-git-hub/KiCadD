@@ -537,6 +537,20 @@ TOOL_RESULT lcscFetch( IPC_CLIENT& aIpc, const json& aArgs )
            + mm( r.courtyard().x() ) + "x" + mm( r.courtyard().y() ) + " mm, " + std::to_string( r.pads_size() )
            + " pads" + ( tht ? " (" + std::to_string( tht ) + " through-hole)" : " (SMD)" );
 
+    if( r.has_stock() )
+    {
+        const kb::LcscStock& st = r.stock();
+        char price[64] = "";
+
+        if( st.price_usd() >= 0 )
+            std::snprintf( price, sizeof( price ), ", US$%.4g each (min %d)", st.price_usd(), st.min_qty() );
+
+        out += "\n  LCSC stock " + ( st.stock() >= 0 ? std::to_string( st.stock() ) : std::string( "?" ) ) + price
+               + "; JLC assembly: " + ( st.jlc_smt() ? "yes" : "no" )
+               + ( st.jlc_class().empty() ? "" : " (" + st.jlc_class() + ")" ) + " -- as of " + st.as_of()
+               + ( r.from_cache() ? " (cached; refresh=true for today's)" : "" );
+    }
+
     if( r.has_symbol() )
     {
         const kb::LcscSymbol& s = r.symbol();

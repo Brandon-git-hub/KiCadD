@@ -41,6 +41,15 @@ struct PART
     std::string                datasheet;
     bool                       fromCache = false;
     std::string                note;          ///< e.g. "offline: used the cache from <date>"
+
+    // M4c: catalogue data that comes with the same answer (as of asOf, not live)
+    long long                  stock = -1;    ///< LCSC stock, -1 unknown
+    double                     priceUsd = -1; ///< LCSC unit price at the minimum quantity, USD
+    int                        minQty = 0;
+    std::string                url;           ///< LCSC product page
+    bool                       jlcSmt = false;       ///< JLCPCB can assemble it
+    std::string                jlcClass;      ///< "Basic Part" / "Extended Part" / ""
+    std::string                asOf;          ///< date of that data (fetch or cache date)
     std::unique_ptr<FOOTPRINT> footprint;     ///< no board, no nets, at the origin
 };
 
