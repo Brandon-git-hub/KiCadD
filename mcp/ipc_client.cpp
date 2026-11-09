@@ -136,9 +136,10 @@ bool IPC_CLIENT::Call( const google::protobuf::Message& aRequest, google::protob
             if( status == ApiStatusCode::AS_UNHANDLED
                 && aRequest.GetDescriptor()->full_name().starts_with( "kicadd." ) )
             {
-                aError += " (this KiCad has no KiCadD handler: a stock KiCad, or a KiCadD pcbnew "
-                          "older than the M2 desktop co-pilot, e.g. v0.1.0-alpha.1 with the API "
-                          "enabled by hand; use a newer KiCadD pcbnew or kicad-cli api-server)";
+                aError += " (nothing here handles KiCadD requests: open the board in the PCB Editor "
+                          "window; the KiCad project window alone does not serve them. A stock "
+                          "KiCad, or a KiCadD older than the M2 desktop co-pilot (v0.1.0-alpha.1), "
+                          "also gives this)"; use a newer KiCadD pcbnew or kicad-cli api-server)";
             }
 
             return false;
