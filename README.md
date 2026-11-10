@@ -1031,6 +1031,22 @@ time, and `--prefix` would leave `share/kicad` (icons, templates, demos) out of 
    （電路圖有 X，PCB 有 2 個 `unconnected-` 網路）。方向：proto `SchNetlist` 加 `no_connect`
    清單，MCP 文字輸出多列一行。
 
+5. **`auto_place` 在桌面版會讓編輯器「沒有回應」，期間所有 MCP 呼叫逾時。** 2026-11-11 在卡住當下
+   取得傾印檔（`kicad_16528_drc_hang.dmp`，用 `v0.1.0-alpha.2` 的 PDB 還原），**原因不是 DRC，
+   也不是死結**：
+   * 主執行緒停在 `KICADD_HANDLER_PCB::handleAutoPlace → kicadd::autoplace::Place`，等 8 條
+     多起點執行緒（`std::thread`）；API 處理函式在 GUI 執行緒執行，所以整個編輯器被占住，
+     之後的 `run_drc` 排在後面而逾時。
+   * 8 條執行緒各累積約 29 秒 CPU，全在 `PLACER::refine → nearestLegal → legalAt → ruled → free`；
+     CPU 時間持續增加，記憶體 425 → 1432 MB。是長時間運算，不是卡住不動。
+   * Linux（16 核）同一操作：無頭 7.7–14.9 秒，桌面版 14.9 秒；`no room for: P3` 那顆放不進去的
+     零件最花時間（把 P3 固定後減半）。核心數較少的 Windows 機器會慢數倍。
+   方向：(a) 運算移出 GUI 執行緒，或至少可取消、有進度；(b) 放不進去的零件要有搜尋上限
+   （`nearestLegal` 的範圍／時間預算），並在結果中提早回報；(c) 查記憶體成長（`pullPoint` 的
+   `vector<VECTOR2>` 重新配置）；(d) 在已佈線的板子上，舊走線當障礙會讓放不進去的零件變多，
+   使用說明要寫明（建議先移除走線，或只對剛 `sync_pcb` 的板子執行）。
+   （先前懷疑 DRC 的 GUI 進度回報，已排除：Linux 桌面版 DRC 4 秒，563 個錯誤也不卡。）
+
 保留不動：專案管理器的 Version Control（Git）面板。
 
 ## License
