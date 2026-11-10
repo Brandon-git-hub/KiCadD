@@ -20,6 +20,8 @@
 #include <pgm_base.h>
 #include <libraries/library_manager.h>
 #include <sch_commit.h>
+#include <sch_edit_frame.h>
+#include <tool/tool_manager.h>
 #include <sch_field.h>
 #include <sch_label.h>
 #include <sch_line.h>
@@ -191,6 +193,36 @@ void KICADD_HANDLER_SCH::rebuildConnectivity()
 {
     if( SCHEMATIC* sch = schematic() )
         sch->RebuildConnectivity();
+}
+
+
+SCH_EDIT_FRAME* KICADD_HANDLER_SCH::editor() const
+{
+    TOOL_MANAGER* mgr = m_context ? m_context->GetToolManager() : nullptr;
+    return mgr ? dynamic_cast<SCH_EDIT_FRAME*>( mgr->GetToolHolder() ) : nullptr;
+}
+
+
+std::optional<ApiResponseStatus> KICADD_HANDLER_SCH::busy() const
+{
+    if( !m_context || m_context->CanAcceptApiCommands() )
+        return std::nullopt;
+
+    return makeError( ApiStatusCode::AS_BUSY,
+                      "the Schematic Editor is busy: the user is in an interactive tool (drawing a "
+                      "wire, moving, a dialog); the edit was not applied" );
+}
+
+
+void KICADD_HANDLER_SCH::announce( const wxString& aWhat ) const
+{
+    // The commit has updated the view; an API request (unlike a tool event) does not repaint
+    // the canvas by itself.
+    if( SCH_EDIT_FRAME* frame = editor() )
+    {
+        frame->SetStatusText( aWhat );
+        frame->GetCanvas()->Refresh();
+    }
 }
 
 
@@ -387,6 +419,9 @@ HANDLER_RESULT<SchPartResponse> KICADD_HANDLER_SCH::handleAddPart( const HANDLER
     if( !schematic() )
         return tl::unexpected( makeError( ApiStatusCode::AS_UNHANDLED, "no schematic open" ) );
 
+    if( auto err = busy() )
+        return tl::unexpected( *err );
+
     const SchAddPart& req = aCtx.Request;
     std::string       note;
     LIB_ID            libId;
@@ -581,9 +616,11 @@ HANDLER_RESULT<SchPartResponse> KICADD_HANDLER_SCH::handleAddPart( const HANDLER
     SCH_SYMBOL* placed = symbol.release();
     SCH_COMMIT  commit( m_context->GetToolManager() );
     commit.Add( placed, screen );
-    commit.Push( wxString::Format( wxS( "add %s" ), placed->GetRef( &sheet ) ) );
+    wxString what = wxString::Format( wxS( "add %s" ), placed->GetRef( &sheet ) );
+    commit.Push( wxS( "Agent: " ) + what );
 
     rebuildConnectivity();
+    announce( wxS( "Agent: " ) + what );
 
     SchPartResponse out;
     packSymbol( placed, sheet, true, *out.mutable_symbol() );
@@ -655,6 +692,9 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleConnect( const HAND
 {
     if( !schematic() )
         return tl::unexpected( makeError( ApiStatusCode::AS_UNHANDLED, "no schematic open" ) );
+
+    if( auto err = busy() )
+        return tl::unexpected( *err );
 
     rebuildConnectivity();
 
@@ -763,8 +803,9 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleConnect( const HAND
     if( added )
     {
         out.set_history_label( "connect " + std::to_string( added ) + " pin" + ( added > 1 ? "s" : "" ) );
-        commit.Push( wx( out.history_label() ) );
+        commit.Push( wxS( "Agent: " ) + wx( out.history_label() ) );
         rebuildConnectivity();
+        announce( wxS( "Agent: " ) + wx( out.history_label() ) );
     }
     else
     {
@@ -779,6 +820,9 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleDisconnect( const H
 {
     if( !schematic() )
         return tl::unexpected( makeError( ApiStatusCode::AS_UNHANDLED, "no schematic open" ) );
+
+    if( auto err = busy() )
+        return tl::unexpected( *err );
 
     SchConnectResponse out;
     SCH_COMMIT         commit( m_context->GetToolManager() );
@@ -805,8 +849,9 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleDisconnect( const H
     if( removed )
     {
         out.set_history_label( "disconnect " + std::to_string( out.done() ) + " pin(s)" );
-        commit.Push( wx( out.history_label() ) );
+        commit.Push( wxS( "Agent: " ) + wx( out.history_label() ) );
         rebuildConnectivity();
+        announce( wxS( "Agent: " ) + wx( out.history_label() ) );
     }
     else
     {
@@ -873,6 +918,9 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleDeleteParts( const 
     if( !schematic() )
         return tl::unexpected( makeError( ApiStatusCode::AS_UNHANDLED, "no schematic open" ) );
 
+    if( auto err = busy() )
+        return tl::unexpected( *err );
+
     SchConnectResponse out;
     SCH_COMMIT         commit( m_context->GetToolManager() );
 
@@ -906,8 +954,9 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleDeleteParts( const 
     if( out.done() )
     {
         out.set_history_label( "delete " + std::to_string( out.done() ) + " part(s)" );
-        commit.Push( wx( out.history_label() ) );
+        commit.Push( wxS( "Agent: " ) + wx( out.history_label() ) );
         rebuildConnectivity();
+        announce( wxS( "Agent: " ) + wx( out.history_label() ) );
     }
     else
     {
@@ -923,10 +972,31 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleSave( const HANDLER
     if( !schematic() )
         return tl::unexpected( makeError( ApiStatusCode::AS_UNHANDLED, "no schematic open" ) );
 
-    if( !m_context->SaveSchematic() )
-        return tl::unexpected( makeError( ApiStatusCode::AS_UNKNOWN, "saving the schematic failed" ) );
-
     SchConnectResponse out;
+
+    if( SCH_EDIT_FRAME* frame = editor() )
+    {
+        // In the Schematic Editor the file is the user's: sync_pcb reads the editor's schematic
+        // and needs no save; an explicit save goes through the editor (title, modified flags).
+        if( aCtx.Request.only_headless() )
+        {
+            out.set_history_label( "in the Schematic Editor: not saved (read from the editor)" );
+            return out;
+        }
+
+        if( auto err = busy() )
+            return tl::unexpected( *err );
+
+        if( !frame->SaveProject() )
+            return tl::unexpected( makeError( ApiStatusCode::AS_UNKNOWN, "saving the schematic failed" ) );
+
+        announce( wxS( "Agent: saved the schematic" ) );
+    }
+    else if( !m_context->SaveSchematic() )
+    {
+        return tl::unexpected( makeError( ApiStatusCode::AS_UNKNOWN, "saving the schematic failed" ) );
+    }
+
     out.set_done( 1 );
     out.set_history_label( "saved " + str( m_context->GetCurrentFileName() ) );
     return out;

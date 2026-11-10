@@ -22,6 +22,8 @@
 #include <tool/tool_manager.h>
 #include <board_design_settings.h>
 #include <drc/drc_engine.h>
+#include <frame_type.h>
+#include <mail_type.h>
 #include <lib_id.h>
 #include <netlist_reader/pcb_netlist_utils.h>
 #include <pcb_io/kicad_sexpr/pcb_io_kicad_sexpr.h>
@@ -2055,16 +2057,31 @@ KICADD_HANDLER_PCB::handleSyncFromSchematic( const HANDLER_CONTEXT<SyncFromSchem
     wxFileName sch( b->GetFileName() );
     sch.SetExt( wxS( "kicad_sch" ) );
 
-    if( !sch.FileExists() )
+    KIWAY*      kiway = m_context->GetKiway();
+    std::string text;
+    bool        fromEditor = false;
+
+    // An open Schematic Editor (desktop, project manager): its schematic as it is now, unsaved
+    // edits included, the way Update PCB from Schematic asks for it
+    if( kiway && kiway->Player( FRAME_SCH, false ) )
+    {
+        kiway->ExpressMail( FRAME_SCH, MAIL_SCH_GET_NETLIST, text );
+        fromEditor = !text.empty() && text != MAIL_SCH_GET_NETLIST_CANCELLED;
+
+        if( !fromEditor )
+            return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
+                                              "the Schematic Editor gave no netlist" ) );
+    }
+
+    if( !fromEditor && !sch.FileExists() )
         return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
                                           "no schematic " + sch.GetFullName().ToStdString() + " next to the board" ) );
 
-    KIWAY*                                 kiway = m_context->GetKiway();
     KIFACE_NETLIST_SCHEMATIC_SERVICE::Type netlister = nullptr;
 
     try
     {
-        if( kiway )
+        if( kiway && !fromEditor )
             netlister = GetKifaceService<KIFACE_NETLIST_SCHEMATIC_SERVICE>( kiway->KiFACE( KIWAY::FACE_SCH ) );
     }
     catch( const IO_ERROR& e )
@@ -2073,12 +2090,10 @@ KICADD_HANDLER_PCB::handleSyncFromSchematic( const HANDLER_CONTEXT<SyncFromSchem
                                           "the schematic module could not be loaded: " + e.What().ToStdString() ) );
     }
 
-    if( !netlister )
+    if( !fromEditor && !netlister )
         return tl::unexpected( makeError( ApiStatusCode::AS_UNIMPLEMENTED, "no schematic netlister available" ) );
 
-    std::string text;
-
-    if( !( *netlister )( sch.GetFullPath(), text, kiway ) || text.empty() )
+    if( !fromEditor && ( !( *netlister )( sch.GetFullPath(), text, kiway ) || text.empty() ) )
         return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
                                           "the schematic could not be netlisted: " + text.substr( 0, 300 ) ) );
 
@@ -2118,6 +2133,7 @@ KICADD_HANDLER_PCB::handleSyncFromSchematic( const HANDLER_CONTEXT<SyncFromSchem
     bool ok = updater->UpdateNetlist( netlist );
 
     SyncFromSchematicResponse out;
+    out.set_from_editor( fromEditor );
 
     if( !aCtx.Request.dry_run() && ok )
     {

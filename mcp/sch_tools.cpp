@@ -351,7 +351,8 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             } } );
 
     aTools.push_back( { "sync_pcb",
-            "Update PCB from Schematic: saves the schematic, then brings the board in line with it "
+            "Update PCB from Schematic: brings the board in line with the schematic (the open "
+            "Schematic Editor's, unsaved edits included; headless: saved first) "
             "(new footprints from each symbol's Footprint field, nets on the pads, changed values). "
             "New footprints land outside the board outline until placed (auto_place). dry_run "
             "reports without changing anything; delete_extra removes footprints the schematic no "
@@ -363,11 +364,17 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             [&aIpc]( const json& a )
             {
                 std::string err;
+                // Headless: save, the board side netlists the file. In the Schematic Editor
+                // nothing is saved (the board side asks the editor). No schematic handler (the
+                // PCB Editor on its own): the saved file is what there is.
                 ks::SchSave save;
                 ks::SchConnectResponse saved;
+                save.set_only_headless( true );
 
-                if( !aIpc.Call( save, saved, err ) )
+                if( !aIpc.Call( save, saved, err ) && err.rfind( "AS_UNHANDLED", 0 ) != 0 )
                     return fail( "saving the schematic first: " + err );
+
+                err.clear();
 
                 kicadd::board::SyncFromSchematic req;
                 req.set_dry_run( a.value( "dry_run", false ) );
@@ -392,6 +399,9 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                 t += "; board now " + std::to_string( r.footprints() ) + " footprints, " + std::to_string( r.nets() )
                      + " nets; " + std::to_string( r.errors() ) + " errors, " + std::to_string( r.warnings() )
                      + " warnings";
+
+                if( r.from_editor() )
+                    t += " (from the open Schematic Editor)";
 
                 // the updater's report, without its routine lines
                 int shown = 0;

@@ -753,8 +753,7 @@ inside the outline, wire length down, DRC only unrouted, both caps within 8 mm o
 undo takes it back), save. PASS, together with mcp_e2e (25 tools), layout, history, lcsc,
 desktop and smoke.
 
-Not yet: the schematic tools in the desktop Schematic Editor (headless only so far; `sync_pcb`
-and `auto_place` work in the PCB Editor too), hierarchical sheets, placing on the back side,
+Not yet (at the time): the schematic tools in the desktop Schematic Editor (see M5d), hierarchical sheets, placing on the back side,
 keep-together groups / placement rules from the agent, routing.
 
 ### auto_place: functional blocks, two sides, speed (2026-11-10)
@@ -823,6 +822,31 @@ Bench: `autoplace_bench.py --sheets --group-weight W --fix J,H --no-groups --bac
 board now follows the board's width; only DRC errors the human layout doesn't already have
 count). `m5_e2e.py` gives U1 C1 C2 block LDO and R1 R2 block LED: saved as Block fields,
 `auto_place` reports 2 blocks from the Block field. PASS, with mcp_e2e and smoke.
+
+## M5d: the schematic tools in the desktop Schematic Editor (2026-11-10)
+
+The `sch_*` tools now work in the open Schematic Editor too, the way the board tools work in the
+PCB Editor: the agent's edits are the editor's own commits (`Agent: add R22`, `Agent: connect 2
+pins` on the undo list, the canvas repainted, the status bar naming the edit), so the user's
+Ctrl+Z / Ctrl+Y take them back and forth. While the user is in an interactive tool (drawing a
+wire, moving, a dialog) edits are refused as busy and nothing changes. The Schematic Editor
+registers `KICADD_HANDLER_SCH` on its frame (`CreateSchFrameContext`) and starts the API server
+if nothing has; it deregisters on close and in its destructor.
+
+In the KiCad project manager both editors live in one process, on one API server, so one
+kicadd-mcp reaches both. `sync_pcb` there asks the open Schematic Editor for its netlist
+(`MAIL_SCH_GET_NETLIST`, as Update PCB from Schematic does): unsaved edits come along and the
+user's schematic file is not written. Headless it saves first and netlists the file, as before;
+with the PCB Editor alone it uses the saved file. `sch_save` in the editor saves through the
+editor (title and modified flags).
+
+`client/desktop_sch_e2e.py` (Xvfb, the real project manager on pic_programmer): Ctrl+E, the agent
+reads the editor's 69 parts, adds a resistor and connects it to VPP and a new net (the title
+shows the schematic modified); the user's Ctrl+Z takes the connection back, a second the part;
+with the wire tool active the agent's add is refused and nothing changes, after Escape it
+applies; Ctrl+P, `sync_pcb` puts the new part on the PCB Editor's board on the right nets "from
+the open Schematic Editor" while the `.kicad_sch` on disk stays byte for byte the same; Ctrl+Q,
+don't save, exit code 0. PASS, together with m5_e2e (headless) and desktop_e2e (PCB Editor).
 
 ## M3: Windows CI (2026-11-06)
 

@@ -1,8 +1,10 @@
 /*
  * KiCadD M5a: schematic generation for agents (proto/kicadd/schematic.proto).
  *
- * Registered next to KiCad's API_HANDLER_SCH on the same SCH_CONTEXT (headless api-server:
- * eeschema's HandleApiOpenDocument). Parts come from a library or an LCSC number; pins are
+ * Registered next to KiCad's API_HANDLER_SCH on the same SCH_CONTEXT: headless (api-server,
+ * eeschema's HandleApiOpenDocument) and in the Schematic Editor (desktop co-pilot: the agent's
+ * edits are the editor's commits, on its undo list and canvas; refused while the user is in a
+ * tool). Parts come from a library or an LCSC number; pins are
  * connected by a wire stub and a net label, so the agent names every net and never routes.
  *
  * This file is part of KiCadD and is licensed GPL-3.0-or-later, like KiCad.
@@ -11,6 +13,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -19,6 +22,8 @@
 
 class SCH_CONTEXT;
 class SCH_COMMIT;
+class SCH_EDIT_FRAME;
+class wxString;
 class SCH_PIN;
 class SCH_SCREEN;
 class SCH_SHEET_PATH;
@@ -78,6 +83,15 @@ private:
                      kicadd::schematic::SchSymbol& aOut );
 
     void rebuildConnectivity();
+
+    /// The Schematic Editor this handler works in (desktop co-pilot), null when headless.
+    SCH_EDIT_FRAME* editor() const;
+
+    /// The editor is in an interactive tool: refuse edits (AS_BUSY).
+    std::optional<ApiResponseStatus> busy() const;
+
+    /// Name the agent's edit in the status bar and repaint (desktop).
+    void announce( const wxString& aWhat ) const;
 
     std::shared_ptr<SCH_CONTEXT> m_context;
 };

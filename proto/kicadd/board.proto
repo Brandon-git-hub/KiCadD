@@ -202,6 +202,7 @@ message SyncFromSchematicResponse
   repeated string new_refs = 5;
   int32  footprints = 6;        // on the board afterwards
   int32  nets       = 7;
+  bool   from_editor = 8;       // the netlist came from the open Schematic Editor (unsaved edits too)
 }
 
 // M5c: automatic placement (src/pcb/kicadd_autoplace.h). Moves the chosen parts inside the

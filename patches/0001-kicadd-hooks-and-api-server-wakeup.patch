@@ -517,7 +517,7 @@ index 1ecfc2e0..40188f5f 100644
  
      //-- Tools menu -----------------------------------------------
 diff --git a/eeschema/sch_edit_frame.cpp b/eeschema/sch_edit_frame.cpp
-index f2bd4e10..7700a010 100644
+index f2bd4e10..37d9fcf0 100644
 --- a/eeschema/sch_edit_frame.cpp
 +++ b/eeschema/sch_edit_frame.cpp
 @@ -71,7 +71,14 @@
@@ -535,7 +535,47 @@ index f2bd4e10..7700a010 100644
  #include <tool/action_manager.h>
  #include <tool/action_toolbar.h>
  #include <tool/common_control.h>
-@@ -741,6 +748,9 @@ void SCH_EDIT_FRAME::setupTools()
+@@ -129,6 +136,11 @@
+ #include <wx/textdlg.h>
+ #include <wx/generic/treectlg.h>
+ 
++#ifdef KICADD
++#include <api/sch_context.h>
++#include <sch/kicadd_handler_sch.h>
++#endif
++
+ 
+ #define DIFF_SYMBOLS_DIALOG_NAME wxT( "DiffSymbolsDialog" )
+ 
+@@ -475,6 +487,17 @@ SCH_EDIT_FRAME::SCH_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
+     Pgm().GetApiServer().RegisterHandler( m_apiHandler.get() );
+     subscribeConnectivity();
+ 
++#ifdef KICADD
++    // Desktop co-pilot: the agent (kicadd-mcp) edits this frame's schematic through the same
++    // commits, undo stack and canvas as the user. The API server is the transport, so it is
++    // started even when the user preference is off; KICADD_NO_API=1 opts out.
++    m_kicaddHandler = std::make_unique<KICADD_HANDLER_SCH>( CreateSchFrameContext( this ) );
++    Pgm().GetApiServer().RegisterHandler( m_kicaddHandler.get() );
++
++    if( !wxGetEnv( wxS( "KICADD_NO_API" ), nullptr ) && !Pgm().GetApiServer().Running() )
++        Pgm().GetApiServer().Start();
++#endif
++
+     if( Kiface().IsSingle() )
+     {
+         m_apiHandlerCommon = std::make_unique<API_HANDLER_COMMON>();
+@@ -620,6 +643,9 @@ SCH_EDIT_FRAME::~SCH_EDIT_FRAME()
+     if( m_schematic )
+         Kiway().LocalHistory().UnregisterSaver( m_schematic );
+ 
++    if( m_kicaddHandler )
++        Pgm().GetApiServer().DeregisterHandler( m_kicaddHandler.get() );
++
+     if( Kiface().IsSingle() )
+     {
+         Pgm().GetApiServer().DeregisterHandler( m_apiHandlerCommon.get() );
+@@ -741,6 +767,9 @@ void SCH_EDIT_FRAME::setupTools()
      m_toolManager->RegisterTool( new SCH_SELECTION_TOOL );
      m_toolManager->RegisterTool( new PICKER_TOOL );
      m_toolManager->RegisterTool( new SCH_DRAWING_TOOLS );
@@ -545,6 +585,40 @@ index f2bd4e10..7700a010 100644
      m_toolManager->RegisterTool( new EE_GRAPHIC_TOOL );
      m_toolManager->RegisterTool( new SCH_LINE_WIRE_BUS_TOOL );
      m_toolManager->RegisterTool( new SCH_MOVE_TOOL );
+@@ -1293,6 +1322,10 @@ void SCH_EDIT_FRAME::doCloseWindow()
+     m_crossProbeFlashTimer.Stop();
+ 
+     Pgm().GetApiServer().DeregisterHandler( m_apiHandler.get() );
++
++    if( m_kicaddHandler )
++        Pgm().GetApiServer().DeregisterHandler( m_kicaddHandler.get() );
++
+     wxTheApp->Unbind( EDA_EVT_PLUGIN_AVAILABILITY_CHANGED, &SCH_EDIT_FRAME::onPluginAvailabilityChanged, this );
+ 
+     // Unregister the autosave saver before any cleanup that might invalidate m_schematic
+diff --git a/eeschema/sch_edit_frame.h b/eeschema/sch_edit_frame.h
+index 53b5785f..f3ddc369 100644
+--- a/eeschema/sch_edit_frame.h
++++ b/eeschema/sch_edit_frame.h
+@@ -66,6 +66,7 @@ class HIERARCHY_PANE;
+ class API_HANDLER_COMMON;
+ class API_HANDLER_LIBRARIES;
+ class API_HANDLER_SCH;
++class API_HANDLER;
+ class DIALOG_SCHEMATIC_SETUP;
+ class PROGRESS_REPORTER;
+ class wxSearchCtrl;
+@@ -1199,6 +1200,10 @@ private:
+     std::unique_ptr<API_HANDLER_SCH> m_apiHandler;
+     std::unique_ptr<API_HANDLER_COMMON> m_apiHandlerCommon;
+     std::unique_ptr<API_HANDLER_LIBRARIES> m_apiLibrariesHandler;
++
++    /// KiCadD desktop co-pilot handler (KICADD_HANDLER_SCH on this frame's schematic); empty
++    /// in builds without KiCadD. Held as the base type so the layout never depends on it.
++    std::unique_ptr<API_HANDLER>        m_kicaddHandler;
+ };
+ 
+ 
 diff --git a/eeschema/sim/spice_simulator.cpp b/eeschema/sim/spice_simulator.cpp
 index dc6d8c4d..62bb3f57 100644
 --- a/eeschema/sim/spice_simulator.cpp

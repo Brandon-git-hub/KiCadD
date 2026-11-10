@@ -139,4 +139,7 @@ message SchDeleteParts
 }
 
 // Returns SchConnectResponse
-message SchSave {}
+message SchSave
+{
+  bool only_headless = 1;   // in the Schematic Editor do nothing (the file is the user's; sync_pcb reads the editor)
+}
