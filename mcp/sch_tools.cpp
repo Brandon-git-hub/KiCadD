@@ -77,6 +77,23 @@ std::string symbolLine( const ks::SchSymbol& s )
     if( !s.lcsc().empty() )
         t += " (" + s.lcsc() + ")";
 
+    if( !s.sheet().empty() && s.sheet() != "/" )
+        t += " on " + s.sheet();
+
+    return t;
+}
+
+/// "SHEET Power /Power/ (Power.kicad_sch) on / @x,y 50.8x25.4, 3 parts, pins: VOUT output right -> +5V"
+std::string sheetLine( const ks::SchSheet& s )
+{
+    std::string t = "SHEET " + s.name() + " " + s.path() + " (" + s.file() + ") on " + s.parent() + " @"
+                    + num( s.x() ) + "," + num( s.y() ) + " " + num( s.width() ) + "x" + num( s.height() ) + ", "
+                    + std::to_string( s.parts() ) + " part(s)";
+
+    for( const ks::SchSheetPin& p : s.pins() )
+        t += "\n  pin " + p.name() + " " + p.direction() + " " + p.side() + " @" + num( p.x() ) + "," + num( p.y() )
+             + ( p.net().empty() ? " (not connected on " + s.parent() + ")" : " -> " + p.net() );
+
     return t;
 }
 
@@ -131,8 +148,9 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                            { "description", "Pins as \"REF.PIN\", e.g. [\"R1.2\", \"U1.VDD\"]" } };
 
     aTools.push_back( { "sch_summary",
-            "The open schematic: its parts (ref, value, symbol, footprint, position), net count and "
-            "unconnected pins. with_pins lists every pin with its net.",
+            "The open schematic: its hierarchical sheets (with their pins and the nets on them), its "
+            "parts (ref, value, symbol, footprint, position, sheet), net count and unconnected pins. "
+            "with_pins lists every pin with its net.",
             obj( { { "with_pins", { { "type", "boolean" } } } } ),
             [&aIpc]( const json& a )
             {
@@ -147,6 +165,9 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                 std::string t = r.file() + ": " + std::to_string( r.symbols_size() ) + " parts, "
                                 + std::to_string( r.nets() ) + " nets, " + std::to_string( r.unconnected_pins() )
                                 + " unconnected pins, " + std::to_string( r.sheets() ) + " sheet(s)";
+
+                for( const ks::SchSheet& s : r.sheet_list() )
+                    t += "\n" + sheetLine( s );
 
                 for( const ks::SchSymbol& s : r.symbols() )
                     t += "\n" + symbolLine( s ) + ( req.with_pins() ? pinLines( s ) : "" );
@@ -171,7 +192,8 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                    { "y", { { "type", "number" }, { "description", "mm, down is +" } } },
                    { "rotation", { { "type", "integer" }, { "enum", { 0, 90, 180, 270 } } } },
                    { "unit", { { "type", "integer" }, { "description", "Multi-unit parts: which unit (default 1)" } } },
-                   { "block", { { "type", "string" }, { "description", "functional block, e.g. LDO" } } } } ),
+                   { "block", { { "type", "string" }, { "description", "functional block, e.g. LDO" } } },
+                   { "sheet", { { "type", "string" }, { "description", "sheet to put it on (name or path; default the root)" } } } } ),
             [&aIpc]( const json& a )
             {
                 ks::SchAddPart req;
@@ -190,6 +212,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                 req.set_rotation( a.value( "rotation", 0 ) );
                 req.set_unit( a.value( "unit", 0 ) );
                 req.set_block( str( a, "block" ) );
+                req.set_sheet( str( a, "sheet" ) );
 
                 ks::SchPartResponse r;
                 std::string         err;
@@ -225,16 +248,27 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "Connect pins to nets, as {\"nets\": {\"GND\": [\"R1.2\", \"C1.2\"], \"VCC\": [\"U1.VDD\"]}}. "
             "Each pin gets a short wire and a net label, so pins on the same net name are connected; "
             "net \"NC\" marks pins as not connected. A pin already on another net is refused "
-            "(sch_disconnect it first). global uses global labels (for multi-sheet designs).",
+            "(sch_disconnect it first). Hierarchy: a net named in ports is a port of the pins' sheet "
+            "(a hierarchical label inside, a sheet pin of that name on the sheet's symbol: inputs on "
+            "the left, the rest on the right); on the parent the sheet pin is SHEET.PIN, like a part's, "
+            "e.g. {\"+5V\": [\"Power.VOUT\", \"U2.3\"]}. global uses global labels instead (every "
+            "sheet sees the net by name).",
             obj( { { "nets", { { "type", "object" },
                                { "additionalProperties", pinList },
                                { "description", "net name -> pins" } } },
-                   { "global", { { "type", "boolean" } } } },
+                   { "global", { { "type", "boolean" } } },
+                   { "ports", { { "type", "array" }, { "items", { { "type", "string" } } },
+                                { "description", "nets that are ports of their sheet: \"VOUT\" or \"VOUT:output\" "
+                                                 "(input, output, bidirectional, tri_state, passive)" } } } },
                  { "nets" } ),
             [&aIpc]( const json& a )
             {
                 ks::SchConnect req;
                 req.set_global( a.value( "global", false ) );
+
+                for( const json& p : a.value( "ports", json::array() ) )
+                    if( p.is_string() )
+                        req.add_ports( p.get<std::string>() );
                 std::string bad;
 
                 if( !a.contains( "nets" ) || !a["nets"].is_object() )
@@ -328,8 +362,55 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                 return TOOL_RESULT{ t, false };
             } } );
 
+    aTools.push_back( { "sch_add_sheet",
+            "Add a hierarchical sheet (a new .kicad_sch file) on a sheet (default the root). Then put "
+            "parts on it with sch_add_part sheet, connect them there with sch_connect, and make the "
+            "nets that leave the sheet ports (sch_connect ports): they become sheet pins, wired on "
+            "the parent as SHEET.PIN.",
+            obj( { { "name", { { "type", "string" }, { "description", "e.g. Power; unique among its siblings" } } },
+                   { "file", { { "type", "string" }, { "description", "default <name>.kicad_sch" } } },
+                   { "parent", { { "type", "string" }, { "description", "sheet name or path (default the root)" } } },
+                   { "x", { { "type", "number" }, { "description", "top left, mm (default: a free spot)" } } },
+                   { "y", { { "type", "number" } } },
+                   { "width", { { "type", "number" }, { "description", "mm, default 50.8" } } },
+                   { "height", { { "type", "number" }, { "description", "mm, default 25.4; grows with its pins" } } } },
+                 { "name" } ),
+            [&aIpc]( const json& a )
+            {
+                ks::SchAddSheet req;
+                req.set_name( str( a, "name" ) );
+                req.set_file( str( a, "file" ) );
+                req.set_parent( str( a, "parent" ) );
+
+                if( a.contains( "x" ) && a["x"].is_number() && a.contains( "y" ) && a["y"].is_number() )
+                {
+                    req.set_x( a["x"].get<double>() );
+                    req.set_y( a["y"].get<double>() );
+                }
+
+                if( a.contains( "width" ) && a["width"].is_number() )
+                    req.set_width( a["width"].get<double>() );
+
+                if( a.contains( "height" ) && a["height"].is_number() )
+                    req.set_height( a["height"].get<double>() );
+
+                ks::SchSheetResponse r;
+                std::string          err;
+
+                if( !aIpc.Call( req, r, err ) )
+                    return fail( err );
+
+                std::string t = "added " + sheetLine( r.sheet() );
+
+                if( !r.note().empty() )
+                    t += "\n  " + r.note();
+
+                return TOOL_RESULT{ t, false };
+            } } );
+
     aTools.push_back( { "sch_delete",
-            "Delete parts from the schematic, with their wire stubs and labels.",
+            "Delete parts from the schematic, with their wire stubs and labels. A sheet's name "
+            "deletes the sheet with everything on it (its file stays on disk).",
             obj( { { "refs", { { "type", "array" }, { "items", { { "type", "string" } } } } } }, { "refs" } ),
             [&aIpc]( const json& a )
             {

@@ -12,7 +12,8 @@ its one API server.
   1. project manager, Ctrl+E: the Schematic Editor registers the agent's schematic tools
   2. agent reads the editor's schematic, adds a part and connects it: the editor's schematic
      changes (title marked modified, status bar names the edit)
-  3. user Ctrl+Z takes the connection back, then the part (one undo list)
+  3. user Ctrl+Z takes the connection back, then the part (one undo list); the agent adds a
+     sheet with a part on it, two Ctrl+Z take both away
   4. user in an interactive tool (drawing a wire): agent edits refused as busy, applied after
   5. Ctrl+P, agent sync_pcb: the PCB Editor's board gets the new part from the open Schematic
      Editor (unsaved), and the schematic file on disk is untouched
@@ -145,6 +146,23 @@ def main():
         err, t = mcp.tool("sch_part", {"ref": ref})
         check(err and "no part" in t.lower(), f"second Ctrl+Z takes {ref} away: {t[:60]}")
         d.shot(os.path.join(work, "shot-2-user-undo.png"))
+
+        print("[3b] agent adds a sheet with a part, user Ctrl+Z twice")
+        err, t = mcp.tool("sch_add_sheet", {"name": "Agent", "x": 30, "y": 190})
+        check(not err and "SHEET Agent /Agent/" in t, "agent added a sheet: " + t.splitlines()[0][:70])
+        err, t = mcp.tool("sch_add_part", {"lib_id": "pic_programmer:R", "value": "1k", "sheet": "Agent"})
+        m2 = re.match(r"added (R\d+) ", t)
+        check(not err and m2 and "on /Agent/" in t.splitlines()[0], "a part on it: " + t.splitlines()[0][:70])
+        err, t = mcp.tool("sch_summary")
+        check(" 70 parts" in t and "3 sheet(s)" in t, "70 parts, 3 sheets: " + t.splitlines()[0][-45:])
+        d.shot(os.path.join(work, "shot-2b-sheet.png"))
+        canvas_keys(sch_win, "ctrl+z")
+        time.sleep(1)
+        canvas_keys(sch_win, "ctrl+z")
+        time.sleep(1)
+        err, t = mcp.tool("sch_summary")
+        check(" 69 parts" in t and "2 sheet(s)" in t and "SHEET Agent" not in t,
+              "user Ctrl+Z twice: part and sheet gone: " + t.splitlines()[0][-45:])
 
         print("[4] user drawing a wire: agent edits wait")
         canvas_keys(sch_win, "w")

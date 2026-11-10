@@ -29,7 +29,11 @@
 #include <sch_pin.h>
 #include <sch_reference_list.h>
 #include <sch_screen.h>
+#include <sch_sheet.h>
+#include <sch_sheet_pin.h>
 #include <sch_sheet_path.h>
+#include <wildcards_and_files_ext.h>
+#include <wx/filename.h>
 #include <sch_symbol.h>
 #include <schematic.h>
 #include <connectivity/conn_facade.h>
@@ -50,6 +54,8 @@ struct KICADD_HANDLER_SCH::PIN_AT
 {
     SCH_SYMBOL*    symbol = nullptr;
     SCH_PIN*       pin = nullptr;
+    SCH_SHEET_PIN* sheetPin = nullptr;   ///< a sheet's pin instead of a symbol's
+    SCH_ITEM*      item = nullptr;       ///< what carries the net: pin or sheet pin
     SCH_SHEET_PATH sheet;
     SCH_SCREEN*    screen = nullptr;
     VECTOR2I       pos;
@@ -162,7 +168,37 @@ bool occupied( SCH_SCREEN* aScreen, const VECTOR2I& aPos )
     return false;
 }
 
+/// "input" -> the label shape; false when unknown.
+bool shapeOf( const std::string& aName, LABEL_FLAG_SHAPE& aOut )
+{
+    static const std::map<std::string, LABEL_FLAG_SHAPE> shapes = {
+        { "input", LABEL_FLAG_SHAPE::L_INPUT },         { "output", LABEL_FLAG_SHAPE::L_OUTPUT },
+        { "bidirectional", LABEL_FLAG_SHAPE::L_BIDI },  { "bidi", LABEL_FLAG_SHAPE::L_BIDI },
+        { "tri_state", LABEL_FLAG_SHAPE::L_TRISTATE },  { "passive", LABEL_FLAG_SHAPE::L_UNSPECIFIED } };
+
+    auto it = shapes.find( aName );
+
+    if( it == shapes.end() )
+        return false;
+
+    aOut = it->second;
+    return true;
+}
+
 } // namespace
+
+
+std::string KICADD_HANDLER_SCH::shapeName( LABEL_FLAG_SHAPE aShape )
+{
+    switch( aShape )
+    {
+    case LABEL_FLAG_SHAPE::L_INPUT:    return "input";
+    case LABEL_FLAG_SHAPE::L_OUTPUT:   return "output";
+    case LABEL_FLAG_SHAPE::L_BIDI:     return "bidirectional";
+    case LABEL_FLAG_SHAPE::L_TRISTATE: return "tri_state";
+    default:                           return "passive";
+    }
+}
 
 
 KICADD_HANDLER_SCH::KICADD_HANDLER_SCH( std::shared_ptr<SCH_CONTEXT> aContext ) :
@@ -177,6 +213,7 @@ KICADD_HANDLER_SCH::KICADD_HANDLER_SCH( std::shared_ptr<SCH_CONTEXT> aContext ) 
     registerHandler<GetSchNetlist, SchNetlist>( &KICADD_HANDLER_SCH::handleGetNetlist );
     registerHandler<SchDeleteParts, SchConnectResponse>( &KICADD_HANDLER_SCH::handleDeleteParts );
     registerHandler<SchSave, SchConnectResponse>( &KICADD_HANDLER_SCH::handleSave );
+    registerHandler<SchAddSheet, SchSheetResponse>( &KICADD_HANDLER_SCH::handleAddSheet );
 }
 
 
@@ -246,14 +283,163 @@ std::vector<std::pair<SCH_SYMBOL*, SCH_SHEET_PATH>> KICADD_HANDLER_SCH::findSymb
 }
 
 
+std::vector<std::pair<SCH_SHEET*, SCH_SHEET_PATH>> KICADD_HANDLER_SCH::findSheetSymbols( const std::string& aName )
+{
+    std::vector<std::pair<SCH_SHEET*, SCH_SHEET_PATH>> out;
+
+    for( const SCH_SHEET_PATH& sheet : schematic()->Hierarchy() )
+    {
+        for( SCH_ITEM* item : sheet.LastScreen()->Items().OfType( SCH_SHEET_T ) )
+        {
+            auto*          child = static_cast<SCH_SHEET*>( item );
+            SCH_SHEET_PATH path = sheet;
+            path.push_back( child );
+
+            if( str( child->GetName() ) == aName || str( path.PathHumanReadable() ) == aName
+                || str( path.PathHumanReadable( true, true ) ) == aName )
+                out.emplace_back( child, sheet );
+        }
+    }
+
+    return out;
+}
+
+
+std::optional<SCH_SHEET_PATH> KICADD_HANDLER_SCH::findSheet( const std::string& aNameOrPath, std::string& aError )
+{
+    SCH_SHEET_LIST hierarchy = schematic()->Hierarchy();
+
+    if( aNameOrPath.empty() || aNameOrPath == "/" )
+        return hierarchy.empty() ? std::nullopt : std::optional<SCH_SHEET_PATH>( hierarchy[0] );
+
+    std::vector<SCH_SHEET_PATH> found;
+
+    for( const SCH_SHEET_PATH& path : hierarchy )
+    {
+        if( path.size() < 2 )
+            continue;
+
+        if( str( path.Last()->GetName() ) == aNameOrPath || str( path.PathHumanReadable() ) == aNameOrPath
+            || str( path.PathHumanReadable( true, true ) ) == aNameOrPath )
+            found.push_back( path );
+    }
+
+    if( found.size() == 1 )
+        return found[0];
+
+    aError = found.empty() ? "no sheet " + aNameOrPath
+                           : "sheet " + aNameOrPath + " is used more than once; give its path (\"/Parent/"
+                                     + aNameOrPath + "/\")";
+    return std::nullopt;
+}
+
+
+void KICADD_HANDLER_SCH::packSheet( SCH_SHEET* aSheet, const SCH_SHEET_PATH& aParent, SchSheet& aOut )
+{
+    SCH_SHEET_PATH path = aParent;
+    path.push_back( aSheet );
+
+    wxFileName file( aSheet->GetFileName() );
+
+    aOut.set_name( str( aSheet->GetName() ) );
+    aOut.set_file( str( file.GetFullPath() ) );
+    aOut.set_path( str( path.PathHumanReadable() ) );
+    aOut.set_parent( str( aParent.PathHumanReadable() ) );
+    aOut.set_x( mm( aSheet->GetPosition().x ) );
+    aOut.set_y( mm( aSheet->GetPosition().y ) );
+    aOut.set_width( mm( aSheet->GetSize().x ) );
+    aOut.set_height( mm( aSheet->GetSize().y ) );
+
+    int parts = 0;
+
+    if( SCH_SCREEN* screen = aSheet->GetScreen() )
+    {
+        for( SCH_ITEM* item : screen->Items().OfType( SCH_SYMBOL_T ) )
+        {
+            if( !static_cast<SCH_SYMBOL*>( item )->IsPower() )
+                parts++;
+        }
+    }
+
+    aOut.set_parts( parts );
+
+    for( SCH_SHEET_PIN* sp : aSheet->GetPins() )
+    {
+        SchSheetPin* p = aOut.add_pins();
+        p->set_name( str( sp->GetText() ) );
+        p->set_direction( shapeName( sp->GetShape() ) );
+        p->set_side( sp->GetSide() == SHEET_SIDE::LEFT    ? "left"
+                     : sp->GetSide() == SHEET_SIDE::RIGHT ? "right"
+                     : sp->GetSide() == SHEET_SIDE::TOP   ? "up"
+                                                          : "down" );
+        // its net on the parent: only when something is attached there (otherwise connectivity
+        // reports the net inside the sheet)
+        if( !wiresEndingAt( aParent.LastScreen(), sp->GetPosition() ).empty()
+            || !labelsAt( aParent.LastScreen(), sp->GetPosition() ).empty() )
+            p->set_net( pinNet( sp, aParent ) );
+        p->set_x( mm( sp->GetPosition().x ) );
+        p->set_y( mm( sp->GetPosition().y ) );
+    }
+}
+
+
+void KICADD_HANDLER_SCH::hierarchyChanged()
+{
+    schematic()->RefreshHierarchy();
+
+    if( SCH_EDIT_FRAME* frame = editor() )
+        frame->UpdateHierarchyNavigator();
+}
+
+
 bool KICADD_HANDLER_SCH::findPin( const std::string& aRef, const std::string& aPin, PIN_AT& aOut,
                                   std::string& aError )
 {
     auto symbols = findSymbols( aRef );
 
+    // no such part: a sheet of that name, and its pin
     if( symbols.empty() )
     {
-        aError = "no part " + aRef;
+        std::vector<std::pair<SCH_SHEET*, SCH_SHEET_PATH>> sheets = findSheetSymbols( aRef );
+
+        if( sheets.empty() )
+        {
+            aError = "no part or sheet " + aRef;
+            return false;
+        }
+
+        if( sheets.size() > 1 )
+        {
+            aError = "sheet name " + aRef + " is used more than once; give its path";
+            return false;
+        }
+
+        auto& [sheet, parent] = sheets[0];
+
+        for( SCH_SHEET_PIN* sp : sheet->GetPins() )
+        {
+            if( str( sp->GetText() ) != aPin )
+                continue;
+
+            aOut = PIN_AT();
+            aOut.sheetPin = sp;
+            aOut.item = sp;
+            aOut.sheet = parent;
+            aOut.screen = parent.LastScreen();
+            aOut.pos = sp->GetPosition();
+
+            switch( sp->GetSide() )
+            {
+            case SHEET_SIDE::LEFT:   aOut.out = { -1, 0 }; aOut.side = "left";  break;
+            case SHEET_SIDE::RIGHT:  aOut.out = { 1, 0 };  aOut.side = "right"; break;
+            case SHEET_SIDE::TOP:    aOut.out = { 0, -1 }; aOut.side = "up";    break;
+            default:                 aOut.out = { 0, 1 };  aOut.side = "down";  break;
+            }
+
+            return true;
+        }
+
+        aError = "sheet " + aRef + " has no pin " + aPin + " (a port of the sheet: sch_connect ports)";
         return false;
     }
 
@@ -266,6 +452,7 @@ bool KICADD_HANDLER_SCH::findPin( const std::string& aRef, const std::string& aP
             PIN_AT at;
             at.symbol = symbol;
             at.pin = pin;
+            at.item = pin;
             at.sheet = sheet;
             at.screen = sheet.LastScreen();
             at.pos = pin->GetPosition();
@@ -305,7 +492,7 @@ bool KICADD_HANDLER_SCH::findPin( const std::string& aRef, const std::string& aP
 }
 
 
-std::string KICADD_HANDLER_SCH::pinNet( SCH_PIN* aPin, const SCH_SHEET_PATH& aSheet )
+std::string KICADD_HANDLER_SCH::pinNet( SCH_ITEM* aPin, const SCH_SHEET_PATH& aSheet )
 {
     std::optional<SCH_CONNECTIVITY::ITEM_VIEW> view =
             schematic()->Connectivity().Connection( aPin->m_Uuid, aSheet.Path() );
@@ -339,6 +526,7 @@ void KICADD_HANDLER_SCH::packSymbol( SCH_SYMBOL* aSymbol, const SCH_SHEET_PATH& 
 
     aOut.set_unit( aSymbol->GetUnit() );
     aOut.set_units( aSymbol->GetUnitCount() );
+    aOut.set_sheet( str( aSheet.PathHumanReadable() ) );
 
     if( const SCH_FIELD* lcsc = aSymbol->GetField( wxS( "LCSC" ) ) )
         aOut.set_lcsc( str( lcsc->GetText() ) );
@@ -410,6 +598,13 @@ HANDLER_RESULT<SchSummary> KICADD_HANDLER_SCH::handleGetSummary( const HANDLER_C
 
     out.set_nets( (int) nets.size() );
     out.set_unconnected_pins( unconnected );
+
+    for( const SCH_SHEET_PATH& sheet : schematic()->Hierarchy() )
+    {
+        for( SCH_ITEM* item : sheet.LastScreen()->Items().OfType( SCH_SHEET_T ) )
+            packSheet( static_cast<SCH_SHEET*>( item ), sheet, *out.add_sheet_list() );
+    }
+
     return out;
 }
 
@@ -489,8 +684,24 @@ HANDLER_RESULT<SchPartResponse> KICADD_HANDLER_SCH::handleAddPart( const HANDLER
                                           "symbol " + str( libId.Format().wx_str() ) + " not found" ) );
 
     SCH_SHEET_LIST hierarchy = schematic()->Hierarchy();
-    SCH_SHEET_PATH sheet = m_context->GetCurrentSheet().value_or( *hierarchy.begin() );
-    SCH_SCREEN*    screen = sheet.LastScreen();
+    SCH_SHEET_PATH sheet = *hierarchy.begin();
+    std::string    sheetErr;
+
+    if( !req.sheet().empty() )
+    {
+        std::optional<SCH_SHEET_PATH> asked = findSheet( req.sheet(), sheetErr );
+
+        if( !asked )
+            return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, sheetErr ) );
+
+        sheet = *asked;
+    }
+
+    SCH_SCREEN* screen = sheet.LastScreen();
+
+    if( screen->GetRefCount() > 1 )
+        note += std::string( note.empty() ? "" : "; " ) + "the sheet's file is used more than once: "
+                "the part is on every copy";
     int            unit = req.unit() > 0 ? req.unit() : 1;
 
     if( libSymbol->GetUnitCount() > 0 && unit > libSymbol->GetUnitCount() )
@@ -702,6 +913,25 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleConnect( const HAND
     SCH_COMMIT         commit( m_context->GetToolManager() );
     int                added = 0;
 
+    // ports: "VOUT" or "VOUT:output"
+    std::map<std::string, LABEL_FLAG_SHAPE> ports;
+
+    for( const std::string& port : aCtx.Request.ports() )
+    {
+        size_t           colon = port.find( ':' );
+        std::string      name = port.substr( 0, colon );
+        LABEL_FLAG_SHAPE shape = LABEL_FLAG_SHAPE::L_BIDI;
+
+        if( colon != std::string::npos && !shapeOf( port.substr( colon + 1 ), shape ) )
+            return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
+                                              "port " + port + ": direction is input, output, bidirectional, "
+                                              "tri_state or passive" ) );
+
+        ports[name] = shape;
+    }
+
+    std::set<SCH_SHEET*> modifiedSheets;
+
     for( const SchPinNet& link : aCtx.Request.links() )
     {
         PIN_AT      at;
@@ -721,7 +951,7 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleConnect( const HAND
         }
 
         bool        wantNc = link.net() == "NC";
-        std::string current = pinNet( at.pin, at.sheet );
+        std::string current = pinNet( at.item, at.sheet );
 
         if( wantNc )
         {
@@ -777,13 +1007,47 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleConnect( const HAND
             continue;
         }
 
+        auto            port = ports.find( link.net() );
+        SCH_LABEL_BASE* netLabel = nullptr;
+
+        if( port != ports.end() )
+        {
+            // A port of the pin's sheet: a hierarchical label here, a sheet pin of the same name
+            // on the sheet's symbol on the parent
+            if( at.sheet.size() < 2 )
+            {
+                out.add_errors( label + ": " + link.net() + " can't be a port: the pin is on the root sheet" );
+                continue;
+            }
+
+            SCH_SHEET_PATH parent = at.sheet;
+            parent.pop_back();
+            SCH_SHEET* owner = at.sheet.Last();
+
+            if( !owner->HasPin( wx( link.net() ) ) )
+            {
+                if( modifiedSheets.insert( owner ).second )
+                    commit.Modify( owner, parent.LastScreen() );
+
+                addSheetPin( owner, wx( link.net() ), port->second );
+            }
+
+            auto* hier = new SCH_HIERLABEL( end, wx( link.net() ) );
+            hier->SetShape( port->second );
+            netLabel = hier;
+        }
+        else if( aCtx.Request.global() )
+        {
+            netLabel = new SCH_GLOBALLABEL( end, wx( link.net() ) );
+        }
+        else
+        {
+            netLabel = new SCH_LABEL( end, wx( link.net() ) );
+        }
+
         auto* wire = new SCH_LINE( at.pos, LAYER_WIRE );
         wire->SetEndPoint( end );
         commit.Add( wire, at.screen );
-
-        SCH_LABEL_BASE* netLabel = aCtx.Request.global()
-                                           ? static_cast<SCH_LABEL_BASE*>( new SCH_GLOBALLABEL( end, wx( link.net() ) ) )
-                                           : static_cast<SCH_LABEL_BASE*>( new SCH_LABEL( end, wx( link.net() ) ) );
 
         // text runs away from the pin
         if( at.out.x < 0 )
@@ -923,6 +1187,7 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleDeleteParts( const 
 
     SchConnectResponse out;
     SCH_COMMIT         commit( m_context->GetToolManager() );
+    bool               sheetsGone = false;
 
     for( const std::string& ref : aCtx.Request.refs() )
     {
@@ -930,7 +1195,35 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleDeleteParts( const 
 
         if( symbols.empty() )
         {
-            out.add_errors( "no part " + ref );
+            // a sheet: its symbol on the parent (the stubs on its pins with it); what is on the
+            // sheet goes with it, its file stays on disk
+            auto sheets = findSheetSymbols( ref );
+
+            if( sheets.size() == 1 )
+            {
+                auto& [sheet, parent] = sheets[0];
+
+                for( SCH_SHEET_PIN* sp : sheet->GetPins() )
+                {
+                    PIN_AT at;
+                    at.sheetPin = sp;
+                    at.item = sp;
+                    at.sheet = parent;
+                    at.screen = parent.LastScreen();
+                    at.pos = sp->GetPosition();
+                    disconnectPin( at, commit );
+                }
+
+                commit.Remove( sheet, parent.LastScreen() );
+                sheetsGone = true;
+                out.set_done( out.done() + 1 );
+            }
+            else
+            {
+                out.add_errors( sheets.empty() ? "no part or sheet " + ref
+                                               : "sheet name " + ref + " is used more than once; give its path" );
+            }
+
             continue;
         }
 
@@ -955,6 +1248,10 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleDeleteParts( const 
     {
         out.set_history_label( "delete " + std::to_string( out.done() ) + " part(s)" );
         commit.Push( wxS( "Agent: " ) + wx( out.history_label() ) );
+
+        if( sheetsGone )
+            hierarchyChanged();
+
         rebuildConnectivity();
         announce( wxS( "Agent: " ) + wx( out.history_label() ) );
     }
@@ -963,6 +1260,184 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleDeleteParts( const 
         commit.Revert();
     }
 
+    return out;
+}
+
+
+void KICADD_HANDLER_SCH::addSheetPin( SCH_SHEET* aSheet, const wxString& aName, LABEL_FLAG_SHAPE aShape )
+{
+    // inputs on the left, everything else on the right, one every 2.54 mm from the top; the
+    // sheet grows when its side is full
+    SHEET_SIDE side = aShape == LABEL_FLAG_SHAPE::L_INPUT ? SHEET_SIDE::LEFT : SHEET_SIDE::RIGHT;
+    int        n = 0;
+
+    for( SCH_SHEET_PIN* sp : aSheet->GetPins() )
+    {
+        if( sp->GetSide() == side )
+            n++;
+    }
+
+    const VECTOR2I pos = aSheet->GetPosition();
+    VECTOR2I       size = aSheet->GetSize();
+    int            y = pos.y + STUB * ( n + 1 );
+
+    if( y > pos.y + size.y - STUB )
+    {
+        size.y = STUB * ( n + 2 );
+        aSheet->Resize( size );
+    }
+
+    auto* pin = new SCH_SHEET_PIN( aSheet, VECTOR2I( side == SHEET_SIDE::LEFT ? pos.x : pos.x + size.x, y ), aName );
+    pin->SetShape( aShape );
+    pin->SetSide( side );
+    pin->SetPosition( VECTOR2I( side == SHEET_SIDE::LEFT ? pos.x : pos.x + size.x, y ) );
+    aSheet->AddPin( pin );
+}
+
+
+HANDLER_RESULT<SchSheetResponse> KICADD_HANDLER_SCH::handleAddSheet( const HANDLER_CONTEXT<SchAddSheet>& aCtx )
+{
+    if( !schematic() )
+        return tl::unexpected( makeError( ApiStatusCode::AS_UNHANDLED, "no schematic open" ) );
+
+    if( auto err = busy() )
+        return tl::unexpected( *err );
+
+    const SchAddSheet& req = aCtx.Request;
+    wxString           name = wx( req.name() );
+
+    if( name.IsEmpty() || name.Contains( wxS( "/" ) ) )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "a sheet needs a name (no \"/\")" ) );
+
+    std::string                   err;
+    std::optional<SCH_SHEET_PATH> parent = findSheet( req.parent(), err );
+
+    if( !parent )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, err ) );
+
+    SCH_SCREEN* parentScreen = parent->LastScreen();
+
+    for( SCH_ITEM* item : parentScreen->Items().OfType( SCH_SHEET_T ) )
+    {
+        if( static_cast<SCH_SHEET*>( item )->GetName() == name )
+            return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
+                                              "sheet " + req.name() + " already exists there" ) );
+    }
+
+    // Its file: as asked or "<name>.kicad_sch", next to the root schematic. A new file only:
+    // reusing a sheet file (several instances) is not supported here.
+    wxString file = req.file().empty() ? name + wxS( "." ) + FILEEXT::KiCadSchematicFileExtension : wx( req.file() );
+    file.Replace( wxS( " " ), wxS( "_" ) );
+
+    if( !file.EndsWith( wxS( "." ) + FILEEXT::KiCadSchematicFileExtension ) )
+        file += wxS( "." ) + FILEEXT::KiCadSchematicFileExtension;
+
+    wxFileName root( schematic()->RootScreen()->GetFileName() );
+    wxFileName abs( file );
+
+    if( !abs.IsAbsolute() )
+        abs.MakeAbsolute( root.GetPath() );
+
+    if( abs.FileExists() )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
+                                          str( abs.GetFullName() ) + " already exists; give another file name" ) );
+
+    SCH_SCREENS screens( schematic()->Root() );
+
+    for( SCH_SCREEN* screen = screens.GetFirst(); screen; screen = screens.GetNext() )
+    {
+        if( wxFileName( screen->GetFileName() ) == abs )
+            return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
+                                              str( abs.GetFullName() ) + " is already a sheet of this schematic" ) );
+    }
+
+    VECTOR2I size( snap( iu( req.width() > 0 ? req.width() : 50.8 ) ), snap( iu( req.height() > 0 ? req.height() : 25.4 ) ) );
+    VECTOR2I pos;
+    std::string note;
+
+    if( req.has_x() && req.has_y() )
+    {
+        pos = VECTOR2I( snap( iu( req.x() ) ), snap( iu( req.y() ) ) );
+    }
+    else
+    {
+        // the first free spot on the parent, with room around for the pins' stubs and labels
+        std::vector<BOX2I> taken;
+
+        for( SCH_ITEM* item : parentScreen->Items() )
+            taken.push_back( item->GetBoundingBox() );
+
+        BOX2I body( VECTOR2I( 0, 0 ), size );
+        body.Inflate( iu( 20.32 ), iu( 7.62 ) );
+
+        const int left = iu( 25.4 ), top = iu( 25.4 );
+        const int right = parentScreen->GetPageSettings().GetWidthIU( schIUScale.IU_PER_MILS ) - iu( 25.4 );
+        const int bottom = parentScreen->GetPageSettings().GetHeightIU( schIUScale.IU_PER_MILS ) - iu( 40 );
+        const int step = iu( 2.54 );
+        bool      found = false;
+
+        for( int y = top; y + body.GetHeight() < bottom && !found; y += step )
+        {
+            for( int x = left; x + body.GetWidth() < right && !found; x += step )
+            {
+                VECTOR2I anchor( snap( x - body.GetLeft() ), snap( y - body.GetTop() ) );
+                BOX2I    box = body;
+                box.Move( anchor );
+
+                if( std::none_of( taken.begin(), taken.end(), [&]( const BOX2I& b ) { return b.Intersects( box ); } ) )
+                {
+                    pos = anchor;
+                    found = true;
+                }
+            }
+        }
+
+        if( !found )
+        {
+            int lowest = top;
+
+            for( const BOX2I& b : taken )
+                lowest = std::max( lowest, b.GetBottom() );
+
+            pos = VECTOR2I( snap( left + iu( 20.32 ) ), snap( lowest + iu( 10.16 ) ) );
+            note = "the sheet is full: placed below it";
+        }
+    }
+
+    // No parent item: SCH_COMMIT turns adding an item whose parent is a sheet into modifying
+    // that sheet; the screen becomes its parent when it is appended.
+    auto* sheet = new SCH_SHEET( nullptr, pos, size );
+    sheet->GetField( FIELD_T::SHEET_NAME )->SetText( name );
+
+    wxFileName rel( abs );
+    rel.MakeRelativeTo( wxFileName( parentScreen->GetFileName() ).GetPath() );
+    sheet->GetField( FIELD_T::SHEET_FILENAME )->SetText( rel.GetFullPath( wxPATH_UNIX ) );
+
+    auto* screen = new SCH_SCREEN( schematic() );
+    screen->SetFileName( abs.GetFullPath() );
+    screen->SetPageSettings( parentScreen->GetPageSettings() );
+    screen->SetContentModified();
+    sheet->SetScreen( screen );
+
+    SCH_SHEET_LIST hierarchy = schematic()->Hierarchy();
+    SCH_SHEET_PATH instance = *parent;
+    instance.push_back( sheet );
+    instance.SetPageNumber( hierarchy.GetNextPageNumber() );
+
+    sheet->AutoplaceFields( parentScreen, AUTOPLACE_AUTO );
+
+    SCH_COMMIT commit( m_context->GetToolManager() );
+    commit.Add( sheet, parentScreen );
+    wxString what = wxS( "add sheet " ) + name;
+    commit.Push( wxS( "Agent: " ) + what );
+
+    hierarchyChanged();
+    rebuildConnectivity();
+    announce( wxS( "Agent: " ) + what );
+
+    SchSheetResponse out;
+    packSheet( sheet, *parent, *out.mutable_sheet() );
+    out.set_note( note );
     return out;
 }
 

@@ -18,6 +18,7 @@
 #include <vector>
 
 #include <api/api_handler.h>
+#include <sch_label.h>
 #include <kicadd/schematic.pb.h>
 
 class SCH_CONTEXT;
@@ -25,7 +26,9 @@ class SCH_COMMIT;
 class SCH_EDIT_FRAME;
 class wxString;
 class SCH_PIN;
+class SCH_ITEM;
 class SCH_SCREEN;
+class SCH_SHEET;
 class SCH_SHEET_PATH;
 class SCH_SYMBOL;
 class SCHEMATIC;
@@ -67,6 +70,25 @@ private:
     HANDLER_RESULT<kicadd::schematic::SchConnectResponse>
     handleSave( const HANDLER_CONTEXT<kicadd::schematic::SchSave>& aCtx );
 
+    HANDLER_RESULT<kicadd::schematic::SchSheetResponse>
+    handleAddSheet( const HANDLER_CONTEXT<kicadd::schematic::SchAddSheet>& aCtx );
+
+    /// Sheet symbols named @a aName (or with that path), with the path of the sheet they sit on.
+    std::vector<std::pair<SCH_SHEET*, SCH_SHEET_PATH>> findSheetSymbols( const std::string& aName );
+
+    /// The sheet path for a name ("Power") or a path ("/Power/"); "" or "/" is the root.
+    std::optional<SCH_SHEET_PATH> findSheet( const std::string& aNameOrPath, std::string& aError );
+
+    void packSheet( SCH_SHEET* aSheet, const SCH_SHEET_PATH& aParent, kicadd::schematic::SchSheet& aOut );
+
+    /// A sheet pin for a port: inputs on the left, the rest on the right; grows the sheet.
+    void addSheetPin( SCH_SHEET* aSheet, const wxString& aName, LABEL_FLAG_SHAPE aShape );
+
+    /// Sheets were added or removed: the hierarchy (and the editor's navigator) again.
+    void hierarchyChanged();
+
+    static std::string shapeName( LABEL_FLAG_SHAPE aShape );
+
     /// Symbols (all units) carrying @a aRef, with their sheet.
     std::vector<std::pair<SCH_SYMBOL*, SCH_SHEET_PATH>> findSymbols( const std::string& aRef );
 
@@ -77,7 +99,7 @@ private:
     int disconnectPin( const PIN_AT& aPin, SCH_COMMIT& aCommit );
 
     /// Net name of a placed pin after a connectivity rebuild ("" when on no net).
-    std::string pinNet( SCH_PIN* aPin, const SCH_SHEET_PATH& aSheet );
+    std::string pinNet( SCH_ITEM* aPin, const SCH_SHEET_PATH& aSheet );
 
     void packSymbol( SCH_SYMBOL* aSymbol, const SCH_SHEET_PATH& aSheet, bool aWithPins,
                      kicadd::schematic::SchSymbol& aOut );

@@ -37,6 +37,52 @@ message SchSymbol
   int32  units     = 9;    // units the part has
   string lcsc      = 10;
   repeated SchPin pins = 11;
+  string sheet     = 12;   // the sheet it is on: "/" (root), "/Power/"
+}
+
+// A hierarchical sheet: its symbol on the parent sheet, its own file, its pins (one per port of
+// the sheet: a hierarchical label inside, a sheet pin on the symbol outside)
+message SchSheetPin
+{
+  string name      = 1;
+  string direction = 2;    // input, output, bidirectional, tri_state, passive
+  string side      = 3;    // where a wire leaves it on the parent: left, right
+  string net       = 4;    // its net on the parent sheet ("" when not connected there)
+  double x         = 5;
+  double y         = 6;
+}
+
+message SchSheet
+{
+  string name   = 1;
+  string file   = 2;       // relative to the project
+  string path   = 3;       // "/Power/"
+  string parent = 4;       // "/"
+  double x      = 5;       // the sheet symbol on the parent, mm
+  double y      = 6;
+  double width  = 7;
+  double height = 8;
+  int32  parts  = 9;       // symbols on it (power symbols aside)
+  repeated SchSheetPin pins = 10;
+}
+
+// Add a hierarchical sheet (a new file) on a parent sheet.
+// Returns SchSheetResponse
+message SchAddSheet
+{
+  string name   = 1;       // "Power": unique among its siblings
+  string file   = 2;       // default "<name>.kicad_sch" next to the root schematic
+  string parent = 3;       // sheet name or path; default the root
+  optional double x = 4;   // the sheet symbol's top left, mm; default the next free spot
+  optional double y = 5;
+  double width  = 6;       // mm (default 50.8)
+  double height = 7;       // mm (default 25.4; grows with its pins)
+}
+
+message SchSheetResponse
+{
+  SchSheet sheet = 1;
+  string   note  = 2;
 }
 
 // Returns SchSummary
@@ -52,6 +98,7 @@ message SchSummary
   int32  nets             = 3;
   int32  unconnected_pins = 4;   // pins on no named net and not marked no-connect
   repeated SchSymbol symbols = 5;
+  repeated SchSheet sheet_list = 6;   // the hierarchical sheets (root aside)
 }
 
 // Place a symbol: from a library (lib_id "Device:R") or an LCSC part (lcsc "C25804": fetched,
@@ -70,6 +117,7 @@ message SchAddPart
   int32  rotation  = 8;    // 0, 90, 180, 270
   int32  unit      = 9;    // multi-unit parts: which unit (default 1)
   string block     = 10;   // functional block ("LDO", "MCU"): a hidden "Block" field; auto_place keeps blocks together
+  string sheet     = 11;   // the sheet to put it on (name or path, "Power" or "/Power/"); default the root
 }
 
 // Returns SchPartResponse
@@ -87,7 +135,8 @@ message SchPartResponse
 message SchPinNet
 {
   string ref = 1;
-  string pin = 2;          // pin number ("1", "A3") or a unique pin name ("VDD")
+  string pin = 2;          // pin number ("1", "A3") or a unique pin name ("VDD"); for a sheet pin
+                           // ref is the sheet's name and pin the sheet pin's ("Power", "VOUT")
   string net = 3;          // net name; "NC" puts a no-connect flag instead
 }
 
@@ -98,6 +147,10 @@ message SchConnect
 {
   repeated SchPinNet links = 1;
   bool global = 2;
+  // Nets that are ports of the pins' sheet: a hierarchical label inside instead of a local one,
+  // and a sheet pin of the same name on the sheet's symbol on the parent ("VOUT" or
+  // "VOUT:output"; directions input, output, bidirectional, tri_state, passive)
+  repeated string ports = 3;
 }
 
 // Take the stub/label/no-connect off pins (net ignored).
@@ -132,7 +185,8 @@ message SchNetlist
   repeated string unconnected = 2;   // "U1.7": on no net, no no-connect flag
 }
 
-// Returns SchConnectResponse (done = parts deleted, with their stubs and labels)
+// Returns SchConnectResponse (done = parts deleted, with their stubs and labels; a sheet's name
+// deletes the sheet with everything on it, its file stays on disk)
 message SchDeleteParts
 {
   repeated string refs = 1;

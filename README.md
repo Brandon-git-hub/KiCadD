@@ -848,6 +848,52 @@ applies; Ctrl+P, `sync_pcb` puts the new part on the PCB Editor's board on the r
 the open Schematic Editor" while the `.kicad_sch` on disk stays byte for byte the same; Ctrl+Q,
 don't save, exit code 0. PASS, together with m5_e2e (headless) and desktop_e2e (PCB Editor).
 
+## M5e: hierarchical sheets (2026-11-10)
+
+The agent builds multi-sheet designs the way it builds one sheet:
+
+```
+sch_add_sheet {"name": "Power"}                                  -> Power.kicad_sch, page 2
+sch_add_part  {"lib_id": "Device:R", "sheet": "Power"}           -> R1 on /Power/
+sch_connect   {"nets": {"VOUT": ["R1.2", "C1.1"], "VIN": ["R1.1"]},
+               "ports": ["VOUT:output", "VIN:input"]}            -> hierarchical labels inside,
+                                                                    sheet pins on Power's symbol
+sch_connect   {"nets": {"+5V": ["Power.VOUT", "LED.VCC"]}}       -> on the root: sheet pins are
+                                                                    wired like part pins
+```
+
+* `sch_add_sheet`: name (unique among its siblings), file (default `<name>.kicad_sch` next to
+  the root; a new file only: an existing one, or one already in the schematic, is refused),
+  parent (name or path), position (default the next free spot), size. One commit; the editor's
+  hierarchy navigator follows.
+* `sch_add_part sheet` puts the part on that sheet (annotated across the whole hierarchy).
+* `sch_connect ports`: those nets become ports of the pins' sheet: a hierarchical label inside
+  and, if missing, a sheet pin of the same name and shape on the sheet's symbol (inputs on the
+  left, the rest on the right, 2.54 mm apart; the sheet grows when a side is full). A port on a
+  root pin is refused. Other nets on a sub-sheet stay local (`/LED/LED_A`).
+* A sheet pin is `SHEET.PIN` wherever a part pin is accepted (`sch_connect`, `sch_disconnect`).
+* `sch_summary` lists the sheets: path, file, position, parts, and each pin with its direction,
+  side and the net it has on the parent ("not connected on /" until wired there). Parts say
+  which sheet they are on.
+* `sch_delete` with a sheet's name removes it with everything on it (its file stays on disk).
+
+One trap on the way: `SCH_COMMIT` turns adding an item whose parent item is a sheet into
+modifying that sheet, so a sheet created with its parent sheet as parent item was never added.
+It is created without one; appending it to the screen sets the parent.
+
+Verification: `client/hier_e2e.py` (headless): two sheets with R/C and LED/R, ports, the root
+wiring them with a cap: one `/+5V` across three sheets (R1.2 C1.1 R2.1), one `/GND`, `/VIN`
+from the root into Power, `/LED/LED_A` local; disconnecting `Power.VOUT` splits the net,
+reconnecting joins it; saved (Power.kicad_sch, LED.kicad_sch), restarted, same netlist;
+`sync_pcb` puts all five parts on the board with the cross-sheet nets; `auto_place groups
+"sheets"` sees three blocks; deleting LED leaves Power and three parts. KiCad's ERC on the saved
+design: 0 violations. `desktop_sch_e2e.py` adds a sheet with a part in the open Schematic Editor
+(the navigator shows "Agent (page 3)"), and the user's two Ctrl+Z take both away. PASS, with
+m5_e2e, mcp_e2e (26 tools) and smoke.
+
+Not supported: several instances of one sheet file (a channel used twice): adding a part to
+such a sheet is noted ("the part is on every copy"), annotation per instance is not handled.
+
 ## M3: Windows CI (2026-11-06)
 
 `.github/workflows/windows.yml` builds KiCadD for Windows x64 on GitHub-hosted runners:
