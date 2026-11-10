@@ -1017,13 +1017,13 @@ time, and `--prefix` would leave `share/kicad` (icons, templates, demos) out of 
    `${KICAD10_FOOTPRINT_DIR}/*.pretty`，找不到庫所以 DRC 無法比對。板子本身沒問題。
    方向：在無官方庫的 KiCadD 把這類警告預設設為忽略（或 `run_drc` 摘要中分開列出）。
    不要建議使用者「把標準庫加回來」，因為本版沒有那些庫。
-2. **`sch_netlist` 重複腳位。** 重現：`GND` 裡 `U2.7` 出現 4 次，`VCC` 裡 `U2.14` 出現 4 次
-   （74HC125 四個單元共用的電源腳）。原因：`handleGetNetlist`
-   （`src/sch/kicadd_handler_sch.cpp`）對每個單元各呼叫 `symbol->GetPins( &sheet )`，
-   共用腳（unit 0）每個單元各回傳一次。方向：以 `ref.pin` 去重（`pins` 排序後 `unique`）。
-3. **`sch_netlist` 把部分電源符號當成腳位。** 重現：`VPP` 裡出現 `#PWR122.1 #PWR123.1 #PWR134.1`。
-   原因：demo 內嵌的 `pic_programmer:VPP` 符號沒有 `(power)` 旗標，`symbol->IsPower()` 為假。
-   方向：另外跳過 `#` 開頭的參考編號（KiCad 對電源符號保留的前綴）。
+2. **（低優先，純顯示）`sch_netlist` 重複腳位。** `GND` 裡 `U2.7`、`VCC` 裡 `U2.14` 各出現 4 次：
+   74HC125 四個單元共用的電源腳，`handleGetNetlist`（`src/sch/kicadd_handler_sch.cpp`）對每個單元
+   各呼叫 `symbol->GetPins( &sheet )`，共用腳（unit 0）每次都回傳。電路沒有錯，只是輸出變長；
+   KiCad 自己的網路表匯出每支腳在每個網路只列一次。方向：以 `ref.pin` 去重。
+3. **（低優先，純顯示）`sch_netlist` 列出虛擬電源符號。** `VPP` 裡出現 `#PWR122.1 #PWR123.1 #PWR134.1`：
+   demo 的 `pic_programmer:VPP` 是後加的虛擬電源，符號沒有 `(power)` 旗標，`IsPower()` 為假。
+   一般的 GND / VCC 電源符號有正確跳過。方向（可選）：另外跳過 `#` 開頭的參考編號。
 
 保留不動：專案管理器的 Version Control（Git）面板。
 
