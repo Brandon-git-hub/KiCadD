@@ -60,9 +60,26 @@ struct PART
     /// May go to the other side: its shape there (mirrored), same frame and pad order as above
     bool                  canFlip = false;
     bool                  flipIfSatellite = false;   ///< canFlip only when it belongs to an IC pin
+
+    // Rules from the agent (hard: a spot breaking them is not legal)
+    int   edgeSide = -1;      ///< EDGE_*: its courtyard at that side of the board, -1 none
+    bool  hasRegion = false;  ///< its courtyard inside region
+    BOX2I region;
+    int   fixedRot = -1;      ///< only this rotation (quarter turns), -1 free
     std::vector<VECTOR2I> flipOutline, flipCopper, flipPadOffset;
     std::vector<BOX2I>    flipPadBox;
 };
+
+enum { EDGE_LEFT = 0, EDGE_RIGHT, EDGE_TOP, EDGE_BOTTOM, EDGE_ANY };
+
+/// Parts kept within maxDist of each other (centres of their pads); soft, reported when broken.
+struct NEAR_RULE
+{
+    std::vector<int> parts;     ///< indices into the parts
+    int              maxDist = 0;
+    std::string      label;     ///< "Y1 U1"
+};
+
 
 struct OPTIONS
 {
@@ -90,9 +107,12 @@ struct OPTIONS
     int  backPenalty = 500000;     ///< nm of distance a spot on the back must win by
 
     bool measureOnly = false;      ///< place nothing: the "before" values only
+
+    std::vector<NEAR_RULE> nearRules;
 };
 
 enum { OBST_FRONT = 1, OBST_BACK = 2, OBST_INNER = 4 };
+
 
 struct RESULT
 {
@@ -107,6 +127,7 @@ struct RESULT
     int                      satellites = 0;    ///< small passives tied to an IC pin (decaps, pull-ups), placed
     double                   satBefore = 0;     ///< their mean distance to the pin, mm, before (on the board)
     double                   satAfter = 0;      ///< mm
+    std::vector<std::string> violations;        ///< rules not met: "Y1 U1: 7.2 mm apart (max 5)"
 };
 
 /**

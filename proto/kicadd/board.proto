@@ -223,6 +223,38 @@ message AutoPlace
   repeated string back  = 11;  // these parts may go to the bottom side ("C*", "R12"; SMD only)
   bool   back_decaps    = 12;  // decoupling caps (2 pads, one on ground, at an IC pin) may go to the bottom, under it
   bool   measure_only   = 13;  // move nothing: report the current wire length, mixing, decoupling distance
+
+  // Rules (refs may be patterns: "J*"). Edge, region and rotation are hard (a part that can't
+  // meet them is not placed); near is kept with a strong pull and reported when broken.
+  repeated EdgeRule     edge_rules     = 14;
+  repeated RegionRule   region_rules   = 15;
+  repeated NearRule     near_rules     = 16;
+  repeated RotationRule rotation_rules = 17;
+}
+
+message EdgeRule
+{
+  string ref  = 1;
+  string side = 2;     // left, right, top, bottom, any: its courtyard at that board edge
+}
+
+message RegionRule
+{
+  string ref = 1;
+  Point  min = 2;      // board coordinates, nm: the courtyard stays inside
+  Point  max = 3;
+}
+
+message NearRule
+{
+  repeated string refs = 1;
+  int64  max_distance  = 2;   // nm, between the centres of the parts' pads
+}
+
+message RotationRule
+{
+  string ref     = 1;
+  int32  degrees = 2;  // 0, 90, 180, 270
 }
 
 message PartGroup
@@ -249,6 +281,7 @@ message AutoPlaceResponse
   int32  decaps         = 14;     // placed small passives tied to an IC pin (decaps, pull-ups)
   double decap_before_mm = 15;    // their mean pad-to-pin distance (those on the board before)
   double decap_after_mm = 16;
+  repeated string rule_violations = 17;   // near rules not met
 }
 
 message FetchLcsc

@@ -200,9 +200,23 @@ public:
                 m_satellites[m_work[i].affPart].push_back( (int) i );
         }
 
+        m_nearOf.resize( m_parts.size() );
+
+        for( size_t r = 0; r < m_opt.nearRules.size(); ++r )
+        {
+            for( int k : m_opt.nearRules[r].parts )
+            {
+                if( k >= 0 && k < (int) m_parts.size() )
+                    m_nearOf[k].push_back( (int) r );
+            }
+        }
+
         for( size_t i = 0; i < m_parts.size(); ++i )
         {
             PART& p = m_parts[i];
+
+            if( p.movable && p.fixedRot >= 0 )
+                p.rot = p.fixedRot & 3;
 
             // a decoupling cap: two pads, one on ground (the largest net), tied to an IC pin
             bool decap = m_work[i].affPart >= 0 && p.pads.size() == 2
@@ -248,6 +262,30 @@ public:
 
         centre();
         res.mixed = mixed();
+
+        for( const NEAR_RULE& rule : m_opt.nearRules )
+        {
+            for( size_t a = 0; a < rule.parts.size(); ++a )
+            {
+                for( size_t b = a + 1; b < rule.parts.size(); ++b )
+                {
+                    int i = rule.parts[a], j = rule.parts[b];
+
+                    if( !m_work[i].placed || !m_work[j].placed )
+                        continue;
+
+                    double d = ( nearCentre( i ) - nearCentre( j ) ).EuclideanNorm();
+
+                    if( d > rule.maxDist + 1000 )
+                    {
+                        char buf[160];
+                        snprintf( buf, sizeof( buf ), "%s %s: %.1f mm apart (max %.1f)", m_parts[i].ref.c_str(),
+                                  m_parts[j].ref.c_str(), d / 1e6, rule.maxDist / 1e6 );
+                        res.violations.push_back( buf );
+                    }
+                }
+            }
+        }
         res.satAfter = satelliteDistance( false, &res.satellites );
 
         for( size_t i = 0; i < m_parts.size(); ++i )
@@ -339,6 +377,24 @@ private:
         for( int j : m_satellites[i] )
             cost += 2.0 * ( padPos( j, m_work[j].affPad ) - padPos( i, m_work[j].affOther ) ).EuclideanNorm();
 
+        // near rules: every mm beyond the limit costs like 10 mm of wire
+        for( int r : m_nearOf[i] )
+        {
+            const NEAR_RULE& rule = m_opt.nearRules[r];
+            VECTOR2D         me = nearCentre( i );
+
+            for( int j : rule.parts )
+            {
+                if( j == i || !m_work[j].placed )
+                    continue;
+
+                double d = ( nearCentre( j ) - me ).EuclideanNorm();
+
+                if( d > rule.maxDist )
+                    cost += 10.0 * ( d - rule.maxDist );
+            }
+        }
+
         VECTOR2D bc;
 
         if( blockCentre( i, bc ) )
@@ -380,6 +436,21 @@ private:
             sx += 2.0 * want.x;
             sy += 2.0 * want.y;
             sw += 2.0;
+        }
+
+        // near rules: towards the other parts of the rule
+        for( int r : m_nearOf[i] )
+        {
+            for( int j : m_opt.nearRules[r].parts )
+            {
+                if( j == i || !m_work[j].placed )
+                    continue;
+
+                VECTOR2D want = nearCentre( j ) - VECTOR2D( m_work[i].cu[at( p, aRot )].Centre() );
+                sx += 3.0 * want.x;
+                sy += 3.0 * want.y;
+                sw += 3.0;
+            }
         }
 
         VECTOR2D bc;
@@ -770,8 +841,110 @@ private:
         return clear;
     }
 
+    /// Near rules measure between the parts' pad-box centres.
+    VECTOR2D nearCentre( int i ) const
+    {
+        return VECTOR2D( cuAt( i, m_parts[i].pos, m_parts[i].rot ).Centre() );
+    }
+
+    /// Anchor for part i in rotation aRot that puts its centre on the centre of its near-rule
+    /// partners already placed; false when there are none.
+    bool nearTarget( int i, int aRot, VECTOR2I& aOut ) const
+    {
+        VECTOR2D sum( 0, 0 );
+        int      n = 0;
+
+        for( int r : m_nearOf[i] )
+        {
+            for( int j : m_opt.nearRules[r].parts )
+            {
+                if( j != i && m_work[j].placed )
+                {
+                    sum += nearCentre( j );
+                    n++;
+                }
+            }
+        }
+
+        if( !n )
+            return false;
+
+        VECTOR2D want = sum / n - VECTOR2D( m_work[i].cu[at( m_parts[i], aRot )].Centre() );
+        aOut = VECTOR2I( KiROUND( want.x ), KiROUND( want.y ) );
+        return true;
+    }
+
+    /// The agent's hard rules for part i at aPos / aRot: board edge, region.
+    bool ruled( int i, const VECTOR2I& aPos, int aRot ) const
+    {
+        const PART& p = m_parts[i];
+
+        if( p.edgeSide < 0 && !p.hasRegion )
+            return true;
+
+        BOX2I b = boxAt( i, aPos, aRot );
+
+        if( p.hasRegion && !( p.region.Contains( b.GetOrigin() ) && p.region.Contains( b.GetEnd() ) ) )
+            return false;
+
+        if( p.edgeSide >= 0 )
+        {
+            const int tol = m_opt.edge + 2 * m_opt.grid;
+            const int d[4] = { b.GetLeft() - m_area.GetLeft(), m_area.GetRight() - b.GetRight(),
+                               b.GetTop() - m_area.GetTop(), m_area.GetBottom() - b.GetBottom() };
+
+            if( p.edgeSide == EDGE_ANY )
+                return *std::min_element( d, d + 4 ) <= tol;
+
+            return d[p.edgeSide] <= tol;
+        }
+
+        return true;
+    }
+
+    /// Where the rules want part i near aTarget: onto its edge (the nearest one for "any"),
+    /// into its region.
+    VECTOR2I ruleTarget( int i, const VECTOR2I& aTarget, int aRot ) const
+    {
+        const PART& p = m_parts[i];
+        VECTOR2I    t = aTarget;
+        const BOX2I rel = m_work[i].box[at( p, aRot )];
+
+        if( p.edgeSide >= 0 )
+        {
+            const int x[2] = { m_area.GetLeft() + m_opt.edge - rel.GetLeft(), m_area.GetRight() - m_opt.edge - rel.GetRight() };
+            const int y[2] = { m_area.GetTop() + m_opt.edge - rel.GetTop(), m_area.GetBottom() - m_opt.edge - rel.GetBottom() };
+            int       side = p.edgeSide;
+
+            if( side == EDGE_ANY )
+            {
+                const int d[4] = { std::abs( t.x - x[0] ), std::abs( t.x - x[1] ), std::abs( t.y - y[0] ),
+                                   std::abs( t.y - y[1] ) };
+                side = (int) ( std::min_element( d, d + 4 ) - d );
+            }
+
+            if( side == EDGE_LEFT || side == EDGE_RIGHT )
+                t.x = x[side == EDGE_RIGHT];
+            else
+                t.y = y[side == EDGE_BOTTOM];
+        }
+
+        if( p.hasRegion )
+        {
+            t.x = std::clamp( t.x, p.region.GetLeft() - rel.GetLeft(),
+                              std::max( p.region.GetLeft() - rel.GetLeft(), p.region.GetRight() - rel.GetRight() ) );
+            t.y = std::clamp( t.y, p.region.GetTop() - rel.GetTop(),
+                              std::max( p.region.GetTop() - rel.GetTop(), p.region.GetBottom() - rel.GetBottom() ) );
+        }
+
+        return t;
+    }
+
     bool legalAt( int i, const VECTOR2I& aPos, int aRot ) const
     {
+        if( !ruled( i, aPos, aRot ) )
+            return false;
+
         return free( i, aPos, aRot ) && insideBoard( boxAt( i, aPos, aRot ) );
     }
 
@@ -1015,6 +1188,11 @@ private:
 
         std::stable_partition( order.begin(), order.end(), connected );
 
+        // parts with a place given by the rules (connectors on an edge, parts in a region) first:
+        // they frame the rest
+        std::stable_partition( order.begin(), order.end(),
+                               [&]( int i ) { return m_parts[i].edgeSide >= 0 || m_parts[i].hasRegion; } );
+
         const VECTOR2I spots[8] = { m_area.GetOrigin(),
                                     { m_area.GetRight(), m_area.GetTop() },
                                     m_area.GetEnd(),
@@ -1054,17 +1232,20 @@ private:
                 if( m_work[i].affPart >= 0 && m_work[m_work[i].affPart].placed )
                     pullPoint( i, startRot, tgt );
 
+                // a near rule with partners placed: right next to them
+                nearTarget( i, startRot, tgt );
+
                 bool     found = false;
                 VECTOR2I spot;
                 int      rot = startRot;
 
-                if( nearestLegal( i, tgt, startRot, spot ) )
+                if( nearestLegal( i, ruleTarget( i, tgt, startRot ), startRot, spot ) )
                     found = true;
 
-                for( int k = 1; k < 4 && !found && m_opt.rotate; ++k )
+                for( int k = 1; k < 4 && !found && m_opt.rotate && m_parts[i].fixedRot < 0; ++k )
                 {
                     rot = ( startRot + k ) & 3;
-                    found = nearestLegal( i, tgt, rot, spot );
+                    found = nearestLegal( i, ruleTarget( i, tgt, rot ), rot, spot );
                 }
 
                 if( !found )
@@ -1144,29 +1325,45 @@ private:
             {
                 const int r = m_opt.rotate ? t % 4 : 0;
                 int       rot = m_opt.rotate ? r : keepRot;
+
+                if( p.fixedRot >= 0 && rot != ( p.fixedRot & 3 ) )
+                    continue;
                 p.back = ( t / ( m_opt.rotate ? 4 : 1 ) ) == 0 ? keepBack : !keepBack;
                 VECTOR2I want, at;
 
                 if( !pullPoint( i, rot, want ) )
                     continue;
 
-                // a spot farther from where the wires pull than the part is now rarely helps:
-                // don't search the whole board for one
-                int maxRing = (int) ( ( VECTOR2D( keepPos ) - VECTOR2D( want ) ).EuclideanNorm() / m_opt.grid ) + 3;
+                // where the wires pull it, and (near rules) next to its partners
+                std::vector<VECTOR2I> cands = { ruleTarget( i, want, rot ) };
+                VECTOR2I              nt;
 
-                if( !nearestLegal( i, want, rot, at, maxRing ) )
-                    continue;
+                if( nearTarget( i, rot, nt ) )
+                    cands.push_back( ruleTarget( i, nt, rot ) );
 
-                p.pos = at;
-                p.rot = rot;
-                double cost = localCost( i ) + ( p.back && p.canFlip ? m_opt.backPenalty : 0 );
-
-                if( cost < bestCost - 1000.0 )      // at least 1 µm better
+                for( const VECTOR2I& cand : cands )
                 {
-                    bestCost = cost;
-                    bestPos = at;
-                    bestRot = rot;
-                    bestBack = p.back;
+                    // a spot farther from where the wires pull than the part is now rarely
+                    // helps: don't search the whole board for one (near targets: a bit more)
+                    int maxRing = (int) ( ( VECTOR2D( keepPos ) - VECTOR2D( cand ) ).EuclideanNorm() / m_opt.grid ) + 3;
+
+                    if( &cand != &cands[0] )
+                        maxRing += (int) ( 10000000 / m_opt.grid );
+
+                    if( !nearestLegal( i, cand, rot, at, maxRing ) )
+                        continue;
+
+                    p.pos = at;
+                    p.rot = rot;
+                    double cost = localCost( i ) + ( p.back && p.canFlip ? m_opt.backPenalty : 0 );
+
+                    if( cost < bestCost - 1000.0 )      // at least 1 µm better
+                    {
+                        bestCost = cost;
+                        bestPos = at;
+                        bestRot = rot;
+                        bestBack = p.back;
+                    }
                 }
             }
 
@@ -1238,6 +1435,7 @@ private:
     mutable unsigned                              m_stampNow = 0;
     int                                           m_maxHoleGap = 0;
     std::vector<std::vector<int>>                 m_members;    ///< per block
+    std::vector<std::vector<int>>                 m_nearOf;     ///< near rules a part is in
     bool                                          m_soft = false;
     std::vector<VECTOR2D>                         m_blockSum;
     std::vector<int>                              m_blockN;

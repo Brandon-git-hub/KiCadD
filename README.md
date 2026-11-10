@@ -894,6 +894,38 @@ m5_e2e, mcp_e2e (26 tools) and smoke.
 Not supported: several instances of one sheet file (a channel used twice): adding a part to
 such a sheet is noted ("the part is on every copy"), annotation per instance is not handled.
 
+## M5f: placement rules from the agent (2026-11-10)
+
+`auto_place rules` says what a designer would say before placing; refs may be patterns:
+
+```
+"rules": {
+  "edge":     {"J1": "left", "P1": "left", "USB*": "any"},  // courtyard at that board edge
+  "region":   {"U3": [73.6, 40.6, 129.7, 139.8]},          // courtyard inside, mm
+  "rotation": {"J1": 270},                                 // only this rotation
+  "near":     [{"refs": ["U4", "C4"], "max": 8}]           // pad centres within 8 mm
+}
+```
+
+* edge, region and rotation are hard: a spot breaking them is not legal (a part that can't meet
+  them is reported as having no room). Parts with an edge or region go first, so connectors
+  frame the rest; their target is moved onto their edge (the nearest one for "any") or into
+  their region before the free spot is searched for.
+* near is kept by a strong pull (every mm over the limit costs like 10 mm of wire) and by trying
+  the spot next to the partners in legalisation and refinement; what can't be met comes back as
+  "rules not met: P2 U5: 11.6 mm apart (max 2.0)".
+* Bad rules (a side that isn't one, an unknown ref, 45 degrees) are refused before anything moves.
+
+`client/rules_e2e.py` (pic_programmer, tracks stripped, all front parts off the board): J1 and
+P1 on the left edge (0.6 and 0.8 mm from it) at 270, U3 inside the left 35 % of the board, U4
+and C4 7.5 mm apart, read back from the saved board's courtyards and pads; DRC: nothing the
+human layout doesn't have; wire length 1620 mm (1712 without rules). P2 and U5 within 2 mm is
+reported as not met. Without rules nothing changes (pic_programmer 1711.69 mm, coldfire 7236.76
+mm, as before). PASS, with m5_e2e and mcp_e2e.
+
+Not yet: connectors that overhang the edge (the DB9 in the human layout sticks 8.6 mm out): an
+edge rule keeps the courtyard inside, flush with the edge.
+
 ## M3: Windows CI (2026-11-06)
 
 `.github/workflows/windows.yml` builds KiCadD for Windows x64 on GitHub-hosted runners:

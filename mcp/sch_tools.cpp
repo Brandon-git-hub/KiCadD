@@ -536,7 +536,15 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                    { "back_decaps", { { "type", "boolean" },
                                       { "description", "decoupling caps may go to the bottom, under their IC pin" } } },
                    { "measure_only", { { "type", "boolean" },
-                                       { "description", "move nothing, report the numbers for the parts as they are" } } } } ),
+                                       { "description", "move nothing, report the numbers for the parts as they are" } } },
+                   { "rules", { { "type", "object" },
+                                { "description",
+                                  "placement rules; refs may be patterns (\"J*\"). edge: {\"J1\": \"left\"} "
+                                  "(left/right/top/bottom/any: the courtyard at that board edge); region: "
+                                  "{\"U1\": [x0, y0, x1, y1]} (mm, the courtyard inside); rotation: "
+                                  "{\"J1\": 90}; near: [{\"refs\": [\"Y1\", \"U1\"], \"max\": 5}] (mm "
+                                  "between the centres of their pads). edge/region/rotation are hard, near is reported when "
+                                  "it can't be met" } } } } ),
             [&aIpc]( const json& a )
             {
                 kicadd::board::AutoPlace req;
@@ -580,6 +588,64 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
 
                 req.set_back_decaps( a.value( "back_decaps", false ) );
                 req.set_measure_only( a.value( "measure_only", false ) );
+
+                if( a.contains( "rules" ) )
+                {
+                    const json& rules = a["rules"];
+
+                    if( !rules.is_object() )
+                        return fail( "rules: an object with edge, region, rotation, near" );
+
+                    // (named: items() of a temporary would dangle in the loop)
+                    const json edge = rules.value( "edge", json::object() );
+                    const json region = rules.value( "region", json::object() );
+                    const json rotation = rules.value( "rotation", json::object() );
+                    const json nearRules = rules.value( "near", json::array() );
+
+                    if( !edge.is_object() || !region.is_object() || !rotation.is_object() || !nearRules.is_array() )
+                        return fail( "rules: edge, region, rotation are objects (ref -> ...), near a list" );
+
+                    for( const auto& [ref, side] : edge.items() )
+                    {
+                        kicadd::board::EdgeRule* r = req.add_edge_rules();
+                        r->set_ref( ref );
+                        r->set_side( side.is_string() ? side.get<std::string>() : "" );
+                    }
+
+                    for( const auto& [ref, box] : region.items() )
+                    {
+                        if( !box.is_array() || box.size() != 4 || !std::all_of( box.begin(), box.end(),
+                                                                               []( const json& v ) { return v.is_number(); } ) )
+                            return fail( "region rule " + ref + ": [x0, y0, x1, y1] in mm" );
+
+                        kicadd::board::RegionRule* r = req.add_region_rules();
+                        r->set_ref( ref );
+                        r->mutable_min()->set_x( std::llround( box[0].get<double>() * 1e6 ) );
+                        r->mutable_min()->set_y( std::llround( box[1].get<double>() * 1e6 ) );
+                        r->mutable_max()->set_x( std::llround( box[2].get<double>() * 1e6 ) );
+                        r->mutable_max()->set_y( std::llround( box[3].get<double>() * 1e6 ) );
+                    }
+
+                    for( const auto& [ref, deg] : rotation.items() )
+                    {
+                        kicadd::board::RotationRule* r = req.add_rotation_rules();
+                        r->set_ref( ref );
+                        r->set_degrees( deg.is_number() ? deg.get<int>() : 1 );
+                    }
+
+                    for( const json& near : nearRules )
+                    {
+                        if( !near.is_object() || !near.contains( "refs" ) || !near.contains( "max" ) || !near["max"].is_number() )
+                            return fail( "near rule: {\"refs\": [...], \"max\": mm}" );
+
+                        kicadd::board::NearRule* r = req.add_near_rules();
+                        r->set_max_distance( std::llround( near["max"].get<double>() * 1e6 ) );
+
+                        for( const json& ref : near["refs"] )
+                            if( ref.is_string() )
+                                r->add_refs( ref.get<std::string>() );
+                    }
+                }
 
                 for( const json& r : a.value( "refs", json::array() ) )
                     if( r.is_string() )
@@ -641,6 +707,14 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
 
                     for( const std::string& ref : r.unplaced() )
                         t += " " + ref;
+                }
+
+                if( r.rule_violations_size() )
+                {
+                    t += "\n  rules not met:";
+
+                    for( const std::string& v : r.rule_violations() )
+                        t += "\n    " + v;
                 }
 
                 if( r.skipped_size() )

@@ -2439,6 +2439,91 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
 
     opt.rotate = !req.no_rotate();
     opt.backSatellites = req.back_decaps();
+
+    // The agent's rules: refs may be patterns ("J*"); each must match something
+    auto matching = [&]( const std::string& aPattern, std::vector<int>& aOut ) -> bool
+    {
+        wxString pat = wxString::FromUTF8( aPattern );
+
+        for( size_t i = 0; i < fps.size(); ++i )
+        {
+            if( fps[i]->GetReference().Matches( pat ) )
+                aOut.push_back( (int) i );
+        }
+
+        return !aOut.empty();
+    };
+
+    auto bad = [&]( const std::string& aMsg ) { return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, aMsg ) ); };
+
+    for( const kicadd::board::EdgeRule& r : req.edge_rules() )
+    {
+        static const std::map<std::string, int> sides = { { "left", ap::EDGE_LEFT },   { "right", ap::EDGE_RIGHT },
+                                                          { "top", ap::EDGE_TOP },     { "bottom", ap::EDGE_BOTTOM },
+                                                          { "any", ap::EDGE_ANY } };
+        std::vector<int> hit;
+        auto             side = sides.find( r.side() );
+
+        if( side == sides.end() )
+            return bad( "edge rule " + r.ref() + ": side is left, right, top, bottom or any" );
+
+        if( !matching( r.ref(), hit ) )
+            return bad( "edge rule: no footprint " + r.ref() );
+
+        for( int i : hit )
+            parts[i].edgeSide = side->second;
+    }
+
+    for( const kicadd::board::RegionRule& r : req.region_rules() )
+    {
+        std::vector<int> hit;
+
+        if( !matching( r.ref(), hit ) )
+            return bad( "region rule: no footprint " + r.ref() );
+
+        BOX2I box( VECTOR2I( (int) std::min( r.min().x(), r.max().x() ), (int) std::min( r.min().y(), r.max().y() ) ),
+                   VECTOR2I( (int) std::abs( r.max().x() - r.min().x() ), (int) std::abs( r.max().y() - r.min().y() ) ) );
+
+        for( int i : hit )
+        {
+            parts[i].hasRegion = true;
+            parts[i].region = box;
+        }
+    }
+
+    for( const kicadd::board::RotationRule& r : req.rotation_rules() )
+    {
+        std::vector<int> hit;
+        int              deg = ( ( r.degrees() % 360 ) + 360 ) % 360;
+
+        if( deg % 90 )
+            return bad( "rotation rule " + r.ref() + ": 0, 90, 180 or 270" );
+
+        if( !matching( r.ref(), hit ) )
+            return bad( "rotation rule: no footprint " + r.ref() );
+
+        for( int i : hit )
+            parts[i].fixedRot = deg / 90;
+    }
+
+    for( const kicadd::board::NearRule& r : req.near_rules() )
+    {
+        ap::NEAR_RULE rule;
+        rule.maxDist = (int) std::max<int64_t>( 0, r.max_distance() );
+
+        for( const std::string& ref : r.refs() )
+        {
+            if( !matching( ref, rule.parts ) )
+                return bad( "near rule: no footprint " + ref );
+
+            rule.label += ( rule.label.empty() ? "" : " " ) + ref;
+        }
+
+        if( rule.parts.size() < 2 )
+            return bad( "near rule " + rule.label + ": two parts or more" );
+
+        opt.nearRules.push_back( std::move( rule ) );
+    }
     opt.measureOnly = req.measure_only();
 
     if( const char* seed = getenv( "KICADD_AP_SEED" ) )     // benchmarks only
@@ -2587,6 +2672,9 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
         out.set_mixed( res.mixed );
         out.set_mixed_before( res.mixedBefore );
     }
+
+    for( const std::string& v : res.violations )
+        out.add_rule_violations( v );
 
     out.set_on_back( res.onBack );
     out.set_flipped( res.flipped );
