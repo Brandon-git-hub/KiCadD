@@ -1122,6 +1122,40 @@ index 0780a942..d3f966f4 100644
  set_target_properties( pcbnew_kiface PROPERTIES
  #Decorate OUTPUT_NAME with PREFIX and SUFFIX, creating something like
  #_pcbnew.so, _pcbnew.dll, or _pcbnew.kiface
+diff --git a/pcbnew/api/api_handler_pcb_tasks.cpp b/pcbnew/api/api_handler_pcb_tasks.cpp
+index 618b7cc5..caf50cc7 100644
+--- a/pcbnew/api/api_handler_pcb_tasks.cpp
++++ b/pcbnew/api/api_handler_pcb_tasks.cpp
+@@ -53,6 +53,11 @@
+ #include <api/board/board_tasks.pb.h>
+ #include <api/common/tasks.pb.h>
+ 
++#ifdef KICADD
++#include <footprint_library_adapter.h>
++#include <project_pcb.h>
++#endif
++
+ #include <algorithm>
+ #include <memory>
+ 
+@@ -208,6 +213,17 @@ public:
+         if( m_testFootprints && !fetchNetlist() )
+             return;
+ 
++#ifdef KICADD
++        // The library parity check reads the footprint libraries: load them first, as
++        // `kicad-cli pcb drc` does (headless, nothing else has; otherwise every library reads as
++        // "not enabled", the project's own included). The editor has them already.
++        if( FOOTPRINT_LIBRARY_ADAPTER* adapter = PROJECT_PCB::FootprintLibAdapter( m_board->GetProject() ) )
++        {
++            adapter->AsyncLoad();
++            adapter->BlockUntilLoaded();
++        }
++#endif
++
+         EDA_UNITS units = EDA_UNITS::MM;
+         PCB_EDIT_FRAME* frame = m_handler->frame();
+ 
 diff --git a/pcbnew/board.cpp b/pcbnew/board.cpp
 index c745afed..51c0b2cb 100644
 --- a/pcbnew/board.cpp
@@ -1862,6 +1896,36 @@ index c4623074..ba1a0d3a 100644
      }
 +#endif
  }
+diff --git a/pcbnew/drc/drc_test_provider_library_parity.cpp b/pcbnew/drc/drc_test_provider_library_parity.cpp
+index f0e0b2d8..b1fe9b8a 100644
+--- a/pcbnew/drc/drc_test_provider_library_parity.cpp
++++ b/pcbnew/drc/drc_test_provider_library_parity.cpp
+@@ -1200,6 +1200,25 @@ bool DRC_TEST_PROVIDER_LIBRARY_PARITY::Run()
+         if( std::optional<LIBRARY_TABLE_ROW*> optRow = adapter->GetRow( libName ); optRow )
+             libTableRow = *optRow;
+ 
++#ifdef KICADD
++        // KiCadD ships none of KiCad's standard libraries: a footprint from one of them (no table
++        // row, or a row pointing into ${KICADn_FOOTPRINT_DIR} that isn't there) can't be compared,
++        // and saying so for every footprint only buries the real findings. Libraries that do
++        // exist (the project's own) are still checked.
++        auto isStockLibrary = []( const LIBRARY_TABLE_ROW* aRow )
++        {
++            const wxString& uri = aRow->URI();
++            return uri.StartsWith( wxS( "${KICAD" ) ) && uri.Contains( wxS( "_FOOTPRINT_DIR}" ) );
++        };
++
++        if( !libTableRow
++            || ( isStockLibrary( libTableRow )
++                 && ( !adapter->HasLibrary( libName, true ) || !adapter->IsLibraryLoaded( libName ) ) ) )
++        {
++            continue;
++        }
++#endif
++
+         if( !libTableRow )
+         {
+             if( !m_drcEngine->IsErrorLimitExceeded( DRCE_LIB_FOOTPRINT_ISSUES ) )
 diff --git a/pcbnew/menubar_pcb_editor.cpp b/pcbnew/menubar_pcb_editor.cpp
 index eda0f8cb..f32c202b 100644
 --- a/pcbnew/menubar_pcb_editor.cpp

@@ -23,7 +23,7 @@ Built as a thin extension of upstream `kicad-cli api-server`, not a fork of the 
 | `web/index.html` | 2D view (vanilla JS + Canvas 2D), embedded into `kicadd-mcp` at build time |
 | `client/` | Python IPC client, benchmark, verification + A/B scripts, `run_server.sh`, `desktop_e2e.py` (M2) |
 
-### Upstream patch (~2100 lines incl. context, 41 files; see the M1–M4 sections for the newest parts)
+### Upstream patch (~2600 lines incl. context, 53 files; see the M1–M7 sections and the 2026-11-11 fixes for the newest parts)
 
 - **Hooks** (guarded by `KICADD_DIR` / `#ifdef KICADD`): `CMakeLists.txt`, `pcbnew/CMakeLists.txt`,
   `pcbnew/pcbnew.cpp` register `KICADD_HANDLER_PCB` next to `API_HANDLER_PCB`.
@@ -1036,11 +1036,30 @@ legalizing takes 0.9 s and improving (refine) the rest, about 2 s per pass.
 `--sheets`, `--fix J,H`, `--back-decaps --back C*`), 7.9/12.7/8.7/7.7 s → 7.2/10.0/6.7/7.8 s.
 `m5_e2e`, `rules_e2e` and `hier_e2e` pass.
 
+## DRC: library check without KiCad's libraries (2026-11-11)
+
+TODO 1 from the Windows trial: `run_drc` on pic_programmer gave `0 errors, 63 warnings`, all
+`lib_footprint_issues`. There were two causes:
+
+- **KiCad's standard libraries are not part of KiCadD.** A footprint from one of them (no table
+  row, or a row pointing into `${KICADn_FOOTPRINT_DIR}`) can't be compared. In KiCadD builds the
+  library parity check now skips these (`drc_test_provider_library_parity.cpp`, `#ifdef KICADD`).
+- **Headless DRC never loaded the libraries.** The API's DRC task did not load the footprint
+  libraries first, as `kicad-cli pcb drc` does, so every library read as "not enabled",
+  including the project's own `footprints`. The task now loads them first
+  (`api_handler_pcb_tasks.cpp`, `#ifdef KICADD`); the editor has them loaded already.
+
+Libraries that exist are still compared. After growing one pad of Q3 (`footprints:TO-92`) on a
+copy of the board, DRC reports `lib_footprint_mismatch Q3 ... does not match copy in library
+'footprints'`; the untouched board has 0 warnings, headless and in the desktop pcbnew.
+A separate "library check skipped" line in `run_drc` (planned) was not added: the skipped
+footprints are only the ones from libraries KiCadD doesn't ship.
+
 ## 待做清單 (TODO)
 
 2026-11-10，`v0.1.0-alpha.2` 在 Windows 上試用後回報；以下已在 Linux 上用 `pic_programmer` 重現確認，**尚未實作**。
 
-1. **`lib_footprint_issues` 警告雜訊。** 重現：`run_drc` 回報 `0 errors, 63 warnings`，全是
+1. **（已完成 2026-11-11，見「DRC: library check without KiCad's libraries」）`lib_footprint_issues` 警告雜訊。** 重現：`run_drc` 回報 `0 errors, 63 warnings`，全是
    `The current configuration does not include the footprint library 'Capacitor_THT'`（以及
    `MountingHole` 等）。原因：KiCadD 不附 KiCad 官方封裝庫，demo 的 `fp-lib-table` 指向
    `${KICAD10_FOOTPRINT_DIR}/*.pretty`，找不到庫所以 DRC 無法比對。板子本身沒問題。
