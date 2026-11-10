@@ -25,6 +25,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <string>
 #include <vector>
 
@@ -81,6 +82,16 @@ struct NEAR_RULE
 };
 
 
+/// Shared with a placement running on another thread: progress out, cancel in.
+struct PROGRESS
+{
+    std::atomic<bool> cancel{ false };   ///< stop now; the result is then not to be used
+    std::atomic<int>  placed{ 0 };       ///< parts given a legal spot (the furthest start)
+    std::atomic<int>  passes{ 0 };       ///< improving passes finished (the furthest start)
+    std::atomic<bool> improving{ false };
+};
+
+
 struct OPTIONS
 {
     int  spacing = 250000;     ///< courtyard to courtyard, nm
@@ -112,6 +123,8 @@ struct OPTIONS
     /// placement stays legal when it runs out; only the wire length is less good.
     double timeLimit = 0;
 
+    PROGRESS* progress = nullptr;  ///< optional
+
     std::vector<NEAR_RULE> nearRules;
 };
 
@@ -134,6 +147,7 @@ struct RESULT
     std::vector<std::string> violations;        ///< rules not met: "Y1 U1: 7.2 mm apart (max 5)"
     int                      refinePasses = 0;  ///< improving passes run (the last one may be cut short)
     bool                     timedOut = false;  ///< stopped improving at OPTIONS::timeLimit
+    bool                     cancelled = false; ///< PROGRESS::cancel: the positions are not usable
 };
 
 /**

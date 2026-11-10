@@ -234,6 +234,17 @@ message AutoPlace
   // Seconds for improving the wire length once every part has a legal spot (0 = 10 s, < 0 = no
   // limit). Running out leaves a legal placement, only a less improved one.
   double time_limit     = 18;
+
+  // Run on another thread: the answer comes at once with running = true; then ask
+  // AutoPlaceStatus until running is false (the result is applied on that call). Other edits
+  // are refused as busy meanwhile; if the board changes anyway, nothing is moved.
+  bool   background     = 19;
+}
+
+// Returns AutoPlaceResponse: running (progress), or the finished result, applied now
+message AutoPlaceStatus
+{
+  bool cancel = 1;     // stop the background run; nothing is moved
 }
 
 message EdgeRule
@@ -290,6 +301,9 @@ message AutoPlaceResponse
   int32  refine_passes  = 19;     // improving passes run
   double seconds        = 20;     // placer run time
   int32  track_obstacles = 21;    // tracks and vias on the board: the parts keep clear of them
+  bool   running        = 22;     // background: still running (ask AutoPlaceStatus again)
+  bool   cancelled      = 23;     // stopped by AutoPlaceStatus cancel: nothing moved
+  string progress       = 24;     // while running: "placing, 30/62 parts", "improving, 2 pass(es) done"
 }
 
 message FetchLcsc

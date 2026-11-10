@@ -10,8 +10,10 @@
 #include "ipc_client.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <thread>
 
 #include <kicadd/schematic.pb.h>
 #include <kicadd/board.pb.h>
@@ -530,7 +532,8 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "default: two-sided assembly costs more). Reports wire length before/after, how mixed "
             "the blocks are and how far the small passives (decaps, pull-ups) are from their IC pin. "
             "Existing tracks and vias are obstacles: on a routed board fewer parts find room, so "
-            "place before routing (right after sync_pcb), or delete the routing first.",
+            "place before routing (right after sync_pcb), or delete the routing first. Runs beside "
+            "the editor (it stays responsive); if the board is changed meanwhile nothing is moved.",
             obj( { { "refs", { { "type", "array" }, { "items", { { "type", "string" } } } } },
                    { "all", { { "type", "boolean" } } },
                    { "fixed", { { "type", "array" }, { "items", { { "type", "string" } } } } },
@@ -684,8 +687,50 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                 kicadd::board::AutoPlaceResponse r;
                 std::string                      err;
 
+                // On another thread in the editor (it stays responsive; a long run used to freeze
+                // it and time out every call queued behind it); ask until it's done.
+                req.set_background( true );
+
                 if( !aIpc.Call( req, r, err ) )
                     return fail( err );
+
+                const auto t0 = std::chrono::steady_clock::now();
+                const double limit = req.time_limit() > 0 ? req.time_limit() : 10.0;
+                const double giveUp = ( req.time_limit() < 0 ? 600.0 : limit + 300.0 );
+                bool         cancelSent = false;
+                std::string  lastProgress;
+
+                while( r.running() )
+                {
+                    lastProgress = r.progress();
+                    std::this_thread::sleep_for( std::chrono::milliseconds( 200 ) );
+                    const double waited = std::chrono::duration<double>( std::chrono::steady_clock::now() - t0 ).count();
+
+                    kicadd::board::AutoPlaceStatus st;
+
+                    if( waited > giveUp && !cancelSent )
+                    {
+                        st.set_cancel( true );
+                        cancelSent = true;
+                    }
+
+                    kicadd::board::AutoPlaceResponse next;
+
+                    if( !aIpc.Call( st, next, err ) )
+                    {
+                        // done, but the user is routing / in a dialog: it is applied when they finish
+                        if( err.find( "interactive tool" ) != std::string::npos && waited < giveUp )
+                            continue;
+
+                        return fail( err );
+                    }
+
+                    r = std::move( next );
+                }
+
+                if( r.cancelled() )
+                    return fail( "auto_place gave up after " + num( giveUp ) + " s (" + lastProgress
+                                 + "); nothing was moved" );
 
                 std::string t = a.value( "measure_only", false ) ? std::string( "measured (nothing moved)" )
                                                                  : "placed " + std::to_string( r.moved() ) + " part(s)";

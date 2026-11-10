@@ -223,6 +223,7 @@ KICADD_HANDLER_PCB::KICADD_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext ) 
     registerHandler<FetchLcsc, FetchLcscResponse>( &KICADD_HANDLER_PCB::handleFetchLcsc );
     registerHandler<SyncFromSchematic, SyncFromSchematicResponse>( &KICADD_HANDLER_PCB::handleSyncFromSchematic );
     registerHandler<AutoPlace, AutoPlaceResponse>( &KICADD_HANDLER_PCB::handleAutoPlace );
+    registerHandler<AutoPlaceStatus, AutoPlaceResponse>( &KICADD_HANDLER_PCB::handleAutoPlaceStatus );
     registerHandler<Undo, HistoryResponse>( &KICADD_HANDLER_PCB::handleUndo );
     registerHandler<Redo, HistoryResponse>( &KICADD_HANDLER_PCB::handleRedo );
     registerHandler<GetHistory, HistoryResponse>( &KICADD_HANDLER_PCB::handleGetHistory );
@@ -249,11 +250,15 @@ KICADD_HANDLER_PCB::KICADD_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext ) 
 }
 
 
-KICADD_HANDLER_PCB::~KICADD_HANDLER_PCB() = default;
+KICADD_HANDLER_PCB::~KICADD_HANDLER_PCB()
+{
+    stopAutoPlace();
+}
 
 
 void KICADD_HANDLER_PCB::DetachBoard()
 {
+    stopAutoPlace();
     m_feed.reset();
     m_undo.clear();
     m_redo.clear();
@@ -272,6 +277,13 @@ kicadd::RENDER_FEED* KICADD_HANDLER_PCB::feed()
 
 std::optional<ApiResponseStatus> KICADD_HANDLER_PCB::busy() const
 {
+    if( m_autoPlace )
+    {
+        return makeError( ApiStatusCode::AS_BUSY,
+                          "auto_place is running on this board; the edit was not applied (wait for it, "
+                          "or cancel it)" );
+    }
+
     if( !m_context || m_context->CanAcceptApiCommands() )
         return std::nullopt;
 
@@ -2613,16 +2625,162 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
     BOX2I area = outline.BBox();
     opt.grid = std::max( 100000, (int) ( std::max( area.GetWidth(), area.GetHeight() ) / 800 ) / 50000 * 50000 );
 
-    // Improving is cut off after time_limit (the placement is legal from the start): on the
-    // desktop this runs on the editor's thread, and fewer cores make it much slower.
+    // Improving is cut off after time_limit (the placement is legal from the start): fewer
+    // cores make it much slower.
     opt.timeLimit = req.time_limit() > 0 ? req.time_limit() : req.time_limit() < 0 ? 0 : 10.0;
 
-    const auto t0 = std::chrono::steady_clock::now();
-    ap::RESULT res = ap::Place( parts, (int) netIndex.size(), outline, opt );
-    out.set_seconds( std::chrono::duration<double>( std::chrono::steady_clock::now() - t0 ).count() );
+    auto job = std::make_unique<AUTOPLACE_JOB>();
+    job->parts = std::move( parts );
+    job->netCount = (int) netIndex.size();
+    job->outline = outline;
+    job->opt = opt;
+    job->opt.progress = &job->progress;
+    job->measureOnly = req.measure_only();
+    job->groupSource = groupSource;
+    job->board = b;
+    job->revision = feed() ? feed()->Revision() : 0;
+    job->started = std::chrono::steady_clock::now();
+    job->out = std::move( out );
+    job->out.set_track_obstacles( (int) b->Tracks().size() );
+
+    for( FOOTPRINT* fp : fps )
+        job->ids.push_back( fp->m_Uuid );
+
+    for( const ap::PART& p : job->parts )
+        job->movable += p.movable ? 1 : 0;
+
+    if( !req.background() )
+    {
+        runAutoPlace( *job );
+        return finishAutoPlace( *job );
+    }
+
+    // In the background: the editor stays responsive. The placer works on its own copy of
+    // the parts, never on the board; the result is applied on this thread when asked for
+    // (AutoPlaceStatus), and only if the board hasn't changed meanwhile.
+    AUTOPLACE_JOB* raw = job.get();
+    job->worker = std::thread( [raw]() { runAutoPlace( *raw ); } );
+    m_autoPlace = std::move( job );
+
+    announce( wxString::Format( wxS( "Agent: auto-placing %d parts..." ), raw->movable ) );
+    return autoPlaceRunning( *raw );
+}
+
+
+void KICADD_HANDLER_PCB::runAutoPlace( AUTOPLACE_JOB& aJob )
+{
+    aJob.result = kicadd::autoplace::Place( aJob.parts, aJob.netCount, aJob.outline, aJob.opt );
+    aJob.seconds = std::chrono::duration<double>( std::chrono::steady_clock::now() - aJob.started ).count();
+    aJob.done = true;
+}
+
+
+AutoPlaceResponse KICADD_HANDLER_PCB::autoPlaceRunning( const AUTOPLACE_JOB& aJob ) const
+{
+    AutoPlaceResponse r = aJob.out;
+    r.set_running( true );
+    r.set_seconds( std::chrono::duration<double>( std::chrono::steady_clock::now() - aJob.started ).count() );
+
+    if( aJob.progress.improving )
+        r.set_progress( "improving, " + std::to_string( aJob.progress.passes.load() ) + " pass(es) done" );
+    else
+        r.set_progress( "placing, " + std::to_string( aJob.progress.placed.load() ) + "/"
+                        + std::to_string( aJob.movable ) + " parts" );
+
+    return r;
+}
+
+
+void KICADD_HANDLER_PCB::stopAutoPlace()
+{
+    if( !m_autoPlace )
+        return;
+
+    m_autoPlace->progress.cancel = true;
+
+    if( m_autoPlace->worker.joinable() )
+        m_autoPlace->worker.join();
+
+    m_autoPlace.reset();
+}
+
+
+HANDLER_RESULT<AutoPlaceResponse>
+KICADD_HANDLER_PCB::handleAutoPlaceStatus( const HANDLER_CONTEXT<AutoPlaceStatus>& aCtx )
+{
+    if( !m_autoPlace )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no auto_place is running" ) );
+
+    if( aCtx.Request.cancel() )
+    {
+        AutoPlaceResponse r = m_autoPlace->out;
+        stopAutoPlace();
+        r.set_cancelled( true );
+        return r;
+    }
+
+    if( !m_autoPlace->done )
+        return autoPlaceRunning( *m_autoPlace );
+
+    // Done: apply it, unless the user is in the middle of something (asked again later)
+    if( m_context && !m_context->CanAcceptApiCommands() )
+    {
+        return tl::unexpected( makeError( ApiStatusCode::AS_BUSY,
+                                          "auto_place is done, but the user is in an interactive tool; "
+                                          "ask again to apply it (or cancel)" ) );
+    }
+
+    m_autoPlace->worker.join();
+    std::unique_ptr<AUTOPLACE_JOB> job = std::move( m_autoPlace );
+    return finishAutoPlace( *job );
+}
+
+
+HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::finishAutoPlace( AUTOPLACE_JOB& aJob )
+{
+    namespace ap = kicadd::autoplace;
+
+    AutoPlaceResponse& out = aJob.out;
+    const ap::RESULT&  res = aJob.result;
+    BOARD*             b = board();
+
+    out.set_seconds( aJob.seconds );
     out.set_timed_out( res.timedOut );
     out.set_refine_passes( res.refinePasses );
-    out.set_track_obstacles( (int) b->Tracks().size() );
+
+    if( res.cancelled )
+    {
+        out.set_cancelled( true );
+        return out;
+    }
+
+    // The positions are for the board as it was: anything changed since (the user moved a part,
+    // routed, the board was replaced) and they may no longer fit.
+    if( b != aJob.board || !feed() || feed()->Revision() != aJob.revision )
+    {
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
+                                          "the board changed while auto_place was running; nothing was "
+                                          "moved, run it again" ) );
+    }
+
+    std::unordered_map<KIID, FOOTPRINT*> byId;
+
+    for( FOOTPRINT* fp : b->Footprints() )
+        byId[fp->m_Uuid] = fp;
+
+    std::vector<ap::PART>&  parts = aJob.parts;
+    std::vector<FOOTPRINT*> fps;
+
+    for( const KIID& id : aJob.ids )
+    {
+        auto it = byId.find( id );
+
+        if( it == byId.end() )
+            return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
+                                              "a footprint went away while auto_place was running; run it again" ) );
+
+        fps.push_back( it->second );
+    }
 
     std::vector<FOOTPRINT*> targets;
     std::set<std::string>   unplaced( res.unplaced.begin(), res.unplaced.end() );
@@ -2630,7 +2788,7 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
 
     for( size_t i = 0; i < parts.size(); ++i )
     {
-        if( parts[i].movable && !unplaced.count( parts[i].ref ) && !req.measure_only() )
+        if( parts[i].movable && !unplaced.count( parts[i].ref ) && !aJob.measureOnly )
         {
             targets.push_back( fps[i] );
             index[fps[i]] = i;
@@ -2674,10 +2832,10 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
     for( const std::string& r : res.unplaced )
         out.add_unplaced( r );
 
-    if( opt.groups > 0 )
+    if( aJob.opt.groups > 0 )
     {
-        out.set_groups( opt.groups );
-        out.set_group_source( groupSource );
+        out.set_groups( aJob.opt.groups );
+        out.set_group_source( aJob.groupSource );
         out.set_mixed( res.mixed );
         out.set_mixed_before( res.mixedBefore );
     }

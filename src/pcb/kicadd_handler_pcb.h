@@ -10,9 +10,12 @@
 #ifndef KICADD_HANDLER_PCB_H
 #define KICADD_HANDLER_PCB_H
 
+#include <atomic>
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <optional>
+#include <thread>
 #include <vector>
 
 #include <kiid.h>
@@ -22,6 +25,8 @@
 #include <api/api_handler.h>
 #include <kicadd/board.pb.h>
 #include <kicadd/render.pb.h>
+
+#include "pcb/kicadd_autoplace.h"
 
 class BOARD;
 class BOARD_COMMIT;
@@ -81,6 +86,43 @@ private:
 
     HANDLER_RESULT<kicadd::board::AutoPlaceResponse>
     handleAutoPlace( const HANDLER_CONTEXT<kicadd::board::AutoPlace>& aCtx );
+
+    HANDLER_RESULT<kicadd::board::AutoPlaceResponse>
+    handleAutoPlaceStatus( const HANDLER_CONTEXT<kicadd::board::AutoPlaceStatus>& aCtx );
+
+    /// An auto_place run: the model built from the board, the placer's result, what to report
+    struct AUTOPLACE_JOB
+    {
+        std::vector<kicadd::autoplace::PART> parts;
+        std::vector<KIID>                    ids;          ///< the footprint of each part
+        int                                  netCount = 0;
+        SHAPE_POLY_SET                       outline;
+        kicadd::autoplace::OPTIONS           opt;
+        kicadd::autoplace::PROGRESS          progress;
+        bool                                 measureOnly = false;
+        int                                  movable = 0;
+        std::string                          groupSource;
+        BOARD*                               board = nullptr;
+        uint64_t                             revision = 0;  ///< the board's, at the start
+        std::chrono::steady_clock::time_point started;
+        kicadd::board::AutoPlaceResponse     out;           ///< filled while building the model
+
+        std::thread                          worker;
+        std::atomic<bool>                    done{ false };
+        kicadd::autoplace::RESULT            result;
+        double                               seconds = 0;
+    };
+
+    /// The placement itself (any thread: touches only the job)
+    static void runAutoPlace( AUTOPLACE_JOB& aJob );
+
+    /// Main thread: apply a finished job's result to the board as one undoable edit
+    HANDLER_RESULT<kicadd::board::AutoPlaceResponse> finishAutoPlace( AUTOPLACE_JOB& aJob );
+
+    kicadd::board::AutoPlaceResponse autoPlaceRunning( const AUTOPLACE_JOB& aJob ) const;
+
+    /// Cancel a background run and wait for its thread
+    void stopAutoPlace();
 
     HANDLER_RESULT<kicadd::board::SyncFromSchematicResponse>
     handleSyncFromSchematic( const HANDLER_CONTEXT<kicadd::board::SyncFromSchematic>& aCtx );
@@ -191,6 +233,8 @@ private:
     std::unique_ptr<kicadd::RENDER_FEED> m_feed;
 
     std::vector<NETINFO_ITEM*> m_pendingNets;   ///< created by the commit being built
+
+    std::unique_ptr<AUTOPLACE_JOB> m_autoPlace;   ///< running in the background
 
     bool m_deferLargeNets = true;
     int  m_deferMinPads = 50;

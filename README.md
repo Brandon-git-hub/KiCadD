@@ -1036,6 +1036,37 @@ legalizing takes 0.9 s and improving (refine) the rest, about 2 s per pass.
 `--sheets`, `--fix J,H`, `--back-decaps --back C*`), 7.9/12.7/8.7/7.7 s → 7.2/10.0/6.7/7.8 s.
 `m5_e2e`, `rules_e2e` and `hier_e2e` pass.
 
+## auto_place in the background (2026-11-11)
+
+TODO 5a: the placement no longer runs on the editor's thread.
+
+- `AutoPlace.background` builds the model from the board on the main thread, then hands the
+  placement to a worker thread and answers at once (`running`, `progress`: "placing, 30/62
+  parts", "improving, 2 pass(es) done"). The worker touches only its own copy of the parts.
+- `AutoPlaceStatus` reports progress; once the run is done, that call applies the result on the
+  main thread as one undoable edit, as before. `cancel` stops the run and moves nothing.
+- While it runs, the agent's own edits are refused as busy (`auto_place is running`).
+  kicadd-mcp retries busy for up to 10 s, so in practice they wait and land after the
+  placement. If the board changes anyway (the user edits it, an upstream API call refills
+  zones), the result is discarded: `the board changed while auto_place was running; nothing
+  was moved`. The check uses the change feed's revision and the board pointer, then finds the
+  footprints by KIID.
+- If the run finishes while the user is in an interactive tool, the result waits until the
+  tool is done.
+- The MCP `auto_place` tool always runs it in the background and polls every 200 ms, so for
+  the agent it is still one call. It gives up and cancels after `time_limit` + 300 s.
+  Without `background`, the request runs synchronously as before (Python client, tests).
+- Closing or replacing the board (`DetachBoard`) and the handler's destructor cancel and join
+  a running placement.
+
+Verified: `desktop_autoplace_e2e.py` (desktop pcbnew under Xvfb, routed pic_programmer, `all`):
+`board_summary` answers in 1 ms while the placement runs (it used to wait about 15 s); an agent
+move made meanwhile lands after the placement (undo order: the move, then `auto-place 62
+parts`); `refill_zones` during a run gives "board changed" and nothing moves.
+`autoplace_bg_e2e.py` (headless, Python client): progress while running, edits refused,
+cancel moves nothing and leaves no job, the synchronous call still works. `m5_e2e`,
+`hier_e2e`, `rules_e2e` pass, and `autoplace_bench.py` wire lengths are unchanged.
+
 ## DRC: library check without KiCad's libraries (2026-11-11)
 
 TODO 1 from the Windows trial: `run_drc` on pic_programmer gave `0 errors, 63 warnings`, all
@@ -1096,7 +1127,7 @@ Release check, 2026-11-11 (`build-lean`): `m5_e2e`, `hier_e2e`, `rules_e2e`, `sm
    清單，MCP 文字輸出多列一行。
 
 5. **`auto_place` 在桌面版會讓編輯器「沒有回應」，期間所有 MCP 呼叫逾時。**
-   **(b)(d) 已完成（2026-11-11，見下方「auto_place time limit」）；(a)(c) 尚未實作。** 2026-11-11 在卡住當下
+   **(b)(d) 已完成（2026-11-11，見「auto_place time limit」）；(a) 已完成（見「auto_place in the background」）；(c)(e) 尚未實作。** 2026-11-11 在卡住當下
    取得傾印檔（`kicad_16528_drc_hang.dmp`，用 `v0.1.0-alpha.2` 的 PDB 還原），**原因不是 DRC，
    也不是死結**：
    * 主執行緒停在 `KICADD_HANDLER_PCB::handleAutoPlace → kicadd::autoplace::Place`，等 8 條

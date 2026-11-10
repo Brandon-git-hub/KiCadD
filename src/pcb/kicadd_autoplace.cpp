@@ -258,6 +258,12 @@ public:
         global();
         legalize( res );
 
+        if( cancelled() )
+        {
+            res.cancelled = true;
+            return res;
+        }
+
         // Another start that got here with the same layout ends with the same result: only one
         // of them goes on (parts already on the board: the starts differ little).
         if( m_claim && !m_claim( fingerprint() ) )
@@ -271,6 +277,9 @@ public:
         m_limited = m_hasDeadline;
         double cost = totalCost();
 
+        if( m_opt.progress )
+            m_opt.progress->improving = true;
+
         for( int pass = 0; aRefine && pass < m_opt.refinePasses; ++pass )
         {
             if( expired() )
@@ -278,6 +287,9 @@ public:
 
             bool improved = refine();
             res.refinePasses++;
+
+            if( m_opt.progress )
+                raise( m_opt.progress->passes, res.refinePasses );
 
             if( !improved || expired() )
                 break;
@@ -290,8 +302,14 @@ public:
             cost = now;
         }
 
-        res.timedOut = m_late;
+        res.timedOut = m_late && !cancelled();
         m_limited = false;
+
+        if( cancelled() )
+        {
+            res.cancelled = true;
+            return res;
+        }
 
         centre();
         res.mixed = mixed();
@@ -365,6 +383,9 @@ private:
     /// Out of time (only while improving: placing every part is never cut short)
     bool expired() const
     {
+        if( cancelled() )
+            return true;
+
         if( !m_limited )
             return false;
 
@@ -372,6 +393,18 @@ private:
             m_late = true;
 
         return m_late;
+    }
+
+    bool cancelled() const { return m_opt.progress && m_opt.progress->cancel.load( std::memory_order_relaxed ); }
+
+    /// aCounter = max( aCounter, aValue ): the starts run side by side, report the furthest
+    static void raise( std::atomic<int>& aCounter, int aValue )
+    {
+        int now = aCounter.load();
+
+        while( now < aValue && !aCounter.compare_exchange_weak( now, aValue ) )
+        {
+        }
     }
 
     /// What refine() lowers, summed over the placed movable parts
@@ -1308,6 +1341,7 @@ private:
                                     { m_area.Centre().x, m_area.GetBottom() },
                                     { m_area.GetLeft(), m_area.Centre().y } };
         int spot = 0;
+        int placedCount = 0;
 
         for( int i : order )
         {
@@ -1388,6 +1422,9 @@ private:
             m_parts[i].rot = bestRot;
             at = bestAt;
 
+            if( cancelled() )
+                return;
+
             if( ok )
             {
                 m_parts[i].pos = at;
@@ -1398,6 +1435,9 @@ private:
             {
                 aRes.unplaced.push_back( m_parts[i].ref );
             }
+
+            if( m_opt.progress )
+                raise( m_opt.progress->placed, ++placedCount );
         }
     }
 
@@ -1616,6 +1656,13 @@ RESULT Place( std::vector<PART>& aParts, int aNetCount, const SHAPE_POLY_SET& aO
         if( a.unplaced.size() < b.unplaced.size()
             || ( a.unplaced.size() == b.unplaced.size() && a.hpwlAfter < b.hpwlAfter ) )
             best = v;
+    }
+
+    if( aOptions.progress && aOptions.progress->cancel )
+    {
+        RESULT res;
+        res.cancelled = true;
+        return res;      // aParts as they were
     }
 
     aParts = std::move( parts[best] );
