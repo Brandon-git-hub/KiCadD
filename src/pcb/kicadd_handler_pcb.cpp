@@ -2613,7 +2613,16 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
     BOX2I area = outline.BBox();
     opt.grid = std::max( 100000, (int) ( std::max( area.GetWidth(), area.GetHeight() ) / 800 ) / 50000 * 50000 );
 
+    // Improving is cut off after time_limit (the placement is legal from the start): on the
+    // desktop this runs on the editor's thread, and fewer cores make it much slower.
+    opt.timeLimit = req.time_limit() > 0 ? req.time_limit() : req.time_limit() < 0 ? 0 : 10.0;
+
+    const auto t0 = std::chrono::steady_clock::now();
     ap::RESULT res = ap::Place( parts, (int) netIndex.size(), outline, opt );
+    out.set_seconds( std::chrono::duration<double>( std::chrono::steady_clock::now() - t0 ).count() );
+    out.set_timed_out( res.timedOut );
+    out.set_refine_passes( res.refinePasses );
+    out.set_track_obstacles( (int) b->Tracks().size() );
 
     std::vector<FOOTPRINT*> targets;
     std::set<std::string>   unplaced( res.unplaced.begin(), res.unplaced.end() );

@@ -1007,6 +1007,35 @@ time, and `--prefix` would leave `share/kicad` (icons, templates, demos) out of 
 - `vcpkg.exe` is fetched with the job token (`gh release download`); anonymous downloads timed
   out (HTTP 504) during GitHub's 2026-11-09 incident.
 
+## auto_place time limit (2026-11-11)
+
+From the Windows trial (TODO 5): `auto_place` runs on the editor's thread, so a long run makes
+the editor stop responding. Profiling the routed pic_programmer (`all`, tracks kept) showed
+legalizing takes 0.9 s and improving (refine) the rest, about 2 s per pass.
+
+- **Time limit.** Improving stops after `time_limit` seconds (default 10, `-1` no limit), shared
+  by all starts. Every part keeps a legal spot throughout, so stopping anywhere leaves a valid
+  placement; the result says `stopped improving at the time limit (10 s, 3 pass(es))`.
+  Placing every part (legalize) is never cut short.
+- **Duplicate starts stop early.** With the parts already on the board the starts differ only in
+  order, and 8 starts gave just 2 layouts. A start whose layout after legalizing matches
+  another's stops there (same layout, same result), so 6 of the 8 threads stop early.
+- **Converged passes stop.** Improving ends when a pass gains less than 0.1 % of the cost.
+- **Usage note.** Tracks and vias are obstacles. When parts find no room on a routed board, the
+  result says so and suggests deleting the routing first or placing right after `sync_pcb`.
+  The tool description says this too.
+
+| routed pic_programmer, `all` | before | after |
+|---|---|---|
+| headless, 16 cores | 14.3 s | 9.4 s, same result (1753.1 mm) |
+| headless, 4 cores (`taskset`) | not measured | 10.0 s (time limit, 4 passes), same 1753.1 mm |
+| desktop pcbnew (Xvfb), 16 cores | 14.9 s | 9.5 s |
+| desktop pcbnew (Xvfb), 4 cores | not measured | 10.0 s (time limit) |
+
+`autoplace_bench.py` (tracks stripped): same wire length in all four configurations (plain,
+`--sheets`, `--fix J,H`, `--back-decaps --back C*`), 7.9/12.7/8.7/7.7 s → 7.2/10.0/6.7/7.8 s.
+`m5_e2e`, `rules_e2e` and `hier_e2e` pass.
+
 ## 待做清單 (TODO)
 
 2026-11-10，`v0.1.0-alpha.2` 在 Windows 上試用後回報；以下已在 Linux 上用 `pic_programmer` 重現確認，**尚未實作**。
@@ -1031,7 +1060,8 @@ time, and `--prefix` would leave `share/kicad` (icons, templates, demos) out of 
    （電路圖有 X，PCB 有 2 個 `unconnected-` 網路）。方向：proto `SchNetlist` 加 `no_connect`
    清單，MCP 文字輸出多列一行。
 
-5. **`auto_place` 在桌面版會讓編輯器「沒有回應」，期間所有 MCP 呼叫逾時。** 2026-11-11 在卡住當下
+5. **`auto_place` 在桌面版會讓編輯器「沒有回應」，期間所有 MCP 呼叫逾時。**
+   **(b)(d) 已完成（2026-11-11，見下方「auto_place time limit」）；(a)(c) 尚未實作。** 2026-11-11 在卡住當下
    取得傾印檔（`kicad_16528_drc_hang.dmp`，用 `v0.1.0-alpha.2` 的 PDB 還原），**原因不是 DRC，
    也不是死結**：
    * 主執行緒停在 `KICADD_HANDLER_PCB::handleAutoPlace → kicadd::autoplace::Place`，等 8 條
@@ -1046,6 +1076,8 @@ time, and `--prefix` would leave `share/kicad` (icons, templates, demos) out of 
    `vector<VECTOR2>` 重新配置）；(d) 在已佈線的板子上，舊走線當障礙會讓放不進去的零件變多，
    使用說明要寫明（建議先移除走線，或只對剛 `sync_pcb` 的板子執行）。
    （先前懷疑 DRC 的 GUI 進度回報，已排除：Linux 桌面版 DRC 4 秒，563 個錯誤也不卡。）
+   (e) 新發現：走線障礙物用的是整條走線的外框（`GetBoundingBox`），斜走線會擋住一大塊矩形，
+   已佈線的板子上零件更難放進去。改成依走線形狀判斷，可能讓 P3 放得進去。
 
 保留不動：專案管理器的 Version Control（Git）面板。
 

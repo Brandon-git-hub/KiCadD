@@ -10,8 +10,12 @@
 #include <geometry/eda_angle.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <functional>
 #include <limits>
+#include <mutex>
+#include <set>
 #include <thread>
 
 namespace kicadd::autoplace
@@ -254,11 +258,40 @@ public:
         global();
         legalize( res );
 
+        // Another start that got here with the same layout ends with the same result: only one
+        // of them goes on (parts already on the board: the starts differ little).
+        if( m_claim && !m_claim( fingerprint() ) )
+        {
+            m_duplicate = true;
+            return res;
+        }
+
+        // Improve until a pass gains less than 0.1 % or the time is up. Every part keeps a
+        // legal spot throughout, so stopping anywhere leaves a valid placement.
+        m_limited = m_hasDeadline;
+        double cost = totalCost();
+
         for( int pass = 0; aRefine && pass < m_opt.refinePasses; ++pass )
         {
-            if( !refine() )
+            if( expired() )
                 break;
+
+            bool improved = refine();
+            res.refinePasses++;
+
+            if( !improved || expired() )
+                break;
+
+            double now = totalCost();
+
+            if( cost - now < 1e-3 * std::abs( cost ) )
+                break;
+
+            cost = now;
         }
+
+        res.timedOut = m_late;
+        m_limited = false;
 
         centre();
         res.mixed = mixed();
@@ -307,6 +340,17 @@ public:
         return res;
     }
 
+    /// Stop improving at aDeadline; aClaim(layout) is false when another start has that layout
+    void Limit( std::chrono::steady_clock::time_point aDeadline, bool aHasDeadline,
+                std::function<bool( uint64_t )> aClaim )
+    {
+        m_deadline = aDeadline;
+        m_hasDeadline = aHasDeadline;
+        m_claim = std::move( aClaim );
+    }
+
+    bool Duplicate() const { return m_duplicate; }
+
     double hpwl() const
     {
         double total = 0;
@@ -318,6 +362,65 @@ public:
     }
 
 private:
+    /// Out of time (only while improving: placing every part is never cut short)
+    bool expired() const
+    {
+        if( !m_limited )
+            return false;
+
+        if( !m_late && std::chrono::steady_clock::now() >= m_deadline )
+            m_late = true;
+
+        return m_late;
+    }
+
+    /// What refine() lowers, summed over the placed movable parts
+    double totalCost()
+    {
+        refreshBlocks();
+        double total = 0;
+
+        for( size_t i = 0; i < m_parts.size(); ++i )
+        {
+            const PART& p = m_parts[i];
+
+            if( p.movable && m_work[i].placed )
+                total += localCost( (int) i ) + ( p.back && p.canFlip ? m_opt.backPenalty : 0 );
+        }
+
+        return total;
+    }
+
+    /// The layout of the movable parts (FNV-1a)
+    uint64_t fingerprint() const
+    {
+        uint64_t h = 1469598103934665603ULL;
+
+        auto mix = [&]( int64_t v )
+        {
+            for( int k = 0; k < 8; ++k, v >>= 8 )
+            {
+                h ^= (uint64_t) ( v & 0xff );
+                h *= 1099511628211ULL;
+            }
+        };
+
+        for( size_t i = 0; i < m_parts.size(); ++i )
+        {
+            const PART& p = m_parts[i];
+
+            if( !p.movable )
+                continue;
+
+            mix( m_work[i].placed ? 1 : 0 );
+            mix( p.pos.x );
+            mix( p.pos.y );
+            mix( p.rot + ( p.back ? 4 : 0 ) );
+        }
+
+        return h;
+    }
+
     VECTOR2I padPos( int aPart, int aPad ) const
     {
         const PART& p = m_parts[aPart];
@@ -972,6 +1075,9 @@ private:
 
         for( int r = 0; r <= maxRing; ++r )
         {
+            if( expired() )
+                return false;
+
             double   best = std::numeric_limits<double>::max();
             bool     found = false;
             VECTOR2I bestPos;
@@ -1312,6 +1418,9 @@ private:
 
         for( int i : order )
         {
+            if( expired() )
+                return improved;
+
             PART&    p = m_parts[i];
             VECTOR2I keepPos = p.pos;
             int      keepRot = p.rot;
@@ -1380,7 +1489,7 @@ private:
 
         // Swap parts of about the same size (two resistors, two caps): kept when the wire
         // length of both goes down and both still fit.
-        for( size_t a = 0; a < order.size(); ++a )
+        for( size_t a = 0; a < order.size() && !expired(); ++a )
         {
             for( size_t bi = a + 1; bi < order.size(); ++bi )
             {
@@ -1441,6 +1550,13 @@ private:
     std::vector<int>                              m_blockN;
     std::vector<VECTOR2D>                         m_cachedCentre;
     double                                        m_softWeight = m_opt.groupWeight;
+
+    std::chrono::steady_clock::time_point         m_deadline;
+    bool                                          m_hasDeadline = false;
+    bool                                          m_limited = false;   ///< improving: the deadline applies
+    mutable bool                                  m_late = false;
+    std::function<bool( uint64_t )>               m_claim;
+    bool                                          m_duplicate = false;
 };
 
 } // namespace
@@ -1455,7 +1571,20 @@ RESULT Place( std::vector<PART>& aParts, int aNetCount, const SHAPE_POLY_SET& aO
     const int                      starts = aOptions.measureOnly ? 1 : std::max( 1, aOptions.starts );
     std::vector<std::vector<PART>> parts( starts, aParts );
     std::vector<RESULT>            results( starts );
+    std::vector<char>              duplicate( starts, 0 );
     std::vector<std::thread>       threads;
+
+    // one time limit for all starts (they run side by side)
+    const auto deadline = std::chrono::steady_clock::now()
+                          + std::chrono::milliseconds( (int64_t) ( aOptions.timeLimit * 1000 ) );
+    std::mutex         seenMutex;
+    std::set<uint64_t> seen;
+
+    auto claim = [&]( uint64_t aLayout )
+    {
+        std::lock_guard<std::mutex> lock( seenMutex );
+        return seen.insert( aLayout ).second;
+    };
 
     for( int v = 0; v < starts; ++v )
     {
@@ -1463,7 +1592,9 @@ RESULT Place( std::vector<PART>& aParts, int aNetCount, const SHAPE_POLY_SET& aO
                 [&, v]()
                 {
                     PLACER placer( parts[v], aNetCount, aOutline, aOptions, v + aOptions.seed * starts );
+                    placer.Limit( deadline, aOptions.timeLimit > 0, claim );
                     results[v] = placer.Run();
+                    duplicate[v] = placer.Duplicate();
                 } );
     }
 
@@ -1472,8 +1603,14 @@ RESULT Place( std::vector<PART>& aParts, int aNetCount, const SHAPE_POLY_SET& aO
 
     int best = 0;
 
-    for( int v = 1; v < starts; ++v )
+    while( best + 1 < starts && duplicate[best] )
+        best++;
+
+    for( int v = best + 1; v < starts; ++v )
     {
+        if( duplicate[v] )
+            continue;
+
         const RESULT &a = results[v], &b = results[best];
 
         if( a.unplaced.size() < b.unplaced.size()

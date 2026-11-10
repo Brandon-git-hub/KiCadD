@@ -108,6 +108,10 @@ struct OPTIONS
 
     bool measureOnly = false;      ///< place nothing: the "before" values only
 
+    /// Seconds for improving (refine) after every part has its legal spot, 0 = no limit. The
+    /// placement stays legal when it runs out; only the wire length is less good.
+    double timeLimit = 0;
+
     std::vector<NEAR_RULE> nearRules;
 };
 
@@ -128,6 +132,8 @@ struct RESULT
     double                   satBefore = 0;     ///< their mean distance to the pin, mm, before (on the board)
     double                   satAfter = 0;      ///< mm
     std::vector<std::string> violations;        ///< rules not met: "Y1 U1: 7.2 mm apart (max 5)"
+    int                      refinePasses = 0;  ///< improving passes run (the last one may be cut short)
+    bool                     timedOut = false;  ///< stopped improving at OPTIONS::timeLimit
 };
 
 /**

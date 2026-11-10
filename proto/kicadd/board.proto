@@ -230,6 +230,10 @@ message AutoPlace
   repeated RegionRule   region_rules   = 15;
   repeated NearRule     near_rules     = 16;
   repeated RotationRule rotation_rules = 17;
+
+  // Seconds for improving the wire length once every part has a legal spot (0 = 10 s, < 0 = no
+  // limit). Running out leaves a legal placement, only a less improved one.
+  double time_limit     = 18;
 }
 
 message EdgeRule
@@ -282,6 +286,10 @@ message AutoPlaceResponse
   double decap_before_mm = 15;    // their mean pad-to-pin distance (those on the board before)
   double decap_after_mm = 16;
   repeated string rule_violations = 17;   // near rules not met
+  bool   timed_out      = 18;     // stopped improving at time_limit
+  int32  refine_passes  = 19;     // improving passes run
+  double seconds        = 20;     // placer run time
+  int32  track_obstacles = 21;    // tracks and vias on the board: the parts keep clear of them
 }
 
 message FetchLcsc

@@ -520,7 +520,9 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "wire length (group_weight trades one for the other). Bottom side: back lists parts that "
             "may go there, back_decaps lets decoupling caps go under their IC pin (SMD only; off by "
             "default: two-sided assembly costs more). Reports wire length before/after, how mixed "
-            "the blocks are and how far the small passives (decaps, pull-ups) are from their IC pin.",
+            "the blocks are and how far the small passives (decaps, pull-ups) are from their IC pin. "
+            "Existing tracks and vias are obstacles: on a routed board fewer parts find room, so "
+            "place before routing (right after sync_pcb), or delete the routing first.",
             obj( { { "refs", { { "type", "array" }, { "items", { { "type", "string" } } } } },
                    { "all", { { "type", "boolean" } } },
                    { "fixed", { { "type", "array" }, { "items", { { "type", "string" } } } } },
@@ -535,6 +537,10 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                                { "description", "parts that may go to the bottom side, e.g. [\"C*\", \"R12\"]" } } },
                    { "back_decaps", { { "type", "boolean" },
                                       { "description", "decoupling caps may go to the bottom, under their IC pin" } } },
+                   { "time_limit", { { "type", "number" },
+                                     { "description", "seconds for improving the wire length after every part "
+                                                      "has a legal spot (default 10, -1 no limit); the "
+                                                      "placement is legal either way" } } },
                    { "measure_only", { { "type", "boolean" },
                                        { "description", "move nothing, report the numbers for the parts as they are" } } },
                    { "rules", { { "type", "object" },
@@ -588,6 +594,9 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
 
                 req.set_back_decaps( a.value( "back_decaps", false ) );
                 req.set_measure_only( a.value( "measure_only", false ) );
+
+                if( a.contains( "time_limit" ) && a["time_limit"].is_number() )
+                    req.set_time_limit( a["time_limit"].get<double>() );
 
                 if( a.contains( "rules" ) )
                 {
@@ -701,12 +710,22 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                 if( !r.edit().history_label().empty() )
                     t += "; undo: \"" + r.edit().history_label() + "\"";
 
+                if( r.timed_out() )
+                    t += "\n  stopped improving at the time limit (" + num( r.seconds() ) + " s, "
+                         + std::to_string( r.refine_passes() ) + " pass(es)): the placement is legal; "
+                         "time_limit gives it longer";
+
                 if( r.unplaced_size() )
                 {
                     t += "\n  no room for:";
 
                     for( const std::string& ref : r.unplaced() )
                         t += " " + ref;
+
+                    if( r.track_obstacles() > 0 )
+                        t += "\n  the board's " + std::to_string( r.track_obstacles() )
+                             + " tracks/vias are obstacles: delete the routing first, or place right "
+                               "after sync_pcb";
                 }
 
                 if( r.rule_violations_size() )
