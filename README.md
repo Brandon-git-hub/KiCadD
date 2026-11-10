@@ -1007,6 +1007,26 @@ time, and `--prefix` would leave `share/kicad` (icons, templates, demos) out of 
 - `vcpkg.exe` is fetched with the job token (`gh release download`); anonymous downloads timed
   out (HTTP 504) during GitHub's 2026-11-09 incident.
 
+## 待做清單 (TODO)
+
+2026-11-10，`v0.1.0-alpha.2` 在 Windows 上試用後回報；以下已在 Linux 上用 `pic_programmer` 重現確認，**尚未實作**。
+
+1. **`lib_footprint_issues` 警告雜訊。** 重現：`run_drc` 回報 `0 errors, 63 warnings`，全是
+   `The current configuration does not include the footprint library 'Capacitor_THT'`（以及
+   `MountingHole` 等）。原因：KiCadD 不附 KiCad 官方封裝庫，demo 的 `fp-lib-table` 指向
+   `${KICAD10_FOOTPRINT_DIR}/*.pretty`，找不到庫所以 DRC 無法比對。板子本身沒問題。
+   方向：在無官方庫的 KiCadD 把這類警告預設設為忽略（或 `run_drc` 摘要中分開列出）。
+   不要建議使用者「把標準庫加回來」，因為本版沒有那些庫。
+2. **`sch_netlist` 重複腳位。** 重現：`GND` 裡 `U2.7` 出現 4 次，`VCC` 裡 `U2.14` 出現 4 次
+   （74HC125 四個單元共用的電源腳）。原因：`handleGetNetlist`
+   （`src/sch/kicadd_handler_sch.cpp`）對每個單元各呼叫 `symbol->GetPins( &sheet )`，
+   共用腳（unit 0）每個單元各回傳一次。方向：以 `ref.pin` 去重（`pins` 排序後 `unique`）。
+3. **`sch_netlist` 把部分電源符號當成腳位。** 重現：`VPP` 裡出現 `#PWR122.1 #PWR123.1 #PWR134.1`。
+   原因：demo 內嵌的 `pic_programmer:VPP` 符號沒有 `(power)` 旗標，`symbol->IsPower()` 為假。
+   方向：另外跳過 `#` 開頭的參考編號（KiCad 對電源符號保留的前綴）。
+
+保留不動：專案管理器的 Version Control（Git）面板。
+
 ## License
 
 GPL-3.0-or-later (same as KiCad). Konnect (AGPL-3.0-only) is used as design reference only;
