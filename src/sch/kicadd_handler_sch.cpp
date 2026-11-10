@@ -1326,11 +1326,12 @@ HANDLER_RESULT<SchSheetResponse> KICADD_HANDLER_SCH::handleAddSheet( const HANDL
 
     // Its file: as asked or "<name>.kicad_sch", next to the root schematic. A new file only:
     // reusing a sheet file (several instances) is not supported here.
-    wxString file = req.file().empty() ? name + wxS( "." ) + FILEEXT::KiCadSchematicFileExtension : wx( req.file() );
+    const wxString ext = wxS( "." ) + wxString( FILEEXT::KiCadSchematicFileExtension );
+    wxString       file = req.file().empty() ? name + ext : wx( req.file() );
     file.Replace( wxS( " " ), wxS( "_" ) );
 
-    if( !file.EndsWith( wxS( "." ) + FILEEXT::KiCadSchematicFileExtension ) )
-        file += wxS( "." ) + FILEEXT::KiCadSchematicFileExtension;
+    if( !file.EndsWith( ext ) )
+        file += ext;
 
     wxFileName root( schematic()->RootScreen()->GetFileName() );
     wxFileName abs( file );
