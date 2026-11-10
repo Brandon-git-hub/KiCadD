@@ -1025,6 +1025,12 @@ time, and `--prefix` would leave `share/kicad` (icons, templates, demos) out of 
    demo 的 `pic_programmer:VPP` 是後加的虛擬電源，符號沒有 `(power)` 旗標，`IsPower()` 為假。
    一般的 GND / VCC 電源符號有正確跳過。方向（可選）：另外跳過 `#` 開頭的參考編號。
 
+4. **（低優先）`sch_netlist` 不顯示標了不接（X）的腳。** `handleGetNetlist` 對沒有網路的腳：
+   有 no-connect 旗標就直接略過，沒有才列進 `unconnected`。結果是「刻意不接」的腳不出現在任何
+   地方，Agent 和使用者分不出它和「工具沒看到」。`pic_programmer` 的 U4.3 / U4.4 就是這樣
+   （電路圖有 X，PCB 有 2 個 `unconnected-` 網路）。方向：proto `SchNetlist` 加 `no_connect`
+   清單，MCP 文字輸出多列一行。
+
 保留不動：專案管理器的 Version Control（Git）面板。
 
 ## License
