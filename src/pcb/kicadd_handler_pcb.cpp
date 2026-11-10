@@ -21,6 +21,7 @@
 #include <class_draw_panel_gal.h>
 #include <tool/tool_manager.h>
 #include <board_design_settings.h>
+#include <drc/drc_engine.h>
 #include <lib_id.h>
 #include <netlist_reader/pcb_netlist_utils.h>
 #include <pcb_io/kicad_sexpr/pcb_io_kicad_sexpr.h>
@@ -2215,7 +2216,8 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
             return p;
         };
 
-        const SHAPE_POLY_SET& crt = fp->GetCourtyard( F_CrtYd );
+        part.back = fp->IsFlipped();
+        const SHAPE_POLY_SET& crt = fp->GetCourtyard( part.back ? B_CrtYd : F_CrtYd );
 
         if( crt.OutlineCount() > 0 )
         {
@@ -2235,7 +2237,7 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
         // courtyard: keep it clear of the neighbours' silk too (DRC silk_clearance).
         auto addSilk = [&]( const BOARD_ITEM* aItem )
         {
-            if( !aItem->IsOnLayer( F_SilkS ) )
+            if( !aItem->IsOnLayer( part.back ? B_SilkS : F_SilkS ) )
                 return;
 
             if( const PCB_TEXT* text = dynamic_cast<const PCB_TEXT*>( aItem ); text && !text->IsVisible() )
@@ -2259,11 +2261,34 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
             ap::PAD p;
             p.offset = toLocal( pad->GetPosition() );
 
+            if( pad->HasHole() )
+            {
+                part.tht = true;
+                wxString src;
+
+                if( std::optional<int> c = pad->GetLocalClearance( &src ) )
+                    part.holeGap = std::max( part.holeGap, *c );
+            }
+
             BOX2I padBox = pad->GetBoundingBox();
+
+            bool first = true;
 
             for( const VECTOR2I& c : { padBox.GetOrigin(), padBox.GetEnd(), VECTOR2I( padBox.GetRight(), padBox.GetTop() ),
                                        VECTOR2I( padBox.GetLeft(), padBox.GetBottom() ) } )
-                part.copper.push_back( toLocal( c ) );
+            {
+                VECTOR2I l = toLocal( c );
+                part.copper.push_back( l );
+
+                if( first )
+                    p.box = BOX2I( l, VECTOR2I( 0, 0 ) );
+                else
+                    p.box.Merge( l );
+
+                first = false;
+            }
+
+            p.hole = pad->HasHole();
 
             if( pad->GetNetCode() > 0 )
             {
@@ -2280,6 +2305,76 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
 
     ap::OPTIONS opt;
 
+    // Functional blocks kept together: asked for, else the footprints' Block field (from the
+    // symbol, sch_add_part block), or the schematic sheets when asked. Sheets are not the default:
+    // on the demo boards they are rarely the blocks a layout keeps apart, and pulling them
+    // together cost 10-35% wire length.
+    std::map<std::string, int> groupIndex;
+    std::string                groupSource;
+
+    auto assign = [&]( size_t aPart, const std::string& aName )
+    {
+        auto [it, added] = groupIndex.emplace( aName, (int) groupIndex.size() );
+        parts[aPart].group = it->second;
+    };
+
+    if( !req.no_groups() && req.groups_size() > 0 )
+    {
+        groupSource = "request";
+
+        for( const kicadd::board::PartGroup& g : req.groups() )
+        {
+            for( const std::string& r : g.refs() )
+            {
+                auto it = std::find_if( parts.begin(), parts.end(), [&]( const ap::PART& p ) { return p.ref == r; } );
+
+                if( it == parts.end() )
+                    return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
+                                                      "groups: no footprint " + r ) );
+
+                assign( it - parts.begin(), g.name() );
+            }
+        }
+    }
+    else if( !req.no_groups() && req.groups_from_sheets() )
+    {
+        groupSource = "sheets";
+
+        for( size_t i = 0; i < fps.size(); ++i )
+        {
+            KIID_PATH path = fps[i]->GetPath();
+
+            if( path.empty() )
+                continue;
+
+            path.pop_back();
+            assign( i, path.AsString().ToStdString() );
+        }
+    }
+    else if( !req.no_groups() )
+    {
+        groupSource = "Block field";
+
+        for( size_t i = 0; i < fps.size(); ++i )
+        {
+            if( const PCB_FIELD* f = fps[i]->GetField( wxS( "Block" ) ); f && !f->GetText().IsEmpty() )
+                assign( i, f->GetText().ToStdString( wxConvUTF8 ) );
+        }
+    }
+
+    if( req.group_weight() > 0 )
+        opt.groupWeight = req.group_weight();
+
+    if( groupIndex.size() >= 2 )
+    {
+        opt.groups = (int) groupIndex.size();
+    }
+    else
+    {
+        for( ap::PART& p : parts )
+            p.group = -1;
+    }
+
     if( req.spacing() > 0 )
         opt.spacing = (int) req.spacing();
 
@@ -2287,6 +2382,9 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
         opt.edge = (int) req.edge();
 
     opt.rotate = !req.no_rotate();
+
+    if( const char* seed = getenv( "KICADD_AP_SEED" ) )     // benchmarks only
+        opt.seed = atoi( seed );
 
     // Board items the parts must keep clear of: copper drawings and text, tracks, vias (grown
     // by the default clearance), keep-outs that forbid footprints.
@@ -2318,6 +2416,26 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
             if( zone->GetIsRuleArea() && zone->GetDoNotAllowFootprints() )
                 opt.obstacles.push_back( zone->GetBoundingBox() );
         }
+    }
+
+    // Pads must keep the hole clearance from the holes of through-hole parts, on both sides
+    // (board rules may ask for much more than the courtyard gap)
+    {
+        BOARD_DESIGN_SETTINGS& bds = b->GetDesignSettings();
+        int                    hole = bds.m_HoleClearance;
+
+        if( bds.m_DRCEngine )
+        {
+            DRC_CONSTRAINT c;
+
+            if( bds.m_DRCEngine->QueryWorstConstraint( HOLE_CLEARANCE_CONSTRAINT, c ) )
+                hole = std::max( hole, c.Value().Min() );
+
+            if( bds.m_DRCEngine->QueryWorstConstraint( PHYSICAL_HOLE_CLEARANCE_CONSTRAINT, c ) )
+                hole = std::max( hole, c.Value().Min() );
+        }
+
+        opt.holeClearance = std::min( hole, 5000000 );
     }
 
     // a finer grid for small boards, a coarser one for big ones
@@ -2370,6 +2488,14 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
 
     for( const std::string& r : res.unplaced )
         out.add_unplaced( r );
+
+    if( opt.groups > 0 )
+    {
+        out.set_groups( opt.groups );
+        out.set_group_source( groupSource );
+        out.set_mixed( res.mixed );
+        out.set_mixed_before( res.mixedBefore );
+    }
 
     out.set_hpwl_before_mm( res.hpwlBefore );
     out.set_hpwl_after_mm( res.hpwlAfter );

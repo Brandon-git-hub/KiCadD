@@ -757,6 +757,53 @@ Not yet: the schematic tools in the desktop Schematic Editor (headless only so f
 and `auto_place` work in the PCB Editor too), hierarchical sheets, placing on the back side,
 keep-together groups / placement rules from the agent, routing.
 
+### auto_place: functional blocks, two sides, speed (2026-11-10)
+
+**Blocks.** `sch_add_part` takes `block` ("LDO", "USB"), saved as a hidden `Block` field that
+`sync_pcb` carries to the footprint. `auto_place` keeps each block together: blocks from
+`groups` (`{"LDO": ["U2", "C3"]}`), else the footprints' Block field; `groups: "sheets"` uses
+the schematic sheets, `false` none. Each part is also pulled to the centre of the rest of its
+block, in all three steps, with `group_weight` (default 3; 1 is like one two-pin net). The
+answer says how mixed the blocks are: parts whose nearest neighbour (courtyard gap, same side)
+belongs to another block, before and after.
+
+Measured on four KiCad demos with the sheets as blocks (all front parts moved off the board,
+connectors, mounting holes, switches and logos kept where the human put them on cm5_minima;
+wire length is half-perimeter, mm; "mixed" as above):
+
+| board (front parts) | human | no blocks | regions | soft pull, weight 1 | weight 3 |
+|---|---|---|---|---|---|
+| pic_programmer (62) | 1489, mixed 6 | 1385-1731, mixed 11-12 | 1993, mixed 19 | 1985-2106, mixed 8-10 | 1824-1879, mixed 2-5 |
+| kit-dev-coldfire (146) | 7931, mixed 18 | 7091-7496, mixed 65-69 | 10087-10522, mixed 37-49 | 7237-8096, mixed 37-48 | 8300-8719, mixed 21-37 |
+| cm5_minima (54) | 2720, mixed 32 | 2976 | 2976, mixed 43 | 2979, mixed 48 | |
+| video (86) | 30912, mixed 26 | 58264, mixed 57 | 52463, mixed 23 | 58005, mixed 56 | |
+
+What that says: keeping blocks together costs wire length (here 10-35 %), it does not buy it.
+Without blocks the placer is already at or below the human layout's wire length on two boards
+(coldfire 9 % shorter, pic_programmer 7 % shorter on one of three seeds); the remaining gap is
+mostly how a start lands (the same board spreads 1385-1731 over seeds), not mixed blocks. The
+sheets are not the blocks a layout keeps apart either: pic_programmer's second sheet is its 7
+sockets, wired to everything. So blocks are opt-in (the agent says which parts belong together)
+and soft. The first version gave each block an exclusive region (slicing floorplan, regions
+placed by their connections): the most expensive and, on pic_programmer, even more mixed; it
+was dropped.
+
+**Two sides.** Front and back no longer share room: a part's courtyard only conflicts with the
+same side's, through-hole pads count on both (no body over pins on the other side), and holes
+keep the hole clearance from every pad (the board's worst `hole_clearance` rule and the pads'
+own overrides: cm5_minima's CM5 connector holes ask for 1.5-1.7 mm). Before, the 103 back-side
+parts of video and the CM5 connectors filled the front.
+
+**Speed.** The legality test looked at every placed part; a 4 mm bucket grid of the placed
+parts makes it look at the neighbours only (same results, 6-8x faster: coldfire 97 s -> 13 s,
+cm5_minima > 120 s -> 3 s), and refinement no longer searches the whole board for a spot
+farther away than the part already is. Eight starts instead of four (16 threads here).
+
+Bench: `autoplace_bench.py --sheets --group-weight W --fix J,H --no-groups` (the offset off the
+board now follows the board's width; only DRC errors the human layout doesn't already have
+count). `m5_e2e.py` gives U1 C1 C2 block LDO and R1 R2 block LED: saved as Block fields,
+`auto_place` reports 2 blocks from the Block field. PASS, with mcp_e2e and smoke.
+
 ## M3: Windows CI (2026-11-06)
 
 `.github/workflows/windows.yml` builds KiCadD for Windows x64 on GitHub-hosted runners:

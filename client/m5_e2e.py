@@ -183,7 +183,7 @@ def main():
         check(not err and " 0 parts" in text, "empty schematic: " + text.splitlines()[0][-60:])
 
         print("[parts]")
-        err, u1 = mcp.tool("sch_add_part", {"lcsc": "C6186"})
+        err, u1 = mcp.tool("sch_add_part", {"lcsc": "C6186", "block": "LDO"})
         check(not err and u1.startswith("added U1 AMS1117-3.3 LCSC:AMS1117-3.3"), "LCSC C6186 -> " + u1.splitlines()[0][:90])
         p = pins_of(u1)
         names = {}
@@ -194,11 +194,11 @@ def main():
 
         caps = []
         for _ in range(2):
-            err, t = mcp.tool("sch_add_part", {"lcsc": "C14663"})
+            err, t = mcp.tool("sch_add_part", {"lcsc": "C14663", "block": "LDO"})
             m = re.match(r"added (C\d+) ", t)
             caps.append(m.group(1) if m else None)
         check(caps == ["C1", "C2"], f"two LCSC 100 nF caps numbered {caps}")
-        err, t = mcp.tool("sch_add_part", {"lcsc": "C25804"})
+        err, t = mcp.tool("sch_add_part", {"lcsc": "C25804", "block": "LED"})
         check(t.startswith("added R1 "), "LCSC 10k -> " + t.splitlines()[0][:60])
         err, t = mcp.tool("sch_add_part", {"lib_id": "Device:R", "value": "1k", "footprint": "LCSC:R0603",
                                            "ref": "R?", "rotation": 90})
@@ -255,7 +255,8 @@ def main():
         nets, unconnected = netlist(mcp)
         check(not err and "R2.2" not in nets.get("GND", set()) and nets.get("LED_K") == {"R1.2"},
               "deleting R2 takes its stubs and labels with it")
-        err, t = mcp.tool("sch_add_part", {"lib_id": "Device:R", "value": "1k", "footprint": "LCSC:R0603"})
+        err, t = mcp.tool("sch_add_part", {"lib_id": "Device:R", "value": "1k", "footprint": "LCSC:R0603",
+                                           "block": "LED"})
         check(t.startswith("added R2 "), "R2 is free again")
         mcp.tool("sch_connect", {"nets": {"LED_K": ["R2.1"], "GND": ["R2.2"]}})
         before, _ = netlist(mcp)
@@ -273,6 +274,8 @@ def main():
         text = open(os.path.join(proj, "blank.kicad_sch"), encoding="utf-8").read()
         check(text.count('(lib_id "LCSC:') == 4 and text.count('(lib_id "Device:R")') == 1,
               "saved file: 4 LCSC symbols, 1 Device:R")
+        check(text.count('(property "Block" "LDO"') == 3 and text.count('(property "Block" "LED"') == 2,
+              "block: a Block field on U1 C1 C2 (LDO) and R1 R2 (LED)")
 
         print("[M5b: sync_pcb]")
         err, t = mcp.tool("sync_pcb", {"dry_run": True})
@@ -297,6 +300,8 @@ def main():
         m = re.search(r"placed (\d+) part\(s\).*?wire length \(half-perimeter\) ([\d.]+) -> ([\d.]+) mm", t)
         check(not err and m and m.group(1) == "5" and float(m.group(3)) < float(m.group(2)),
               "auto_place: " + t.splitlines()[0][:120])
+        check("2 blocks (Block field)" in t, "the parts' Block field carried to the board by sync_pcb: "
+              + (re.search(r"\d+ blocks[^;]*", t) or re.search(r".*", "no blocks")).group(0)[:90])
         err, t = mcp.tool("run_drc", {"include_warnings": False})
         kinds = re.search(r"errors: (.*)", t).group(1) if "errors:" in t else t
         check(set(re.findall(r"(\w+) \d+", kinds)) <= {"unconnected_items"},

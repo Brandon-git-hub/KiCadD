@@ -479,6 +479,22 @@ HANDLER_RESULT<SchPartResponse> KICADD_HANDLER_SCH::handleAddPart( const HANDLER
     if( !req.footprint().empty() )
         symbol->SetFootprintFieldText( wx( req.footprint() ) );
 
+    // The functional block: a hidden field, carried to the footprint by sync_pcb, read by
+    // auto_place to keep the block's parts together.
+    if( !req.block().empty() )
+    {
+        SCH_FIELD* field = symbol->GetField( wxS( "Block" ) );
+
+        if( !field )
+        {
+            field = symbol->AddField( SCH_FIELD( symbol.get(), FIELD_T::USER, wxS( "Block" ) ) );
+            field->SetPosition( symbol->GetPosition() );
+        }
+
+        field->SetText( wx( req.block() ) );
+        field->SetVisible( false );
+    }
+
     // Reference: "R5" as given; "", "R?" or a bare prefix annotated with the next free number.
     wxString ref = wx( req.ref() );
 

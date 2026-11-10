@@ -69,6 +69,7 @@ message SchAddPart
   optional double y = 7;
   int32  rotation  = 8;    // 0, 90, 180, 270
   int32  unit      = 9;    // multi-unit parts: which unit (default 1)
+  string block     = 10;   // functional block ("LDO", "MCU"): a hidden "Block" field; auto_place keeps blocks together
 }
 
 // Returns SchPartResponse

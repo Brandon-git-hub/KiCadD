@@ -159,7 +159,9 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "\"Device:C\", ...) or an LCSC part (lcsc \"C25804\": fetched from the JLCEDA/EasyEDA "
             "Official Library, symbol + footprint saved to the project's LCSC libraries). ref \"R?\" "
             "or empty is numbered automatically. Without x/y it goes to the next free spot. Returns "
-            "its pins (number, name, type, side) to connect with sch_connect.",
+            "its pins (number, name, type, side) to connect with sch_connect. block names the "
+            "functional block the part belongs to (\"LDO\", \"MCU\", \"USB\"): auto_place keeps "
+            "each block's parts together on the board.",
             obj( { { "lib_id", { { "type", "string" } } },
                    { "lcsc", { { "type", "string" } } },
                    { "ref", { { "type", "string" } } },
@@ -168,7 +170,8 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                    { "x", { { "type", "number" }, { "description", "mm" } } },
                    { "y", { { "type", "number" }, { "description", "mm, down is +" } } },
                    { "rotation", { { "type", "integer" }, { "enum", { 0, 90, 180, 270 } } } },
-                   { "unit", { { "type", "integer" }, { "description", "Multi-unit parts: which unit (default 1)" } } } } ),
+                   { "unit", { { "type", "integer" }, { "description", "Multi-unit parts: which unit (default 1)" } } },
+                   { "block", { { "type", "string" }, { "description", "functional block, e.g. LDO" } } } } ),
             [&aIpc]( const json& a )
             {
                 ks::SchAddPart req;
@@ -186,6 +189,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
 
                 req.set_rotation( a.value( "rotation", 0 ) );
                 req.set_unit( a.value( "unit", 0 ) );
+                req.set_block( str( a, "block" ) );
 
                 ks::SchPartResponse r;
                 std::string         err;
@@ -419,16 +423,57 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "connects to (decoupling caps and pull-ups next to their IC pin), courtyards kept apart, "
             "rotations tried, as one undoable edit. Default: the parts outside the board (new from "
             "sync_pcb); refs for chosen parts, all for every unlocked part; fixed keeps parts where "
-            "they are (place connectors first, then lock or fix them). Reports wire length before/after.",
+            "they are (place connectors first, then lock or fix them). Functional blocks are kept "
+            "together: from groups, else the parts' Block field (sch_add_part block); groups "
+            "\"sheets\" uses the schematic sheets, false none. Keeping blocks together costs some "
+            "wire length (group_weight trades one for the other). Reports wire length before/after "
+            "and how mixed the blocks are.",
             obj( { { "refs", { { "type", "array" }, { "items", { { "type", "string" } } } } },
                    { "all", { { "type", "boolean" } } },
                    { "fixed", { { "type", "array" }, { "items", { { "type", "string" } } } } },
                    { "spacing", { { "type", "number" }, { "description", "courtyard gap, mm (default 0.25)" } } },
                    { "edge", { { "type", "number" }, { "description", "courtyard to board edge, mm (default 0.5)" } } },
-                   { "rotate", { { "type", "boolean" }, { "description", "try 90/180/270 (default true)" } } } } ),
+                   { "rotate", { { "type", "boolean" }, { "description", "try 90/180/270 (default true)" } } },
+                   { "groups", { { "description", "{\"LDO\": [\"U2\", \"C3\"], ...} blocks to keep together, "
+                                                   "\"sheets\", or false: no blocks" } } },
+                   { "group_weight", { { "type", "number" },
+                                       { "description", "pull to the block's centre, 1 = like a two-pin net (default 3)" } } } } ),
             [&aIpc]( const json& a )
             {
                 kicadd::board::AutoPlace req;
+
+                if( a.contains( "groups" ) )
+                {
+                    const json& g = a["groups"];
+
+                    if( g.is_boolean() )
+                    {
+                        req.set_no_groups( !g.get<bool>() );
+                    }
+                    else if( g.is_string() && g.get<std::string>() == "sheets" )
+                    {
+                        req.set_groups_from_sheets( true );
+                    }
+                    else if( g.is_object() )
+                    {
+                        for( const auto& [name, refs] : g.items() )
+                        {
+                            kicadd::board::PartGroup* pg = req.add_groups();
+                            pg->set_name( name );
+
+                            for( const json& r : refs )
+                                if( r.is_string() )
+                                    pg->add_refs( r.get<std::string>() );
+                        }
+                    }
+                    else
+                    {
+                        return fail( "groups: an object {block: [refs]}, \"sheets\" or false" );
+                    }
+                }
+
+                if( a.contains( "group_weight" ) && a["group_weight"].is_number() )
+                    req.set_group_weight( a["group_weight"].get<double>() );
 
                 for( const json& r : a.value( "refs", json::array() ) )
                     if( r.is_string() )
@@ -465,6 +510,11 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
 
                 t += "; wire length (half-perimeter) " + num( r.hpwl_before_mm() ) + " -> " + num( r.hpwl_after_mm() )
                      + " mm";
+
+                if( r.groups() > 0 )
+                    t += "; " + std::to_string( r.groups() ) + " blocks (" + r.group_source() + "), "
+                         + std::to_string( r.mixed() ) + " part(s) with their nearest neighbour in another block (before "
+                         + std::to_string( r.mixed_before() ) + ")";
 
                 if( !r.edit().history_label().empty() )
                     t += "; undo: \"" + r.edit().history_label() + "\"";

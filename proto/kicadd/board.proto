@@ -215,6 +215,16 @@ message AutoPlace
   int64  edge           = 4;   // courtyard to board edge, nm (0 = 0.5 mm)
   bool   no_rotate      = 5;
   repeated string fixed = 6;   // keep these where they are (in addition to locked parts)
+  repeated PartGroup groups = 7; // functional blocks kept together; default: the footprints' "Block" field
+  bool   no_groups      = 8;   // ignore blocks
+  bool   groups_from_sheets = 9;  // the schematic sheets are the blocks
+  double group_weight   = 10;  // pull to the block's centre, 1 = like a two-pin net (0 = 3)
+}
+
+message PartGroup
+{
+  string name = 1;
+  repeated string refs = 2;
 }
 
 message AutoPlaceResponse
@@ -226,6 +236,10 @@ message AutoPlaceResponse
   repeated string refs  = 5;      // the parts it placed
   MoveResponse edit     = 6;      // positions after, history label
   repeated string skipped = 7;    // asked for but kept: locked, back side, not at 0/90/180/270
+  int32  groups         = 8;      // blocks the parts were kept together in (0: none)
+  string group_source   = 9;      // "request", "Block field", "sheets"
+  int32  mixed          = 10;     // placed parts whose nearest neighbour is in another block
+  int32  mixed_before   = 11;     // the same before (parts on the board)
 }
 
 message FetchLcsc

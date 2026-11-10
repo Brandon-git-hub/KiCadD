@@ -56,6 +56,8 @@ struct WORK
     BOX2I                 box[4];        ///< courtyard (+ silk) box relative to the anchor
     BOX2I                 cu[4];         ///< pads' box relative to the anchor
     std::vector<VECTOR2I> pad[4];        ///< pad offsets
+    std::vector<BOX2I>    padBox[4];     ///< each pad's copper
+    std::vector<BOX2I>    holeBox[4];    ///< the copper of the pads with a hole
     bool                  placed = false;
     int                   affPad = -1;   ///< small passive: its pad pulled to ...
     int                   affPart = -1;  ///< ... this part's ...
@@ -91,7 +93,16 @@ public:
                 m_work[i].cu[r] = boxOf( p.copper, r, m_work[i].box[r] );
 
                 for( const PAD& pad : p.pads )
+                {
                     m_work[i].pad[r].push_back( rotated( pad.offset, r ) );
+
+                    BOX2I pb( rotated( pad.box.GetOrigin(), r ), VECTOR2I( 0, 0 ) );
+                    pb.Merge( rotated( pad.box.GetEnd(), r ) );
+                    m_work[i].padBox[r].push_back( pb );
+
+                    if( pad.hole )
+                        m_work[i].holeBox[r].push_back( pb );
+                }
             }
 
             for( size_t k = 0; k < p.pads.size(); ++k )
@@ -164,6 +175,11 @@ public:
             if( m_work[i].affPart >= 0 )
                 m_satellites[m_work[i].affPart].push_back( (int) i );
         }
+
+        for( const PART& p : m_parts )
+            m_maxHoleGap = std::max( m_maxHoleGap, p.holeGap );
+
+        bucketRebuild();
     }
 
     RESULT Run( bool aRefine = true )
@@ -171,6 +187,11 @@ public:
         RESULT res;
         res.hpwlBefore = hpwl();
 
+        for( size_t i = 0; i < m_parts.size(); ++i )
+            m_newcomer[i] = m_parts[i].movable && !insideBoard( boxAt( (int) i, m_parts[i].pos, m_parts[i].rot ) );
+
+        res.mixedBefore = mixed();
+        blocks();
         global();
         legalize( res );
 
@@ -181,6 +202,7 @@ public:
         }
 
         centre();
+        res.mixed = mixed();
 
         for( size_t i = 0; i < m_parts.size(); ++i )
         {
@@ -262,6 +284,11 @@ private:
         for( int j : m_satellites[i] )
             cost += 2.0 * ( padPos( j, m_work[j].affPad ) - padPos( i, m_work[j].affOther ) ).EuclideanNorm();
 
+        VECTOR2D bc;
+
+        if( blockCentre( i, bc ) )
+            cost += m_softWeight * ( VECTOR2D( boxAt( i, m_parts[i].pos, m_parts[i].rot ).Centre() ) - bc ).EuclideanNorm();
+
         return cost;
     }
 
@@ -300,11 +327,140 @@ private:
             sw += 2.0;
         }
 
+        VECTOR2D bc;
+
+        if( blockCentre( i, bc ) )
+        {
+            VECTOR2D want = bc - VECTOR2D( m_work[i].box[aRot & 3].Centre() );
+            sx += m_softWeight * want.x;
+            sy += m_softWeight * want.y;
+            sw += m_softWeight;
+        }
+
         if( sw <= 0 )
             return false;
 
         aOut = VECTOR2I( KiROUND( sx / sw ), KiROUND( sy / sw ) );
         return true;
+    }
+
+    /// Placed parts in a block whose nearest neighbour (courtyard gap) is in another block.
+    int mixed() const
+    {
+        std::vector<int>   on;
+        std::vector<BOX2I> box( m_parts.size() );
+
+        for( size_t i = 0; i < m_parts.size(); ++i )
+        {
+            box[i] = boxAt( (int) i, m_parts[i].pos, m_parts[i].rot );
+
+            // on the board: its centre (silk of big parts may stick out of the outline)
+            if( m_parts[i].group >= 0 && m_outline.Contains( box[i].Centre() ) )
+                on.push_back( (int) i );
+        }
+
+        auto gap = [&]( const BOX2I& a, const BOX2I& b )
+        {
+            double dx = std::max<double>( 0, std::max( a.GetLeft() - b.GetRight(), b.GetLeft() - a.GetRight() ) );
+            double dy = std::max<double>( 0, std::max( a.GetTop() - b.GetBottom(), b.GetTop() - a.GetBottom() ) );
+            return std::hypot( dx, dy );
+        };
+
+        int count = 0;
+
+        for( int i : on )
+        {
+            int    best = -1;
+            double bd = std::numeric_limits<double>::max();
+
+            for( int j : on )
+            {
+                if( j == i || m_parts[j].back != m_parts[i].back )
+                    continue;
+
+                double d = gap( box[i], box[j] );
+
+                if( d < bd )
+                {
+                    bd = d;
+                    best = j;
+                }
+            }
+
+            if( best >= 0 && m_parts[best].group != m_parts[i].group )
+                count++;
+        }
+
+        return count;
+    }
+
+    /// Soft blocks: the members' centres, taken once per pass (a pass moves parts one at a
+    /// time; the block centre hardly moves meanwhile).
+    void refreshBlocks()
+    {
+        if( !m_soft )
+            return;
+
+        m_blockSum.assign( m_members.size(), VECTOR2D( 0, 0 ) );
+        m_blockN.assign( m_members.size(), 0 );
+        m_cachedCentre.resize( m_parts.size() );
+
+        for( size_t g = 0; g < m_members.size(); ++g )
+        {
+            for( int j : m_members[g] )
+            {
+                m_cachedCentre[j] = VECTOR2D( boxAt( j, m_parts[j].pos, m_parts[j].rot ).Centre() );
+
+                if( m_work[j].placed )
+                {
+                    m_blockSum[g] += m_cachedCentre[j];
+                    m_blockN[g]++;
+                }
+            }
+        }
+    }
+
+    /// Centre of the other parts of part i's block (soft blocks), false when there are none.
+    bool blockCentre( int i, VECTOR2D& aOut ) const
+    {
+        int g = m_parts[i].group;
+
+        if( !m_soft || g < 0 || g >= (int) m_blockSum.size() )
+            return false;
+
+        VECTOR2D sum = m_blockSum[g];
+        int      n = m_blockN[g];
+
+        if( m_work[i].placed && n > 0 )
+        {
+            sum -= m_cachedCentre[i];
+            n--;
+        }
+
+        if( n == 0 )
+            return false;
+
+        aOut = sum / n;
+        return true;
+    }
+
+    /// Blocks: the members of each (soft pull to their centre), when there are two or more.
+    void blocks()
+    {
+        const int G = m_opt.groups;
+
+        if( G < 2 || m_opt.groupWeight <= 0 )
+            return;
+
+        m_members.assign( G, {} );
+
+        for( size_t i = 0; i < m_parts.size(); ++i )
+        {
+            if( m_parts[i].group >= 0 && m_parts[i].group < G )
+                m_members[m_parts[i].group].push_back( (int) i );
+        }
+
+        m_soft = true;
     }
 
     bool insideBoard( const BOX2I& aBox ) const
@@ -335,6 +491,101 @@ private:
 
     /// Part i at aPos / aRot: courtyard clear of the placed parts (+ spacing), pads clear of
     /// the obstacles (silk may go over board text).
+    // A bucket grid over the board of the placed parts' boxes (courtyard and pads), so a
+    // legality test looks at the neighbours only. A part's entry covers where it was when it
+    // was entered: update it (bucketUpdate) when a part moves for good.
+    static constexpr int BUCKET = 4000000;   // 4 mm
+
+    void bucketRange( const BOX2I& aBox, int& x0, int& y0, int& x1, int& y1 ) const
+    {
+        auto cx = [&]( int v ) { return std::clamp( (int) ( ( (int64_t) v - m_bucketOrigin.x ) / BUCKET ), 0, m_bucketW - 1 ); };
+        auto cy = [&]( int v ) { return std::clamp( (int) ( ( (int64_t) v - m_bucketOrigin.y ) / BUCKET ), 0, m_bucketH - 1 ); };
+        x0 = cx( aBox.GetLeft() );
+        x1 = cx( aBox.GetRight() );
+        y0 = cy( aBox.GetTop() );
+        y1 = cy( aBox.GetBottom() );
+    }
+
+    BOX2I footprintOf( int j ) const
+    {
+        BOX2I b = boxAt( j, m_parts[j].pos, m_parts[j].rot );
+        b.Merge( cuAt( j, m_parts[j].pos, m_parts[j].rot ) );
+        return b;
+    }
+
+    void bucketRemove( int j )
+    {
+        if( m_bucketAt[j].GetWidth() < 0 )
+            return;
+
+        int x0, y0, x1, y1;
+        bucketRange( m_bucketAt[j], x0, y0, x1, y1 );
+
+        for( int y = y0; y <= y1; ++y )
+            for( int x = x0; x <= x1; ++x )
+            {
+                auto& v = m_buckets[y * m_bucketW + x];
+                v.erase( std::remove( v.begin(), v.end(), j ), v.end() );
+            }
+
+        m_bucketAt[j] = BOX2I( VECTOR2I( 0, 0 ), VECTOR2I( -1, -1 ) );
+    }
+
+    void bucketUpdate( int j )
+    {
+        bucketRemove( j );
+
+        if( !m_work[j].placed )
+            return;
+
+        BOX2I b = footprintOf( j );
+        int   x0, y0, x1, y1;
+        bucketRange( b, x0, y0, x1, y1 );
+
+        for( int y = y0; y <= y1; ++y )
+            for( int x = x0; x <= x1; ++x )
+                m_buckets[y * m_bucketW + x].push_back( j );
+
+        m_bucketAt[j] = b;
+    }
+
+    void bucketRebuild()
+    {
+        BOX2I all = m_area;
+        all.Inflate( 100000000 );     // 100 mm round the board: parts sticking out
+        m_bucketOrigin = all.GetOrigin();
+        m_bucketW = std::max( 1, (int) ( all.GetWidth() / BUCKET ) + 1 );
+        m_bucketH = std::max( 1, (int) ( all.GetHeight() / BUCKET ) + 1 );
+        m_buckets.assign( (size_t) m_bucketW * m_bucketH, {} );
+        m_bucketAt.assign( m_parts.size(), BOX2I( VECTOR2I( 0, 0 ), VECTOR2I( -1, -1 ) ) );
+        m_stamp.assign( m_parts.size(), 0 );
+
+        for( size_t j = 0; j < m_parts.size(); ++j )
+            bucketUpdate( (int) j );
+    }
+
+    /// aFn( j ) for each part entered near aBox, once; stops when aFn returns false.
+    template <typename F>
+    void forNear( const BOX2I& aBox, F aFn ) const
+    {
+        int x0, y0, x1, y1;
+        bucketRange( aBox, x0, y0, x1, y1 );
+        ++m_stampNow;
+
+        for( int y = y0; y <= y1; ++y )
+            for( int x = x0; x <= x1; ++x )
+                for( int j : m_buckets[y * m_bucketW + x] )
+                {
+                    if( m_stamp[j] == m_stampNow )
+                        continue;
+
+                    m_stamp[j] = m_stampNow;
+
+                    if( !aFn( j ) )
+                        return;
+                }
+    }
+
     bool free( int i, const VECTOR2I& aPos, int aRot ) const
     {
         if( !m_opt.obstacles.empty() )
@@ -351,21 +602,83 @@ private:
         BOX2I b = boxAt( i, aPos, aRot );
         b.Inflate( m_opt.spacing );
 
-        for( size_t j = 0; j < m_parts.size(); ++j )
+        const PART& p = m_parts[i];
+        const int   holeGap = std::max( m_opt.spacing, m_opt.holeClearance );
+
+        BOX2I reach = b;
+        reach.Inflate( std::max( holeGap, m_maxHoleGap ) );     // neighbours' holes
+
+        bool clear = true;
+
+        forNear( reach, [&]( int j )
         {
-            if( (int) j == i || !m_work[j].placed )
-                continue;
+            if( j == i || !m_work[j].placed )
+                return true;
 
-            if( b.Intersects( boxAt( (int) j, m_parts[j].pos, m_parts[j].rot ) ) )
+            const PART& q = m_parts[j];
+
+            const BOX2I qBox = boxAt( j, q.pos, q.rot );
+
+            if( q.back == p.back && b.Intersects( qBox ) )
+            {
+                clear = false;
                 return false;
-        }
+            }
 
-        return true;
+            if( !q.tht && !p.tht )
+                return true;
+
+            // Through-hole pins stick out on the other side (no part body over them) and the
+            // holes want their clearance from every pad on both sides.
+            const int gap = std::max( { holeGap, p.holeGap, q.holeGap } );
+
+            auto holesHit = [&]( int aHoles, const VECTOR2I& aHPos, int aHRot, const BOX2I& aBody, int aPads,
+                                 const VECTOR2I& aPPos, int aPRot, bool aOtherSide )
+            {
+                BOX2I padsCu = cuAt( aPads, aPPos, aPRot );
+                padsCu.Inflate( gap );
+
+                for( BOX2I h : m_work[aHoles].holeBox[aHRot & 3] )
+                {
+                    h.Move( aHPos );
+
+                    if( aOtherSide && h.Intersects( aBody ) )
+                        return true;
+
+                    BOX2I hg = h;
+                    hg.Inflate( gap );
+
+                    if( !hg.Intersects( padsCu ) )
+                        continue;
+
+                    for( BOX2I pb : m_work[aPads].padBox[aPRot & 3] )
+                    {
+                        pb.Move( aPPos );
+
+                        if( hg.Intersects( pb ) )
+                            return true;
+                    }
+                }
+
+                return false;
+            };
+
+            const bool otherSide = q.back != p.back;
+
+            if( q.tht && holesHit( j, q.pos, q.rot, b, i, aPos, aRot, otherSide ) )
+                clear = false;
+            else if( p.tht && holesHit( i, aPos, aRot, qBox, j, q.pos, q.rot, otherSide ) )
+                clear = false;
+
+            return clear;
+        } );
+
+        return clear;
     }
 
     bool legalAt( int i, const VECTOR2I& aPos, int aRot ) const
     {
-        return insideBoard( boxAt( i, aPos, aRot ) ) && free( i, aPos, aRot );
+        return free( i, aPos, aRot ) && insideBoard( boxAt( i, aPos, aRot ) );
     }
 
     /// Nearest legal anchor to aTarget for part i in rotation aRot (square rings on the grid).
@@ -460,12 +773,12 @@ private:
             if( !p.movable )
                 continue;
 
-            if( !insideBoard( boxAt( (int) i, p.pos, p.rot ) ) )
+            if( m_newcomer[i] )
             {
                 double a = k * 2.39996 + m_variant * 1.1;
                 double rr = spread * std::sqrt( ( k + 0.5 ) / ( m_parts.size() + 1.0 ) );
+
                 p.pos = c + VECTOR2I( KiROUND( rr * std::cos( a ) ), KiROUND( rr * std::sin( a ) ) );
-                m_newcomer[i] = true;
             }
 
             k++;
@@ -484,6 +797,8 @@ private:
         // board improves it rather than starting over); newcomers are pulled in.
         for( int it = 0; it < 60; ++it )
         {
+            refreshBlocks();
+
             for( size_t i = 0; i < m_parts.size(); ++i )
             {
                 if( !m_parts[i].movable || !m_newcomer[i] )
@@ -554,6 +869,8 @@ private:
                 p.pos += d;
         }
 
+        bucketRebuild();
+
         for( size_t i = 0; i < m_parts.size(); ++i )
         {
             if( !m_parts[i].movable || !m_work[i].placed )
@@ -564,6 +881,7 @@ private:
                 for( size_t j = 0; j < m_parts.size(); ++j )
                     m_parts[j].pos = keep[j];
 
+                bucketRebuild();
                 return;
             }
         }
@@ -571,6 +889,7 @@ private:
 
     void legalize( RESULT& aRes )
     {
+        bucketRebuild();
         std::vector<int> order;
 
         for( size_t i = 0; i < m_parts.size(); ++i )
@@ -614,6 +933,7 @@ private:
 
         for( int i : order )
         {
+            refreshBlocks();     // the block's parts placed so far
             VECTOR2I target = m_parts[i].pos, at;
 
             if( !connected( i ) && m_newcomer[i] )
@@ -641,6 +961,7 @@ private:
             {
                 m_parts[i].pos = at;
                 m_work[i].placed = true;
+                bucketUpdate( i );
             }
             else
             {
@@ -651,6 +972,7 @@ private:
 
     bool refine()
     {
+        refreshBlocks();
         bool             improved = false;
         std::vector<int> order;
 
@@ -680,7 +1002,11 @@ private:
                 if( !pullPoint( i, rot, want ) )
                     continue;
 
-                if( !nearestLegal( i, want, rot, at ) )
+                // a spot farther from where the wires pull than the part is now rarely helps:
+                // don't search the whole board for one
+                int maxRing = (int) ( ( VECTOR2D( keepPos ) - VECTOR2D( want ) ).EuclideanNorm() / m_opt.grid ) + 3;
+
+                if( !nearestLegal( i, want, rot, at, maxRing ) )
                     continue;
 
                 p.pos = at;
@@ -699,7 +1025,10 @@ private:
             p.rot = bestRot;
 
             if( bestPos != keepPos || bestRot != keepRot )
+            {
                 improved = true;
+                bucketUpdate( i );
+            }
         }
 
         // Swap parts of about the same size (two resistors, two caps): kept when the wire
@@ -722,9 +1051,15 @@ private:
                 bool fits = legalAt( i, p.pos, p.rot ) && legalAt( j, q.pos, q.rot );
 
                 if( fits && localCost( i ) + localCost( j ) < before - 1000.0 )
+                {
                     improved = true;
+                    bucketUpdate( i );
+                    bucketUpdate( j );
+                }
                 else
+                {
                     std::swap( p.pos, q.pos );
+                }
             }
         }
 
@@ -742,6 +1077,19 @@ private:
     std::vector<bool>                             m_newcomer;
     int                                           m_variant = 0;
     std::vector<std::vector<int>>                 m_satellites;
+    std::vector<std::vector<int>>                 m_buckets;
+    std::vector<BOX2I>                            m_bucketAt;
+    VECTOR2I                                      m_bucketOrigin;
+    int                                           m_bucketW = 1, m_bucketH = 1;
+    mutable std::vector<unsigned>                 m_stamp;
+    mutable unsigned                              m_stampNow = 0;
+    int                                           m_maxHoleGap = 0;
+    std::vector<std::vector<int>>                 m_members;    ///< per block
+    bool                                          m_soft = false;
+    std::vector<VECTOR2D>                         m_blockSum;
+    std::vector<int>                              m_blockN;
+    std::vector<VECTOR2D>                         m_cachedCentre;
+    double                                        m_softWeight = m_opt.groupWeight;
 };
 
 } // namespace
@@ -763,7 +1111,7 @@ RESULT Place( std::vector<PART>& aParts, int aNetCount, const SHAPE_POLY_SET& aO
         threads.emplace_back(
                 [&, v]()
                 {
-                    PLACER placer( parts[v], aNetCount, aOutline, aOptions, v );
+                    PLACER placer( parts[v], aNetCount, aOutline, aOptions, v + aOptions.seed * starts );
                     results[v] = placer.Run();
                 } );
     }
