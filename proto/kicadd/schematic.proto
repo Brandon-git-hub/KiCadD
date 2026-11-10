@@ -183,6 +183,7 @@ message SchNetlist
 {
   repeated SchNet nets        = 1;
   repeated string unconnected = 2;   // "U1.7": on no net, no no-connect flag
+  repeated string no_connect  = 3;   // on no net, marked no-connect (X) on purpose
 }
 
 // Returns SchConnectResponse (done = parts deleted, with their stubs and labels; a sheet's name

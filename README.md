@@ -1055,6 +1055,22 @@ copy of the board, DRC reports `lib_footprint_mismatch Q3 ... does not match cop
 A separate "library check skipped" line in `run_drc` (planned) was not added: the skipped
 footprints are only the ones from libraries KiCadD doesn't ship.
 
+## sch_netlist: one entry per pin, no virtual symbols, no-connect pins listed (2026-11-11)
+
+TODO 2–4 from the Windows trial, all in `handleGetNetlist`:
+
+- A pin shared by the units of a symbol is listed once. The supply pins of the 74HC125 came back
+  from each of its four units: `U2.7` four times in `GND`.
+- Symbols whose reference starts with `#` are skipped, even without the power flag
+  (pic_programmer's `VPP` listed `#PWR122.1 #PWR123.1 #PWR134.1`).
+- Pins marked no-connect (X) are listed in a new `no_connect` field (`SchNetlist`, field 3),
+  shown as a `no-connect (N): ...` line. Before, they appeared nowhere, so neither the agent
+  nor the user could tell them apart from pins the tool missed. pic_programmer: 77 such pins,
+  among them `U4.3 U4.4`.
+
+Release check, 2026-11-11 (`build-lean`): `m5_e2e`, `hier_e2e`, `rules_e2e`, `smoke`,
+`desktop_e2e` (with the LCSC cache), `desktop_sch_e2e` and `mcp_e2e` (Jetson board) all pass.
+
 ## 待做清單 (TODO)
 
 2026-11-10，`v0.1.0-alpha.2` 在 Windows 上試用後回報；以下已在 Linux 上用 `pic_programmer` 重現確認，**尚未實作**。
@@ -1065,15 +1081,15 @@ footprints are only the ones from libraries KiCadD doesn't ship.
    `${KICAD10_FOOTPRINT_DIR}/*.pretty`，找不到庫所以 DRC 無法比對。板子本身沒問題。
    方向：在無官方庫的 KiCadD 把這類警告預設設為忽略（或 `run_drc` 摘要中分開列出）。
    不要建議使用者「把標準庫加回來」，因為本版沒有那些庫。
-2. **（低優先，純顯示）`sch_netlist` 重複腳位。** `GND` 裡 `U2.7`、`VCC` 裡 `U2.14` 各出現 4 次：
+2. **（已完成 2026-11-11）（低優先，純顯示）`sch_netlist` 重複腳位。** `GND` 裡 `U2.7`、`VCC` 裡 `U2.14` 各出現 4 次：
    74HC125 四個單元共用的電源腳，`handleGetNetlist`（`src/sch/kicadd_handler_sch.cpp`）對每個單元
    各呼叫 `symbol->GetPins( &sheet )`，共用腳（unit 0）每次都回傳。電路沒有錯，只是輸出變長；
    KiCad 自己的網路表匯出每支腳在每個網路只列一次。方向：以 `ref.pin` 去重。
-3. **（低優先，純顯示）`sch_netlist` 列出虛擬電源符號。** `VPP` 裡出現 `#PWR122.1 #PWR123.1 #PWR134.1`：
+3. **（已完成 2026-11-11）（低優先，純顯示）`sch_netlist` 列出虛擬電源符號。** `VPP` 裡出現 `#PWR122.1 #PWR123.1 #PWR134.1`：
    demo 的 `pic_programmer:VPP` 是後加的虛擬電源，符號沒有 `(power)` 旗標，`IsPower()` 為假。
    一般的 GND / VCC 電源符號有正確跳過。方向（可選）：另外跳過 `#` 開頭的參考編號。
 
-4. **（低優先）`sch_netlist` 不顯示標了不接（X）的腳。** `handleGetNetlist` 對沒有網路的腳：
+4. **（已完成 2026-11-11）（低優先）`sch_netlist` 不顯示標了不接（X）的腳。** `handleGetNetlist` 對沒有網路的腳：
    有 no-connect 旗標就直接略過，沒有才列進 `unconnected`。結果是「刻意不接」的腳不出現在任何
    地方，Agent 和使用者分不出它和「工具沒看到」。`pic_programmer` 的 U4.3 / U4.4 就是這樣
    （電路圖有 X，PCB 有 2 個 `unconnected-` 網路）。方向：proto `SchNetlist` 加 `no_connect`

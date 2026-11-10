@@ -328,8 +328,8 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             } } );
 
     aTools.push_back( { "sch_netlist",
-            "Nets of the schematic with their pins (\"REF.PIN\"), and the pins on no net. net filters "
-            "to one net.",
+            "Nets of the schematic with their pins (\"REF.PIN\"), the pins on no net (unconnected) and "
+            "the ones marked no-connect (X) on purpose. net filters to one net.",
             obj( { { "net", { { "type", "string" } } } } ),
             [&aIpc]( const json& a )
             {
@@ -356,6 +356,14 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                     t += "\nunconnected (" + std::to_string( r.unconnected_size() ) + "):";
 
                     for( const std::string& p : r.unconnected() )
+                        t += " " + p;
+                }
+
+                if( r.no_connect_size() )
+                {
+                    t += "\nno-connect (" + std::to_string( r.no_connect_size() ) + "):";
+
+                    for( const std::string& p : r.no_connect() )
                         t += " " + p;
                 }
 

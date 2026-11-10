@@ -1133,8 +1133,11 @@ HANDLER_RESULT<SchNetlist> KICADD_HANDLER_SCH::handleGetNetlist( const HANDLER_C
 
     rebuildConnectivity();
 
-    std::map<std::string, std::vector<std::string>> nets;
-    SchNetlist                                      out;
+    // Sets: a pin shared by the units of a symbol (the supply pins of a 74HC125) comes back
+    // from every unit; it is one pin on the net, as in KiCad's own netlist.
+    std::map<std::string, std::set<std::string>> nets;
+    std::set<std::string>                        unconnected, noConnect;
+    SchNetlist                                   out;
 
     for( const SCH_SHEET_PATH& sheet : schematic()->Hierarchy() )
     {
@@ -1147,15 +1150,21 @@ HANDLER_RESULT<SchNetlist> KICADD_HANDLER_SCH::handleGetNetlist( const HANDLER_C
 
             std::string ref = str( symbol->GetRef( &sheet ) );
 
+            // virtual symbols (#PWR, #FLG) are no parts, also when the power flag is missing
+            if( ref.empty() || ref[0] == '#' )
+                continue;
+
             for( SCH_PIN* pin : symbol->GetPins( &sheet ) )
             {
                 std::string net = pinNet( pin, sheet );
                 std::string name = ref + "." + str( pin->GetNumber() );
 
                 if( !net.empty() )
-                    nets[net].push_back( name );
-                else if( !noConnectAt( sheet.LastScreen(), pin->GetPosition() ) && aCtx.Request.net().empty() )
-                    out.add_unconnected( name );
+                    nets[net].insert( name );
+                else if( noConnectAt( sheet.LastScreen(), pin->GetPosition() ) )
+                    noConnect.insert( name );
+                else
+                    unconnected.insert( name );
             }
         }
     }
@@ -1165,12 +1174,20 @@ HANDLER_RESULT<SchNetlist> KICADD_HANDLER_SCH::handleGetNetlist( const HANDLER_C
         if( !aCtx.Request.net().empty() && name != aCtx.Request.net() && name != "/" + aCtx.Request.net() )
             continue;
 
-        std::sort( pins.begin(), pins.end() );
         SchNet* n = out.add_nets();
         n->set_name( name );
 
         for( const std::string& p : pins )
             n->add_pins( p );
+    }
+
+    if( aCtx.Request.net().empty() )
+    {
+        for( const std::string& p : unconnected )
+            out.add_unconnected( p );
+
+        for( const std::string& p : noConnect )
+            out.add_no_connect( p );
     }
 
     return out;
