@@ -775,6 +775,8 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                     for( const std::string& ref : r.unplaced() )
                         t += " " + ref;
 
+                    t += " (left where they were; the others keep clear of them)";
+
                     if( r.track_obstacles() > 0 )
                         t += "\n  the board's " + std::to_string( r.track_obstacles() )
                              + " tracks/vias are obstacles: delete the routing first, or place right "

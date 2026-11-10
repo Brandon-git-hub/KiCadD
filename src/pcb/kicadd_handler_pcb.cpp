@@ -34,6 +34,7 @@
 #include <footprint.h>
 #include <pad.h>
 #include <pcb_track.h>
+#include <geometry/shape_arc.h>
 #include <zone.h>
 #include <geometry/seg.h>
 #include <geometry/shape_poly_set.h>
@@ -2582,13 +2583,57 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
             }
         }
 
+        // A diagonal track's bounding box covers far more than the track: cover it with a row
+        // of small boxes instead (arcs: along their polyline). Still never less than the track.
+        auto addLine = [&]( const VECTOR2I& aA, const VECTOR2I& aB, int aHalf, int aSides )
+        {
+            const VECTOR2I d = aB - aA;
+
+            int n = 1;
+
+            if( d.x != 0 && d.y != 0 )
+                n = std::clamp( (int) std::ceil( d.EuclideanNorm() / std::max( 2 * aHalf, 250000 ) ), 1, 256 );
+
+            for( int k = 0; k < n; ++k )
+            {
+                VECTOR2I p0 = aA + VECTOR2I( (int64_t) d.x * k / n, (int64_t) d.y * k / n );
+                VECTOR2I p1 = aA + VECTOR2I( (int64_t) d.x * ( k + 1 ) / n, (int64_t) d.y * ( k + 1 ) / n );
+                BOX2I    box( p0 );
+                box.Merge( p1 );
+                box.Inflate( aHalf );
+                add( box, aSides );
+            }
+        };
+
         for( PCB_TRACK* track : b->Tracks() )
         {
-            BOX2I box = track->GetBoundingBox();
-            box.Inflate( clearance );
             // a via goes through every layer between its ends: count it on all sides
-            add( box, track->Type() == PCB_VIA_T ? ( ap::OBST_FRONT | ap::OBST_BACK | ap::OBST_INNER )
-                                                 : sides( track->GetLayerSet() ) );
+            if( track->Type() == PCB_VIA_T )
+            {
+                BOX2I box = track->GetBoundingBox();
+                box.Inflate( std::max( clearance, track->GetOwnClearance( track->GetLayer() ) ) );
+                add( box, ap::OBST_FRONT | ap::OBST_BACK | ap::OBST_INNER | ap::OBST_PADS );
+                continue;
+            }
+
+            // its own net class may ask for more than the default (POWER: 0.28 mm)
+            const int half = track->GetWidth() / 2 + std::max( clearance, track->GetOwnClearance( track->GetLayer() ) );
+            const int side = sides( track->GetLayerSet() ) | ap::OBST_PADS;
+
+            if( track->Type() == PCB_ARC_T )
+            {
+                auto*                 arc = static_cast<PCB_ARC*>( track );
+                const int             maxError = 10000;
+                SHAPE_LINE_CHAIN      chain = SHAPE_ARC( arc->GetStart(), arc->GetMid(), arc->GetEnd(), 0 )
+                                                 .ConvertToPolyline( maxError );
+
+                for( int k = 0; k + 1 < chain.PointCount(); ++k )
+                    addLine( chain.CPoint( k ), chain.CPoint( k + 1 ), half + maxError, side );
+            }
+            else
+            {
+                addLine( track->GetStart(), track->GetEnd(), half, side );
+            }
         }
 
         for( ZONE* zone : b->Zones() )

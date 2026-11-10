@@ -128,7 +128,8 @@ struct OPTIONS
     std::vector<NEAR_RULE> nearRules;
 };
 
-enum { OBST_FRONT = 1, OBST_BACK = 2, OBST_INNER = 4 };
+enum { OBST_FRONT = 1, OBST_BACK = 2, OBST_INNER = 4,
+       OBST_PADS = 8 };   ///< only the pads must clear it (tracks may run between a part's pins)
 
 
 struct RESULT

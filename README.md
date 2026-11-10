@@ -1067,6 +1067,44 @@ parts`); `refill_zones` during a run gives "board changed" and nothing moves.
 cancel moves nothing and leaves no job, the synchronous call still works. `m5_e2e`,
 `hier_e2e`, `rules_e2e` pass, and `autoplace_bench.py` wire lengths are unchanged.
 
+## auto_place on a routed board (2026-11-11)
+
+TODO 5(e) and what turned up with it. On the routed pic_programmer (`all`, tracks kept), DRC
+after auto_place had 563 errors, among them 18 `shorting_items`, 10 `overlapping_footprints`
+and 48 `pth_in_courtyard`. Three causes:
+
+- **Tracks as one bounding box.** A diagonal track's box covers far more than the track. Track
+  obstacles are now a row of small boxes along the segment (arcs: along their polyline), each
+  grown by half the width plus the track's own net-class clearance (POWER asked for 0.28 mm,
+  the default for 0.25 mm). Vias also use their own clearance.
+- **The part's side as one box around all pads.** A track running between the rows of an IC's
+  pins kept the IC out. For tracks and vias (`OBST_PADS`) each pad is now checked once that box
+  meets the track. Copper text and graphics still keep the whole pad area clear: allowing them
+  under a part made the stripped-board benchmark 15 % worse, and they don't belong under a part
+  body anyway.
+- **A part with no room was no obstacle.** P3 (the 40-pin ZIF socket, whose courtyard is
+  already over the board edge in the human layout) stays where it is, but the other parts
+  were placed over its pads: the shorts. A part that finds no room and is (partly) on the
+  board is now kept as a fixed part at its place, and the result says so.
+
+| routed pic_programmer, `all` | before | after |
+|---|---|---|
+| wire length | 1753.1 mm | 1653.1 mm |
+| DRC after `refill_zones` | 563 errors (shorts, overlaps, holes, silk, clearance...) | only `unconnected_items` 122 |
+
+`autoplace_bench.py` (tracks stripped): the same wire lengths as before in all four
+configurations. `m5_e2e`, `hier_e2e`, `rules_e2e`, `smoke`, `desktop_autoplace_e2e` and
+`autoplace_bg_e2e` pass.
+
+**TODO 5(c), memory growth (Windows 425 → 1432 MB): not reproduced on Linux.** RSS sampled
+during `auto_place all` (no time limit) on the routed pic_programmer stayed flat: headless
+`kicad-cli` 251 → 257–260 MB, desktop pcbnew 602 → 607 MB. That holds for the code before the
+time limit too (peak 266 MB headless). The suspected `pullPoint` reallocation doesn't exist:
+`pullPoint` only sums, and the hot path (`free`, `legalAt`, `nearestLegal`) allocates nothing.
+The only per-call container is `localCost`'s small `nets` vector. If the growth shows up again
+on Windows with alpha.4, a heap snapshot (or the working set at the start and end of a run)
+would tell where it goes.
+
 ## DRC: library check without KiCad's libraries (2026-11-11)
 
 TODO 1 from the Windows trial: `run_drc` on pic_programmer gave `0 errors, 63 warnings`, all
@@ -1127,7 +1165,8 @@ Release check, 2026-11-11 (`build-lean`): `m5_e2e`, `hier_e2e`, `rules_e2e`, `sm
    清單，MCP 文字輸出多列一行。
 
 5. **`auto_place` 在桌面版會讓編輯器「沒有回應」，期間所有 MCP 呼叫逾時。**
-   **(b)(d) 已完成（2026-11-11，見「auto_place time limit」）；(a) 已完成（見「auto_place in the background」）；(c)(e) 尚未實作。** 2026-11-11 在卡住當下
+   **(a)(b)(d)(e) 已完成（2026-11-11，見「auto_place time limit」「auto_place in the background」
+   「auto_place on a routed board」）。(c) 在 Linux 無法重現（見同節），請在 Windows 上用 alpha.4 再確認。** 2026-11-11 在卡住當下
    取得傾印檔（`kicad_16528_drc_hang.dmp`，用 `v0.1.0-alpha.2` 的 PDB 還原），**原因不是 DRC，
    也不是死結**：
    * 主執行緒停在 `KICADD_HANDLER_PCB::handleAutoPlace → kicadd::autoplace::Place`，等 8 條

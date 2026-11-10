@@ -243,6 +243,15 @@ public:
         for( size_t i = 0; i < m_parts.size(); ++i )
             m_newcomer[i] = m_parts[i].movable && !insideBoard( boxAt( (int) i, m_parts[i].pos, m_parts[i].rot ) );
 
+        m_startPos.resize( m_parts.size() );
+        m_startRot.resize( m_parts.size() );
+
+        for( size_t i = 0; i < m_parts.size(); ++i )
+        {
+            m_startPos[i] = m_parts[i].pos;
+            m_startRot[i] = m_parts[i].rot;
+        }
+
         res.mixedBefore = mixed();
         res.satBefore = satelliteDistance( true, &res.satellites );
 
@@ -895,8 +904,22 @@ private:
                 if( layered && !( m_opt.obstacleLayers[k] & mine ) )
                     continue;
 
-                if( cu.Intersects( m_opt.obstacles[k] ) )
+                if( !cu.Intersects( m_opt.obstacles[k] ) )
+                    continue;
+
+                // copper text and graphics: not under the part at all
+                if( !layered || !( m_opt.obstacleLayers[k] & OBST_PADS ) )
                     return false;
+
+                // a track: the box around all pads meets it, does a pad? (a track between the
+                // rows of an IC's pins doesn't keep the IC out)
+                for( BOX2I pb : m_work[i].padBox[at( me, aRot )] )
+                {
+                    pb.Move( aPos );
+
+                    if( pb.Intersects( m_opt.obstacles[k] ) )
+                        return false;
+                }
             }
         }
 
@@ -1434,6 +1457,20 @@ private:
             else
             {
                 aRes.unplaced.push_back( m_parts[i].ref );
+
+                // It stays where it is (it isn't moved): when that is on the board (even partly:
+                // a connector over the edge), the parts placed after it must keep clear of it,
+                // as of a fixed part.
+                m_parts[i].pos = m_startPos[i];
+                m_parts[i].rot = m_startRot[i];
+                m_parts[i].back = m_work[i].startBack;
+
+                if( m_area.Intersects( boxAt( i, m_parts[i].pos, m_parts[i].rot ) ) )
+                {
+                    m_parts[i].movable = false;
+                    m_work[i].placed = true;
+                    bucketUpdate( i );
+                }
             }
 
             if( m_opt.progress )
@@ -1574,6 +1611,8 @@ private:
     std::vector<std::vector<std::pair<int, int>>> m_netPads;
     std::vector<double>                           m_weight;
     std::vector<bool>                             m_newcomer;
+    std::vector<VECTOR2I>                         m_startPos;   ///< where the parts were
+    std::vector<int>                              m_startRot;
     int                                           m_variant = 0;
     std::vector<std::vector<int>>                 m_satellites;
     std::vector<std::vector<int>>                 m_buckets;
