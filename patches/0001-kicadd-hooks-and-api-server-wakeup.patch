@@ -129,6 +129,22 @@ index 56f064f1..8618dc21 100644
  
  /// A file extension with a leading '.' is a suffix, and this one is used on
  /// top level program modules which implement the KIFACE.
+diff --git a/common/CMakeLists.txt b/common/CMakeLists.txt
+index de2e4823..320eaabc 100644
+--- a/common/CMakeLists.txt
++++ b/common/CMakeLists.txt
+@@ -1473,3 +1473,11 @@ make_lexer_export(
+ # to build it, first enable #define STAND_ALONE at top of dsnlexer.cpp
+ add_executable( dsntest EXCLUDE_FROM_ALL dsnlexer.cpp )
+ target_link_libraries( dsntest common ${wxWidgets_LIBRARIES} rt )
++
++# KiCadD (M7 declutter): KICADD only on the files that need it, so the rest of common keeps its
++# build cache: the first-run wizard's silent defaults, the Help menu, the bug report address
++if( KICADD_DIR )
++    set_property( SOURCE startwizard/startwizard.cpp startwizard/startwizard_provider_privacy.cpp
++                         eda_base_frame.cpp tool/common_control.cpp
++                  APPEND PROPERTY COMPILE_DEFINITIONS KICADD )
++endif()
 diff --git a/common/api/api_plugin_manager.cpp b/common/api/api_plugin_manager.cpp
 index 02e5f1c9..291f59df 100644
 --- a/common/api/api_plugin_manager.cpp
@@ -216,6 +232,60 @@ index b224822c..eaec83c9 100644
      aMsg << indent4 << "ngspice: " << NGSPICE_BUILD_VERSION << eol;
  #elif defined( NGSPICE_HAVE_CONFIG_H )
      #undef HAVE_STRNCASECMP     /* is redefined in ngspice/config.h */
+diff --git a/common/eda_base_frame.cpp b/common/eda_base_frame.cpp
+index 810a90f0..ff038fbb 100644
+--- a/common/eda_base_frame.cpp
++++ b/common/eda_base_frame.cpp
+@@ -916,8 +916,10 @@ void EDA_BASE_FRAME::AddStandardHelpMenu( wxMenuBar* aMenuBar )
+     helpMenu->Add( ACTIONS::help );
+     helpMenu->Add( ACTIONS::gettingStarted );
+     helpMenu->Add( ACTIONS::listHotKeys );
++#ifndef KICADD   // KiCadD is a fork: KiCad's contribute/donate pages are not its own
+     helpMenu->Add( ACTIONS::getInvolved );
+     helpMenu->Add( ACTIONS::donate );
++#endif
+     helpMenu->Add( ACTIONS::reportBug );
+ 
+     helpMenu->AppendSeparator();
+diff --git a/common/startwizard/startwizard.cpp b/common/startwizard/startwizard.cpp
+index 30622323..d64a4613 100644
+--- a/common/startwizard/startwizard.cpp
++++ b/common/startwizard/startwizard.cpp
+@@ -178,6 +178,15 @@ void STARTWIZARD::CheckAndRun( wxWindow* aParent )
+     if( !wizardRequired )
+         return;
+ 
++#ifdef KICADD
++    // KiCadD: no setup wizard blocking the first start (the agent may be driving the editor):
++    // the defaults, as if the user had cancelled it (no update checks, no data collection, API on).
++    for( std::unique_ptr<STARTWIZARD_PROVIDER>& provider : m_providers )
++        provider->ApplyDefaults();
++
++    return;
++#endif
++
+     Pgm().HideSplash();
+ 
+     // wxLogGui shows queued messages when a modal opens
+diff --git a/common/startwizard/startwizard_provider_privacy.cpp b/common/startwizard/startwizard_provider_privacy.cpp
+index eb770877..9e0277c5 100644
+--- a/common/startwizard/startwizard_provider_privacy.cpp
++++ b/common/startwizard/startwizard_provider_privacy.cpp
+@@ -118,8 +118,14 @@ void STARTWIZARD_PROVIDER_PRIVACY::ApplyDefaults()
+     COMMON_SETTINGS* commonSettings = Pgm().GetCommonSettings();
+     KICAD_SETTINGS* settings = Pgm().GetSettingsManager().GetAppSettings<KICAD_SETTINGS>( "kicad" );
+ 
++#ifdef KICADD
++    // KiCadD: KiCad's update and package checks are for KiCad, not this fork
++    settings->m_KiCadUpdateCheck = false;
++    settings->m_PcmUpdateCheck   = false;
++#else
+     settings->m_KiCadUpdateCheck = true;
+     settings->m_PcmUpdateCheck   = true;
++#endif
+     APP_MONITOR::SENTRY::Instance()->SetSentryOptIn( false );
+ 
+     commonSettings->m_DoNotShowAgain.update_check_prompt = true;
 diff --git a/common/text_eval/text_eval_vcs.cpp b/common/text_eval/text_eval_vcs.cpp
 index 383869d8..6ab48405 100644
 --- a/common/text_eval/text_eval_vcs.cpp
@@ -278,6 +348,24 @@ index 383869d8..6ab48405 100644
      tl_contextIsFile = m_previousIsFile;
  }
  
+diff --git a/common/tool/common_control.cpp b/common/tool/common_control.cpp
+index c12d77ef..f0fdfdac 100644
+--- a/common/tool/common_control.cpp
++++ b/common/tool/common_control.cpp
+@@ -56,9 +56,13 @@
+ 
+ 
+ /// URL to launch a new issue with pre-populated description
++#ifdef KICADD
++wxString COMMON_CONTROL::m_bugReportUrl = wxS( "https://github.com/Brandon-git-hub/KiCadD/issues/new?body=%s" );
++#else
+ wxString COMMON_CONTROL::m_bugReportUrl =
+         wxS( "https://gitlab.com/kicad/code/kicad/-/issues/new?issuable_template=bare&issue"
+              "[description]=%s" );
++#endif
+ 
+ 
+ /// Issue template to use for reporting bugs (this should not be translated)
 diff --git a/eeschema/CMakeLists.txt b/eeschema/CMakeLists.txt
 index 5b6dbf2a..2eb2155c 100644
 --- a/eeschema/CMakeLists.txt
@@ -482,7 +570,7 @@ index a219ae94..809b1645 100644
          if( screen->IsContentModified() )
          {
 diff --git a/eeschema/menubar.cpp b/eeschema/menubar.cpp
-index 1ecfc2e0..40188f5f 100644
+index 1ecfc2e0..19df0702 100644
 --- a/eeschema/menubar.cpp
 +++ b/eeschema/menubar.cpp
 @@ -21,6 +21,9 @@
@@ -516,6 +604,22 @@ index 1ecfc2e0..40188f5f 100644
  
  
      //-- Tools menu -----------------------------------------------
+@@ -350,6 +358,7 @@ void SCH_EDIT_FRAME::doReCreateMenuBar()
+     submenuVariants->Add( SCH_ACTIONS::copyVariant );
+     toolsMenu->Add( submenuVariants );
+ 
++#ifndef KICADD_NO_PYTHON   // KiCadD: no Python, no plugins (the agent talks to the API directly)
+     ACTION_MENU* submenuActionPlugins = new ACTION_MENU( false, selTool );
+     submenuActionPlugins->SetTitle( _( "External Plugins" ) );
+     submenuActionPlugins->SetIcon( BITMAPS::puzzle_piece );
+@@ -362,6 +371,7 @@ void SCH_EDIT_FRAME::doReCreateMenuBar()
+ 
+     toolsMenu->AppendSeparator();
+     toolsMenu->Add( submenuActionPlugins );
++#endif
+ 
+     //-- Preferences menu -----------------------------------------------
+     //
 diff --git a/eeschema/sch_edit_frame.cpp b/eeschema/sch_edit_frame.cpp
 index f2bd4e10..37d9fcf0 100644
 --- a/eeschema/sch_edit_frame.cpp
@@ -815,6 +919,20 @@ index 928f9a0f..fab84eea 100644
  /**
   * Return a service address for IfaceOrAddress().
   *
+diff --git a/kicad/CMakeLists.txt b/kicad/CMakeLists.txt
+index 00f53d6a..7f51bff3 100644
+--- a/kicad/CMakeLists.txt
++++ b/kicad/CMakeLists.txt
+@@ -315,3 +315,9 @@ if( APPLE )
+         " COMPONENT Runtime
+         )
+ endif()
++
++# KiCadD (M7 declutter): no Plugin and Content Manager, no update checks against KiCad
++if( KICADD_DIR )
++    set_property( SOURCE kicad_manager_frame.cpp menubar.cpp dialogs/panel_kicad_launcher.cpp
++                  APPEND PROPERTY COMPILE_DEFINITIONS KICADD )
++endif()
 diff --git a/kicad/cli/command_api_server.cpp b/kicad/cli/command_api_server.cpp
 index e65d5b26..e171c79f 100644
 --- a/kicad/cli/command_api_server.cpp
@@ -894,6 +1012,73 @@ index e65d5b26..e171c79f 100644
      std::signal( SIGINT, oldSigInt );
  #ifdef SIGTERM
      std::signal( SIGTERM, oldSigTerm );
+diff --git a/kicad/dialogs/panel_kicad_launcher.cpp b/kicad/dialogs/panel_kicad_launcher.cpp
+index d8f6d66c..ae30ba26 100644
+--- a/kicad/dialogs/panel_kicad_launcher.cpp
++++ b/kicad/dialogs/panel_kicad_launcher.cpp
+@@ -177,12 +177,14 @@ void PANEL_KICAD_LAUNCHER::CreateLaunchers()
+     addLauncher( KICAD_MANAGER_ACTIONS::editDrawingSheet, BITMAPS::icon_pagelayout_editor,
+                  _( "Edit drawing sheet borders and title blocks for use in schematics and PCB designs" ) );
+ 
++#ifndef KICADD   // KiCadD: no Plugin and Content Manager
+     BITMAP_BUTTON* bb = addLauncher( KICAD_MANAGER_ACTIONS::showPluginManager, BITMAPS::icon_pcm,
+                                      _( "Manage downloadable packages from KiCad and 3rd party repositories" ),
+                                      KIPLATFORM::POLICY::GetPolicyBool( POLICY_KEY_PCM )
+                                             != KIPLATFORM::POLICY::PBOOL::DISABLED );
+ 
+     m_frame->SetPcmButton( bb );
++#endif
+ 
+     Layout();
+ }
+diff --git a/kicad/kicad_manager_frame.cpp b/kicad/kicad_manager_frame.cpp
+index b068e8a0..246ef6de 100644
+--- a/kicad/kicad_manager_frame.cpp
++++ b/kicad/kicad_manager_frame.cpp
+@@ -1492,8 +1492,14 @@ void KICAD_MANAGER_FRAME::OnIdle( wxIdleEvent& aEvent )
+ 
+     KICAD_SETTINGS* settings = kicadSettings();
+ 
++#ifdef KICADD
++    // KiCadD: no background checks against KiCad's package repositories or releases, whatever
++    // settings a KiCad installation left in the shared config directory
++    if( false )
++#else
+     if( KIPLATFORM::POLICY::GetPolicyBool( POLICY_KEY_PCM ) != KIPLATFORM::POLICY::PBOOL::DISABLED
+         && settings->m_PcmUpdateCheck )
++#endif
+     {
+         if( !m_pcm )
+             CreatePCM();
+@@ -1501,7 +1507,7 @@ void KICAD_MANAGER_FRAME::OnIdle( wxIdleEvent& aEvent )
+         m_pcm->RunBackgroundUpdate();
+     }
+ 
+-#ifdef KICAD_UPDATE_CHECK
++#if defined( KICAD_UPDATE_CHECK ) && !defined( KICADD )
+     if( !m_updateManager && settings->m_KiCadUpdateCheck )
+     {
+         m_updateManager = std::make_unique<UPDATE_MANAGER>();
+diff --git a/kicad/menubar.cpp b/kicad/menubar.cpp
+index f77dfcad..f46b3483 100644
+--- a/kicad/menubar.cpp
++++ b/kicad/menubar.cpp
+@@ -243,6 +243,7 @@ void KICAD_MANAGER_FRAME::doReCreateMenuBar()
+     toolsMenu->Add( KICAD_MANAGER_ACTIONS::showCalculator );
+     toolsMenu->Add( KICAD_MANAGER_ACTIONS::editDrawingSheet );
+ 
++#ifndef KICADD   // KiCadD: parts come from LCSC per project, not KiCad's package repositories
+     wxMenuItem* pcmMenuItem = toolsMenu->Add( KICAD_MANAGER_ACTIONS::showPluginManager );
+ 
+     if( KIPLATFORM::POLICY::GetPolicyBool( POLICY_KEY_PCM )
+@@ -250,6 +251,7 @@ void KICAD_MANAGER_FRAME::doReCreateMenuBar()
+     {
+         pcmMenuItem->Enable( false );
+     }
++#endif
+ 
+     toolsMenu->AppendSeparator();
+     toolsMenu->Add( _( "Compare Project Branches..." ),
 diff --git a/pcbnew/CMakeLists.txt b/pcbnew/CMakeLists.txt
 index 0780a942..d3f966f4 100644
 --- a/pcbnew/CMakeLists.txt
@@ -1678,7 +1863,7 @@ index c4623074..ba1a0d3a 100644
 +#endif
  }
 diff --git a/pcbnew/menubar_pcb_editor.cpp b/pcbnew/menubar_pcb_editor.cpp
-index eda0f8cb..bd574deb 100644
+index eda0f8cb..f32c202b 100644
 --- a/pcbnew/menubar_pcb_editor.cpp
 +++ b/pcbnew/menubar_pcb_editor.cpp
 @@ -20,6 +20,9 @@
@@ -1711,6 +1896,22 @@ index eda0f8cb..bd574deb 100644
      placeMenu->Add( PCB_ACTIONS::drawVia );
      placeMenu->Add( PCB_ACTIONS::placeViaStack );
      placeMenu->Add( PCB_ACTIONS::makeViaStack );
+@@ -483,6 +491,7 @@ void PCB_EDIT_FRAME::doReCreateMenuBar()
+ 
+     toolsMenu->Add( multichannelSubmenu );
+ 
++#ifndef KICADD_NO_PYTHON   // KiCadD: no Python, no plugins (the agent talks to the API directly)
+     ACTION_MENU* submenuActionPlugins = new ACTION_MENU( false, selTool );
+     submenuActionPlugins->SetTitle( _( "External Plugins" ) );
+     submenuActionPlugins->SetIcon( BITMAPS::puzzle_piece );
+@@ -495,6 +504,7 @@ void PCB_EDIT_FRAME::doReCreateMenuBar()
+ 
+     toolsMenu->AppendSeparator();
+     toolsMenu->Add( submenuActionPlugins );
++#endif
+ 
+     //-- Preferences menu ----------------------------------------------------
+     //
 diff --git a/pcbnew/pcb_edit_frame.cpp b/pcbnew/pcb_edit_frame.cpp
 index e6b786c0..c99a45b2 100644
 --- a/pcbnew/pcb_edit_frame.cpp

@@ -926,6 +926,29 @@ mm, as before). PASS, with m5_e2e and mcp_e2e.
 Not yet: connectors that overhang the edge (the DB9 in the human layout sticks 8.6 mm out): an
 edge rule keeps the courtyard inside, flush with the edge.
 
+## M7: desktop declutter (2026-11-10)
+
+What a KiCadD user should not meet any more:
+
+* **No first-run "KiCad Setup" wizard.** It was modal and appeared before anything else (the
+  agent waited behind it). KiCadD applies the wizard's own defaults silently: settings as
+  shipped, library tables (blank when no templates are installed: parts come per project from
+  LCSC), API server on, no data collection.
+* **No checks against KiCad's servers.** KiCad's update check and the package manager's
+  background check are off by default and never run in the project manager, whatever an
+  installed KiCad left in the shared config directory.
+* **No Plugin and Content Manager** (launcher button and Tools menu entry): parts come from LCSC,
+  not KiCad's package repositories.
+* **No "External Plugins" menus** in the PCB and Schematic Editors: there is no Python; the
+  agent talks to the API directly. (STEP export and the simulator were already hidden in M1.)
+* **Help menu**: KiCad's "Get Involved" and "Donate" are gone (KiCadD is a fork); "Report Bug"
+  opens a KiCadD GitHub issue.
+
+`KICADD` is defined only on the files concerned (`set_property( SOURCE ... )`), so the rest of
+common/ and the project manager keep their build cache: 36 build steps. Verified on a fresh config
+directory under Xvfb: the project manager opens straight away (no wizard), `check_for_updates`
+is false, no PCM launcher, the trimmed Help menu; desktop_e2e and desktop_sch_e2e pass.
+
 ## M3: Windows CI (2026-11-06)
 
 `.github/workflows/windows.yml` builds KiCadD for Windows x64 on GitHub-hosted runners:
