@@ -2184,9 +2184,91 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
                && outline.Contains( VECTOR2I( box.GetLeft(), box.GetBottom() ) );
     };
 
+    std::vector<wxString> back;
+
+    for( const std::string& g : req.back() )
+        back.push_back( wxString::FromUTF8( g ) );
+
+    if( ( !back.empty() || req.back_decaps() ) && b->GetCopperLayerCount() < 2 )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "a one-layer board has no bottom side to place on" ) );
+
+    // A footprint's shape at rotation 0, relative to its anchor: courtyard (or body) and the
+    // silkscreen on its side, each pad's position and copper.
+    auto shapeOf = [&]( const FOOTPRINT* f, std::vector<VECTOR2I>& aOutline, std::vector<VECTOR2I>& aCopper,
+                        std::vector<VECTOR2I>& aPadOffset, std::vector<BOX2I>& aPadBox )
+    {
+        const VECTOR2I  anchor = f->GetPosition();
+        const EDA_ANGLE orient = f->GetOrientation();
+        const bool      flipped = f->IsFlipped();
+
+        auto toLocal = [&]( const VECTOR2I& aWorld )
+        {
+            VECTOR2I p = aWorld - anchor;
+            RotatePoint( p, -orient );
+            return p;
+        };
+
+        auto corners = [&]( const BOX2I& aBox, std::vector<VECTOR2I>& aOut )
+        {
+            for( const VECTOR2I& c : { aBox.GetOrigin(), aBox.GetEnd(), VECTOR2I( aBox.GetRight(), aBox.GetTop() ),
+                                       VECTOR2I( aBox.GetLeft(), aBox.GetBottom() ) } )
+                aOut.push_back( toLocal( c ) );
+        };
+
+        const SHAPE_POLY_SET& crt = f->GetCourtyard( flipped ? B_CrtYd : F_CrtYd );
+
+        if( crt.OutlineCount() > 0 )
+        {
+            for( auto it = crt.CIterate(); it; ++it )
+                aOutline.push_back( toLocal( *it ) );
+        }
+        else
+        {
+            corners( f->GetBoundingBox( false ), aOutline );
+        }
+
+        // Silkscreen (outline, polarity marks, the visible reference) often sticks out of the
+        // courtyard: keep it clear of the neighbours' silk too (DRC silk_clearance).
+        auto addSilk = [&]( const BOARD_ITEM* aItem )
+        {
+            if( !aItem->IsOnLayer( flipped ? B_SilkS : F_SilkS ) )
+                return;
+
+            if( const PCB_TEXT* text = dynamic_cast<const PCB_TEXT*>( aItem ); text && !text->IsVisible() )
+                return;
+
+            corners( aItem->GetBoundingBox(), aOutline );
+        };
+
+        for( const BOARD_ITEM* item : f->GraphicalItems() )
+            addSilk( item );
+
+        for( const PCB_FIELD* field : f->GetFields() )
+            addSilk( field );
+
+        for( const PAD* pad : f->Pads() )
+        {
+            aPadOffset.push_back( toLocal( pad->GetPosition() ) );
+
+            std::vector<VECTOR2I> c;
+            corners( pad->GetBoundingBox(), c );
+            BOX2I box( c[0], VECTOR2I( 0, 0 ) );
+
+            for( const VECTOR2I& v : c )
+            {
+                box.Merge( v );
+                aCopper.push_back( v );
+            }
+
+            aPadBox.push_back( box );
+        }
+    };
+
     for( FOOTPRINT* fp : b->Footprints() )
     {
         ap::PART  part;
+        std::vector<VECTOR2I> padOffset;
+        std::vector<BOX2I>    padBox;
         EDA_ANGLE orient = fp->GetOrientation();
         VECTOR2I  anchor = fp->GetPosition();
         double    quarter = orient.AsDegrees() / 90.0;
@@ -2201,65 +2283,41 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
 
         part.movable = wanted && !fixed.count( fp->GetReference() );
 
-        if( part.movable && ( fp->IsLocked() || fp->IsFlipped() || !square ) )
+        if( part.movable && ( fp->IsLocked() || !square ) )
         {
             part.movable = false;
-            out.add_skipped( part.ref + ( fp->IsLocked() ? " (locked)" : fp->IsFlipped() ? " (on the back)"
-                                                                                           : " (not at a right angle)" ) );
+            out.add_skipped( part.ref + ( fp->IsLocked() ? " (locked)" : " (not at a right angle)" ) );
         }
-
-        // shape at rotation 0, relative to the anchor
-        auto toLocal = [&]( const VECTOR2I& aWorld )
-        {
-            VECTOR2I p = aWorld - anchor;
-            RotatePoint( p, -orient );
-            return p;
-        };
 
         part.back = fp->IsFlipped();
-        const SHAPE_POLY_SET& crt = fp->GetCourtyard( part.back ? B_CrtYd : F_CrtYd );
+        shapeOf( fp, part.outline, part.copper, padOffset, padBox );
 
-        if( crt.OutlineCount() > 0 )
+        // may go to the other side: its shape there, from a flipped copy (the same flip as
+        // applying it does)
+        bool backAsked = std::any_of( back.begin(), back.end(),
+                                  [&]( const wxString& g ) { return fp->GetReference().Matches( g ); } );
+        bool smd = std::none_of( fp->Pads().begin(), fp->Pads().end(), []( PAD* p ) { return p->HasHole(); } );
+        bool small = fp->Pads().size() <= 3;
+
+        if( part.movable && smd && ( backAsked || ( req.back_decaps() && small ) ) )
         {
-            for( auto it = crt.CIterate(); it; ++it )
-                part.outline.push_back( toLocal( *it ) );
+            std::unique_ptr<FOOTPRINT> copy( static_cast<FOOTPRINT*>( fp->Clone() ) );
+            copy->Flip( copy->GetPosition(), FLIP_DIRECTION::LEFT_RIGHT );
+            shapeOf( copy.get(), part.flipOutline, part.flipCopper, part.flipPadOffset, part.flipPadBox );
+            part.canFlip = true;
+            part.flipIfSatellite = !backAsked;
         }
-        else
+        else if( backAsked && !smd )
         {
-            BOX2I box = fp->GetBoundingBox( false );
-
-            for( const VECTOR2I& c : { box.GetOrigin(), box.GetEnd(), VECTOR2I( box.GetRight(), box.GetTop() ),
-                                       VECTOR2I( box.GetLeft(), box.GetBottom() ) } )
-                part.outline.push_back( toLocal( c ) );
+            out.add_skipped( part.ref + " (through-hole: stays on its side)" );
         }
 
-        // Silkscreen (outline, polarity marks, the visible reference) often sticks out of the
-        // courtyard: keep it clear of the neighbours' silk too (DRC silk_clearance).
-        auto addSilk = [&]( const BOARD_ITEM* aItem )
+        for( size_t k = 0; k < fp->Pads().size(); ++k )
         {
-            if( !aItem->IsOnLayer( part.back ? B_SilkS : F_SilkS ) )
-                return;
-
-            if( const PCB_TEXT* text = dynamic_cast<const PCB_TEXT*>( aItem ); text && !text->IsVisible() )
-                return;
-
-            BOX2I box = aItem->GetBoundingBox();
-
-            for( const VECTOR2I& c : { box.GetOrigin(), box.GetEnd(), VECTOR2I( box.GetRight(), box.GetTop() ),
-                                       VECTOR2I( box.GetLeft(), box.GetBottom() ) } )
-                part.outline.push_back( toLocal( c ) );
-        };
-
-        for( const BOARD_ITEM* item : fp->GraphicalItems() )
-            addSilk( item );
-
-        for( const PCB_FIELD* field : fp->GetFields() )
-            addSilk( field );
-
-        for( PAD* pad : fp->Pads() )
-        {
+            PAD*    pad = fp->Pads()[k];
             ap::PAD p;
-            p.offset = toLocal( pad->GetPosition() );
+            p.offset = padOffset[k];
+            p.box = padBox[k];
 
             if( pad->HasHole() )
             {
@@ -2268,24 +2326,6 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
 
                 if( std::optional<int> c = pad->GetLocalClearance( &src ) )
                     part.holeGap = std::max( part.holeGap, *c );
-            }
-
-            BOX2I padBox = pad->GetBoundingBox();
-
-            bool first = true;
-
-            for( const VECTOR2I& c : { padBox.GetOrigin(), padBox.GetEnd(), VECTOR2I( padBox.GetRight(), padBox.GetTop() ),
-                                       VECTOR2I( padBox.GetLeft(), padBox.GetBottom() ) } )
-            {
-                VECTOR2I l = toLocal( c );
-                part.copper.push_back( l );
-
-                if( first )
-                    p.box = BOX2I( l, VECTOR2I( 0, 0 ) );
-                else
-                    p.box.Merge( l );
-
-                first = false;
             }
 
             p.hole = pad->HasHole();
@@ -2382,6 +2422,8 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
         opt.edge = (int) req.edge();
 
     opt.rotate = !req.no_rotate();
+    opt.backSatellites = req.back_decaps();
+    opt.measureOnly = req.measure_only();
 
     if( const char* seed = getenv( "KICADD_AP_SEED" ) )     // benchmarks only
         opt.seed = atoi( seed );
@@ -2394,13 +2436,36 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
         if( std::shared_ptr<NETCLASS> nc = b->GetDesignSettings().m_NetSettings->GetDefaultNetclass() )
             clearance = std::max( clearance, nc->GetClearance() );
 
+        // which sides an item's copper is on: SMD pads meet their own side's only
+        auto sides = []( const LSET& aLayers )
+        {
+            int m = 0;
+
+            if( aLayers.test( F_Cu ) )
+                m |= ap::OBST_FRONT;
+
+            if( aLayers.test( B_Cu ) )
+                m |= ap::OBST_BACK;
+
+            if( ( aLayers & LSET::InternalCuMask() ).any() )
+                m |= ap::OBST_INNER;
+
+            return m;
+        };
+
+        auto add = [&]( const BOX2I& aBox, int aSides )
+        {
+            opt.obstacles.push_back( aBox );
+            opt.obstacleLayers.push_back( aSides );
+        };
+
         for( BOARD_ITEM* item : b->Drawings() )
         {
             if( ( item->GetLayerSet() & LSET::AllCuMask() ).any() )
             {
                 BOX2I box = item->GetBoundingBox();
                 box.Inflate( clearance );
-                opt.obstacles.push_back( box );
+                add( box, sides( item->GetLayerSet() ) );
             }
         }
 
@@ -2408,13 +2473,18 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
         {
             BOX2I box = track->GetBoundingBox();
             box.Inflate( clearance );
-            opt.obstacles.push_back( box );
+            // a via goes through every layer between its ends: count it on all sides
+            add( box, track->Type() == PCB_VIA_T ? ( ap::OBST_FRONT | ap::OBST_BACK | ap::OBST_INNER )
+                                                 : sides( track->GetLayerSet() ) );
         }
 
         for( ZONE* zone : b->Zones() )
         {
             if( zone->GetIsRuleArea() && zone->GetDoNotAllowFootprints() )
-                opt.obstacles.push_back( zone->GetBoundingBox() );
+            {
+                int m = sides( zone->GetLayerSet() );
+                add( zone->GetBoundingBox(), m ? m : ( ap::OBST_FRONT | ap::OBST_BACK | ap::OBST_INNER ) );
+            }
         }
     }
 
@@ -2450,7 +2520,7 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
 
     for( size_t i = 0; i < parts.size(); ++i )
     {
-        if( parts[i].movable && !unplaced.count( parts[i].ref ) )
+        if( parts[i].movable && !unplaced.count( parts[i].ref ) && !req.measure_only() )
         {
             targets.push_back( fps[i] );
             index[fps[i]] = i;
@@ -2469,6 +2539,11 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
                         [&]( FOOTPRINT* fp )
                         {
                             const ap::PART& p = parts[index[fp]];
+
+                            // the other side: the same flip its shape there was taken with
+                            if( p.back != fp->IsFlipped() )
+                                fp->Flip( fp->GetPosition(), FLIP_DIRECTION::LEFT_RIGHT );
+
                             fp->SetOrientation( EDA_ANGLE( 90.0 * p.rot, DEGREES_T ) );
                             fp->SetPosition( p.pos );
                         },
@@ -2497,6 +2572,11 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
         out.set_mixed_before( res.mixedBefore );
     }
 
+    out.set_on_back( res.onBack );
+    out.set_flipped( res.flipped );
+    out.set_decaps( res.satellites );
+    out.set_decap_before_mm( res.satBefore );
+    out.set_decap_after_mm( res.satAfter );
     out.set_hpwl_before_mm( res.hpwlBefore );
     out.set_hpwl_after_mm( res.hpwlAfter );
     return out;

@@ -297,6 +297,7 @@ def main():
 
         print("[M5c: auto_place]")
         err, t = mcp.tool("auto_place")
+        frontPin = re.search(r"tied to an IC pin ([\d.]+) mm", t)
         m = re.search(r"placed (\d+) part\(s\).*?wire length \(half-perimeter\) ([\d.]+) -> ([\d.]+) mm", t)
         check(not err and m and m.group(1) == "5" and float(m.group(3)) < float(m.group(2)),
               "auto_place: " + t.splitlines()[0][:120])
@@ -321,6 +322,28 @@ def main():
         err, q = mcp.tool("query_area", {"x": (x0 + x1) / 2, "y": (y0 + y1) / 2, "radius": 60, "kinds": ["footprint"]})
         check(not err and "FP U1" not in q, "undo takes the placement back (parts outside again)")
         mcp.tool("redo")
+
+        print("[auto_place: decoupling caps to the bottom side]")
+        err, t = mcp.tool("auto_place", {"all": True, "back_decaps": True})
+        ob = re.search(r"(\d+) on the bottom side \((\d+) changed side\)", t)
+        backPin = re.search(r"tied to an IC pin ([\d.]+) mm", t)
+        check(not err and ob and int(ob.group(2)) >= 1, "back_decaps: " + (ob.group(0) if ob else t[:120]))
+        err, q = mcp.tool("query_area", {"x": (x0 + x1) / 2, "y": (y0 + y1) / 2, "radius": 60, "kinds": ["footprint"]})
+        layers = {mm.group(1): mm.group(2) for mm in re.finditer(r"^FP (\S+) (\S+)", q, re.M)}
+        # layer names as the board calls them (the blank board: top_layer / bottom_layer)
+        bottom = sorted(r for r, l in layers.items() if l.startswith("B.") or "bottom" in l.lower())
+        check(bottom and set(bottom) <= {"C1", "C2"} and "U1" not in bottom,
+              f"only the regulator's caps went to B.Cu: {bottom}")
+        check(frontPin and backPin and float(backPin.group(1)) < float(frontPin.group(1)),
+              "closer to their pins from below: pad to pin "
+              f"{frontPin and frontPin.group(1)} -> {backPin and backPin.group(1)} mm")
+        err, t = mcp.tool("run_drc", {"include_warnings": False})
+        kinds = re.search(r"errors: (.*)", t).group(1) if "errors:" in t else t
+        check(set(re.findall(r"(\w+) \d+", kinds)) <= {"unconnected_items"},
+              "DRC with parts on both sides: only unrouted (" + kinds[:80] + ")")
+        mcp.tool("undo")
+        err, q = mcp.tool("query_area", {"x": (x0 + x1) / 2, "y": (y0 + y1) / 2, "radius": 60, "kinds": ["footprint"]})
+        check(not re.search(r"^FP \S+ (B\.|bottom)", q, re.M | re.I), "undo puts them back on the top side")
         err, t = mcp.tool("save_board")
         check(not err, "board saved")
     finally:

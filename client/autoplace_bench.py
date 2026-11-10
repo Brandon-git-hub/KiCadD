@@ -30,6 +30,8 @@ def main():
     ap.add_argument("--no-groups", action="store_true", help="ignore blocks")
     ap.add_argument("--sheets", action="store_true", help="the schematic sheets are the blocks")
     ap.add_argument("--group-weight", type=float, default=0)
+    ap.add_argument("--back-decaps", action="store_true", help="decoupling caps may go to the bottom")
+    ap.add_argument("--back", default="", help="parts that may go to the bottom, e.g. C*,R*")
     ap.add_argument("--fix", default="", help="reference prefixes kept where the human put them, e.g. J,H "
                     "(connectors, mounting holes: what an agent places first)")
     a = ap.parse_args()
@@ -62,26 +64,31 @@ def main():
         off = (float(om.group(2)) - float(om.group(1)) + 50) if om else 250   # clear of the board
         off = float(os.environ.get("BENCH_OFF", off))
         err, q = mcp.tool("query_area", {"x": 0, "y": 0, "radius": 2000, "kinds": ["footprint"], "limit": 2000})
+        every = [m.group(1) for m in re.finditer(r"^FP (\S+) ", q, re.M)]
         refs = [m.group(1) for m in re.finditer(r"^FP (\S+) (\S+)", q, re.M) if m.group(2).startswith("F.")
                 or "top" in m.group(2).lower()]   # user layer names: top_layer, top_copper
-        # the human layout's wire length: a placement request that cannot place anything
-        # (one part, 1 m spacing) reports the current length and moves nothing
-        err, h = mcp.tool("auto_place", {"refs": [refs[0]], "rotate": False, "spacing": 1000,
-                                         **({"groups": "sheets"} if a.sheets else {})})
+        fix = [p for p in a.fix.split(",") if p]
+        fixed = [r for r in every if re.match(r"[A-Za-z]*", r).group(0) in fix]
+        if fix:
+            refs = [r for r in refs if r not in fixed]
+            print("kept in place:", ",".join(fix))
+        blocks = {"groups": "sheets"} if a.sheets else {}
+        # the human layout, measured over the same parts: wire length, mixing, decoupling distance
+        err, h = mcp.tool("auto_place", {"refs": refs, "measure_only": True, **blocks})
         # the human layout's own DRC errors (besides unconnected): only new ones count against auto_place
         err, d0 = mcp.tool("run_drc", {"include_warnings": False})
         base = {k: int(n) for k, n in re.findall(r"(\w+) (\d+)", re.search(r"errors: (.*)", d0).group(1))} \
             if "errors:" in d0 else {}
         hm = re.search(r"wire length \(half-perimeter\) ([\d.]+) ->", h)
         human = float(hm.group(1)) if hm else None
-        fix = [p for p in a.fix.split(",") if p]
-        fixed = [r for r in refs if re.match(r"[A-Za-z]*", r).group(0) in fix]
-        if fix:
-            refs = [r for r in refs if r not in fixed]
-            print("kept in place:", ",".join(fix))
+        hd = re.search(r"(\d+) passive\(s\) tied to an IC pin ([\d.]+) mm", h)
         mcp.tool("move_footprints", {"refs": refs, "dx": -off, "dy": 0})
         t0 = time.time()
         args = {"fixed": fixed} if fixed else {}
+        if a.back_decaps:
+            args["back_decaps"] = True
+        if a.back:
+            args["back"] = a.back.split(",")
         if a.no_groups:
             args["groups"] = False
         elif a.sheets:
@@ -95,6 +102,12 @@ def main():
         kinds = re.search(r"errors: (.*)", d).group(1) if "errors:" in d else d[:100]
         print(f"{len(refs)} parts off the board, auto_place {dt:.1f} s")
         print(f"wire length: human {human} mm, auto {m.group(2) if m else '?'} mm")
+        ad = re.search(r"(\d+) passive\(s\) tied to an IC pin ([\d.]+) mm", t)
+        ob = re.search(r"(\d+) on the bottom side \((\d+) changed side\)", t)
+        if ad:
+            print(f"passives to their IC pin: human {hd.group(2) + ' mm' if hd else '?'}, "
+                  f"auto {ad.group(2)} mm ({ad.group(1)} parts)"
+                  + (f"; {ob.group(1)} on the bottom ({ob.group(2)} flipped)" if ob else ""))
         bm = re.search(r"(\d+) blocks \(([^)]*)\), (\d+) part\(s\) with their nearest neighbour in another block", t)
         hb = re.search(r"\(before (\d+)\)", h)
         if bm:

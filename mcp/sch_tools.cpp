@@ -426,8 +426,10 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "they are (place connectors first, then lock or fix them). Functional blocks are kept "
             "together: from groups, else the parts' Block field (sch_add_part block); groups "
             "\"sheets\" uses the schematic sheets, false none. Keeping blocks together costs some "
-            "wire length (group_weight trades one for the other). Reports wire length before/after "
-            "and how mixed the blocks are.",
+            "wire length (group_weight trades one for the other). Bottom side: back lists parts that "
+            "may go there, back_decaps lets decoupling caps go under their IC pin (SMD only; off by "
+            "default: two-sided assembly costs more). Reports wire length before/after, how mixed "
+            "the blocks are and how far the small passives (decaps, pull-ups) are from their IC pin.",
             obj( { { "refs", { { "type", "array" }, { "items", { { "type", "string" } } } } },
                    { "all", { { "type", "boolean" } } },
                    { "fixed", { { "type", "array" }, { "items", { { "type", "string" } } } } },
@@ -437,7 +439,13 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                    { "groups", { { "description", "{\"LDO\": [\"U2\", \"C3\"], ...} blocks to keep together, "
                                                    "\"sheets\", or false: no blocks" } } },
                    { "group_weight", { { "type", "number" },
-                                       { "description", "pull to the block's centre, 1 = like a two-pin net (default 3)" } } } } ),
+                                       { "description", "pull to the block's centre, 1 = like a two-pin net (default 3)" } } },
+                   { "back", { { "type", "array" }, { "items", { { "type", "string" } } },
+                               { "description", "parts that may go to the bottom side, e.g. [\"C*\", \"R12\"]" } } },
+                   { "back_decaps", { { "type", "boolean" },
+                                      { "description", "decoupling caps may go to the bottom, under their IC pin" } } },
+                   { "measure_only", { { "type", "boolean" },
+                                       { "description", "move nothing, report the numbers for the parts as they are" } } } } ),
             [&aIpc]( const json& a )
             {
                 kicadd::board::AutoPlace req;
@@ -475,6 +483,13 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                 if( a.contains( "group_weight" ) && a["group_weight"].is_number() )
                     req.set_group_weight( a["group_weight"].get<double>() );
 
+                for( const json& r : a.value( "back", json::array() ) )
+                    if( r.is_string() )
+                        req.add_back( r.get<std::string>() );
+
+                req.set_back_decaps( a.value( "back_decaps", false ) );
+                req.set_measure_only( a.value( "measure_only", false ) );
+
                 for( const json& r : a.value( "refs", json::array() ) )
                     if( r.is_string() )
                         req.add_refs( r.get<std::string>() );
@@ -498,7 +513,8 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                 if( !aIpc.Call( req, r, err ) )
                     return fail( err );
 
-                std::string t = "placed " + std::to_string( r.moved() ) + " part(s)";
+                std::string t = a.value( "measure_only", false ) ? std::string( "measured (nothing moved)" )
+                                                                 : "placed " + std::to_string( r.moved() ) + " part(s)";
 
                 if( r.moved() )
                 {
@@ -510,6 +526,15 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
 
                 t += "; wire length (half-perimeter) " + num( r.hpwl_before_mm() ) + " -> " + num( r.hpwl_after_mm() )
                      + " mm";
+
+                if( r.decaps() > 0 )
+                    t += "; " + std::to_string( r.decaps() ) + " passive(s) tied to an IC pin "
+                         + num( r.decap_after_mm() ) + " mm from it on average"
+                         + ( r.decap_before_mm() > 0 ? " (before " + num( r.decap_before_mm() ) + ")" : "" );
+
+                if( r.on_back() > 0 || r.flipped() > 0 )
+                    t += "; " + std::to_string( r.on_back() ) + " on the bottom side ("
+                         + std::to_string( r.flipped() ) + " changed side)";
 
                 if( r.groups() > 0 )
                     t += "; " + std::to_string( r.groups() ) + " blocks (" + r.group_source() + "), "
@@ -535,7 +560,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                         t += " " + ref;
                 }
 
-                return TOOL_RESULT{ t, r.moved() == 0 && r.unplaced_size() > 0 };
+                return TOOL_RESULT{ t, r.moved() == 0 && r.unplaced_size() > 0 && !a.value( "measure_only", false ) };
             } } );
 
     aTools.push_back( { "sch_save",

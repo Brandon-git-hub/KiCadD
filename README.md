@@ -799,7 +799,27 @@ parts makes it look at the neighbours only (same results, 6-8x faster: coldfire 
 cm5_minima > 120 s -> 3 s), and refinement no longer searches the whole board for a spot
 farther away than the part already is. Eight starts instead of four (16 threads here).
 
-Bench: `autoplace_bench.py --sheets --group-weight W --fix J,H --no-groups` (the offset off the
+**Bottom side.** Opt-in, since two-sided assembly costs a second stencil and setup:
+`back_decaps: true` lets decoupling caps (two pads, one on ground, tied to an IC pin) go to the
+bottom, under their pin, where the IC's body doesn't block them; `back: ["C*", "R12"]` lets any
+listed SMD part go there (through-hole parts stay on their side and are named). Such a part
+carries its shape on both sides (taken from a flipped copy, with the same flip that applies
+it); legalisation and refinement try both sides, and the bottom has to win by 0.5 mm. Copper
+obstacles count on their own side (vias and inner layers for through-hole pads only). Parts
+already on the bottom can now be placed too (they stay there). `measure_only` reports the
+numbers for the parts as they are, moving nothing (the bench measures the human layout so).
+
+| board | front only | `back_decaps` | `back: ["C*", "R*"]` |
+|---|---|---|---|
+| kit-dev-coldfire | 7237 mm, passives 26.5 mm from their IC pin (human 35.6) | 7027 mm, 19.5 mm, 33 caps on the bottom | 6100 mm, 11.2 mm, 79 parts on the bottom |
+| cm5_minima | 2976 mm, 13.6 mm (human 24.4) | 2954 mm, 10.8 mm, 11 on the bottom | |
+| video | 57647 mm, 78.1 mm | 57662 mm, 75.2 mm, 5 on the bottom | |
+
+Every run: no DRC errors the human layout doesn't already have. pic_programmer is through-hole
+almost throughout: nothing to flip. `m5_e2e.py`: the regulator's two caps go under it (pad to
+pin 3.41 -> 1.59 mm), U1 stays on top, DRC only unrouted, undo puts them back on top.
+
+Bench: `autoplace_bench.py --sheets --group-weight W --fix J,H --no-groups --back-decaps --back C*` (the offset off the
 board now follows the board's width; only DRC errors the human layout doesn't already have
 count). `m5_e2e.py` gives U1 C1 C2 block LDO and R1 R2 block LED: saved as Block fields,
 `auto_place` reports 2 blocks from the Block field. PASS, with mcp_e2e and smoke.

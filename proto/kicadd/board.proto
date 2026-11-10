@@ -219,6 +219,9 @@ message AutoPlace
   bool   no_groups      = 8;   // ignore blocks
   bool   groups_from_sheets = 9;  // the schematic sheets are the blocks
   double group_weight   = 10;  // pull to the block's centre, 1 = like a two-pin net (0 = 3)
+  repeated string back  = 11;  // these parts may go to the bottom side ("C*", "R12"; SMD only)
+  bool   back_decaps    = 12;  // decoupling caps (2 pads, one on ground, at an IC pin) may go to the bottom, under it
+  bool   measure_only   = 13;  // move nothing: report the current wire length, mixing, decoupling distance
 }
 
 message PartGroup
@@ -240,6 +243,11 @@ message AutoPlaceResponse
   string group_source   = 9;      // "request", "Block field", "sheets"
   int32  mixed          = 10;     // placed parts whose nearest neighbour is in another block
   int32  mixed_before   = 11;     // the same before (parts on the board)
+  int32  on_back        = 12;     // placed parts on the bottom side
+  int32  flipped        = 13;     // of the placed parts, how many changed side
+  int32  decaps         = 14;     // placed small passives tied to an IC pin (decaps, pull-ups)
+  double decap_before_mm = 15;    // their mean pad-to-pin distance (those on the board before)
+  double decap_after_mm = 16;
 }
 
 message FetchLcsc

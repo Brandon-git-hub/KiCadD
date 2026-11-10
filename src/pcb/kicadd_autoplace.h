@@ -56,6 +56,12 @@ struct PART
     bool             back = false;    ///< on the bottom side: shares no room with the top's parts...
     bool             tht = false;     ///< ... except through-hole parts: their pads go through both sides
     int              holeGap = 0;     ///< its holes' own clearance (pad / footprint override), nm
+
+    /// May go to the other side: its shape there (mirrored), same frame and pad order as above
+    bool                  canFlip = false;
+    bool                  flipIfSatellite = false;   ///< canFlip only when it belongs to an IC pin
+    std::vector<VECTOR2I> flipOutline, flipCopper, flipPadOffset;
+    std::vector<BOX2I>    flipPadBox;
 };
 
 struct OPTIONS
@@ -74,7 +80,19 @@ struct OPTIONS
     /// Areas no pad may touch: copper graphics and text on the board, tracks, vias, footprint
     /// keep-outs (already grown by the clearance they need). Silk may go over them.
     std::vector<BOX2I> obstacles;
+    /// Per obstacle (or empty: all sides): OBST_FRONT | OBST_BACK | OBST_INNER. SMD pads meet
+    /// their own side's only, through-hole pads every layer.
+    std::vector<int>   obstacleLayers;
+
+    /// Decoupling caps (two pads, one on ground, tied to an IC pin) may go to the back too,
+    /// under the pin (when they have canFlip shapes)
+    bool backSatellites = false;
+    int  backPenalty = 500000;     ///< nm of distance a spot on the back must win by
+
+    bool measureOnly = false;      ///< place nothing: the "before" values only
 };
+
+enum { OBST_FRONT = 1, OBST_BACK = 2, OBST_INNER = 4 };
 
 struct RESULT
 {
@@ -84,6 +102,11 @@ struct RESULT
     int                      moved = 0;
     int                      mixed = 0;         ///< placed parts in a block whose nearest neighbour is in another
     int                      mixedBefore = 0;   ///< the same before (parts on the board)
+    int                      onBack = 0;        ///< placed parts on the back side (movable ones)
+    int                      flipped = 0;       ///< of them, moved there from the front (or back to front)
+    int                      satellites = 0;    ///< small passives tied to an IC pin (decaps, pull-ups), placed
+    double                   satBefore = 0;     ///< their mean distance to the pin, mm, before (on the board)
+    double                   satAfter = 0;      ///< mm
 };
 
 /**

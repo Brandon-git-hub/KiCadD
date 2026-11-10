@@ -50,14 +50,23 @@ BOX2I boxOf( const std::vector<VECTOR2I>& aPoints, int aRot, const BOX2I& aFallb
 }
 
 
-/// Everything the placer needs per part, precomputed for the four rotations.
+/// Index of a part's shapes on its current side in rotation aRot.
+inline int at( const PART& aPart, int aRot )
+{
+    return ( aPart.back ? 4 : 0 ) + ( aRot & 3 );
+}
+
+
+/// Everything the placer needs per part, precomputed for both sides and the four rotations.
 struct WORK
 {
-    BOX2I                 box[4];        ///< courtyard (+ silk) box relative to the anchor
-    BOX2I                 cu[4];         ///< pads' box relative to the anchor
-    std::vector<VECTOR2I> pad[4];        ///< pad offsets
-    std::vector<BOX2I>    padBox[4];     ///< each pad's copper
-    std::vector<BOX2I>    holeBox[4];    ///< the copper of the pads with a hole
+    // per side (front 0..3, back 4..7) and rotation: see at()
+    BOX2I                 box[8];        ///< courtyard (+ silk) box relative to the anchor
+    BOX2I                 cu[8];         ///< pads' box relative to the anchor
+    std::vector<VECTOR2I> pad[8];        ///< pad offsets
+    std::vector<BOX2I>    padBox[8];     ///< each pad's copper
+    std::vector<BOX2I>    holeBox[8];    ///< the copper of the pads with a hole
+    bool                  startBack = false;
     bool                  placed = false;
     int                   affPad = -1;   ///< small passive: its pad pulled to ...
     int                   affPart = -1;  ///< ... this part's ...
@@ -87,21 +96,36 @@ public:
         {
             PART& p = m_parts[i];
 
-            for( int r = 0; r < 4; ++r )
+            // its own side from the shape, the other one from the flipped shape (when it has one)
+            m_work[i].startBack = p.back;
+            const bool flip = p.canFlip && p.flipPadOffset.size() == p.pads.size()
+                              && p.flipPadBox.size() == p.pads.size();
+            p.canFlip = flip;
+
+            for( int side = 0; side < 2; ++side )
             {
-                m_work[i].box[r] = boxOf( p.outline, r, unit );
-                m_work[i].cu[r] = boxOf( p.copper, r, m_work[i].box[r] );
+                const bool other = ( side == 1 ) != p.back;
+                const bool use = other && flip;
 
-                for( const PAD& pad : p.pads )
+                for( int r = 0; r < 4; ++r )
                 {
-                    m_work[i].pad[r].push_back( rotated( pad.offset, r ) );
+                    const int k = side * 4 + r;
+                    m_work[i].box[k] = boxOf( use ? p.flipOutline : p.outline, r, unit );
+                    m_work[i].cu[k] = boxOf( use ? p.flipCopper : p.copper, r, m_work[i].box[k] );
 
-                    BOX2I pb( rotated( pad.box.GetOrigin(), r ), VECTOR2I( 0, 0 ) );
-                    pb.Merge( rotated( pad.box.GetEnd(), r ) );
-                    m_work[i].padBox[r].push_back( pb );
+                    for( size_t n = 0; n < p.pads.size(); ++n )
+                    {
+                        const PAD& pad = p.pads[n];
+                        m_work[i].pad[k].push_back( rotated( use ? p.flipPadOffset[n] : pad.offset, r ) );
 
-                    if( pad.hole )
-                        m_work[i].holeBox[r].push_back( pb );
+                        const BOX2I& rel = use ? p.flipPadBox[n] : pad.box;
+                        BOX2I        pb( rotated( rel.GetOrigin(), r ), VECTOR2I( 0, 0 ) );
+                        pb.Merge( rotated( rel.GetEnd(), r ) );
+                        m_work[i].padBox[k].push_back( pb );
+
+                        if( pad.hole )
+                            m_work[i].holeBox[k].push_back( pb );
+                    }
                 }
             }
 
@@ -176,8 +200,19 @@ public:
                 m_satellites[m_work[i].affPart].push_back( (int) i );
         }
 
-        for( const PART& p : m_parts )
+        for( size_t i = 0; i < m_parts.size(); ++i )
+        {
+            PART& p = m_parts[i];
+
+            // a decoupling cap: two pads, one on ground (the largest net), tied to an IC pin
+            bool decap = m_work[i].affPart >= 0 && p.pads.size() == 2
+                         && ( p.pads[0].net == largest || p.pads[1].net == largest );
+
+            if( p.flipIfSatellite && ( !m_opt.backSatellites || !decap ) )
+                p.canFlip = false;
+
             m_maxHoleGap = std::max( m_maxHoleGap, p.holeGap );
+        }
 
         bucketRebuild();
     }
@@ -191,6 +226,16 @@ public:
             m_newcomer[i] = m_parts[i].movable && !insideBoard( boxAt( (int) i, m_parts[i].pos, m_parts[i].rot ) );
 
         res.mixedBefore = mixed();
+        res.satBefore = satelliteDistance( true, &res.satellites );
+
+        if( m_opt.measureOnly )
+        {
+            res.hpwlAfter = res.hpwlBefore;
+            res.mixed = res.mixedBefore;
+            res.satAfter = res.satBefore;
+            return res;
+        }
+
         blocks();
         global();
         legalize( res );
@@ -203,6 +248,16 @@ public:
 
         centre();
         res.mixed = mixed();
+        res.satAfter = satelliteDistance( false, &res.satellites );
+
+        for( size_t i = 0; i < m_parts.size(); ++i )
+        {
+            if( m_parts[i].movable && m_work[i].placed && m_parts[i].back )
+                res.onBack++;
+
+            if( m_parts[i].movable && m_work[i].placed && m_parts[i].back != m_work[i].startBack )
+                res.flipped++;
+        }
 
         for( size_t i = 0; i < m_parts.size(); ++i )
         {
@@ -228,19 +283,19 @@ private:
     VECTOR2I padPos( int aPart, int aPad ) const
     {
         const PART& p = m_parts[aPart];
-        return p.pos + m_work[aPart].pad[p.rot & 3][aPad];
+        return p.pos + m_work[aPart].pad[at( p, p.rot )][aPad];
     }
 
     BOX2I boxAt( int aPart, const VECTOR2I& aPos, int aRot ) const
     {
-        BOX2I b = m_work[aPart].box[aRot & 3];
+        BOX2I b = m_work[aPart].box[at( m_parts[aPart], aRot )];
         b.Move( aPos );
         return b;
     }
 
     BOX2I cuAt( int aPart, const VECTOR2I& aPos, int aRot ) const
     {
-        BOX2I b = m_work[aPart].cu[aRot & 3];
+        BOX2I b = m_work[aPart].cu[at( m_parts[aPart], aRot )];
         b.Move( aPos );
         return b;
     }
@@ -310,7 +365,7 @@ private:
                 if( q == i || !m_work[q].placed )
                     continue;
 
-                VECTOR2I want = padPos( q, b ) - m_work[i].pad[aRot & 3][k];
+                VECTOR2I want = padPos( q, b ) - m_work[i].pad[at( p, aRot )][k];
                 sx += m_weight[n] * want.x;
                 sy += m_weight[n] * want.y;
                 sw += m_weight[n];
@@ -321,7 +376,7 @@ private:
 
         if( w.affPart >= 0 && m_work[w.affPart].placed )
         {
-            VECTOR2I want = padPos( w.affPart, w.affOther ) - w.pad[aRot & 3][w.affPad];
+            VECTOR2I want = padPos( w.affPart, w.affOther ) - w.pad[at( p, aRot )][w.affPad];
             sx += 2.0 * want.x;
             sy += 2.0 * want.y;
             sw += 2.0;
@@ -331,7 +386,7 @@ private:
 
         if( blockCentre( i, bc ) )
         {
-            VECTOR2D want = bc - VECTOR2D( m_work[i].box[aRot & 3].Centre() );
+            VECTOR2D want = bc - VECTOR2D( m_work[i].box[at( p, aRot )].Centre() );
             sx += m_softWeight * want.x;
             sy += m_softWeight * want.y;
             sw += m_softWeight;
@@ -342,6 +397,38 @@ private:
 
         aOut = VECTOR2I( KiROUND( sx / sw ), KiROUND( sy / sw ) );
         return true;
+    }
+
+    /// Mean distance, mm, from the movable small passives' pad to the IC pin they belong to
+    /// (aOnBoard: only those already on the board, for the "before").
+    double satelliteDistance( bool aOnBoard, int* aCount ) const
+    {
+        double sum = 0;
+        int    n = 0;
+
+        for( size_t i = 0; i < m_parts.size(); ++i )
+        {
+            const WORK& w = m_work[i];
+
+            if( !m_parts[i].movable || w.affPart < 0 )
+                continue;
+
+            auto on = [&]( int k )
+            {
+                return m_outline.Contains( boxAt( k, m_parts[k].pos, m_parts[k].rot ).Centre() );
+            };
+
+            if( aOnBoard ? !( on( (int) i ) && on( w.affPart ) ) : !( w.placed && m_work[w.affPart].placed ) )
+                continue;
+
+            sum += ( VECTOR2D( padPos( (int) i, w.affPad ) ) - VECTOR2D( padPos( w.affPart, w.affOther ) ) ).EuclideanNorm();
+            n++;
+        }
+
+        if( aCount )
+            *aCount = n;
+
+        return n ? sum / n / 1e6 : 0;
     }
 
     /// Placed parts in a block whose nearest neighbour (courtyard gap) is in another block.
@@ -592,9 +679,16 @@ private:
         {
             BOX2I cu = cuAt( i, aPos, aRot );
 
-            for( const BOX2I& o : m_opt.obstacles )
+            const PART& me = m_parts[i];
+            const int   mine = me.tht ? ( OBST_FRONT | OBST_BACK | OBST_INNER ) : me.back ? OBST_BACK : OBST_FRONT;
+            const bool  layered = m_opt.obstacleLayers.size() == m_opt.obstacles.size();
+
+            for( size_t k = 0; k < m_opt.obstacles.size(); ++k )
             {
-                if( cu.Intersects( o ) )
+                if( layered && !( m_opt.obstacleLayers[k] & mine ) )
+                    continue;
+
+                if( cu.Intersects( m_opt.obstacles[k] ) )
                     return false;
             }
         }
@@ -638,7 +732,7 @@ private:
                 BOX2I padsCu = cuAt( aPads, aPPos, aPRot );
                 padsCu.Inflate( gap );
 
-                for( BOX2I h : m_work[aHoles].holeBox[aHRot & 3] )
+                for( BOX2I h : m_work[aHoles].holeBox[at( m_parts[aHoles], aHRot )] )
                 {
                     h.Move( aHPos );
 
@@ -651,7 +745,7 @@ private:
                     if( !hg.Intersects( padsCu ) )
                         continue;
 
-                    for( BOX2I pb : m_work[aPads].padBox[aPRot & 3] )
+                    for( BOX2I pb : m_work[aPads].padBox[at( m_parts[aPads], aPRot )] )
                     {
                         pb.Move( aPPos );
 
@@ -688,7 +782,7 @@ private:
         VECTOR2I  t( KiROUND( (double) aTarget.x / g ) * g, KiROUND( (double) aTarget.y / g ) * g );
 
         // keep the search inside what could fit at all
-        const BOX2I& rel = m_work[i].box[aRot & 3];
+        const BOX2I& rel = m_work[i].box[at( m_parts[i], aRot )];
         const int    xmin = m_area.GetLeft() - rel.GetLeft(), xmax = m_area.GetRight() - rel.GetRight();
         const int    ymin = m_area.GetTop() - rel.GetTop(), ymax = m_area.GetBottom() - rel.GetBottom();
 
@@ -939,23 +1033,73 @@ private:
             if( !connected( i ) && m_newcomer[i] )
                 target = spots[spot++ % 8];
 
-            // satellites go to what they belong to, now that it has its final place
-            if( m_work[i].affPart >= 0 && m_work[m_work[i].affPart].placed )
-                pullPoint( i, m_parts[i].rot, target );
+            // On each side it may use: satellites go to what they belong to, now that it has its
+            // final place (on the back right under the pin: the part above doesn't block it);
+            // in its rotation or, when that doesn't fit, the other three. The back has to win by
+            // backPenalty.
+            const bool startSide = m_parts[i].back;
+            const int  startRot = m_parts[i].rot;
+            const VECTOR2I start = target;
+            bool       ok = false;
+            double     bestD = 0;
+            VECTOR2I   bestAt;
+            int        bestRot = startRot;
+            bool       bestSide = startSide;
 
-            bool ok = nearestLegal( i, target, m_parts[i].rot, at );
-
-            // doesn't fit as it is turned: try the other three ways round
-            for( int k = 1; k < 4 && !ok && m_opt.rotate; ++k )
+            for( int s = 0; s < ( m_parts[i].canFlip ? 2 : 1 ); ++s )
             {
-                int rot = ( m_parts[i].rot + k ) & 3;
+                m_parts[i].back = s == 0 ? startSide : !startSide;
+                VECTOR2I tgt = start;
 
-                if( nearestLegal( i, target, rot, at ) )
+                if( m_work[i].affPart >= 0 && m_work[m_work[i].affPart].placed )
+                    pullPoint( i, startRot, tgt );
+
+                bool     found = false;
+                VECTOR2I spot;
+                int      rot = startRot;
+
+                if( nearestLegal( i, tgt, startRot, spot ) )
+                    found = true;
+
+                for( int k = 1; k < 4 && !found && m_opt.rotate; ++k )
                 {
+                    rot = ( startRot + k ) & 3;
+                    found = nearestLegal( i, tgt, rot, spot );
+                }
+
+                if( !found )
+                    continue;
+
+                double d = ( VECTOR2D( spot ) - VECTOR2D( tgt ) ).EuclideanNorm()
+                           + ( m_parts[i].back ? m_opt.backPenalty : 0 );
+
+                // a satellite: how close its pad gets to the pin is what counts
+                if( m_work[i].affPart >= 0 && m_work[m_work[i].affPart].placed )
+                {
+                    VECTOR2I keepPos = m_parts[i].pos;
+                    int      keepRot = m_parts[i].rot;
+                    m_parts[i].pos = spot;
                     m_parts[i].rot = rot;
+                    d = ( VECTOR2D( padPos( i, m_work[i].affPad ) )
+                          - VECTOR2D( padPos( m_work[i].affPart, m_work[i].affOther ) ) ).EuclideanNorm()
+                        + ( m_parts[i].back ? m_opt.backPenalty : 0 );
+                    m_parts[i].pos = keepPos;
+                    m_parts[i].rot = keepRot;
+                }
+
+                if( !ok || d < bestD )
+                {
                     ok = true;
+                    bestD = d;
+                    bestAt = spot;
+                    bestRot = rot;
+                    bestSide = m_parts[i].back;
                 }
             }
+
+            m_parts[i].back = bestSide;
+            m_parts[i].rot = bestRot;
+            at = bestAt;
 
             if( ok )
             {
@@ -990,13 +1134,17 @@ private:
             PART&    p = m_parts[i];
             VECTOR2I keepPos = p.pos;
             int      keepRot = p.rot;
-            double   bestCost = localCost( i );
+            bool     keepBack = p.back;
+            double   bestCost = localCost( i ) + ( p.back && p.canFlip ? m_opt.backPenalty : 0 );
             VECTOR2I bestPos = keepPos;
             int      bestRot = keepRot;
+            bool     bestBack = keepBack;
 
-            for( int r = 0; r < ( m_opt.rotate ? 4 : 1 ); ++r )
+            for( int t = 0; t < ( m_opt.rotate ? 4 : 1 ) * ( p.canFlip ? 2 : 1 ); ++t )
             {
-                int      rot = m_opt.rotate ? r : keepRot;
+                const int r = m_opt.rotate ? t % 4 : 0;
+                int       rot = m_opt.rotate ? r : keepRot;
+                p.back = ( t / ( m_opt.rotate ? 4 : 1 ) ) == 0 ? keepBack : !keepBack;
                 VECTOR2I want, at;
 
                 if( !pullPoint( i, rot, want ) )
@@ -1011,20 +1159,22 @@ private:
 
                 p.pos = at;
                 p.rot = rot;
-                double cost = localCost( i );
+                double cost = localCost( i ) + ( p.back && p.canFlip ? m_opt.backPenalty : 0 );
 
                 if( cost < bestCost - 1000.0 )      // at least 1 µm better
                 {
                     bestCost = cost;
                     bestPos = at;
                     bestRot = rot;
+                    bestBack = p.back;
                 }
             }
 
             p.pos = bestPos;
             p.rot = bestRot;
+            p.back = bestBack;
 
-            if( bestPos != keepPos || bestRot != keepRot )
+            if( bestPos != keepPos || bestRot != keepRot || bestBack != keepBack )
             {
                 improved = true;
                 bucketUpdate( i );
@@ -1039,7 +1189,10 @@ private:
             {
                 int   i = order[a], j = order[bi];
                 PART &p = m_parts[i], &q = m_parts[j];
-                BOX2I bp = m_work[i].box[p.rot & 3], bq = m_work[j].box[q.rot & 3];
+                if( p.back != q.back )
+                    continue;
+
+                BOX2I bp = m_work[i].box[at( p, p.rot )], bq = m_work[j].box[at( q, q.rot )];
 
                 if( std::abs( bp.GetWidth() - bq.GetWidth() ) > m_opt.grid
                     || std::abs( bp.GetHeight() - bq.GetHeight() ) > m_opt.grid )
@@ -1101,7 +1254,7 @@ RESULT Place( std::vector<PART>& aParts, int aNetCount, const SHAPE_POLY_SET& aO
     // that places the most parts with the shortest wire length.
     // The starts are independent (own copy of the parts, the outline only read): run them in
     // parallel.
-    const int                      starts = std::max( 1, aOptions.starts );
+    const int                      starts = aOptions.measureOnly ? 1 : std::max( 1, aOptions.starts );
     std::vector<std::vector<PART>> parts( starts, aParts );
     std::vector<RESULT>            results( starts );
     std::vector<std::thread>       threads;
