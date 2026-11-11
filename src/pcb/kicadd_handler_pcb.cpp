@@ -1289,7 +1289,7 @@ KICADD_HANDLER_PCB::handleDeleteTracks( const HANDLER_CONTEXT<DeleteTracks>& aCt
             todo.pop_back();
 
             // direct neighbours (CONNECTIVITY_DATA::GetConnectedItems gives the whole island)
-            std::vector<BOARD_CONNECTED_ITEM*> near;
+            std::vector<BOARD_CONNECTED_ITEM*> adjacent;
 
             if( const CN_CONNECTIVITY_ALGO::ITEM_MAP_ENTRY* entry = conn->GetConnectivityAlgo()->FindItemEntry( item ) )
             {
@@ -1300,9 +1300,9 @@ KICADD_HANDLER_PCB::handleDeleteTracks( const HANDLER_CONTEXT<DeleteTracks>& aCt
                         BOARD_CONNECTED_ITEM* parent = other->Parent();
 
                         if( parent && parent != item && parent->Type() != PCB_ZONE_T
-                            && std::find( near.begin(), near.end(), parent ) == near.end() )
+                            && std::find( adjacent.begin(), adjacent.end(), parent ) == adjacent.end() )
                         {
-                            near.push_back( parent );
+                            adjacent.push_back( parent );
                         }
                     }
                 }
@@ -1312,7 +1312,7 @@ KICADD_HANDLER_PCB::handleDeleteTracks( const HANDLER_CONTEXT<DeleteTracks>& aCt
             // not followed further (else a GND tree would go all the way round the board)
             if( item->Type() != PCB_PAD_T )
             {
-                bool end = std::any_of( near.begin(), near.end(),
+                bool end = std::any_of( adjacent.begin(), adjacent.end(),
                                         [&]( const BOARD_CONNECTED_ITEM* n )
                                         {
                                             return n->Type() == PCB_PAD_T && !mine.count( n->GetParentFootprint() );
@@ -1322,7 +1322,7 @@ KICADD_HANDLER_PCB::handleDeleteTracks( const HANDLER_CONTEXT<DeleteTracks>& aCt
                     continue;
             }
 
-            for( BOARD_CONNECTED_ITEM* next : near )
+            for( BOARD_CONNECTED_ITEM* next : adjacent )
             {
                 KICAD_T type = next->Type();
 

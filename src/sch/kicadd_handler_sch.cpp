@@ -1854,27 +1854,27 @@ HANDLER_RESULT<SchPartResponse> KICADD_HANDLER_SCH::handleMove( const HANDLER_CO
             for( SCH_LINE* wire : wiresEndingAt( screen, at ) )
             {
                 const bool     startHere = wire->GetStartPoint() == at;
-                const VECTOR2I far = startHere ? wire->GetEndPoint() : wire->GetStartPoint();
+                const VECTOR2I farEnd = startHere ? wire->GetEndPoint() : wire->GetStartPoint();
 
                 // a stub: straight out, and at its far end only its label / power symbol
-                std::vector<SCH_LABEL_BASE*> farLabels = labelsAt( screen, far );
-                std::vector<SCH_SYMBOL*>     farPower = powerSymbolsAt( screen, far );
+                std::vector<SCH_LABEL_BASE*> farLabels = labelsAt( screen, farEnd );
+                std::vector<SCH_SYMBOL*>     farPower = powerSymbolsAt( screen, farEnd );
                 bool                         farPin = false;
 
-                for( SCH_ITEM* item : screen->Items().Overlapping( SCH_SYMBOL_T, far ) )
+                for( SCH_ITEM* item : screen->Items().Overlapping( SCH_SYMBOL_T, farEnd ) )
                 {
                     auto* other = static_cast<SCH_SYMBOL*>( item );
 
                     if( !other->IsPower() )
                     {
                         for( SCH_PIN* p : other->GetPins( nullptr ) )
-                            farPin |= p->GetPosition() == far;
+                            farPin |= p->GetPosition() == farEnd;
                     }
                 }
 
-                const bool stub = wiresEndingAt( screen, far ).size() == 1 && !farPin
+                const bool stub = wiresEndingAt( screen, farEnd ).size() == 1 && !farPin
                                   && ( !farLabels.empty() || !farPower.empty() )
-                                  && ( far.x == at.x || far.y == at.y );
+                                  && ( farEnd.x == at.x || farEnd.y == at.y );
 
                 if( !stub )
                 {
@@ -1883,7 +1883,7 @@ HANDLER_RESULT<SchPartResponse> KICADD_HANDLER_SCH::handleMove( const HANDLER_CO
                 }
 
                 STUB_AT s;
-                s.length = std::max( std::abs( far.x - at.x ), std::abs( far.y - at.y ) );
+                s.length = std::max( std::abs( farEnd.x - at.x ), std::abs( farEnd.y - at.y ) );
 
                 for( SCH_LABEL_BASE* label : farLabels )
                 {

@@ -7,6 +7,8 @@
 #include "lcsc/kicadd_parts.h"
 #include "lcsc/kicadd_lcsc.h"
 
+#include <footprint.h>     // PART owns one (MSVC wants the type complete for its destructor)
+
 #include <kicad_curl/kicad_curl.h>
 #include <kicad_curl/kicad_curl_easy.h>
 #include <paths.h>
