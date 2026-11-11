@@ -4,7 +4,12 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 
 > ⚠️ Pre-release，僅供試用。由 GitHub Actions 自動建置；功能在 Linux 上做過端到端測試，Windows 上只有 CI 的 smoke test 與早期版本的人工試用。
 
-## 這一版（alpha.5）
+## 這一版（alpha.6）
+- **反覆擺件 / undo 時記憶體一直增加：** 編輯器的 Ctrl+Z 歷史每一步都存一份改到的零件，而 KiCad 的復原步數上限設定（`max_undo_items`）因為一個上游的 bug 從來沒有生效，歷史會無限增加。已修正，預設保留 100 步（`%APPDATA%\kicad\10.99\pcbnew.json` 的 `system.max_undo_items`：0 = 100 步，負數 = 不限）。
+- **`run_drc`：** 用 `types` / `refs` 篩選時，另外列出符合篩選的數量（上面的類別統計是全板的）。
+- **`audit`：** 固定孔、光學定位點、測試點不再算成連接器（`pic_programmer` 從 10 個變成 4 個）。
+
+## alpha.5
 **修正**
 - **桌面版當掉：** Agent 新增零件 → Agent `undo` → 你在編輯器按 Ctrl+Z，編輯器會當掉（Agent 的 undo 刪掉了編輯器復原紀錄還在用的零件）。已修正。
 - **BOM 用錯立創編號：** 從立創抓的封裝存進專案庫時帶著零件編號，另一顆用同一封裝的零件（例如 1k 電阻用了 10k 抓來的 `R0603`）會以錯的編號進 BOM。現在庫裡的封裝不帶編號，`sync_pcb` 也會清掉舊庫留下的編號。

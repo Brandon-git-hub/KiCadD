@@ -1391,8 +1391,8 @@ SOIC-8 pad 1 against KiCad's within 0.1 mm, and a design using `kicadd:R_0603` t
    * Linux（16 核）同一操作：無頭 7.7–14.9 秒，桌面版 14.9 秒；`no room for: P3` 那顆放不進去的
      零件最花時間（把 P3 固定後減半）。核心數較少的 Windows 機器會慢數倍。
    方向：(a) 運算移出 GUI 執行緒，或至少可取消、有進度；(b) 放不進去的零件要有搜尋上限
-   （`nearestLegal` 的範圍／時間預算），並在結果中提早回報；(c) 查記憶體成長（`pullPoint` 的
-   `vector<VECTOR2>` 重新配置）；(d) 在已佈線的板子上，舊走線當障礙會讓放不進去的零件變多，
+   （`nearestLegal` 的範圍／時間預算），並在結果中提早回報；(c) 查記憶體成長（已查明 2026-11-12，
+   見第 8 項 (c)：是編輯器的 undo 歷史不受上限限制）；(d) 在已佈線的板子上，舊走線當障礙會讓放不進去的零件變多，
    使用說明要寫明（建議先移除走線，或只對剛 `sync_pcb` 的板子執行）。
    （先前懷疑 DRC 的 GUI 進度回報，已排除：Linux 桌面版 DRC 4 秒，563 個錯誤也不卡。）
    (e) 新發現：走線障礙物用的是整條走線的外框（`GetBoundingBox`），斜走線會擋住一大塊矩形，
@@ -1461,6 +1461,20 @@ SOIC-8 pad 1 against KiCad's within 0.1 mm, and a design using `kicadd:R_0603` t
      還留著「auto-place 62 parts」，`undo` 對 62 個零件各回報一行 `changed since; left as is`，
      Agent 因此誤以為零件還在擺件後的位置。安全上沒有問題（沒有蓋掉任何東西）。如果零件都已經
      回到修改前的位置，要改成一行「已在編輯器裡撤銷」，並移除這筆紀錄。
+
+8. **（已完成 2026-11-12）alpha.5 在 Windows 上試用 `pic_programmer`。** 擺件後的 DRC 不再卡住
+   （1.2 秒）；`auto_place` 結果比原本差時保留原擺放。發現並修正：
+   * (a) `run_drc` 的類別統計是全板的，用了 `types` / `refs` 篩選時看起來像篩選沒生效。
+     現在另加一行「符合篩選的數量」。
+   * (b) `audit` 把固定孔（P101–P106，`MountingHole` 封裝）算成連接器。固定孔、光學定位點、
+     測試點不再算（依符號名稱或封裝名稱開頭，J1 的 `DSUB-9_…_MountingHolesOffset` 仍是連接器）。
+   * (c) **記憶體（5c）：** 每輪「`auto_place force` + `undo`」認可大小 +3.4 MB，20 輪線性增加。
+     不是 Agent 的程式漏掉，是編輯器的 Ctrl+Z 歷史：每個 commit 存一份改到的封裝的複本
+     （massif：全在 `BOARD_COMMIT::makeImage → FOOTPRINT::Clone`），Agent 的 `undo` 也是一個
+     commit。KiCad 的 `max_undo_items` 本來就該限制它，但 `EDA_DRAW_FRAME` 另外宣告了同名的
+     `m_undoRedoCountMax`，設定讀進那一個，裁切 undo 清單用的是 `EDA_BASE_FRAME` 那一個（永遠 0，
+     不限）：上游的 bug，設定從來沒生效。已修正，KiCadD 的預設為 100 步（`max_undo_items` 0 =
+     100，負數 = 不限）。Linux 桌面版實測（每輪兩次全板移動）：前 50 輪每輪 +4 MB，之後持平。
 
 保留不動：專案管理器的 Version Control（Git）面板。
 

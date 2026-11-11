@@ -233,7 +233,7 @@ index b224822c..eaec83c9 100644
  #elif defined( NGSPICE_HAVE_CONFIG_H )
      #undef HAVE_STRNCASECMP     /* is redefined in ngspice/config.h */
 diff --git a/common/eda_base_frame.cpp b/common/eda_base_frame.cpp
-index 810a90f0..ff038fbb 100644
+index 810a90f0..696e86ea 100644
 --- a/common/eda_base_frame.cpp
 +++ b/common/eda_base_frame.cpp
 @@ -916,8 +916,10 @@ void EDA_BASE_FRAME::AddStandardHelpMenu( wxMenuBar* aMenuBar )
@@ -247,6 +247,75 @@ index 810a90f0..ff038fbb 100644
      helpMenu->Add( ACTIONS::reportBug );
  
      helpMenu->AppendSeparator();
+@@ -1880,14 +1882,28 @@ void EDA_BASE_FRAME::ClearUndoRedoList()
+ }
+ 
+ 
++// The undo / redo depth: max_undo_items, 0 (the default) meaning no limit. KiCadD: 0 means 100
++// steps, below 0 no limit; every step keeps a copy of what it changed (a whole-board placement:
++// every footprint), and an agent makes many of them.
++static int undoLimit( int aSetting )
++{
++#ifdef KICADD
++    return aSetting == 0 ? 100 : aSetting;
++#else
++    return aSetting;
++#endif
++}
++
++
+ void EDA_BASE_FRAME::PushCommandToUndoList( PICKED_ITEMS_LIST* aNewitem )
+ {
+     m_undoList.PushCommand( aNewitem );
++    const int maxItems = undoLimit( m_undoRedoCountMax );
+ 
+     // Delete the extra items, if count max reached
+-    if( m_undoRedoCountMax > 0 )
++    if( maxItems > 0 )
+     {
+-        int extraitems = GetUndoCommandCount() - m_undoRedoCountMax;
++        int extraitems = GetUndoCommandCount() - maxItems;
+ 
+         if( extraitems > 0 )
+             ClearUndoORRedoList( UNDO_LIST, extraitems );
+@@ -1898,11 +1914,12 @@ void EDA_BASE_FRAME::PushCommandToUndoList( PICKED_ITEMS_LIST* aNewitem )
+ void EDA_BASE_FRAME::PushCommandToRedoList( PICKED_ITEMS_LIST* aNewitem )
+ {
+     m_redoList.PushCommand( aNewitem );
++    const int maxItems = undoLimit( m_undoRedoCountMax );
+ 
+     // Delete the extra items, if count max reached
+-    if( m_undoRedoCountMax > 0 )
++    if( maxItems > 0 )
+     {
+-        int extraitems = GetRedoCommandCount() - m_undoRedoCountMax;
++        int extraitems = GetRedoCommandCount() - maxItems;
+ 
+         if( extraitems > 0 )
+             ClearUndoORRedoList( REDO_LIST, extraitems );
+diff --git a/common/eda_draw_frame.cpp b/common/eda_draw_frame.cpp
+index df67c231..e9144285 100644
+--- a/common/eda_draw_frame.cpp
++++ b/common/eda_draw_frame.cpp
+@@ -106,7 +106,6 @@ EDA_DRAW_FRAME::EDA_DRAW_FRAME( KIWAY* aKiway, wxWindow* aParent, FRAME_T aFrame
+     m_zoomCustomEntry     = wxNOT_FOUND;
+     m_overrideLocksCb     = nullptr;
+     m_searchPane          = nullptr;
+-    m_undoRedoCountMax    = DEFAULT_MAX_UNDO_ITEMS;
+ 
+     m_canvasType          = EDA_DRAW_PANEL_GAL::GAL_TYPE_NONE;
+     m_canvas              = nullptr;
+@@ -833,7 +832,9 @@ void EDA_DRAW_FRAME::LoadSettings( APP_SETTINGS_BASE* aCfg )
+     // Read units used in dialogs and toolbars
+     SetUserUnits( static_cast<EDA_UNITS>( aCfg->m_System.units ) );
+ 
+-    m_undoRedoCountMax = aCfg->m_System.max_undo_items;
++    // EDA_DRAW_FRAME used to have its own m_undoRedoCountMax, hiding EDA_BASE_FRAME's: the
++    // setting was read into it, the undo list was trimmed by the other one (always 0, no limit)
++    SetMaxUndoItems( aCfg->m_System.max_undo_items );
+ 
+     m_galDisplayOptions.ReadConfig( *cmnCfg, *window, this );
+ 
 diff --git a/common/startwizard/startwizard.cpp b/common/startwizard/startwizard.cpp
 index 30622323..d64a4613 100644
 --- a/common/startwizard/startwizard.cpp
@@ -929,6 +998,31 @@ index c5cd6f2a..a0f846b9 100644
      wxString m_socketPathOverride;
  
      static wxString s_logFileName;
+diff --git a/include/eda_base_frame.h b/include/eda_base_frame.h
+index 563b7c93..e3ff53df 100644
+--- a/include/eda_base_frame.h
++++ b/include/eda_base_frame.h
+@@ -616,6 +616,7 @@ public:
+     virtual wxString GetRedoActionDescription() const;
+ 
+     int GetMaxUndoItems() const { return m_undoRedoCountMax; }
++    void SetMaxUndoItems( int aMax ) { m_undoRedoCountMax = aMax; }
+ 
+     /**
+      * Must be called after a model change in order to set the "modify" flag and do other
+diff --git a/include/eda_draw_frame.h b/include/eda_draw_frame.h
+index 75d53acc..a3c7805a 100644
+--- a/include/eda_draw_frame.h
++++ b/include/eda_draw_frame.h
+@@ -628,8 +628,6 @@ protected:
+     COLOR4D              m_gridColor;         // Grid color
+     COLOR4D              m_drawBgColor;       // The background color of the draw canvas; BLACK for
+                                               // Pcbnew, BLACK or WHITE for Eeschema
+-    int                  m_undoRedoCountMax;  // Default Undo/Redo command Max depth, to be handed
+-                                              // to screens
+     bool                 m_polarCoords;       // For those frames that support polar coordinates
+ 
+     // Show the drawing sheet (border & title block).
 diff --git a/include/kiface_ids.h b/include/kiface_ids.h
 index 1ffb2ad6..909203b3 100644
 --- a/include/kiface_ids.h
