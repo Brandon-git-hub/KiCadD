@@ -1205,16 +1205,27 @@ Release check, 2026-11-11 (`build-lean`): `m5_e2e`, `hier_e2e`, `rules_e2e`, `sm
      直接處理編輯器裡的板子，不用先存檔；這些匯出程式本版都有保留。
 
    **第三批：JLCPCB 與元件庫**
-   * (h) JLCPCB 官方 API：使用者已申請，**審查中**。官方文件存放在
-     `kicad_refactor/JLCPCB_API_DOC/`（網頁存檔）。要用到的部分：
-     - Components：`Query Component Detail Data`（依 C 編號查詳情）；
-       `Component information`（分頁取得整個公開庫）。**清單裡沒有依規格搜尋的介面**，
-       依規格搜料可能要先把公開庫分頁下載成本機索引再搜。
-     - PCB：`Upload gerber files` → `Get PCB pre-review information` → `Online quote`
-       可做 PCB 報價，接在 (g) 後面。清單裡**沒有 SMT / PCBA 報價**，組裝費只能用 BOM 估算。
-     - 下單（`Create order`）不做，或至少要使用者明確確認。
-     - 開始前先讀 `API Request Signature`、`IP Whitelist`、`Configure API Key`；
-       金鑰不能寫進專案或 log。
+   * (h) **依規格搜料 `lcsc_search`（兩階段）。** JLCPCB 官方 API 的申請被拒（個人開發者門檻高），
+     改用 [jlcparts](https://github.com/yaqwsx/jlcparts)（MIT）每天更新的資料：
+     `https://yaqwsx.github.io/jlcparts/data/cache.zip` + `cache.z01`…（2026-11-11：5 個 50 MB 分卷 +
+     31.8 MB，共約 282 MB；解壓後 `cache.sqlite3` 2.48 GB）。2026-11-11 下載實測：
+     - 表 `jlc_components`：406 萬筆，有庫存 55.2 萬筆；`library_type` base 351 筆、`preferred` 985 筆。
+       欄位有 `category` / `subcategory` / `mfr` / `package` / `manufacturer` / `description` /
+       `stock`（JLC 庫存，資料日期當天）/ `price`（階梯價字串）/ `attributes`（JSON，例如
+       `{"Capacitance":"100nF","Temperature Coefficient":"X7R","Voltage Rating":"16V"}`）。
+     - 只保留有庫存的零件並建 FTS5 索引：360 MB，xz 壓縮後 39 MB，建置約 4 秒，查詢 0–1 ms。
+     - 單純全文搜尋不夠：`10k 0603 1%` 找不到（描述寫的是 `10kΩ`），`AMS1117 3.3` 只靠描述碰巧命中。
+       要從 `attributes` 解析出數值欄位（電阻 Ω、電容 F、電感 H、電壓、容差、介質、封裝別名）。
+     - **階段 1（本機）：** KiCadD 自己的 GitHub Actions 每天抓 jlcparts，產生精簡索引（約 40 MB），
+       發布成固定 tag 的 release asset；使用者第一次搜尋時下載，之後過期才更新。
+       另一個做法是讓使用者自己下載 282 MB、在本機建索引（要 2.5 GB 暫存空間），較不建議。
+       MCP 參數用結構化的（`category`、`value`、`package`、`voltage_min`、`tolerance`、`dielectric`、
+       `basic_only`），另有 `keyword` 自由文字。SQLite 已是 KiCad 的相依套件；Windows（vcpkg）
+       要確認有沒有啟用 FTS5，沒有的話改用數值欄位加索引。
+     - **階段 2（即時確認）：** 前幾個候選用現有的 `lcsc_fetch refresh=true`（EasyEDA）取得今天的
+       庫存與價格；注意那是 LCSC 庫存，JLC 組裝庫存以索引日期的數字為準。
+     - 結果寫明資料日期與來源（jlcparts），不附帶也不轉發零件資料以外的東西。
+     - PCB 報價（官方 API）暫不做。
    * (i) `lib_create_symbol`：給腳位清單（號碼、名稱、類型、方向），產生方框符號。
    * (j) 參數化封裝：只做 SOIC / QFN / QFP / 0402–1206 / 排針等常見封裝；異形封裝仍由使用者在
      編輯器裡畫，立創有的零件優先用 `lcsc_fetch`。
