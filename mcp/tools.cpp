@@ -851,11 +851,52 @@ TOOL_RESULT runDrc( IPC_CLIENT& aIpc, const json& aArgs )
     s += "errors: " + counts( report.errors ) + "\n";
     s += "warnings: " + counts( report.warnings ) + "\n";
 
-    int shown = 0, matching = 0;
+    int  shown = 0, matching = 0;
+    bool filtered = !types.empty() || !refs.empty() || !warnings;
+    std::map<std::string, int> fErrors, fWarnings;
+
+    auto keep = [&]( const DRC_ENTRY& e )
+    {
+        return !( e.warning && !warnings ) && ( types.empty() || types.count( e.type ) ) && involves( e );
+    };
+
+    if( filtered )
+    {
+        int fe = 0, fw = 0;
+
+        for( const DRC_ENTRY& e : report.entries )
+        {
+            if( !keep( e ) )
+                continue;
+
+            ++( e.warning ? fWarnings : fErrors )[e.type];
+            ++( e.warning ? fw : fe );
+        }
+
+        std::string what;
+
+        if( !types.empty() )
+            what += std::to_string( types.size() ) + " type(s)";
+
+        if( !refs.empty() )
+            what += ( what.empty() ? "" : ", " ) + std::to_string( refs.size() ) + " ref(s)";
+
+        if( !warnings )
+            what += ( what.empty() ? "" : ", " ) + std::string( "no warnings" );
+
+        s += "filter (" + what + "): " + std::to_string( fe ) + " errors, " + std::to_string( fw )
+             + " warnings match; the counts above are the whole board\n";
+
+        if( fe )
+            s += "  errors: " + counts( fErrors ) + "\n";
+
+        if( fw )
+            s += "  warnings: " + counts( fWarnings ) + "\n";
+    }
 
     for( const DRC_ENTRY& e : report.entries )
     {
-        if( ( e.warning && !warnings ) || ( !types.empty() && !types.count( e.type ) ) || !involves( e ) )
+        if( !keep( e ) )
             continue;
 
         if( matching++ >= static_cast<int>( limit ) )
@@ -1247,7 +1288,8 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
 
     tools.push_back( { "run_drc",
                        "Full-board DRC (all KiCad checks: clearance, shorts, unconnected, courtyards, "
-                       "silk, edge, holes, ...). Takes seconds on large boards. Output: counts by type, "
+                       "silk, edge, holes, ...). Takes seconds on large boards. Output: whole-board counts by type, "
+                       "then (with types/refs/include_warnings=false) the counts matching the filter, "
                        "then violations (errors first) as 'E|W type itemA[net] x itemB[net] layer @x,y "
                        "detail'. Refill zones first if parts moved.",
                        schema( { { "limit", { { "type", "integer" }, { "description", "Max violations listed (default 40)" } } },
