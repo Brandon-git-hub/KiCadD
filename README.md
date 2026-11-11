@@ -1184,6 +1184,41 @@ Release check, 2026-11-11 (`build-lean`): `m5_e2e`, `hier_e2e`, `rules_e2e`, `sm
    (e) 新發現：走線障礙物用的是整條走線的外框（`GetBoundingBox`），斜走線會擋住一大塊矩形，
    已佈線的板子上零件更難放進去。改成依走線形狀判斷，可能讓 P3 放得進去。
 
+6. **Agent 做不到的事（2026-11-11 試用回報，已對照 MCP 工具清單確認）。** 依建議順序分三批。
+
+   **第一批：電路圖編輯**
+   * (a) `sch_move`：移動、旋轉已放置的零件。`sch_connect` 產生的短線和標籤要跟著零件移動，
+     連線才不會斷。
+   * (b) `sch_wire`：依座標點畫導線，交叉處自動放 junction。短線加標籤仍是預設做法。
+   * (c) 電源符號：本版沒附 `power` 庫，在程式裡直接產生 GND / VCC / +3V3 / +5V 等常用電源符號
+     （`sch_add_part lib_id="power:GND"`，或 `sch_connect` 指定電源網路時自動加上）。
+   * (d) `run_erc`：在記憶體中的電路圖上跑 KiCad 的 ERC（`ERC_TESTER`），未存檔的內容也能查，
+     做法比照 `run_drc`。`kicad-cli sch erc` 只讀檔案。
+   * (e) `lib_register`：把專案裡的 `.kicad_sym` / `.pretty` 加進 `sym-lib-table` / `fp-lib-table`。
+
+   **第二批：審查與製造輸出**
+   * (f) `audit`：用規則檢查，輸出報告，判斷交給 Agent。
+     - 去耦電容：IC 的電源腳，同網路上有沒有電容；在 PCB 上算出電容到腳的距離。
+     - 電源：每個電源網路有沒有來源（穩壓器或連接器），有沒有只接一端的網路。
+     - ESD：接到連接器的訊號網路上有沒有 TVS / ESD 元件。
+   * (g) `export_fab`：一次輸出 Gerber、鑽孔、座標檔（CPL）和 BOM，用 JLCPCB 的格式。
+     直接處理編輯器裡的板子，不用先存檔；這些匯出程式本版都有保留。
+
+   **第三批：JLCPCB 與元件庫**
+   * (h) JLCPCB 官方 API：使用者已申請，**審查中**。官方文件存放在
+     `kicad_refactor/JLCPCB_API_DOC/`（網頁存檔）。要用到的部分：
+     - Components：`Query Component Detail Data`（依 C 編號查詳情）；
+       `Component information`（分頁取得整個公開庫）。**清單裡沒有依規格搜尋的介面**，
+       依規格搜料可能要先把公開庫分頁下載成本機索引再搜。
+     - PCB：`Upload gerber files` → `Get PCB pre-review information` → `Online quote`
+       可做 PCB 報價，接在 (g) 後面。清單裡**沒有 SMT / PCBA 報價**，組裝費只能用 BOM 估算。
+     - 下單（`Create order`）不做，或至少要使用者明確確認。
+     - 開始前先讀 `API Request Signature`、`IP Whitelist`、`Configure API Key`；
+       金鑰不能寫進專案或 log。
+   * (i) `lib_create_symbol`：給腳位清單（號碼、名稱、類型、方向），產生方框符號。
+   * (j) 參數化封裝：只做 SOIC / QFN / QFP / 0402–1206 / 排針等常見封裝；異形封裝仍由使用者在
+     編輯器裡畫，立創有的零件優先用 `lcsc_fetch`。
+
 保留不動：專案管理器的 Version Control（Git）面板。
 
 ## License
