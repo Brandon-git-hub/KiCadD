@@ -235,6 +235,38 @@ public:
         bucketRebuild();
     }
 
+    /// The parts as they are make a placement to compare with: every movable one on the board,
+    /// their courtyards not overlapping (OPTIONS::startOverlaps, from the real shapes), and no
+    /// agent rule to meet (the start may break them). Tracks are not looked at: a routed board's
+    /// parts sit on their own tracks.
+    bool startUsable() const
+    {
+        if( !m_opt.nearRules.empty() || m_opt.startOverlaps )
+            return false;
+
+        bool any = false;
+
+        for( size_t i = 0; i < m_parts.size(); ++i )
+        {
+            const PART& p = m_parts[i];
+
+            if( !p.movable )
+                continue;
+
+            any = true;
+
+            // its centre inside the outline: a hand placement may go closer to the edge than
+            // auto_place would, a mounting hole's courtyard may reach past it
+            if( p.edgeSide >= 0 || p.hasRegion || p.fixedRot >= 0
+                || !m_outline.Contains( boxAt( (int) i, p.pos, p.rot ).Centre() ) )
+            {
+                return false;
+            }
+        }
+
+        return any;
+    }
+
     RESULT Run( bool aRefine = true )
     {
         RESULT res;
@@ -254,6 +286,7 @@ public:
 
         res.mixedBefore = mixed();
         res.satBefore = satelliteDistance( true, &res.satellites );
+        res.startUsable = startUsable();
 
         if( m_opt.measureOnly )
         {
@@ -1702,6 +1735,17 @@ RESULT Place( std::vector<PART>& aParts, int aNetCount, const SHAPE_POLY_SET& aO
         RESULT res;
         res.cancelled = true;
         return res;      // aParts as they were
+    }
+
+    // The parts were all placed already: the new placement has to be better than that.
+    const RESULT& r = results[best];
+
+    if( aOptions.keepBetterStart && r.startUsable
+        && ( !r.unplaced.empty() || r.hpwlAfter >= r.hpwlBefore ) )
+    {
+        RESULT kept = r;
+        kept.keptStart = true;
+        return kept;     // aParts as they were
     }
 
     aParts = std::move( parts[best] );

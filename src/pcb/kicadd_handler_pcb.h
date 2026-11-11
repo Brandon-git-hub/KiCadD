@@ -32,6 +32,7 @@ class BOARD;
 class BOARD_COMMIT;
 class FOOTPRINT;
 class NETINFO_ITEM;
+class PCB_TRACK;
 class PCB_CONTEXT;
 
 namespace kicadd { class RENDER_FEED; }
@@ -77,6 +78,9 @@ private:
 
     HANDLER_RESULT<kicadd::board::MoveResponse>
     handleDeleteFootprints( const HANDLER_CONTEXT<kicadd::board::DeleteFootprints>& aCtx );
+
+    HANDLER_RESULT<kicadd::board::MoveResponse>
+    handleDeleteTracks( const HANDLER_CONTEXT<kicadd::board::DeleteTracks>& aCtx );
 
     HANDLER_RESULT<kicadd::board::MoveResponse>
     handleAddFootprint( const HANDLER_CONTEXT<kicadd::board::AddFootprint>& aCtx );
@@ -196,13 +200,21 @@ private:
         std::vector<wxString>      padNets;
     };
 
+    /// A track, arc or via off the board (deleted), net kept by name.
+    struct TRACK_SNAPSHOT
+    {
+        std::shared_ptr<PCB_TRACK> track;
+        wxString                   net;
+    };
+
     struct HISTORY_ENTRY
     {
-        std::string              label;
-        std::vector<FP_STATE>    before;
-        std::vector<FP_STATE>    after;
-        std::vector<FP_SNAPSHOT> added;     ///< removed again by undo
-        std::vector<FP_SNAPSHOT> removed;   ///< put back by undo
+        std::string                 label;
+        std::vector<FP_STATE>       before;
+        std::vector<FP_STATE>       after;
+        std::vector<FP_SNAPSHOT>    added;     ///< removed again by undo
+        std::vector<FP_SNAPSHOT>    removed;   ///< put back by undo
+        std::vector<TRACK_SNAPSHOT> tracksRemoved;   ///< put back by undo
     };
 
     static FP_STATE stateOf( const FOOTPRINT* aFp );

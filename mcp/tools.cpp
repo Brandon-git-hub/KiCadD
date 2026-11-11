@@ -258,6 +258,12 @@ std::string renderMoveResult( const kb::MoveResponse& r )
     for( const std::string& ref : r.removed() )
         s += ref + " deleted\n";
 
+    if( r.tracks_removed() > 0 )
+        s += std::to_string( r.tracks_removed() ) + " track(s)/via(s) " + ( r.history_label().empty() ? "removed" : "deleted" ) + "\n";
+
+    if( r.tracks_locked() > 0 )
+        s += std::to_string( r.tracks_locked() ) + " locked track(s)/via(s) kept (include_locked deletes them too)\n";
+
     for( const kb::MoveResult& m : r.moved() )
     {
         bool added = std::find( r.added().begin(), r.added().end(), m.ref() ) != r.added().end();
@@ -456,6 +462,52 @@ TOOL_RESULT deleteFootprints( IPC_CLIENT& aIpc, const json& aArgs )
 }
 
 
+TOOL_RESULT deleteTracks( IPC_CLIENT& aIpc, const json& aArgs )
+{
+    kb::DeleteTracks req;
+    req.set_all( aArgs.value( "all", false ) );
+    req.set_include_locked( aArgs.value( "include_locked", false ) );
+    req.set_keep_vias( aArgs.value( "keep_vias", false ) );
+
+    for( const std::string& n : getStrings( aArgs, "nets" ) )
+        req.add_nets( n );
+
+    for( const std::string& r : getStrings( aArgs, "refs" ) )
+        req.add_refs( r );
+
+    if( aArgs.contains( "region" ) )
+    {
+        const json& box = aArgs["region"];
+
+        if( !box.is_array() || box.size() != 4
+            || !std::all_of( box.begin(), box.end(), []( const json& v ) { return v.is_number(); } ) )
+            return error( "region: [x0, y0, x1, y1] in mm" );
+
+        req.mutable_region_min()->set_x( std::llround( box[0].get<double>() * 1e6 ) );
+        req.mutable_region_min()->set_y( std::llround( box[1].get<double>() * 1e6 ) );
+        req.mutable_region_max()->set_x( std::llround( box[2].get<double>() * 1e6 ) );
+        req.mutable_region_max()->set_y( std::llround( box[3].get<double>() * 1e6 ) );
+    }
+
+    if( !req.all() && req.nets().empty() && req.refs().empty() && !req.has_region_min() )
+        return error( "say which: all, nets, refs or region" );
+
+    kb::MoveResponse r;
+    std::string      err;
+
+    if( !aIpc.Call( req, r, err ) )
+        return error( err );
+
+    std::string s = r.tracks_removed() == 0 ? std::string( "no tracks matched\n" ) : "";
+    s += renderMoveResult( r );
+
+    if( r.tracks_removed() > 0 )
+        s += "undo: \"" + r.history_label() + "\"; copper zones keep their old shape: refill_zones before run_drc\n";
+
+    return { s, r.tracks_removed() == 0 && r.tracks_locked() == 0 };
+}
+
+
 TOOL_RESULT addFootprint( IPC_CLIENT& aIpc, const json& aArgs )
 {
     kb::AddFootprint req;
@@ -618,19 +670,58 @@ TOOL_RESULT history( IPC_CLIENT& aIpc, bool aUndo )
     if( !r.ok() && r.label().empty() )
         return { std::string( "nothing to " ) + verb + "\n" + renderHistory( r ) };
 
+    const kb::MoveResponse& res = r.result();
+    int                     already = res.already_there();
+
+    // Parts someone else changed after this entry, listed briefly (an auto_place entry has ~60)
+    auto changedList = [&]()
+    {
+        std::string s;
+        int         n = 0;
+
+        for( const std::string& m : res.missing() )
+        {
+            std::string ref = m.substr( 0, m.find( ' ' ) );
+
+            if( n++ < 10 )
+                s += ( s.empty() ? "" : ", " ) + ref;
+        }
+
+        if( n > 10 )
+            s += ", ... (" + std::to_string( n ) + " in all)";
+
+        return s;
+    };
+
+    if( !r.ok() && res.missing().empty() && already > 0 )
+        return { "\"" + r.label() + "\" was already " + ( aUndo ? "undone" : "redone" )
+                 + " (in the editor): all " + std::to_string( already )
+                 + " part(s) are already there; nothing changed\n" + renderHistory( r ) };
+
     if( !r.ok() )   // the entry was there, but everything in it had been changed by someone else
     {
-        std::string why;
+        std::string t = std::string( "did not " ) + verb + " \"" + r.label() + "\": "
+                        + std::to_string( res.missing_size() )
+                        + " part(s) were changed since (by the user or another edit) and are left as is: "
+                        + changedList();
 
-        for( const std::string& m : r.result().missing() )
-            why += ( why.empty() ? "" : "; " ) + m;
+        if( already > 0 )
+            t += "; " + std::to_string( already ) + " other part(s) are already in place";
 
-        return { std::string( "did not " ) + verb + " \"" + r.label() + "\": " + why + "\n"
-                 + renderHistory( r ) };
+        return { t + "\n" + renderHistory( r ) };
     }
 
-    return { std::string( aUndo ? "undid: " : "redid: " ) + r.label() + "\n" + renderMoveResult( r.result() )
-             + renderHistory( r ) };
+    std::string t = std::string( aUndo ? "undid: " : "redid: " ) + r.label() + "\n";
+
+    if( !res.missing().empty() )
+        t += "  left as is (changed since): " + changedList() + "\n";
+
+    if( already > 0 )
+        t += "  " + std::to_string( already ) + " part(s) were already in place\n";
+
+    kb::MoveResponse shown = res;   // the changed parts are listed above, not as "not found"
+    shown.clear_missing();
+    return { t + renderMoveResult( shown ) + renderHistory( r ) };
 }
 
 
@@ -963,9 +1054,24 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        schema( { { "refs", refs } }, { "refs" } ),
                        [&aIpc]( const json& a ) { return deleteFootprints( aIpc, a ); } } );
 
+    tools.push_back( { "delete_tracks",
+                       "Delete routing (tracks, arcs, vias) as one undoable edit, e.g. before auto_place "
+                       "on a routed board. all: every track; nets: by net name; refs: the copper running "
+                       "from these parts' pads up to the next pad (rip up their connections); region: "
+                       "[x0, y0, x1, y1] mm, anything crossing it. Locked tracks stay unless include_locked. "
+                       "Zones are not touched (refill_zones afterwards). Returns the new unrouted count.",
+                       schema( { { "all", { { "type", "boolean" } } },
+                                 { "nets", refs },
+                                 { "refs", refs },
+                                 { "region", { { "type", "array" }, { "items", { { "type", "number" } } } } },
+                                 { "include_locked", { { "type", "boolean" } } },
+                                 { "keep_vias", { { "type", "boolean" } } } } ),
+                       [&aIpc]( const json& a ) { return deleteTracks( aIpc, a ); } } );
+
     tools.push_back( { "undo",
-                       "Undo the last KiCadD edit (move/rotate/flip/add/delete), restoring the exact previous "
-                       "state. Returns what was undone, new positions and local DRC.",
+                       "Undo the last KiCadD edit (move/rotate/flip/add/delete/auto_place/delete_tracks), restoring the exact previous "
+                       "state. Parts the user changed since are left alone; an edit the user already undid "
+                       "in the editor (Ctrl+Z) is reported as such. Returns what was undone, new positions and local DRC.",
                        schema( json::object() ),
                        [&aIpc]( const json& ) { return history( aIpc, true ); } } );
 

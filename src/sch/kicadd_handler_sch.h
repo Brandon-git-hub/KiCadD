@@ -12,12 +12,15 @@
 
 #pragma once
 
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include <api/api_handler.h>
+#include <lib_id.h>
+#include <lib_symbol.h>
 #include <sch_label.h>
 #include <kicadd/schematic.pb.h>
 
@@ -32,6 +35,7 @@ class SCH_SHEET;
 class SCH_SHEET_PATH;
 class SCH_SYMBOL;
 class SCHEMATIC;
+class SCH_REFERENCE_LIST;
 
 
 class KICADD_HANDLER_SCH : public API_HANDLER
@@ -72,6 +76,28 @@ private:
 
     HANDLER_RESULT<kicadd::schematic::SchSheetResponse>
     handleAddSheet( const HANDLER_CONTEXT<kicadd::schematic::SchAddSheet>& aCtx );
+
+    HANDLER_RESULT<kicadd::schematic::SchPartResponse>
+    handleMove( const HANDLER_CONTEXT<kicadd::schematic::SchMove>& aCtx );
+
+    HANDLER_RESULT<kicadd::schematic::SchWireResponse>
+    handleWire( const HANDLER_CONTEXT<kicadd::schematic::SchWire>& aCtx );
+
+    HANDLER_RESULT<kicadd::schematic::SchErcResponse>
+    handleRunErc( const HANDLER_CONTEXT<kicadd::schematic::SchRunErc>& aCtx );
+
+    HANDLER_RESULT<kicadd::schematic::RegisterLibraryResponse>
+    handleRegisterLibrary( const HANDLER_CONTEXT<kicadd::schematic::RegisterLibrary>& aCtx );
+
+    /// A power symbol for net @a aNet ("GND", "+3V3"): the project's power library if it has
+    /// one, else made here (KiCadD ships no libraries): a ground or a supply shape.
+    const LIB_SYMBOL* powerSymbol( const std::string& aNet, LIB_ID& aId );
+
+    /// A power symbol instance for @a aNet with its pin at @a aPos, pointing along @a aOut
+    /// (away from what it connects to), annotated #PWRnn against @a aPowerRefs (the power
+    /// symbols there are, plus those added in this commit). Not yet on the screen.
+    SCH_SYMBOL* newPowerSymbol( const std::string& aNet, const VECTOR2I& aPos, const VECTOR2I& aOut,
+                                const SCH_SHEET_PATH& aSheet, SCH_REFERENCE_LIST& aPowerRefs );
 
     /// Sheet symbols named @a aName (or with that path), with the path of the sheet they sit on.
     std::vector<std::pair<SCH_SHEET*, SCH_SHEET_PATH>> findSheetSymbols( const std::string& aName );
@@ -116,4 +142,7 @@ private:
     void announce( const wxString& aWhat ) const;
 
     std::shared_ptr<SCH_CONTEXT> m_context;
+
+    /// Power symbols made here, by net name (the instances copy them)
+    std::map<std::string, std::unique_ptr<LIB_SYMBOL>> m_powerSymbols;
 };

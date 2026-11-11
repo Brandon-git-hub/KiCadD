@@ -164,6 +164,29 @@ def main():
         check(" 69 parts" in t and "2 sheet(s)" in t and "SHEET Agent" not in t,
               "user Ctrl+Z twice: part and sheet gone: " + t.splitlines()[0][-45:])
 
+        print("[3c] power symbol, sch_move, sch_wire, run_erc in the editor; Ctrl+Z")
+        err, t = mcp.tool("sch_add_part", {"lib_id": "pic_programmer:R", "value": "1k", "footprint": FOOTPRINT,
+                                           "x": 140, "y": 200})
+        m3 = re.match(r"added (R\d+) ", t)
+        r3 = m3.group(1) if m3 else None
+        err, t = mcp.tool("sch_connect", {"nets": {"GND": [f"{r3}.2"], "AGENT_N": [f"{r3}.1"]}, "power": ["GND"]})
+        check(not err and t.startswith("2 pin(s) connected"), "connected with a GND power symbol: " + t[:50])
+        err, n1 = mcp.tool("sch_netlist", {"net": "GND"})
+        check(f"{r3}.2" in n1, f"{r3}.2 on GND")
+        err, t = mcp.tool("sch_move", {"ref": r3, "dx": 10.16, "rotation": 90})
+        err2, n2 = mcp.tool("sch_netlist", {"net": "GND"})
+        check(not err and f"{r3}.2" in n2 and "@" in t, "moved and turned, still on GND: " + t.splitlines()[0][:70])
+        err, t = mcp.tool("sch_wire", {"points": [[152.4, 190.5], [165.1, 190.5]]})
+        check(not err and "1 segment" in t, "a wire: " + t.splitlines()[0][:70])
+        err, t = mcp.tool("run_erc")
+        check(not err and t.startswith("ERC:") and "footprint_link_issues" not in t, "run_erc: " + t.splitlines()[0][:90])
+        for _ in range(4):
+            canvas_keys(sch_win, "ctrl+z")
+            time.sleep(1)
+        err, t = mcp.tool("sch_summary")
+        err2, n3 = mcp.tool("sch_netlist", {"net": "GND"})
+        check(" 69 parts" in t and f"{r3}." not in n3, "four Ctrl+Z: wire, move, connection, part gone: " + t.splitlines()[0][-30:])
+
         print("[4] user drawing a wire: agent edits wait")
         canvas_keys(sch_win, "w")
         time.sleep(1)

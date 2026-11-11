@@ -3,6 +3,9 @@
     (refused as busy; kicadd-mcp retries busy for up to 10 s) and lands after the placement
  2. it finishes and is applied (one undo entry)
  3. a run during which the board changes (refill_zones, upstream API) moves nothing
+ 4. the agent's edit undone in the editor (Ctrl+Z): the agent's undo says so, moves nothing
+ 5. agent add, agent undo, then Ctrl+Z in the editor: the footprint comes back (the editor's
+    undo still owns it), the editor keeps running
 
 usage: python3 -I desktop_autoplace_e2e.py --build BUILD_DIR --demos DEMOS_DIR --work DIR [--display :58]
 
@@ -49,7 +52,7 @@ try:
         t = time.time(); box["r"] = agent.tool("auto_place", args); box["dt"] = time.time() - t
 
     print("[1] while auto_place runs")
-    box = {}; th = threading.Thread(target=run_bg, args=({"all": True}, box)); th.start()
+    box = {}; th = threading.Thread(target=run_bg, args=({"all": True, "force": True}, box)); th.start()
     time.sleep(2.0)
     lat = []
     for _ in range(5):
@@ -68,12 +71,41 @@ try:
     check(not err and "auto-place" in s, "second undo: the placement")
 
     print("[3] the board changes meanwhile")
-    box = {}; th = threading.Thread(target=run_bg, args=({"all": True}, box)); th.start()
+    box = {}; th = threading.Thread(target=run_bg, args=({"all": True, "force": True}, box)); th.start()
     time.sleep(1.5)
     err, z = other.tool("refill_zones"); print("       refill_zones:", z.splitlines()[0][:80] if z else z)
     th.join()
     err, t = box["r"]
     check(err and "board changed" in t, f"nothing moved: {t[:100]!r}")
+
+    def editor_keys(k):
+        w = xs("search", "--onlyvisible", "--name", "pic_programmer")
+        subprocess.run(["xdotool", "windowfocus", "--sync", w[0]], env=env)
+        subprocess.run(["xdotool", "mousemove", "--sync", "800", "500"], env=env)
+        subprocess.run(["xdotool", "key", "--clearmodifiers", k], env=env); time.sleep(1.5)
+
+    def fp_count():
+        err, s = other.tool("board_summary")
+        return int(s.split("footprints=")[1].split()[0])
+
+    print("[4] the agent's move undone in the editor")
+    err, m = other.tool("move_footprints", {"refs": ["R1"], "dx": 2, "dy": 0})
+    pos = m.splitlines()[0]
+    editor_keys("ctrl+z")
+    err, q = other.tool("query_area", {"x": 0, "y": 0, "radius": 1000, "kinds": ["footprint"]})
+    err, u = other.tool("undo"); print("       undo:", u.splitlines()[0][:110])
+    check(not err and "already undone" in u, "the agent's undo: already undone in the editor")
+
+    print("[5] agent add, agent undo, editor Ctrl+Z")
+    n0 = fp_count()
+    err, t = other.tool("add_footprint", {"like": "C1", "ref": "C?", "x": 120, "y": 60})
+    check(not err and fp_count() == n0 + 1, "added")
+    err, u = other.tool("undo"); check(not err and fp_count() == n0, "agent undo removes it")
+    editor_keys("ctrl+z")
+    check(gui.poll() is None, "editor still running after Ctrl+Z")
+    check(fp_count() == n0 + 1, "Ctrl+Z put the footprint back")
+    editor_keys("ctrl+z")
+    check(gui.poll() is None and fp_count() == n0, "Ctrl+Z again takes the add back")
     agent.close(); other.close()
 finally:
     gui.terminate()

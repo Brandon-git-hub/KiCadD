@@ -201,7 +201,7 @@ def main():
             raise SkipRest()
         print("[3] agent undo does not overwrite the user")
         err, text = mcp.tool("undo")
-        check("changed since" in text and near(pos("U3"), u3),
+        check("already undone (in the editor)" in text and near(pos("U3"), u3),
               "agent undo left U3 alone: " + " ".join(text.split())[:120])
 
         if a.upto < 4:

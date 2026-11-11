@@ -48,6 +48,7 @@ set( KICADD_PCB_SRCS
     ${KICADD_DIR}/src/lcsc/kicadd_lcsc.cpp
     ${KICADD_DIR}/src/pcb/kicadd_lcsc_tool.cpp
     ${KICADD_DIR}/src/pcb/kicadd_autoplace.cpp
+    ${KICADD_DIR}/src/common/kicadd_libtable.cpp
     )
 set( KICADD_INCLUDE_DIRS ${KICADD_DIR}/src ${KICADD_CPP_OUT} )
 # eeschema kiface: LCSC symbols (M4b), reached from pcbnew through KIFACE_KICADD_LCSC_SYMBOL
@@ -55,6 +56,7 @@ set( KICADD_SCH_SRCS
     ${KICADD_DIR}/src/sch/kicadd_lcsc_sym.cpp
     ${KICADD_DIR}/src/sch/kicadd_lcsc_sch_tool.cpp
     ${KICADD_DIR}/src/sch/kicadd_handler_sch.cpp
+    ${KICADD_DIR}/src/common/kicadd_libtable.cpp
     )
 
 # Python client stubs (for tests / plugins; no SWIG anywhere).

@@ -142,6 +142,10 @@ message MoveResponse
   repeated string       added   = 10;          // refs added by this edit
   string                source  = 11;          // AddFootprint: where the footprint came from
   repeated string       created_nets = 12;     // AddFootprint: nets that did not exist before
+  int32                 tracks_removed = 14;   // DeleteTracks: tracks / arcs / vias removed
+  int32                 tracks_locked  = 15;   // DeleteTracks: matched but locked, kept
+  int32                 already_there = 13;    // Undo/Redo: footprints already in the target state
+                                               // (undone / redone in the editor), left alone
 }
 
 // Remove footprints (and their pads from connectivity). Tracks and vias are left in place,
@@ -150,6 +154,21 @@ message MoveResponse
 message DeleteFootprints
 {
   repeated string refs = 1;
+}
+
+// Remove tracks, arcs and vias (the routing), e.g. before auto_place on a routed board.
+// One of: all; nets (by name); region (any part of the track inside); refs (connected to a pad
+// of these footprints). Locked ones stay unless include_locked. Undoable. Zones are not touched
+// (refill_zones afterwards). Returns MoveResponse (tracks_removed, unconnected).
+message DeleteTracks
+{
+  bool            all            = 1;
+  repeated string nets           = 2;
+  Point           region_min     = 3;
+  Point           region_max     = 4;
+  repeated string refs           = 5;
+  bool            include_locked = 6;
+  bool            keep_vias      = 7;
 }
 
 // Place a new footprint in memory.
@@ -239,6 +258,10 @@ message AutoPlace
   // AutoPlaceStatus until running is false (the result is applied on that call). Other edits
   // are refused as busy meanwhile; if the board changes anyway, nothing is moved.
   bool   background     = 19;
+
+  // Apply the result even when it is worse than the parts' current places (every movable part
+  // already on the board, not overlapping): by default those are kept and nothing moves.
+  bool   force          = 20;
 }
 
 // Returns AutoPlaceResponse: running (progress), or the finished result, applied now
@@ -304,6 +327,9 @@ message AutoPlaceResponse
   bool   running        = 22;     // background: still running (ask AutoPlaceStatus again)
   bool   cancelled      = 23;     // stopped by AutoPlaceStatus cancel: nothing moved
   string progress       = 24;     // while running: "placing, 30/62 parts", "improving, 2 pass(es) done"
+  bool   kept_current   = 25;     // the current placement was better (shorter, or all parts fit):
+                                  // nothing moved; hpwl_after_mm is what the new one would have had
+  int32  zones          = 26;     // copper zones on the board: refill them before run_drc
 }
 
 message FetchLcsc

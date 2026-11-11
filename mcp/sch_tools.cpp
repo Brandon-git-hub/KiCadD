@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <map>
 #include <thread>
 
 #include <kicadd/schematic.pb.h>
@@ -254,19 +255,27 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "(a hierarchical label inside, a sheet pin of that name on the sheet's symbol: inputs on "
             "the left, the rest on the right); on the parent the sheet pin is SHEET.PIN, like a part's, "
             "e.g. {\"+5V\": [\"Power.VOUT\", \"U2.3\"]}. global uses global labels instead (every "
-            "sheet sees the net by name).",
+            "sheet sees the net by name). Nets in power get a power symbol instead of a label (GND, "
+            "+3V3, VCC: global on every sheet, the usual way for supplies; ground-like names get a "
+            "ground symbol).",
             obj( { { "nets", { { "type", "object" },
                                { "additionalProperties", pinList },
                                { "description", "net name -> pins" } } },
                    { "global", { { "type", "boolean" } } },
                    { "ports", { { "type", "array" }, { "items", { { "type", "string" } } },
                                 { "description", "nets that are ports of their sheet: \"VOUT\" or \"VOUT:output\" "
-                                                 "(input, output, bidirectional, tri_state, passive)" } } } },
+                                                 "(input, output, bidirectional, tri_state, passive)" } } },
+                   { "power", { { "type", "array" }, { "items", { { "type", "string" } } },
+                                { "description", "nets connected with a power symbol, e.g. [\"GND\", \"+3V3\"]" } } } },
                  { "nets" } ),
             [&aIpc]( const json& a )
             {
                 ks::SchConnect req;
                 req.set_global( a.value( "global", false ) );
+
+                for( const json& p : a.value( "power", json::array() ) )
+                    if( p.is_string() )
+                        req.add_power( p.get<std::string>() );
 
                 for( const json& p : a.value( "ports", json::array() ) )
                     if( p.is_string() )
@@ -532,8 +541,12 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "default: two-sided assembly costs more). Reports wire length before/after, how mixed "
             "the blocks are and how far the small passives (decaps, pull-ups) are from their IC pin. "
             "Existing tracks and vias are obstacles: on a routed board fewer parts find room, so "
-            "place before routing (right after sync_pcb), or delete the routing first. Runs beside "
-            "the editor (it stays responsive); if the board is changed meanwhile nothing is moved.",
+            "place before routing (right after sync_pcb), or delete_tracks first. Runs beside "
+            "the editor (it stays responsive); if the board is changed meanwhile nothing is moved. "
+            "When every part is already placed (no overlaps, no rules), a result that is not better "
+            "than the current placement is not applied (force applies it anyway). Moving parts "
+            "leaves the board's tracks behind and copper zones in their old shape: refill_zones "
+            "before run_drc.",
             obj( { { "refs", { { "type", "array" }, { "items", { { "type", "string" } } } } },
                    { "all", { { "type", "boolean" } } },
                    { "fixed", { { "type", "array" }, { "items", { { "type", "string" } } } } },
@@ -552,6 +565,8 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                                      { "description", "seconds for improving the wire length after every part "
                                                       "has a legal spot (default 10, -1 no limit); the "
                                                       "placement is legal either way" } } },
+                   { "force", { { "type", "boolean" },
+                                { "description", "apply the result even when the current placement is better" } } },
                    { "measure_only", { { "type", "boolean" },
                                        { "description", "move nothing, report the numbers for the parts as they are" } } },
                    { "rules", { { "type", "object" },
@@ -605,6 +620,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
 
                 req.set_back_decaps( a.value( "back_decaps", false ) );
                 req.set_measure_only( a.value( "measure_only", false ) );
+                req.set_force( a.value( "force", false ) );
 
                 if( a.contains( "time_limit" ) && a["time_limit"].is_number() )
                     req.set_time_limit( a["time_limit"].get<double>() );
@@ -733,7 +749,9 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                                  + "); nothing was moved" );
 
                 std::string t = a.value( "measure_only", false ) ? std::string( "measured (nothing moved)" )
-                                                                 : "placed " + std::to_string( r.moved() ) + " part(s)";
+                                : r.kept_current() ? std::string( "kept the current placement (nothing moved): the new one "
+                                                                  "was not better" )
+                                                   : "placed " + std::to_string( r.moved() ) + " part(s)";
 
                 if( r.moved() )
                 {
@@ -743,7 +761,8 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                         t += " " + ref;
                 }
 
-                t += "; wire length (half-perimeter) " + num( r.hpwl_before_mm() ) + " -> " + num( r.hpwl_after_mm() )
+                t += std::string( r.kept_current() ? "; wire length (half-perimeter) now " : "; wire length (half-perimeter) " )
+                     + num( r.hpwl_before_mm() ) + ( r.kept_current() ? ", new one " : " -> " ) + num( r.hpwl_after_mm() )
                      + " mm";
 
                 if( r.decaps() > 0 )
@@ -775,12 +794,28 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                     for( const std::string& ref : r.unplaced() )
                         t += " " + ref;
 
-                    t += " (left where they were; the others keep clear of them)";
+                    t += r.kept_current() ? " (in the new one)" : " (left where they were; the others keep clear of them)";
 
                     if( r.track_obstacles() > 0 )
                         t += "\n  the board's " + std::to_string( r.track_obstacles() )
-                             + " tracks/vias are obstacles: delete the routing first, or place right "
+                             + " tracks/vias are obstacles: delete_tracks all=true first, or place right "
                                "after sync_pcb";
+                }
+
+                if( r.kept_current() )
+                    t += "\n  force=true applies it anyway";
+
+                if( r.moved() > 0 && ( r.track_obstacles() > 0 || r.zones() > 0 ) )
+                {
+                    t += "\n  the moved parts left";
+
+                    if( r.track_obstacles() > 0 )
+                        t += " their tracks behind (reroute, or delete_tracks refs=[...])";
+
+                    if( r.zones() > 0 )
+                        t += std::string( r.track_obstacles() > 0 ? " and" : "" ) + " the "
+                             + std::to_string( r.zones() ) + " copper zone(s) in their old shape: "
+                             "refill_zones before run_drc";
                 }
 
                 if( r.rule_violations_size() )
@@ -799,7 +834,200 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                         t += " " + ref;
                 }
 
-                return TOOL_RESULT{ t, r.moved() == 0 && r.unplaced_size() > 0 && !a.value( "measure_only", false ) };
+                return TOOL_RESULT{ t, r.moved() == 0 && r.unplaced_size() > 0 && !r.kept_current()
+                                               && !a.value( "measure_only", false ) };
+            } } );
+
+    aTools.push_back( { "sch_move",
+            "Move and/or rotate a placed part on the schematic: x/y (mm, the new anchor) or dx/dy, "
+            "rotation 0/90/180/270. Its wire stubs, net labels, power symbols and no-connect flags go "
+            "with it (re-drawn on the side each pin now faces), so its connections stay; other wires "
+            "ending on its pins are dragged along. unit picks one unit of a multi-unit part (needed "
+            "with x/y; dx/dy moves all units). Returns the part's pins at their new place.",
+            obj( { { "ref", { { "type", "string" } } },
+                   { "x", { { "type", "number" } } },
+                   { "y", { { "type", "number" } } },
+                   { "dx", { { "type", "number" } } },
+                   { "dy", { { "type", "number" } } },
+                   { "rotation", { { "type", "integer" }, { "enum", { 0, 90, 180, 270 } } } },
+                   { "unit", { { "type", "integer" } } } },
+                 { "ref" } ),
+            [&aIpc]( const json& a )
+            {
+                ks::SchMove req;
+                req.set_ref( str( a, "ref" ) );
+                req.set_unit( a.value( "unit", 0 ) );
+
+                if( a.contains( "x" ) && a["x"].is_number() )
+                    req.set_x( a["x"].get<double>() );
+
+                if( a.contains( "y" ) && a["y"].is_number() )
+                    req.set_y( a["y"].get<double>() );
+
+                if( a.contains( "dx" ) && a["dx"].is_number() )
+                    req.set_dx( a["dx"].get<double>() );
+
+                if( a.contains( "dy" ) && a["dy"].is_number() )
+                    req.set_dy( a["dy"].get<double>() );
+
+                if( a.contains( "rotation" ) && a["rotation"].is_number() )
+                    req.set_rotation( a["rotation"].get<int>() );
+
+                if( !req.has_x() && !req.has_y() && req.dx() == 0 && req.dy() == 0 && !req.has_rotation() )
+                    return fail( "say where: x/y, dx/dy or rotation" );
+
+                ks::SchPartResponse r;
+                std::string         err;
+
+                if( !aIpc.Call( req, r, err ) )
+                    return fail( err );
+
+                std::string t = "moved " + symbolLine( r.symbol() ) + pinLines( r.symbol() );
+
+                if( !r.note().empty() )
+                    t += "\n  " + r.note();
+
+                return TOOL_RESULT{ t, false };
+            } } );
+
+    aTools.push_back( { "sch_wire",
+            "Draw a wire through points [[x, y], ...] (mm, snapped to the 1.27 mm grid), one segment "
+            "per pair; give corner points for right angles. A point on a pin, label or wire connects "
+            "there: junction dots are added where three or more meet and wires it lands on are split. "
+            "Use it for readable schematics; sch_connect (stub + label) needs no routing. Returns the "
+            "net the wire is on and its pins.",
+            obj( { { "points", { { "type", "array" },
+                                 { "items", { { "type", "array" }, { "items", { { "type", "number" } } } } } } },
+                   { "sheet", { { "type", "string" } } } },
+                 { "points" } ),
+            [&aIpc]( const json& a )
+            {
+                ks::SchWire req;
+                req.set_sheet( str( a, "sheet" ) );
+
+                for( const json& p : a.value( "points", json::array() ) )
+                {
+                    if( !p.is_array() || p.size() != 2 || !p[0].is_number() || !p[1].is_number() )
+                        return fail( "points: [[x, y], [x, y], ...] in mm" );
+
+                    ks::SchPoint* pt = req.add_points();
+                    pt->set_x( p[0].get<double>() );
+                    pt->set_y( p[1].get<double>() );
+                }
+
+                ks::SchWireResponse r;
+                std::string         err;
+
+                if( !aIpc.Call( req, r, err ) )
+                    return fail( err );
+
+                std::string t = std::to_string( r.segments() ) + " segment(s), " + std::to_string( r.junctions() )
+                                + " junction(s)";
+
+                if( !r.net().empty() )
+                {
+                    t += "; net " + r.net() + ":";
+
+                    for( const std::string& p : r.pins() )
+                        t += " " + p;
+                }
+
+                if( !r.note().empty() )
+                    t += "\n  " + r.note();
+
+                return TOOL_RESULT{ t, false };
+            } } );
+
+    aTools.push_back( { "run_erc",
+            "Electrical Rules Check on the schematic as it is now (unsaved edits included): pins of "
+            "different drivers on one net, power inputs not driven (a PWR_FLAG or a regulator output "
+            "is missing), unconnected pins, labels on one pin only, duplicate references... Errors "
+            "listed, warnings counted (warnings=true lists them too).",
+            obj( { { "warnings", { { "type", "boolean" } } } } ),
+            [&aIpc]( const json& a )
+            {
+                ks::SchRunErc req;
+                req.set_include_warnings( a.value( "warnings", false ) );
+
+                ks::SchErcResponse r;
+                std::string        err;
+
+                if( !aIpc.Call( req, r, err ) )
+                    return fail( err );
+
+                std::string t = "ERC: " + std::to_string( r.errors() ) + " error(s), " + std::to_string( r.warnings() )
+                                + " warning(s)";
+
+                std::map<std::string, int> byType;
+
+                for( const ks::SchErcViolation& v : r.violations() )
+                    byType[v.type()]++;
+
+                if( !byType.empty() )
+                {
+                    t += " (";
+                    bool first = true;
+
+                    for( const auto& [type, n] : byType )
+                    {
+                        t += std::string( first ? "" : ", " ) + type + " " + std::to_string( n );
+                        first = false;
+                    }
+
+                    t += ")";
+                }
+
+                int shown = 0;
+
+                for( const ks::SchErcViolation& v : r.violations() )
+                {
+                    if( ++shown > 40 )
+                    {
+                        t += "\n  ... " + std::to_string( r.violations_size() - 40 ) + " more";
+                        break;
+                    }
+
+                    t += "\n  " + v.severity() + " " + v.type() + ": " + v.description();
+
+                    if( !v.sheet().empty() && v.sheet() != "/" )
+                        t += " [" + v.sheet() + "]";
+
+                    for( const std::string& item : v.items() )
+                        t += "\n    " + item;
+                }
+
+                if( !r.ignored().empty() )
+                    t += "\n  ignored by the project's ERC settings: " + std::to_string( r.ignored_size() ) + " check(s)";
+
+                return TOOL_RESULT{ t, false };
+            } } );
+
+    aTools.push_back( { "lib_register",
+            "Add a library that is already on disk to the project: a symbol library (.kicad_sym) to "
+            "sym-lib-table, a footprint library (.pretty folder) to fp-lib-table, so sch_add_part / "
+            "add_footprint can use \"Nickname:Item\". path absolute or relative to the project; nickname "
+            "defaults to the file name.",
+            obj( { { "path", { { "type", "string" } } }, { "nickname", { { "type", "string" } } } }, { "path" } ),
+            [&aIpc]( const json& a )
+            {
+                ks::RegisterLibrary req;
+                req.set_path( str( a, "path" ) );
+                req.set_nickname( str( a, "nickname" ) );
+
+                ks::RegisterLibraryResponse r;
+                std::string                 err;
+
+                if( !aIpc.Call( req, r, err ) )
+                    return fail( err );
+
+                std::string t = std::string( r.added() ? "added " : "" ) + r.nickname() + " -> " + r.uri() + " in "
+                                + r.table() + " (" + std::to_string( r.items() )
+                                + ( r.table() == "sym-lib-table" ? " symbol(s))" : " footprint(s))" );
+
+                if( !r.note().empty() )
+                    t += "\n  " + r.note();
+
+                return TOOL_RESULT{ t, false };
             } } );
 
     aTools.push_back( { "sch_save",

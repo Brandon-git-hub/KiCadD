@@ -540,6 +540,56 @@ index eae8cfde..9b74f316 100644
  
      return true;
  }
+diff --git a/eeschema/erc/erc.cpp b/eeschema/erc/erc.cpp
+index a672c9e6..f6c7f845 100644
+--- a/eeschema/erc/erc.cpp
++++ b/eeschema/erc/erc.cpp
+@@ -2973,6 +2973,21 @@ int ERC_TESTER::TestLibSymbolIssues()
+                 const wxString libName = aSource.library.GetLibNickname();
+                 std::optional<const LIBRARY_TABLE_ROW*> optRow = manager.GetRow( LIBRARY_TABLE_TYPE::SYMBOL, libName );
+ 
++#ifdef KICADD
++                // KiCadD ships none of KiCad's standard libraries and makes its own power symbols
++                // (power:GND without a power library): a symbol from one of them (no table row, or
++                // a row pointing into ${KICADn_SYMBOL_DIR} that isn't there) can't be compared, and
++                // saying so for every symbol buries the real findings. Libraries that exist (the
++                // project's own) are still checked. As the footprint check in DRC.
++                {
++                    const bool stock = optRow && ( *optRow )->URI().StartsWith( wxS( "${KICAD" ) )
++                                       && ( *optRow )->URI().Contains( wxS( "_SYMBOL_DIR}" ) );
++
++                    if( !optRow || ( stock && !adapter->IsLibraryLoaded( libName ) ) )
++                        return issues;
++                }
++#endif
++
+                 if( !optRow || ( *optRow )->Disabled() )
+                 {
+                     if( m_settings.IsTestEnabled( ERCE_LIB_SYMBOL_ISSUES ) )
+@@ -3164,6 +3179,23 @@ int ERC_TESTER::TestFootprintLinkIssues( KIFACE* aCvPcb, PROJECT* aProject )
+             const wxString fpName = fpID.GetLibItemName();
+             const int ret = linkTester( source.footprint, aProject );
+ 
++#ifdef KICADD
++            // No KiCad standard libraries in KiCadD: a footprint from one (no table row, or a row
++            // into ${KICADn_FOOTPRINT_DIR} that isn't there) is not a finding. As in DRC.
++            if( ret != 0 )
++            {
++                std::optional<const LIBRARY_TABLE_ROW*> row =
++                        Pgm().GetLibraryManager().GetRow( LIBRARY_TABLE_TYPE::FOOTPRINT, libName );
++                const bool stock = row && ( *row )->URI().StartsWith( wxS( "${KICAD" ) )
++                                   && ( *row )->URI().Contains( wxS( "_FOOTPRINT_DIR}" ) );
++                std::optional<LIBRARY_MANAGER_ADAPTER*> fpAdapter =
++                        Pgm().GetLibraryManager().Adapter( LIBRARY_TABLE_TYPE::FOOTPRINT );
++
++                if( !row || ( stock && ( !fpAdapter || !( *fpAdapter )->IsLibraryLoaded( libName ) ) ) )
++                    continue;
++            }
++#endif
++
+             if( ret == KIFACE_TEST_FOOTPRINT_LINK_NO_LIBRARY )
+             {
+                 msg.Printf( _( "The current configuration does not include the footprint library '%s'" ),
 diff --git a/eeschema/files-io.cpp b/eeschema/files-io.cpp
 index a219ae94..809b1645 100644
 --- a/eeschema/files-io.cpp

@@ -125,6 +125,11 @@ struct OPTIONS
 
     PROGRESS* progress = nullptr;  ///< optional
 
+    /// Every movable part already on the board without overlaps, and no agent rules: keep that
+    /// placement when the new one is not better (more parts left out, or longer wire length).
+    bool keepBetterStart = false;
+    bool startOverlaps = false;    ///< the movable parts' courtyards overlap where they are now
+
     std::vector<NEAR_RULE> nearRules;
 };
 
@@ -149,6 +154,8 @@ struct RESULT
     int                      refinePasses = 0;  ///< improving passes run (the last one may be cut short)
     bool                     timedOut = false;  ///< stopped improving at OPTIONS::timeLimit
     bool                     cancelled = false; ///< PROGRESS::cancel: the positions are not usable
+    bool                     startUsable = false; ///< every movable part on the board, no overlaps, no rules
+    bool                     keptStart = false;   ///< OPTIONS::keepBetterStart: the start won, parts unchanged
 };
 
 /**

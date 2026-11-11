@@ -147,6 +147,9 @@ message SchConnect
 {
   repeated SchPinNet links = 1;
   bool global = 2;
+  // Nets connected with a power symbol at the stub end instead of a label ("GND", "+3V3"):
+  // global across sheets, as in KiCad. Ground-like names get a ground symbol.
+  repeated string power = 4;
   // Nets that are ports of the pins' sheet: a hierarchical label inside instead of a local one,
   // and a sheet pin of the same name on the sheet's symbol on the parent ("VOUT" or
   // "VOUT:output"; directions input, output, bidirectional, tri_state, passive)
@@ -197,4 +200,91 @@ message SchDeleteParts
 message SchSave
 {
   bool only_headless = 1;   // in the Schematic Editor do nothing (the file is the user's; sync_pcb reads the editor)
+}
+
+// Move and/or rotate a placed part. Its stubs, net labels and no-connect flags go with it (a
+// stub is re-drawn on the side the pin now faces); other wires ending on a pin are dragged
+// along (they may end up diagonal). unit 0 = every unit of the part (only with dx/dy).
+// Returns SchPartResponse (the part at its new place, with its pins)
+message SchMove
+{
+  string ref               = 1;
+  int32  unit              = 2;
+  optional double x        = 3;   // new anchor, mm (snapped to the 1.27 mm grid)
+  optional double y        = 4;
+  double dx                = 5;   // or relative, mm
+  double dy                = 6;
+  optional int32 rotation  = 7;   // new rotation: 0, 90, 180, 270
+}
+
+message SchPoint
+{
+  double x = 1;   // mm
+  double y = 2;
+}
+
+// Draw a wire through points (mm, snapped to the grid): one segment per pair. A point on a pin,
+// a label, a wire end or the middle of a wire connects there (junction dots added where three
+// or more wires meet, a wire it lands on is split). sheet as in SchAddPart.
+// Returns SchWireResponse
+message SchWire
+{
+  repeated SchPoint points = 1;
+  string sheet             = 2;
+}
+
+message SchWireResponse
+{
+  int32  segments  = 1;
+  int32  junctions = 2;
+  string net       = 3;   // the net the wire is on afterwards ("" when on none)
+  repeated string pins = 4;   // pins on that net, "R1.2"
+  string history_label = 5;
+  string note      = 6;
+}
+
+// Run the Electrical Rules Check on the schematic as it is in memory (unsaved edits included).
+// Returns SchErcResponse
+message SchRunErc
+{
+  bool include_warnings = 1;   // default: errors only (warnings counted)
+}
+
+message SchErcViolation
+{
+  string severity    = 1;   // error, warning
+  string type        = 2;   // ERC key, e.g. pin_not_driven
+  string description = 3;
+  repeated string items = 4;   // "Symbol U1 Pin 3 [VCC, Power input, Line]"
+  string sheet       = 5;
+  double x           = 6;   // mm, the first item
+  double y           = 7;
+}
+
+message SchErcResponse
+{
+  int32 errors   = 1;
+  int32 warnings = 2;
+  repeated SchErcViolation violations = 3;
+  repeated string ignored = 4;   // checks set to ignore in the project's ERC settings
+}
+
+// Add a library that is already on disk to the project's library table: a symbol library
+// (.kicad_sym) to sym-lib-table, a footprint library (.pretty directory) to fp-lib-table.
+// path absolute or relative to the project (stored as ${KIPRJMOD}/... when inside it).
+// Returns RegisterLibraryResponse
+message RegisterLibrary
+{
+  string path     = 1;
+  string nickname = 2;   // default: the file / directory name without extension
+}
+
+message RegisterLibraryResponse
+{
+  string nickname = 1;
+  string table    = 2;   // sym-lib-table or fp-lib-table
+  string uri      = 3;
+  bool   added    = 4;   // false: a row of that name was there already (same uri: nothing to do)
+  int32  items    = 5;   // symbols / footprints in it
+  string note     = 6;
 }

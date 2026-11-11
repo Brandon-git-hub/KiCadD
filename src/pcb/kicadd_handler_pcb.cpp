@@ -220,6 +220,7 @@ KICADD_HANDLER_PCB::KICADD_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext ) 
     registerHandler<QueryNet, QueryResponse>( &KICADD_HANDLER_PCB::handleQueryNet );
     registerHandler<MoveDelta, MoveResponse>( &KICADD_HANDLER_PCB::handleMoveDelta );
     registerHandler<DeleteFootprints, MoveResponse>( &KICADD_HANDLER_PCB::handleDeleteFootprints );
+    registerHandler<DeleteTracks, MoveResponse>( &KICADD_HANDLER_PCB::handleDeleteTracks );
     registerHandler<AddFootprint, MoveResponse>( &KICADD_HANDLER_PCB::handleAddFootprint );
     registerHandler<FetchLcsc, FetchLcscResponse>( &KICADD_HANDLER_PCB::handleFetchLcsc );
     registerHandler<SyncFromSchematic, SyncFromSchematicResponse>( &KICADD_HANDLER_PCB::handleSyncFromSchematic );
@@ -1071,6 +1072,191 @@ KICADD_HANDLER_PCB::handleDeleteFootprints( const HANDLER_CONTEXT<DeleteFootprin
 
 
 HANDLER_RESULT<MoveResponse>
+KICADD_HANDLER_PCB::handleDeleteTracks( const HANDLER_CONTEXT<DeleteTracks>& aCtx )
+{
+    if( std::optional<ApiResponseStatus> wait = busy() )
+        return tl::unexpected( *wait );
+
+    BOARD* b = board();
+
+    if( !b )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
+
+    const DeleteTracks& req = aCtx.Request;
+    const bool          byRegion = req.has_region_min() && req.has_region_max();
+
+    if( !req.all() && req.nets().empty() && !byRegion && req.refs().empty() )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
+                                          "DeleteTracks needs all, nets, region or refs" ) );
+
+    MoveResponse                out;
+    std::set<const PCB_TRACK*>  match;
+    std::set<wxString>          nets;
+
+    for( const std::string& n : req.nets() )
+    {
+        if( b->FindNet( wxString::FromUTF8( n ) ) )
+            nets.insert( wxString::FromUTF8( n ) );
+        else
+            out.add_missing( "net " + n );
+    }
+
+    BOX2I region;
+
+    if( byRegion )
+    {
+        VECTOR2I a( req.region_min().x(), req.region_min().y() );
+        VECTOR2I c( req.region_max().x(), req.region_max().y() );
+        region = BOX2I( a, c - a );
+        region.Normalize();
+    }
+
+    for( PCB_TRACK* t : b->Tracks() )
+    {
+        if( req.all() || nets.count( t->GetNetname() ) || ( byRegion && t->HitTest( region, false ) ) )
+            match.insert( t );
+    }
+
+    // refs: the copper running from their pads, through tracks and vias, up to the next pad
+    if( !req.refs().empty() )
+    {
+        std::shared_ptr<CONNECTIVITY_DATA> conn = b->GetConnectivity();
+        std::vector<const BOARD_CONNECTED_ITEM*> todo;
+
+        for( const std::string& ref : req.refs() )
+        {
+            FOOTPRINT* fp = b->FindFootprintByReference( wxString::FromUTF8( ref ) );
+
+            if( !fp )
+            {
+                out.add_missing( ref );
+                continue;
+            }
+
+            for( const PAD* pad : fp->Pads() )
+                todo.push_back( pad );
+        }
+
+        std::set<const FOOTPRINT*> mine;
+
+        for( const BOARD_CONNECTED_ITEM* item : todo )
+            mine.insert( item->GetParentFootprint() );
+
+        while( !todo.empty() )
+        {
+            const BOARD_CONNECTED_ITEM* item = todo.back();
+            todo.pop_back();
+
+            // direct neighbours (CONNECTIVITY_DATA::GetConnectedItems gives the whole island)
+            std::vector<BOARD_CONNECTED_ITEM*> near;
+
+            if( const CN_CONNECTIVITY_ALGO::ITEM_MAP_ENTRY* entry = conn->GetConnectivityAlgo()->FindItemEntry( item ) )
+            {
+                for( const CN_ITEM* cn : entry->GetItems() )
+                {
+                    for( const CN_ITEM* other : cn->ConnectedItems() )
+                    {
+                        BOARD_CONNECTED_ITEM* parent = other->Parent();
+
+                        if( parent && parent != item && parent->Type() != PCB_ZONE_T
+                            && std::find( near.begin(), near.end(), parent ) == near.end() )
+                        {
+                            near.push_back( parent );
+                        }
+                    }
+                }
+            }
+
+            // a track that reaches another part's pad is the end of the connection: taken, but
+            // not followed further (else a GND tree would go all the way round the board)
+            if( item->Type() != PCB_PAD_T )
+            {
+                bool end = std::any_of( near.begin(), near.end(),
+                                        [&]( const BOARD_CONNECTED_ITEM* n )
+                                        {
+                                            return n->Type() == PCB_PAD_T && !mine.count( n->GetParentFootprint() );
+                                        } );
+
+                if( end )
+                    continue;
+            }
+
+            for( BOARD_CONNECTED_ITEM* next : near )
+            {
+                KICAD_T type = next->Type();
+
+                if( ( type == PCB_TRACE_T || type == PCB_ARC_T || type == PCB_VIA_T )
+                    && match.insert( static_cast<PCB_TRACK*>( next ) ).second )
+                {
+                    todo.push_back( next );
+                }
+            }
+        }
+    }
+
+    std::vector<PCB_TRACK*> targets;
+    int                     locked = 0;
+
+    for( PCB_TRACK* t : b->Tracks() )     // board order: the same every time
+    {
+        if( !match.count( t ) )
+            continue;
+
+        if( req.keep_vias() && t->Type() == PCB_VIA_T )
+            continue;
+
+        if( t->IsLocked() && !req.include_locked() )
+        {
+            locked++;
+            continue;
+        }
+
+        targets.push_back( t );
+    }
+
+    out.set_tracks_locked( locked );
+
+    if( targets.empty() )
+    {
+        std::shared_ptr<CONNECTIVITY_DATA> conn = b->GetConnectivity();
+        out.set_unconnected( static_cast<int>( conn->GetUnconnectedCountNoFlush( false ) ) );
+        return out;
+    }
+
+    HISTORY_ENTRY entry;
+    entry.label = "delete " + std::to_string( targets.size() ) + " track(s)/via(s)";
+
+    for( PCB_TRACK* t : targets )
+        entry.tracksRemoved.push_back( { nullptr, t->GetNetCode() > 0 ? t->GetNetname() : wxString() } );
+
+    runCommit(
+            [&]( BOARD_COMMIT& aCommit )
+            {
+                for( PCB_TRACK* t : targets )
+                    aCommit.Remove( t );
+
+                return std::vector<KIID>();
+            },
+            wxString::FromUTF8( "Agent: " + entry.label ), out );
+
+    // As with footprints: headless, the removed tracks are ours now; in the editor its undo
+    // list holds them, so the history keeps copies.
+    for( size_t i = 0; i < targets.size(); ++i )
+    {
+        PCB_TRACK* t = editorOwnsUndo() ? static_cast<PCB_TRACK*>( targets[i]->Clone() ) : targets[i];
+        t->SetNet( NETINFO_LIST::OrphanedItem() );
+        t->SetParent( nullptr );
+        entry.tracksRemoved[i].track.reset( t );
+    }
+
+    out.set_tracks_removed( (int) targets.size() );
+    out.set_history_label( entry.label );
+    record( std::move( entry ) );
+    return out;
+}
+
+
+HANDLER_RESULT<MoveResponse>
 KICADD_HANDLER_PCB::handleAddFootprint( const HANDLER_CONTEXT<AddFootprint>& aCtx )
 {
     if( std::optional<ApiResponseStatus> wait = busy() )
@@ -1406,18 +1592,41 @@ bool KICADD_HANDLER_PCB::applyHistory( const HISTORY_ENTRY& aEntry, bool aUndo, 
     std::vector<std::pair<FOOTPRINT*, const FP_STATE*>>    modifying;
     std::vector<const FP_SNAPSHOT*>                        adding;
 
+    // A footprint to remove that is gone, or one to put back that is there, was already taken
+    // care of (the editor's undo / redo of the agent's commit).
+    int alreadyDone = 0;
+
+    // Tracks deleted by the entry: undo puts them back, redo takes them out again.
+    std::vector<const TRACK_SNAPSHOT*> trackAdd;
+    std::vector<PCB_TRACK*>            trackRemove;
+
+    for( const TRACK_SNAPSHOT& snap : aEntry.tracksRemoved )
+    {
+        BOARD_ITEM* item = b->ResolveItem( snap.track->m_Uuid, true );
+        PCB_TRACK*  onBoard = item && ( item->Type() == PCB_TRACE_T || item->Type() == PCB_ARC_T
+                                        || item->Type() == PCB_VIA_T )
+                                      ? static_cast<PCB_TRACK*>( item ) : nullptr;
+
+        if( aUndo && !onBoard )
+            trackAdd.push_back( &snap );
+        else if( !aUndo && onBoard )
+            trackRemove.push_back( onBoard );
+        else
+            ++alreadyDone;
+    }
+
     for( const FP_SNAPSHOT& snap : toRemove )
     {
         if( FOOTPRINT* fp = resolve( snap.fp->m_Uuid ) )
             removing.push_back( fp );
         else
-            aOut.add_missing( snap.fp->GetReference().ToStdString() );
+            ++alreadyDone;
     }
 
     for( const FP_SNAPSHOT& snap : toAdd )
     {
         if( resolve( snap.fp->m_Uuid ) )
-            aOut.add_missing( snap.fp->GetReference().ToStdString() + " (already on the board)" );
+            ++alreadyDone;
         else
             adding.push_back( &snap );
     }
@@ -1440,11 +1649,23 @@ bool KICADD_HANDLER_PCB::applyHistory( const HISTORY_ENTRY& aEntry, bool aUndo, 
         return true;
     };
 
+    // Already where this entry would put it: someone undid / redid it elsewhere (the editor's
+    // Ctrl+Z on the agent's commit). Nothing to do for it, and not "changed by someone else".
+    auto atTarget = [&]( const FOOTPRINT* aFp, const FP_STATE& aSt )
+    {
+        FP_STATE now = stateOf( aFp );
+        return now.pos == aSt.pos && now.orient == aSt.orient && now.back == aSt.back;
+    };
+
+    int alreadyThere = alreadyDone;
+
     for( const FP_STATE& st : states )
     {
         if( FOOTPRINT* fp = resolve( st.id ) )
         {
-            if( unchanged( fp ) )
+            if( atTarget( fp, st ) )
+                ++alreadyThere;
+            else if( unchanged( fp ) )
                 modifying.emplace_back( fp, &st );
             else
                 aOut.add_missing( fp->GetReference().ToStdString() + " (changed since; left as is)" );
@@ -1455,7 +1676,9 @@ bool KICADD_HANDLER_PCB::applyHistory( const HISTORY_ENTRY& aEntry, bool aUndo, 
         }
     }
 
-    if( removing.empty() && adding.empty() && modifying.empty() )
+    aOut.set_already_there( alreadyThere );
+
+    if( removing.empty() && adding.empty() && modifying.empty() && trackAdd.empty() && trackRemove.empty() )
         return false;
 
     runCommit(
@@ -1484,6 +1707,17 @@ bool KICADD_HANDLER_PCB::applyHistory( const HISTORY_ENTRY& aEntry, bool aUndo, 
                     ids.push_back( fp->m_Uuid );
                 }
 
+                for( const TRACK_SNAPSHOT* snap : trackAdd )
+                {
+                    PCB_TRACK* t = static_cast<PCB_TRACK*>( snap->track->Clone() );   // same KIID
+                    t->SetParent( b );
+                    t->SetNet( netFor( snap->net, aCommit, aOut ) );
+                    aCommit.Add( t );
+                }
+
+                for( PCB_TRACK* t : trackRemove )
+                    aCommit.Remove( t );
+
                 return ids;
             },
             wxString::FromUTF8( std::string( "Agent: " ) + ( aUndo ? "undo " : "redo " ) + aEntry.label ),
@@ -1491,11 +1725,20 @@ bool KICADD_HANDLER_PCB::applyHistory( const HISTORY_ENTRY& aEntry, bool aUndo, 
 
     m_pendingNets.clear();
 
-    // The snapshots stay in the history (undo/redo can repeat); the board copies we just
-    // removed are no longer referenced by anything.
-    for( FOOTPRINT* fp : removing )
-        delete fp;
+    // The snapshots stay in the history (undo/redo can repeat). Headless, the board copies we
+    // just removed are referenced by nothing and ours to delete. In the desktop editor its undo
+    // list owns them (Ctrl+Z puts that very object back): deleting them there would leave the
+    // editor's undo pointing at freed memory.
+    if( !editorOwnsUndo() )
+    {
+        for( FOOTPRINT* fp : removing )
+            delete fp;
 
+        for( PCB_TRACK* t : trackRemove )
+            delete t;
+    }
+
+    aOut.set_tracks_removed( (int) trackRemove.size() );
     return true;
 }
 
@@ -1531,7 +1774,12 @@ KICADD_HANDLER_PCB::handleUndo( const HANDLER_CONTEXT<Undo>& aCtx )
         out.set_ok( applyHistory( entry, true, *out.mutable_result() ) );
         out.set_label( entry.label );
 
-        if( out.ok() )
+        // Nothing applied because it had all been done already (the editor's Ctrl+Z / Ctrl+Y on
+        // the agent's commit): the entry still moves across, so the history matches the board.
+        bool alreadyDone = !out.ok() && out.result().missing().empty()
+                           && out.result().already_there() > 0;
+
+        if( out.ok() || alreadyDone )
             m_redo.push_back( std::move( entry ) );
     }
 
@@ -1559,7 +1807,12 @@ KICADD_HANDLER_PCB::handleRedo( const HANDLER_CONTEXT<Redo>& aCtx )
         out.set_ok( applyHistory( entry, false, *out.mutable_result() ) );
         out.set_label( entry.label );
 
-        if( out.ok() )
+        // Nothing applied because it had all been done already (the editor's Ctrl+Z / Ctrl+Y on
+        // the agent's commit): the entry still moves across, so the history matches the board.
+        bool alreadyDone = !out.ok() && out.result().missing().empty()
+                           && out.result().already_there() > 0;
+
+        if( out.ok() || alreadyDone )
             m_undo.push_back( std::move( entry ) );
     }
 
@@ -2673,6 +2926,47 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
     // Improving is cut off after time_limit (the placement is legal from the start): fewer
     // cores make it much slower.
     opt.timeLimit = req.time_limit() > 0 ? req.time_limit() : req.time_limit() < 0 ? 0 : 10.0;
+    opt.keepBetterStart = !req.force() && !req.measure_only();
+
+    // Where the parts are now counts as a placement only without overlapping courtyards (the
+    // real shapes: the placer's boxes are coarser than a hand placement)
+    if( opt.keepBetterStart )
+    {
+        for( size_t i = 0; i < fps.size() && !opt.startOverlaps; ++i )
+        {
+            if( !parts[i].movable )
+                continue;
+
+            fps[i]->BuildCourtyardCaches();
+
+            for( FOOTPRINT* other : b->Footprints() )
+            {
+                if( other == fps[i] || opt.startOverlaps )
+                    continue;
+
+                for( PCB_LAYER_ID layer : { F_CrtYd, B_CrtYd } )
+                {
+                    const SHAPE_POLY_SET& mine = fps[i]->GetCourtyard( layer );
+                    const SHAPE_POLY_SET& theirs = other->GetCourtyard( layer );
+
+                    if( mine.OutlineCount() == 0 || theirs.OutlineCount() == 0
+                        || !mine.BBox().Intersects( theirs.BBox() ) )
+                    {
+                        continue;
+                    }
+
+                    SHAPE_POLY_SET common = mine.CloneDropTriangulation();
+                    common.BooleanIntersection( theirs );
+
+                    if( common.Area() > 0.01 * 1e12 )     // more than 0.01 mm² (touching is fine)
+                    {
+                        opt.startOverlaps = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
 
     auto job = std::make_unique<AUTOPLACE_JOB>();
     job->parts = std::move( parts );
@@ -2833,7 +3127,7 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::finishAutoPlace( AUTOPLACE
 
     for( size_t i = 0; i < parts.size(); ++i )
     {
-        if( parts[i].movable && !unplaced.count( parts[i].ref ) && !aJob.measureOnly )
+        if( parts[i].movable && !unplaced.count( parts[i].ref ) && !aJob.measureOnly && !res.keptStart )
         {
             targets.push_back( fps[i] );
             index[fps[i]] = i;
@@ -2873,6 +3167,14 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::finishAutoPlace( AUTOPLACE
     }
 
     out.set_moved( (int) targets.size() );
+    out.set_kept_current( res.keptStart );
+
+    int zones = 0;
+
+    for( const ZONE* z : b->Zones() )
+        zones += !z->GetIsRuleArea() && !z->IsTeardropArea();
+
+    out.set_zones( zones );
 
     for( const std::string& r : res.unplaced )
         out.add_unplaced( r );

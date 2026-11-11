@@ -5,6 +5,7 @@
  */
 
 #include "lcsc/kicadd_lcsc.h"
+#include "common/kicadd_libtable.h"
 
 #include <board.h>
 #include <footprint.h>
@@ -446,66 +447,23 @@ void refreshLibrary( bool aSymbols, std::string& aNote )
  */
 bool registerLibrary( const wxString& aDir, bool aSymbols, std::string& aNote )
 {
-    const char* tableName = aSymbols ? "sym-lib-table" : "fp-lib-table";
-    const char* root = aSymbols ? "sym_lib_table" : "fp_lib_table";
     const char* uri = aSymbols ? "${KIPRJMOD}/lcsc.kicad_sym" : "${KIPRJMOD}/lcsc.pretty";
 
-    wxFileName  table( aDir, wxString::FromUTF8( tableName ) );
-    std::string text;
-    bool        exists = table.FileExists() && readFile( table.GetFullPath(), text );
-
-    static const std::regex hasRow( "\\(name\\s+\"?LCSC\"?\\s*\\)" );
-
-    if( exists && std::regex_search( text, hasRow ) )
+    switch( kicadd::AddProjectLibrary( aDir, aSymbols, LIB_NICKNAME, uri,
+                                       std::string( "LCSC parts fetched by KiCadD; " ) + ATTRIBUTION, aNote ) )
     {
+    case kicadd::LIBTABLE_RESULT::ADDED:
+        refreshLibrary( aSymbols, aNote );
+        return true;
+
+    case kicadd::LIBTABLE_RESULT::PRESENT:
+    case kicadd::LIBTABLE_RESULT::CONFLICT:     // the user's own LCSC row: theirs to keep
         refreshLibrary( aSymbols, aNote );
         return false;
-    }
 
-    const std::string row = "  (lib (name \"LCSC\")(type \"KiCad\")(uri \"" + std::string( uri )
-                            + "\")(options \"\")(descr \"LCSC parts fetched by KiCadD; "
-                            + std::string( ATTRIBUTION ) + "\"))\n";
-
-    if( !exists )
-    {
-        text = "(" + std::string( root ) + "\n  (version 7)\n" + row + ")\n";
-    }
-    else
-    {
-        size_t close = text.find_last_of( ')' );
-
-        if( close == std::string::npos )
-        {
-            aNote = std::string( tableName ) + " not understood; add " + LIB_NICKNAME + " by hand";
-            return false;
-        }
-
-        if( close > 0 && text[close - 1] != '\n' )
-            text.insert( close, "\n" );
-
-        text.insert( text.find_last_of( ')' ), row );
-    }
-
-    if( !writeFile( table.GetFullPath(), text ) )
-    {
-        aNote = "cannot write " + table.GetFullPath().ToStdString();
+    default:
         return false;
     }
-
-    try
-    {
-        Pgm().GetLibraryManager().ReloadTables( LIBRARY_TABLE_SCOPE::PROJECT,
-                                                { aSymbols ? LIBRARY_TABLE_TYPE::SYMBOL
-                                                           : LIBRARY_TABLE_TYPE::FOOTPRINT } );
-    }
-    catch( ... )
-    {
-        aNote = std::string( "added to " ) + tableName + "; reopen the project to see it in the library browser";
-        return true;
-    }
-
-    refreshLibrary( aSymbols, aNote );
-    return true;
 }
 
 } // namespace

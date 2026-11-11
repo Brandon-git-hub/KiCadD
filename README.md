@@ -23,7 +23,7 @@ Built as a thin extension of upstream `kicad-cli api-server`, not a fork of the 
 | `web/index.html` | 2D view (vanilla JS + Canvas 2D), embedded into `kicadd-mcp` at build time |
 | `client/` | Python IPC client, benchmark, verification + A/B scripts, `run_server.sh`, `desktop_e2e.py` (M2) |
 
-### Upstream patch (~2600 lines incl. context, 53 files; see the M1–M7 sections and the 2026-11-11 fixes for the newest parts)
+### Upstream patch (~2600 lines incl. context, 54 files; see the M1–M7 sections and the 2026-11-11 fixes for the newest parts)
 
 - **Hooks** (guarded by `KICADD_DIR` / `#ifdef KICADD`): `CMakeLists.txt`, `pcbnew/CMakeLists.txt`,
   `pcbnew/pcbnew.cpp` register `KICADD_HANDLER_PCB` next to `API_HANDLER_PCB`.
@@ -1140,6 +1140,94 @@ TODO 2–4 from the Windows trial, all in `handleGetNetlist`:
 Release check, 2026-11-11 (`build-lean`): `m5_e2e`, `hier_e2e`, `rules_e2e`, `smoke`,
 `desktop_e2e` (with the LCSC cache), `desktop_sch_e2e` and `mcp_e2e` (Jetson board) all pass.
 
+## After the alpha.4 trial: auto_place keeps a better placement, delete_tracks, undo (2026-11-11)
+
+TODO 7, from the Windows trial on the routed pic_programmer.
+
+- **auto_place does not make a placed board worse.** When every movable part is already on
+  the board (its centre inside the outline), no two courtyards overlap (real shapes, more than
+  0.01 mm²: the placer's boxes are coarser than a hand layout, P105 / P3 touch as boxes only)
+  and no agent rules are given, the current placement takes part in the comparison: a result
+  with more parts left out or a longer wire length is not applied ("kept the current
+  placement (nothing moved): the new one was not better; wire length now 1489.21, new one
+  1653.12 mm"). `force` applies it anyway. Parts placed by sync_pcb (outside the board) are
+  newcomers, so the benchmark is unchanged (1711.69 mm, all placed).
+- **Refill hint.** A result that moved parts on a board with tracks or zones says the tracks
+  were left behind and the zones keep their old shape: `refill_zones` before `run_drc` (the
+  437 DRC errors of the trial were mostly the old GND zone fill).
+- **`delete_tracks`** (`DeleteTracks`): `all`, `nets`, `region` [x0, y0, x1, y1] mm, or `refs`:
+  the copper running from these parts' pads through tracks and vias up to the next part's pad
+  (direct neighbours from the connectivity items, not `GetConnectedItems`, which gives the
+  whole island). Locked tracks stay unless `include_locked`; `keep_vias`. One undoable edit:
+  the history keeps the removed tracks (copies in the editor, whose undo list owns the
+  originals), undo puts them back with the same ids and their nets by name, redo takes them out
+  again. Routed pic_programmer: `refs [U5]` 99 of 376, unconnected 0 → 13, undo back to 0.
+- **Agent undo after the user's Ctrl+Z.** If every part of the entry is already where undo
+  (redo) would put it (the user undid the agent's commit in the editor), the answer is one line
+  (`"auto-place 62 parts" was already undone (in the editor): ... nothing changed`) and the
+  entry moves to the redo list, instead of 62 lines of `changed since; left as is` that made
+  the agent think the parts were still moved. Parts changed by someone else are still left
+  alone, listed briefly (ten refs and a count).
+- **Crash fix: agent add, agent undo, then Ctrl+Z in the editor.** The agent's undo of an add
+  deleted the removed footprint although the editor's undo list still owned it (it puts that
+  very object back): Ctrl+Z then used freed memory. Reproduced in `desktop_autoplace_e2e` step 5
+  (the editor process died); now the footprints (and tracks) removed by undo / redo are only
+  deleted headless.
+
+Tests: `client/routed_e2e.py` (headless: kept placement, delete_tracks refs / all with undo /
+redo, auto_place after the rip-up, force); `desktop_autoplace_e2e.py` steps 4–5 (Ctrl+Z then
+agent undo; the crash case).
+
+## Schematic editing: power symbols, sch_move, sch_wire, run_erc, lib_register (2026-11-11)
+
+TODO 6, first batch.
+
+| tool | what it does |
+|---|---|
+| `sch_connect power: ["GND", "+3V3"]` | those nets get a power symbol at the stub end instead of a label (global, as KiCad's) |
+| `sch_add_part lib_id "power:GND"` | a power symbol on its own |
+| `sch_move` | `x`/`y` or `dx`/`dy`, `rotation`, `unit`: the part with its stubs, labels, power symbols and no-connect flags |
+| `sch_wire` | a wire through points; splits wires it lands on, junction dots where three or more meet |
+| `run_erc` | KiCad's ERC on the schematic in memory; errors listed, warnings counted (`warnings` lists them) |
+| `lib_register` | a `.kicad_sym` / `.pretty` already on disk into the project's sym-lib-table / fp-lib-table |
+
+- **Power symbols without a power library.** KiCadD ships none, so `power:NAME` is made in
+  code when the project has no `power` library: a ground shape for names with GND / VSS / 0V /
+  EARTH, a supply arrow otherwise, one hidden `power_in` pin named after the net, parsed from
+  an s-expression of our own (`SCH_IO_KICAD_SEXPR::ParseLibSymbols`); the instance carries its
+  copy, so the saved file needs no library. A project with a `power` library gets its symbols.
+  A ground hangs down, a supply points up; turned over only when the stub comes from that
+  side. Annotated `#PWRnn` against the power symbols there are plus those of the same commit.
+  `sch_disconnect` removes the power symbol with the stub. They are no parts in
+  `sch_summary` / `sch_netlist` and bring no footprints to the board.
+- **sch_move.** Per pin, before the move: a no-connect flag, labels right on the pin, and stubs
+  (a straight wire whose far end has only its label or power symbol) are taken off; any other
+  wire ending on the pin is dragged (one end moves; it may end up diagonal, the answer says
+  so). After the move each is put back at the pin's new place, the stub on the side the pin now
+  faces (same length, further out if that spot is taken). One commit; a body that now overlaps
+  another part is reported, not refused.
+- **sch_wire.** Points snapped to the 1.27 mm grid; a segment running over a connection point
+  of something already there (wire end, pin, label) is split there, so it connects.
+  `JUNCTION_HELPERS::PreviewJunctions` finds where dots are needed; a wire passing through one
+  is split (`SCH_LINE::BreakAt`), as is a wire the new one's end lands on (a T). The answer
+  names the net and its pins.
+- **run_erc.** `ERC_TESTER::RunTests` as `kicad-cli sch erc` does (symbol libraries loaded
+  first; in the editor its ERC markers are cleared and refreshed), read back through
+  `SHEETLIST_ERC_ITEMS_PROVIDER` and `RC_ITEM::GetJsonViolation`.
+- **ERC without KiCad's libraries** (upstream patch, `#ifdef KICADD`, `eeschema/erc/erc.cpp`), as
+  DRC's footprint check: `lib_symbol_issues` skips symbols whose library has no table row or
+  points into `${KICADn_SYMBOL_DIR}` and isn't loaded (also our power symbols), and
+  `footprint_link_issues` the same for footprints. pic_programmer: 64 warnings → 3 (the
+  `wired_implicit_power` of its virtual VPP symbols, real).
+- **lib_register.** The path (absolute or relative to the project) becomes
+  `${KIPRJMOD}/...` when inside the project; nickname defaults to the file name. A row of that
+  name with the same uri: reloaded; with another uri: refused. `src/common/kicadd_libtable.cpp`
+  (compiled into both kifaces) now also writes the LCSC rows.
+
+Tests: `client/sch_edit_e2e.py` (headless: power symbols, moves keep the nets, disconnect /
+reconnect a power pin, an L and a T wire, run_erc, lib_register, save + restart, sync_pcb);
+`desktop_sch_e2e.py` step 3c (the same in the Schematic Editor; four Ctrl+Z take them back).
+
 ## 待做清單 (TODO)
 
 2026-11-10，`v0.1.0-alpha.2` 在 Windows 上試用後回報；以下已在 Linux 上用 `pic_programmer` 重現確認，**尚未實作**。
@@ -1186,7 +1274,8 @@ Release check, 2026-11-11 (`build-lean`): `m5_e2e`, `hier_e2e`, `rules_e2e`, `sm
 
 6. **Agent 做不到的事（2026-11-11 試用回報，已對照 MCP 工具清單確認）。** 依建議順序分三批。
 
-   **第一批：電路圖編輯**
+   **第一批：電路圖編輯（已完成 2026-11-11，見「Schematic editing: power symbols, sch_move, sch_wire,
+   run_erc, lib_register」）**
    * (a) `sch_move`：移動、旋轉已放置的零件。`sch_connect` 產生的短線和標籤要跟著零件移動，
      連線才不會斷。
    * (b) `sch_wire`：依座標點畫導線，交叉處自動放 junction。短線加標籤仍是預設做法。
@@ -1230,7 +1319,8 @@ Release check, 2026-11-11 (`build-lean`): `m5_e2e`, `hier_e2e`, `rules_e2e`, `sm
    * (j) 參數化封裝：只做 SOIC / QFN / QFP / 0402–1206 / 排針等常見封裝；異形封裝仍由使用者在
      編輯器裡畫，立創有的零件優先用 `lcsc_fetch`。
 
-7. **alpha.4 在 Windows 上試用 `pic_programmer`（2026-11-11）。** 背景擺件已確認：擺件期間編輯器可以照常操作，
+7. **（(a)–(d) 已完成 2026-11-11，見「After the alpha.4 trial」；另修正一個桌面版當掉：Agent 新增 →
+   Agent undo → 編輯器 Ctrl+Z）alpha.4 在 Windows 上試用 `pic_programmer`（2026-11-11）。** 背景擺件已確認：擺件期間編輯器可以照常操作，
    使用者在運算中拖動 U5，兩次結果都被捨棄、什麼都沒動。記憶體（5c）尚未量測。發現的問題：
    * (a) **結果比原本的擺放差也照樣套用。** 已佈線的成品板，原本線長 1489 mm，擺件後 1653 mm。
      板上零件都已擺好時，要把原本的擺放也算進比較，比原本差就不套用，並回報。
