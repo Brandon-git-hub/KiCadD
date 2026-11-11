@@ -288,3 +288,74 @@ message RegisterLibraryResponse
   int32  items    = 5;   // symbols / footprints in it
   string note     = 6;
 }
+
+// Design review by rules, for the agent to judge: decoupling (IC power pins with a capacitor to
+// ground on the same net), power (every supply net has a source), ESD (connector nets with a
+// TVS / ESD part), and nets with one pin only. Not a sign-off: findings to look at.
+// Returns SchAuditResponse
+message SchAudit
+{
+}
+
+message SchAuditFinding
+{
+  string category = 1;   // decoupling, power, esd, net
+  string severity = 2;   // warning, info
+  string message  = 3;
+  repeated string refs = 4;
+}
+
+// An IC power pin and a capacitor that decouples it (same net, other side on ground)
+message SchDecapPair
+{
+  string ic      = 1;    // "U1.14"
+  string net     = 2;
+  string cap     = 3;    // "C3.1": its pin on that net
+}
+
+message SchAuditResponse
+{
+  repeated SchAuditFinding findings = 1;
+  repeated SchDecapPair    decaps   = 2;
+  int32 ics        = 3;
+  int32 power_nets = 4;
+  int32 connectors = 5;
+}
+
+// A box symbol from a pin list, saved to the project library "kicadd" (kicadd.kicad_sym next to
+// the project, added to sym-lib-table on first use). Then sch_add_part lib_id "kicadd:<name>".
+// Returns SchCreateSymbolResponse
+message SchSymbolPin
+{
+  string number = 1;
+  string name   = 2;
+  string type   = 3;   // input, output, bidirectional, tri_state, passive, power_in, power_out,
+                       // open_collector, open_emitter, no_connect, unspecified (default passive)
+  string side   = 4;   // left, right, top, bottom (default: inputs and power_in left, the rest right)
+  bool   hidden = 5;
+}
+
+message SchCreateSymbol
+{
+  string name        = 1;   // the symbol's name in the library
+  string reference   = 2;   // prefix, default "U"
+  string value       = 3;   // default the name
+  string footprint   = 4;   // "Library:Footprint"
+  string datasheet   = 5;
+  string description = 6;
+  string keywords    = 7;
+  repeated SchSymbolPin pins = 8;
+  bool   replace     = 9;   // overwrite a symbol of that name
+  string lcsc        = 10;  // an LCSC field
+}
+
+message SchCreateSymbolResponse
+{
+  string lib_id  = 1;       // "kicadd:<name>"
+  string file    = 2;
+  int32  pins    = 3;
+  double width   = 4;       // body, mm
+  double height  = 5;
+  bool   registered = 6;    // the library was added to sym-lib-table now
+  string note    = 7;
+}

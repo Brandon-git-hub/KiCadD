@@ -614,8 +614,19 @@ bool SaveToProjectLibrary( const wxString& dir, const PART& aPart, SAVED& aSaved
 
     try
     {
+        // The library footprint is shared by every part with that package (R0603 for all the
+        // 0603 resistors): the part number belongs to the part, not to it, or a 1k resistor
+        // using it would go into the BOM as the 10k it was fetched for.
+        std::unique_ptr<FOOTPRINT> shared( static_cast<FOOTPRINT*>( aPart.footprint->Clone() ) );
+
+        if( PCB_FIELD* f = shared->GetField( wxS( "LCSC" ) ) )
+        {
+            shared->Remove( f );
+            delete f;
+        }
+
         PCB_IO_KICAD_SEXPR io;
-        io.FootprintSave( lib.GetPath(), aPart.footprint.get() );
+        io.FootprintSave( lib.GetPath(), shared.get() );
     }
     catch( const IO_ERROR& e )
     {

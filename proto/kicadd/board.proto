@@ -539,3 +539,105 @@ message DescribeItemsResponse
 {
   repeated DescribedItem items = 1;   // same order as the request; empty handle if unknown
 }
+
+// ---------------------------------------------------------------------------------------------
+// Fabrication output for JLCPCB (or any fab): Gerbers (Protel extensions, X2, job file),
+// Excellon drill (mm, PTH and NPTH files), a zip of those two (the upload), BOM and CPL as CSV
+// in JLCPCB's columns. From the board in memory (unsaved edits included); zones are plotted as
+// they are filled (refill them first). Returns ExportFabResponse
+message ExportFab
+{
+  string dir    = 1;     // default <project dir>/fab (created)
+  bool   no_zip = 2;
+}
+
+message ExportFabResponse
+{
+  string dir        = 1;
+  repeated string files = 2;    // file names in dir
+  string zip        = 3;        // gerbers + drill, for the upload
+  string bom        = 4;
+  string cpl        = 5;
+  int32  bom_lines  = 6;
+  int32  bom_parts  = 7;
+  int32  placed     = 8;        // parts in the CPL
+  repeated string no_lcsc = 9;  // BOM lines without an LCSC number: "C3 C4 (100n, C_0402)"
+  repeated string notes   = 10;
+  int32  layers     = 11;       // Gerber files
+}
+
+// ---------------------------------------------------------------------------------------------
+// Parts search by specification (two stages): KiCadD's parts index (JLCPCB parts in stock, from
+// jlcparts' daily data, downloaded once and refreshed weekly) narrows down by parameters, then the
+// first few are checked live (EasyEDA: today's LCSC stock and JLCPCB assembly). Returns
+// LcscSearchResponse
+message LcscSearch
+{
+  string keyword     = 1;   // words in the description / part number / package ("AMS1117 3.3")
+  string category    = 2;   // resistor, capacitor, inductor, or a JLCPCB category / subcategory word
+  string value       = 3;   // "100nF", "10k", "4k7", "2.2uH"
+  string package     = 4;   // "0402", "SOT-23"
+  double tolerance   = 5;   // %, at most
+  double voltage_min = 6;   // V, at least (rating)
+  string dielectric  = 7;   // X7R, X5R, C0G
+  bool   basic_only  = 8;
+  int64  min_stock   = 9;   // default 1
+  int32  limit       = 10;  // default 8, at most 50
+  int32  live        = 11;  // how many of the first to check live (default 3, -1 none)
+  bool   update      = 12;  // fetch the index again now
+}
+
+message LcscHit
+{
+  string lcsc         = 1;
+  string mfr          = 2;   // manufacturer part number
+  string manufacturer = 3;
+  string package      = 4;
+  string description  = 5;
+  bool   basic        = 6;
+  bool   preferred    = 7;   // "preferred extended": no extended-part fee at JLCPCB either
+  int64  stock        = 8;   // JLCPCB stock on the index date
+  double price        = 9;   // USD, first price break
+  int64  live_stock   = 10;  // LCSC stock now, -1 not checked / unknown
+  string live_class   = 11;  // "Basic Part" / "Extended Part" (now)
+  bool   live_smt     = 12;  // JLCPCB can assemble it (now)
+  string live_note    = 13;
+}
+
+message LcscSearchResponse
+{
+  repeated LcscHit hits = 1;
+  int64  total      = 2;     // matches before limit
+  string index_date = 3;
+  string note       = 4;
+}
+
+// ---------------------------------------------------------------------------------------------
+// A footprint made from a few numbers, for the common packages, saved to the project library
+// "kicadd" (kicadd.pretty, added to fp-lib-table on first use). Pads from IPC-7351-like rules
+// (toe / heel / side margins on nominal lead sizes); courtyard 0.25 mm (0.5 through-hole).
+// Odd shapes stay with the Footprint Editor. Returns FpCreateResponse
+message FpCreate
+{
+  string kind     = 1;   // chip, sot23, soic, so, qfn, qfp, header
+  string size     = 2;   // chip: 0201 0402 0603 0805 1206 1210 2010 2512
+  string prefix   = 3;   // chip: R, C, L, LED, D (name only)
+  int32  pins     = 4;   // sot23: 3/5/6; soic/so: even; qfn/qfp: a multiple of 4; header: total
+  double pitch    = 5;   // mm (soic 1.27; header 2.54)
+  double body     = 6;   // qfn/qfp: square body side, mm; soic/so: body width (3.9 / 7.5)
+  double span     = 7;   // so/qfp: lead tip to lead tip (default soic 6.0, qfp body + 2)
+  double ep       = 8;   // qfn: exposed pad side, mm (0 none)
+  int32  rows     = 9;   // header: 1 or 2
+  string name     = 10;  // default a descriptive name ("SOIC-8_3.9mm_P1.27mm")
+  bool   replace  = 11;
+}
+
+message FpCreateResponse
+{
+  string lib_id   = 1;   // "kicadd:SOIC-8_3.9mm_P1.27mm"
+  string file     = 2;
+  int32  pads     = 3;
+  Point  courtyard = 4;  // nm
+  bool   registered = 5;
+  string note     = 6;
+}

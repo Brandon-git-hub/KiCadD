@@ -918,6 +918,160 @@ TOOL_RESULT refillZones( IPC_CLIENT& aIpc )
 }
 
 
+TOOL_RESULT lcscSearch( IPC_CLIENT& aIpc, const json& aArgs )
+{
+    kb::LcscSearch req;
+
+    auto s = [&]( const char* aKey ) -> std::string
+    {
+        return aArgs.contains( aKey ) && aArgs[aKey].is_string() ? aArgs[aKey].get<std::string>() : "";
+    };
+
+    auto d = [&]( const char* aKey ) -> double
+    {
+        if( !aArgs.contains( aKey ) )
+            return 0;
+
+        if( aArgs[aKey].is_number() )
+            return aArgs[aKey].get<double>();
+
+        if( aArgs[aKey].is_string() )     // "16V", "1%"
+            return std::atof( aArgs[aKey].get<std::string>().c_str() );
+
+        return 0;
+    };
+
+    req.set_keyword( s( "keyword" ) );
+    req.set_category( s( "category" ) );
+    req.set_value( s( "value" ) );
+    req.set_package( s( "package" ) );
+    req.set_dielectric( s( "dielectric" ) );
+    req.set_tolerance( d( "tolerance" ) );
+    req.set_voltage_min( d( "voltage_min" ) );
+    req.set_basic_only( aArgs.value( "basic_only", false ) );
+    req.set_min_stock( (int64_t) d( "min_stock" ) );
+    req.set_limit( (int) d( "limit" ) );
+    req.set_update( aArgs.value( "update", false ) );
+
+    if( aArgs.contains( "live" ) && aArgs["live"].is_number() )
+        req.set_live( aArgs["live"].get<int>() <= 0 ? -1 : aArgs["live"].get<int>() );
+
+    kb::LcscSearchResponse r;
+    std::string            err;
+
+    if( !aIpc.Call( req, r, err ) )
+        return error( err );
+
+    std::string out = std::to_string( r.total() ) + " match(es) in stock at JLCPCB (parts index of " + r.index_date()
+                      + ", jlcparts data)";
+
+    if( r.total() > r.hits_size() )
+        out += "; the first " + std::to_string( r.hits_size() ) + ": basic, preferred, then by stock";
+
+    if( !r.note().empty() )
+        out += "\n  " + r.note();
+
+    for( const kb::LcscHit& h : r.hits() )
+    {
+        char price[32] = "";
+
+        if( h.price() >= 0 )
+            std::snprintf( price, sizeof( price ), ", US$%.4f", h.price() );
+
+        out += "\n" + h.lcsc() + " " + ( h.basic() ? "BASIC" : h.preferred() ? "preferred" : "extended" ) + " "
+               + h.mfr() + " (" + h.manufacturer() + ") " + h.package() + ", JLC stock " + std::to_string( h.stock() )
+               + price;
+
+        if( h.live_stock() >= 0 || !h.live_class().empty() )
+        {
+            out += "\n    now: LCSC stock " + ( h.live_stock() >= 0 ? std::to_string( h.live_stock() ) : std::string( "?" ) );
+
+            if( !h.live_class().empty() )
+                out += ", " + h.live_class();
+
+            out += std::string( h.live_smt() ? ", JLC assembly yes" : ", JLC assembly no" );
+        }
+        else if( !h.live_note().empty() )
+        {
+            out += "\n    live check failed: " + h.live_note();
+        }
+
+        out += "\n    " + h.description();
+    }
+
+    if( r.hits().empty() )
+        out += "\nnothing: loosen a condition (tolerance, voltage, basic_only, package)";
+
+    return { out };
+}
+
+
+TOOL_RESULT exportFab( IPC_CLIENT& aIpc, const json& aArgs )
+{
+    std::string head;
+
+    // the copper pours as they are now (a stale fill would be plotted as it is)
+    if( aArgs.value( "refill", true ) )
+    {
+        TOOL_RESULT r = refillZones( aIpc );
+
+        if( r.isError )
+            return error( "refill_zones before the export failed: " + r.text );
+
+        head = r.text;
+    }
+
+    kb::ExportFab req;
+
+    if( aArgs.contains( "dir" ) && aArgs["dir"].is_string() )
+        req.set_dir( aArgs["dir"].get<std::string>() );
+
+    req.set_no_zip( !aArgs.value( "zip", true ) );
+
+    kb::ExportFabResponse r;
+    std::string           err;
+
+    if( !aIpc.Call( req, r, err ) )
+        return error( err );
+
+    std::string s = head + "fabrication files in " + r.dir() + ":\n";
+
+    if( !r.zip().empty() )
+        s += "  upload (Gerbers + drill): " + r.zip() + "\n";
+
+    s += "  Gerbers: " + std::to_string( r.layers() ) + " layer file(s) + job file; drill: Excellon (mm)\n";
+    s += "  BOM: " + r.bom() + " (" + std::to_string( r.bom_lines() ) + " lines, " + std::to_string( r.bom_parts() )
+         + " parts)\n";
+    s += "  CPL: " + r.cpl() + " (" + std::to_string( r.placed() ) + " placements)\n";
+
+    if( !r.no_lcsc().empty() )
+    {
+        s += "  without an LCSC number (" + std::to_string( r.no_lcsc_size() ) + " line(s), JLCPCB will not "
+             "assemble them unless you pick parts there):";
+
+        int n = 0;
+
+        for( const std::string& l : r.no_lcsc() )
+        {
+            if( n++ == 12 )
+            {
+                s += "\n    ...";
+                break;
+            }
+
+            s += "\n    " + l;
+        }
+
+        s += "\n";
+    }
+
+    for( const std::string& note : r.notes() )
+        s += "  note: " + note + "\n";
+
+    return { s };
+}
+
+
 TOOL_RESULT openBoard( IPC_CLIENT& aIpc, const json& aArgs )
 {
     if( !aArgs.contains( "path" ) || !aArgs["path"].is_string() )
@@ -1109,6 +1263,39 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        "copper connectivity, running full DRC or saving for fabrication.",
                        schema( json::object() ),
                        [&aIpc]( const json& ) { return refillZones( aIpc ); } } );
+
+    tools.push_back( { "lcsc_search",
+                       "Find JLCPCB / LCSC parts by specification, e.g. value \"100nF\", package \"0402\", "
+                       "dielectric \"X5R\", voltage_min 16, basic_only; or keyword \"AMS1117 3.3\". Searches "
+                       "KiCadD's parts index (JLCPCB parts in stock, daily data from jlcparts; about 45 MB, "
+                       "downloaded on first use, refreshed weekly), basic parts first, then preferred "
+                       "(no extended fee), then by stock; the first few (live, default 3) are checked "
+                       "now against LCSC. Then sch_add_part lcsc=... places one.",
+                       schema( { { "keyword", { { "type", "string" } } },
+                                 { "category", { { "type", "string" },
+                                                 { "description", "resistor, capacitor, inductor, or a JLCPCB category word (\"LDO\", \"MOSFET\")" } } },
+                                 { "value", { { "type", "string" }, { "description", "100nF, 10k, 4k7, 2.2uH" } } },
+                                 { "package", { { "type", "string" } } },
+                                 { "tolerance", { { "type", "number" }, { "description", "%, at most" } } },
+                                 { "voltage_min", { { "type", "number" }, { "description", "V rating, at least" } } },
+                                 { "dielectric", { { "type", "string" } } },
+                                 { "basic_only", { { "type", "boolean" } } },
+                                 { "min_stock", { { "type", "integer" } } },
+                                 { "limit", { { "type", "integer" } } },
+                                 { "live", { { "type", "integer" } } },
+                                 { "update", { { "type", "boolean" }, { "description", "fetch the index again now" } } } } ),
+                       [&aIpc]( const json& a ) { return lcscSearch( aIpc, a ); } } );
+
+    tools.push_back( { "export_fab",
+                       "Write the fabrication files for JLCPCB from the board as it is now (unsaved edits "
+                       "included): Gerbers (Protel extensions, X2, job file) and Excellon drill (mm) zipped "
+                       "for the upload, BOM (Comment, Designator, Footprint, LCSC Part #) and CPL "
+                       "(Designator, Mid X, Mid Y, Layer, Rotation) as CSV. Refills the zones first "
+                       "(refill=false skips it). dir defaults to <project>/fab. Run run_drc before.",
+                       schema( { { "dir", { { "type", "string" } } },
+                                 { "zip", { { "type", "boolean" }, { "description", "default true" } } },
+                                 { "refill", { { "type", "boolean" }, { "description", "default true" } } } } ),
+                       [&aIpc]( const json& a ) { return exportFab( aIpc, a ); } } );
 
     tools.push_back( { "open_board",
                        "Open a .kicad_pcb (or .kicad_pro) on the server (kicad-cli api-server), replacing the current board. "

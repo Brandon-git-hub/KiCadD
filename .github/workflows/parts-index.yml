@@ -1,0 +1,41 @@
+# KiCadD parts index for lcsc_search: built daily from jlcparts' data (MIT; JLCPCB's catalogue,
+# scraped by yaqwsx/jlcparts) by ci/build_parts_index.py, published as the assets of the
+# pre-release "parts-index" (not a version: the Windows workflow only builds v* tags).
+# kicadd downloads parts.db.gz from there on first use and again when it is a week old.
+name: parts-index
+
+on:
+  schedule:
+    - cron: '30 3 * * *'     # jlcparts publishes around 01:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: parts-index
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: ci
+      - name: Build the index
+        run: python3 -I ci/build_parts_index.py out
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          date=$(python3 -c "import json; print(json.load(open('out/parts-meta.json'))['date'])")
+          parts=$(python3 -c "import json; m=json.load(open('out/parts-meta.json')); print(m['parts'], 'parts,', m['basic'], 'basic,', m['preferred'], 'preferred')")
+          notes="Parts index for KiCadD's lcsc_search: JLCPCB parts in stock on $date ($parts), from yaqwsx/jlcparts (MIT, https://github.com/yaqwsx/jlcparts). Rebuilt daily; not a KiCadD version."
+          if ! gh release view parts-index >/dev/null 2>&1; then
+            gh release create parts-index --prerelease --title "Parts index" --notes "$notes"
+          fi
+          gh release upload parts-index out/parts.db.gz out/parts-meta.json --clobber
+          gh release edit parts-index --notes "$notes"

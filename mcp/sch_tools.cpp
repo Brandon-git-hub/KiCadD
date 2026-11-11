@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstdio>
 #include <map>
+#include <set>
 #include <thread>
 
 #include <kicadd/schematic.pb.h>
@@ -998,6 +999,247 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
 
                 if( !r.ignored().empty() )
                     t += "\n  ignored by the project's ERC settings: " + std::to_string( r.ignored_size() ) + " check(s)";
+
+                return TOOL_RESULT{ t, false };
+            } } );
+
+    aTools.push_back( { "audit",
+            "Design review by rules, for you to judge (not a sign-off): decoupling (each IC power pin "
+            "with a capacitor from its net to ground; on the board, how far the nearest one is, "
+            "flagged beyond max_decap_mm, default 5), power (every supply net has a source: power "
+            "output, regulator or connector, else a PWR_FLAG), ESD (connector nets without a TVS / ESD "
+            "part) and nets with one pin only. Run run_erc too.",
+            obj( { { "max_decap_mm", { { "type", "number" } } } } ),
+            [&aIpc]( const json& a )
+            {
+                ks::SchAudit           req;
+                ks::SchAuditResponse   r;
+                std::string            err;
+
+                if( !aIpc.Call( req, r, err ) )
+                    return fail( err );
+
+                const double limit = a.contains( "max_decap_mm" ) && a["max_decap_mm"].is_number()
+                                             ? a["max_decap_mm"].get<double>()
+                                             : 5.0;
+
+                // On the board: the nearest decoupling cap of each IC power pin
+                std::map<std::string, std::pair<double, double>> pads;
+                std::set<std::string>                            asked;
+                bool                                             board = true;
+
+                for( const ks::SchDecapPair& d : r.decaps() )
+                {
+                    if( !board || !asked.insert( d.net() ).second )
+                        continue;
+
+                    kicadd::board::QueryNet q;
+                    q.set_net( d.net() );
+                    q.set_limit( 2000 );
+                    kicadd::board::QueryResponse qr;
+
+                    if( !aIpc.Call( q, qr, err ) )
+                    {
+                        board = false;
+                        break;
+                    }
+
+                    for( const auto& item : qr.items() )
+                    {
+                        if( item.kind() == kicadd::board::IK_PAD )
+                            pads[item.handle()] = { item.pos().x() / 1e6, item.pos().y() / 1e6 };
+                    }
+                }
+
+                std::map<std::string, std::pair<double, std::string>> nearest;   // IC pin -> mm, cap
+
+                for( const ks::SchDecapPair& d : r.decaps() )
+                {
+                    auto a1 = pads.find( d.ic() ), a2 = pads.find( d.cap() );
+
+                    if( a1 == pads.end() || a2 == pads.end() )
+                        continue;
+
+                    double dist = std::hypot( a1->second.first - a2->second.first, a1->second.second - a2->second.second );
+                    auto   it = nearest.find( d.ic() );
+
+                    if( it == nearest.end() || dist < it->second.first )
+                        nearest[d.ic()] = { dist, d.cap().substr( 0, d.cap().find( '.' ) ) };
+                }
+
+                int warnings = 0, infos = 0;
+                std::string body;
+                std::map<std::string, std::string> byCat;
+
+                for( const ks::SchAuditFinding& f : r.findings() )
+                {
+                    ( f.severity() == "warning" ? warnings : infos )++;
+                    byCat[f.category()] += "\n  " + f.severity() + ": " + f.message();
+                }
+
+                std::string far;
+                int         farCount = 0;
+
+                for( const auto& [pin, d] : nearest )
+                {
+                    if( d.first > limit )
+                    {
+                        farCount++;
+                        far += "\n  warning: " + pin + ": nearest decoupling cap " + d.second + " is "
+                               + num( d.first ) + " mm away (pad to pad; max " + num( limit ) + ")";
+                    }
+                }
+
+                warnings += farCount;
+
+                std::string t = "audit: " + std::to_string( warnings ) + " warning(s), " + std::to_string( infos )
+                                + " note(s); " + std::to_string( r.ics() ) + " IC(s), " + std::to_string( r.power_nets() )
+                                + " supply net(s), " + std::to_string( r.connectors() ) + " connector(s)";
+
+                for( const char* cat : { "decoupling", "power", "esd", "net" } )
+                {
+                    std::string extra = std::string( cat ) == "decoupling" ? far : "";
+
+                    if( byCat.count( cat ) || !extra.empty() )
+                        t += "\n" + std::string( cat ) + ":" + byCat[cat] + extra;
+                }
+
+                if( !nearest.empty() )
+                {
+                    double worst = 0;
+
+                    for( const auto& [pin, d] : nearest )
+                        worst = std::max( worst, d.first );
+
+                    t += "\non the board: " + std::to_string( nearest.size() ) + " IC power pin(s) measured, farthest "
+                         "decoupling cap " + num( worst ) + " mm";
+                }
+                else if( r.decaps_size() > 0 )
+                {
+                    t += "\nnot on a board yet (sync_pcb) or no board open: cap distances not measured";
+                }
+
+                return TOOL_RESULT{ t, false };
+            } } );
+
+    aTools.push_back( { "lib_create_symbol",
+            "Make a box symbol from a pin list and save it to the project library \"kicadd\" "
+            "(kicadd.kicad_sym, added to sym-lib-table on first use); then sch_add_part lib_id "
+            "\"kicadd:<name>\". pins: [{number, name, type, side}], type input / output / "
+            "bidirectional / tri_state / passive / power_in / power_out / open_collector / no_connect "
+            "(default passive), side left / right / top / bottom (default: inputs and power inputs left, "
+            "the rest right; in the order given, top to bottom). Prefer lcsc_fetch / sch_add_part lcsc "
+            "when the part is at LCSC.",
+            obj( { { "name", { { "type", "string" } } },
+                   { "reference", { { "type", "string" }, { "description", "prefix, default U" } } },
+                   { "value", { { "type", "string" } } },
+                   { "footprint", { { "type", "string" } } },
+                   { "datasheet", { { "type", "string" } } },
+                   { "description", { { "type", "string" } } },
+                   { "lcsc", { { "type", "string" } } },
+                   { "pins", { { "type", "array" },
+                               { "items", obj( { { "number", { { "type", "string" } } },
+                                                 { "name", { { "type", "string" } } },
+                                                 { "type", { { "type", "string" } } },
+                                                 { "side", { { "type", "string" } } },
+                                                 { "hidden", { { "type", "boolean" } } } },
+                                               { "number" } ) } } },
+                   { "replace", { { "type", "boolean" } } } },
+                 { "name", "pins" } ),
+            [&aIpc]( const json& a )
+            {
+                ks::SchCreateSymbol req;
+                req.set_name( str( a, "name" ) );
+                req.set_reference( str( a, "reference" ) );
+                req.set_value( str( a, "value" ) );
+                req.set_footprint( str( a, "footprint" ) );
+                req.set_datasheet( str( a, "datasheet" ) );
+                req.set_description( str( a, "description" ) );
+                req.set_lcsc( str( a, "lcsc" ) );
+                req.set_replace( a.value( "replace", false ) );
+
+                for( const json& p : a.value( "pins", json::array() ) )
+                {
+                    if( !p.is_object() )
+                        return fail( "pins: [{\"number\": \"1\", \"name\": \"VCC\", \"type\": \"power_in\"}, ...]" );
+
+                    ks::SchSymbolPin* pin = req.add_pins();
+                    pin->set_number( p.contains( "number" ) && p["number"].is_number() ? std::to_string( p["number"].get<int>() )
+                                                                                       : str( p, "number" ) );
+                    pin->set_name( str( p, "name" ) );
+                    pin->set_type( str( p, "type" ) );
+                    pin->set_side( str( p, "side" ) );
+                    pin->set_hidden( p.value( "hidden", false ) );
+                }
+
+                ks::SchCreateSymbolResponse r;
+                std::string                 err;
+
+                if( !aIpc.Call( req, r, err ) )
+                    return fail( err );
+
+                std::string t = "made " + r.lib_id() + ": " + std::to_string( r.pins() ) + " pins, body "
+                                + num( r.width() ) + " x " + num( r.height() ) + " mm, in " + r.file()
+                                + ( r.registered() ? " (kicadd added to sym-lib-table)" : "" );
+
+                if( !r.note().empty() )
+                    t += "\n  " + r.note();
+
+                return TOOL_RESULT{ t, false };
+            } } );
+
+    aTools.push_back( { "lib_create_footprint",
+            "Make a footprint for a common package from a few numbers, saved to the project library "
+            "\"kicadd\" (kicadd.pretty, added to fp-lib-table on first use): kind chip (size 0201..2512, "
+            "prefix R/C/L/LED), sot23 (pins 3/5/6), soic (pins, pitch 1.27, body 3.9 or 7.5), so (pins, "
+            "pitch, body, span: TSSOP / MSOP), qfn (pins, pitch, body, ep), qfp (pins, pitch, body, span), "
+            "header (pins, rows 1/2, pitch). Pads by IPC-7351-like margins on nominal leads; check them "
+            "against the datasheet's land pattern. Odd shapes: the Footprint Editor.",
+            obj( { { "kind", { { "type", "string" } } },
+                   { "size", { { "type", "string" } } },
+                   { "prefix", { { "type", "string" } } },
+                   { "pins", { { "type", "integer" } } },
+                   { "pitch", { { "type", "number" } } },
+                   { "body", { { "type", "number" } } },
+                   { "span", { { "type", "number" } } },
+                   { "ep", { { "type", "number" } } },
+                   { "rows", { { "type", "integer" } } },
+                   { "name", { { "type", "string" } } },
+                   { "replace", { { "type", "boolean" } } } },
+                 { "kind" } ),
+            [&aIpc]( const json& a )
+            {
+                kicadd::board::FpCreate req;
+                req.set_kind( str( a, "kind" ) );
+                req.set_size( a.contains( "size" ) && a["size"].is_number() ? std::to_string( a["size"].get<int>() )
+                                                                            : str( a, "size" ) );
+
+                if( req.size().size() == 3 )     // 402 -> 0402
+                    req.set_size( "0" + req.size() );
+
+                req.set_prefix( str( a, "prefix" ) );
+                req.set_pins( a.value( "pins", 0 ) );
+                req.set_pitch( a.value( "pitch", 0.0 ) );
+                req.set_body( a.value( "body", 0.0 ) );
+                req.set_span( a.value( "span", 0.0 ) );
+                req.set_ep( a.value( "ep", 0.0 ) );
+                req.set_rows( a.value( "rows", 1 ) );
+                req.set_name( str( a, "name" ) );
+                req.set_replace( a.value( "replace", false ) );
+
+                kicadd::board::FpCreateResponse r;
+                std::string                     err;
+
+                if( !aIpc.Call( req, r, err ) )
+                    return fail( err );
+
+                std::string t = "made " + r.lib_id() + ": " + std::to_string( r.pads() ) + " pads, courtyard "
+                                + num( r.courtyard().x() / 1e6 ) + " x " + num( r.courtyard().y() / 1e6 ) + " mm"
+                                + ( r.registered() ? " (kicadd added to fp-lib-table)" : "" )
+                                + "; use it as footprint \"" + r.lib_id() + "\"";
+
+                if( !r.note().empty() )
+                    t += "\n  " + r.note();
 
                 return TOOL_RESULT{ t, false };
             } } );

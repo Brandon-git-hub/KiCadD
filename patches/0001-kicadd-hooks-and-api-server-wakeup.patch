@@ -1130,7 +1130,7 @@ index f77dfcad..f46b3483 100644
      toolsMenu->AppendSeparator();
      toolsMenu->Add( _( "Compare Project Branches..." ),
 diff --git a/pcbnew/CMakeLists.txt b/pcbnew/CMakeLists.txt
-index 0780a942..d3f966f4 100644
+index 0780a942..14aee5a0 100644
 --- a/pcbnew/CMakeLists.txt
 +++ b/pcbnew/CMakeLists.txt
 @@ -311,6 +311,11 @@ set( PCBNEW_EXPORTERS
@@ -1166,7 +1166,7 @@ index 0780a942..d3f966f4 100644
 +if( KICADD_DIR )
 +    target_include_directories( pcbnew_kiface PRIVATE ${KICADD_INCLUDE_DIRS} )
 +    target_compile_definitions( pcbnew_kiface PRIVATE KICADD )
-+    target_link_libraries( pcbnew_kiface PRIVATE kicadd_proto )
++    target_link_libraries( pcbnew_kiface PRIVATE kicadd_proto ${KICAD_SQLITE3_TARGET} )
 +endif()
 +
  set_target_properties( pcbnew_kiface PROPERTIES

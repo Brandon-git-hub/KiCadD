@@ -1228,6 +1228,132 @@ Tests: `client/sch_edit_e2e.py` (headless: power symbols, moves keep the nets, d
 reconnect a power pin, an L and a T wire, run_erc, lib_register, save + restart, sync_pcb);
 `desktop_sch_e2e.py` step 3c (the same in the Schematic Editor; four Ctrl+Z take them back).
 
+## Review and fabrication: audit, export_fab (2026-11-11)
+
+TODO 6, second batch.
+
+**`export_fab`** writes, from the board in memory (`ExportFab`, `src/pcb/kicadd_fab.cpp`):
+
+| file | how |
+|---|---|
+| `<board>-<layer>.g*` | KiCad's Gerber plotter (`StartPlotBoard` / `PlotBoardLayers`): copper, mask, silk, paste, Edge.Cuts; Protel extensions, X2, netlist attributes, mask subtracted from silk |
+| `<board>-job.gbrjob` | `GERBER_JOBFILE_WRITER` |
+| `<board>-PTH.drl`, `-NPTH.drl` | `EXCELLON_WRITER`: mm, decimal, absolute (as the Gerbers) |
+| `<board>-gerbers.zip` | the above, the upload |
+| `<board>-bom.csv` | `Comment, Designator, Footprint, LCSC Part #`: equal value / footprint / LCSC on one line, natural ref order; DNP, board-only and excluded-from-BOM parts left out |
+| `<board>-cpl.csv` | `Designator, Mid X, Mid Y, Layer, Rotation`: footprint origins in the Gerbers' frame (Y up), KiCad rotations; excluded-from-position parts left out |
+
+The CLI jobs (`kicad-cli pcb export gerbers`) reload the file, so they can't see unsaved
+edits; these run the same plotters on the open board. The MCP tool refills the zones first
+(`refill=false` skips it). It lists the BOM lines without an LCSC number and notes
+through-hole parts in the CPL (JLCPCB places them only with THT assembly) and that JLCPCB's
+preview may turn some packages. pic_programmer (`fab_e2e.py`): with the fills as saved, the
+copper, mask, silk, outline and both drill files are the same as kicad-cli's (`--subtract-soldermask`)
+apart from dates; an unsaved move shows in the CPL. `m5_e2e`: the LCSC parts' numbers (C6186,
+C14663 for C1,C2, C25804) reach the BOM, the library resistor is listed without one.
+
+**`audit`** (`SchAudit` on the schematic; distances on the board through `QueryNet`):
+
+- **decoupling**: each IC (a part with power-input pins, not a connector) per supply net: a
+  capacitor (C, two pins) from that net to a ground net (GND / VSS / 0V / EARTH in the name), or
+  a warning; fewer capacitors than power pins is a note (a multi-unit part's shared pin counts
+  once). On the board: the nearest such capacitor of each IC power pin, pad to pad, flagged
+  beyond `max_decap_mm` (5).
+- **power**: every supply net (named by a power symbol, or with power pins) has a source: a
+  power-output pin, a regulator (by name) or a connector pin, else a PWR_FLAG.
+- **esd**: connectors a cable from outside plugs into (USB, RJ45, HDMI, D-Sub, barrel jack,
+  terminal block, RF, SFP, ... by value / library / footprint): their non-ground nets without a
+  TVS / ESD part (by name: TVS, ESD, PESD, SMAJ, USBLC, TPD, ...). Headers, sockets,
+  board-to-board and module slots are named in one line, not checked.
+- **net**: nets with one pin (a misspelt label, a missing connection).
+
+pic_programmer: five ICs' decoupling caps 10–33 mm from their pins (the demo's caps sit
+together near the regulator), the DB9 and the power terminal without protection, the ZIF
+sockets and mounting holes not checked. Jetson AGX Thor baseboard: 74 ICs, all decoupled,
+farthest cap 4.2 mm; the USB-C connectors protected; only the SFP cage nets noted.
+
+## lcsc_search: parts by specification (2026-11-11)
+
+TODO 6(h). The JLCPCB API application was refused (individual developers), so the catalogue
+comes from [jlcparts](https://github.com/yaqwsx/jlcparts) (MIT), which scrapes it daily, in two
+stages.
+
+**Stage 1, the parts index.** `ci/build_parts_index.py` (standard library only) downloads
+jlcparts' split zip (`cache.zip` + `cache.z01`..: 282 MB, one deflated `cache.sqlite3` of
+2.48 GB, inflated straight through the volumes), keeps the 552k parts in stock and writes a
+SQLite file with numbers taken from the attributes: `value` + `unit` (Resistance Ω, Capacitance
+F, Inductance H), `voltage` (rating), `tolerance` %, `dielectric` (X7R, X5R, C0G...), `power`,
+`current`, `vout`, the first price break, basic / preferred, JLCPCB stock; an FTS5 index over
+description, part number, package and category. 180 MB, **46 MB as `parts.db.gz`**, built in
+about 30 s. `.github/workflows/parts-index.yml` builds it daily (03:30 UTC) and publishes it as
+the assets of the pre-release `parts-index` (not a version; the Windows workflow only builds
+`v*` tags). kicadd downloads it on the first `lcsc_search` into the user cache
+(`<cache>/kicadd/parts.db`) and again when it is over a week old (`update` forces it; a failed
+update keeps the old one). `KICADD_PARTS_URL` points elsewhere, `KICADD_PARTS_DB` uses a file
+as it is.
+
+**The query** (`LcscSearch`, `src/lcsc/kicadd_parts.cpp`, SQLite linked into pcbnew's kiface:
+already a KiCad dependency; vcpkg's has FTS5): `value` ("100nF", "10k", "4k7", "2.2uH": the
+unit from the suffix, from `category` resistor / capacitor / inductor, or Ω for k / M) within
+0.1 %, `package` (exact, or `SOT-23` for `SOT-23-3`), `tolerance` at most, `voltage_min`,
+`dielectric`, `basic_only`, `min_stock`, `keyword` (each word a prefix in the full-text index:
+"AMS1117" finds "AMS1117-3.3"), another `category` word against JLCPCB's categories. Basic
+first, then preferred (no extended-part fee), then by stock; a few milliseconds.
+
+**Stage 2, live.** The first `live` hits (3) go through `lcsc_fetch`'s EasyEDA request: today's
+LCSC stock, Basic / Extended, JLCPCB assembly. (The JLCPCB stock shown from the index is of its
+date; LCSC's is now.)
+
+| query | first hit |
+|---|---|
+| 10k, 0603, 1 % | C25804 BASIC (151 matches) |
+| 100nF, 0402, X5R, ≥ 16 V | extended parts only: no basic X5R (C1525 is X7R) |
+| capacitor 100n, 0402, basic_only | C307331, C1525 |
+| keyword "AMS1117 3.3" | C6186 BASIC |
+
+`client/search_e2e.py`: the index from a local HTTP server (`KICADD_PARTS_URL`), unpacked in
+the cache, the searches above, a bad value refused, the live check (network).
+
+**Also: the LCSC part number no longer comes with a library footprint.** `m5_e2e`'s new BOM
+check found it: footprints fetched from LCSC were saved to `lcsc.pretty` with their LCSC field,
+so a 1k resistor on the `R0603` fetched for the 10k C25804 went into the BOM as C25804. The
+library copy is now saved without it, and `sync_pcb` clears the field on footprints whose
+symbol has no LCSC number (libraries saved before).
+
+## New symbols and footprints: lib_create_symbol, lib_create_footprint (2026-11-11)
+
+TODO 6(i)(j). Both write to a project library named `kicadd` (`kicadd.kicad_sym`,
+`kicadd.pretty` next to the project), added to the project's table on first use through the
+same `kicadd_libtable` code as `lib_register`.
+
+**`lib_create_symbol`** (`SchCreateSymbol`): a box symbol from `pins: [{number, name, type,
+side, hidden}]`. Types are KiCad's electrical types (default passive); sides left / right / top /
+bottom (default: inputs and power inputs left, the rest right), in the order given. The body is
+sized from the longest pin names and the pin counts, rounded so every pin lands on the 2.54 mm
+grid; 2.54 mm pins; Reference above and Value below, left aligned. Built as an s-expression of
+our own and parsed (`ParseLibSymbols`), saved with `SCH_IO_KICAD_SEXPR::SaveSymbol`; a name
+that exists is refused unless `replace`, a pin number given twice or an unknown type refused.
+
+**`lib_create_footprint`** (`FpCreate`, `src/pcb/kicadd_fpgen.cpp`): `chip` (0201–2512,
+prefix R / C / L / LED / D), `sot23` (3 / 5 / 6), `soic` (pitch 1.27, body 3.9 / 7.5), `so`
+(any pitch, body, lead span: TSSOP, MSOP), `qfn` (pins, pitch, body, exposed pad), `qfp`,
+`header` (1 / 2 rows, pitch). Pads follow the IPC-7351 idea, a nominal lead plus toe, heel and
+side margins, with margins of our own (not KiCad's library, which is CC-BY-SA); pad width
+min(0.6, 0.62 × pitch, pitch − 0.2). Courtyard 0.25 mm around pads and body (0.5 for
+through-hole), body on F.Fab with the pin-1 corner cut, silk where clear of the pads, a pin-1
+dot. The `.kicad_mod` is loaded back before the answer (a file KiCad can't read is removed).
+
+| footprint | pad 1 (ours) | KiCad's |
+|---|---|---|
+| SOIC-8 3.9 mm | -2.48, -1.905, 1.94 × 0.6 | -2.475, -1.905, 1.95 × 0.6 |
+| SOT-23-5 | ±1.135, 1.33 × 0.6 | ±1.1375, 1.325 × 0.6 |
+| R 0603 | ±0.825, 0.79 × 0.96 | ±0.825, 0.8 × 0.95 |
+
+`client/lib_e2e.py`: a 6-pin regulator symbol (pins on their sides and types after
+`sch_add_part`), refusals (same name, a pin twice), eight footprints with the right pad counts,
+SOIC-8 pad 1 against KiCad's within 0.1 mm, and a design using `kicadd:R_0603` through
+`sync_pcb` with no DRC library warnings.
+
 ## 待做清單 (TODO)
 
 2026-11-10，`v0.1.0-alpha.2` 在 Windows 上試用後回報；以下已在 Linux 上用 `pic_programmer` 重現確認，**尚未實作**。
@@ -1285,7 +1411,7 @@ reconnect a power pin, an L and a T wire, run_erc, lib_register, save + restart,
      做法比照 `run_drc`。`kicad-cli sch erc` 只讀檔案。
    * (e) `lib_register`：把專案裡的 `.kicad_sym` / `.pretty` 加進 `sym-lib-table` / `fp-lib-table`。
 
-   **第二批：審查與製造輸出**
+   **第二批：審查與製造輸出（已完成 2026-11-11，見「Review and fabrication: audit, export_fab」）**
    * (f) `audit`：用規則檢查，輸出報告，判斷交給 Agent。
      - 去耦電容：IC 的電源腳，同網路上有沒有電容；在 PCB 上算出電容到腳的距離。
      - 電源：每個電源網路有沒有來源（穩壓器或連接器），有沒有只接一端的網路。
@@ -1294,7 +1420,8 @@ reconnect a power pin, an L and a T wire, run_erc, lib_register, save + restart,
      直接處理編輯器裡的板子，不用先存檔；這些匯出程式本版都有保留。
 
    **第三批：JLCPCB 與元件庫**
-   * (h) **依規格搜料 `lcsc_search`（兩階段）。** JLCPCB 官方 API 的申請被拒（個人開發者門檻高），
+   * (h) **（已完成 2026-11-11，見「lcsc_search: parts by specification」；CI 的 parts-index 要推上 main
+     後才會跑）依規格搜料 `lcsc_search`（兩階段）。** JLCPCB 官方 API 的申請被拒（個人開發者門檻高），
      改用 [jlcparts](https://github.com/yaqwsx/jlcparts)（MIT）每天更新的資料：
      `https://yaqwsx.github.io/jlcparts/data/cache.zip` + `cache.z01`…（2026-11-11：5 個 50 MB 分卷 +
      31.8 MB，共約 282 MB；解壓後 `cache.sqlite3` 2.48 GB）。2026-11-11 下載實測：
@@ -1315,8 +1442,8 @@ reconnect a power pin, an L and a T wire, run_erc, lib_register, save + restart,
        庫存與價格；注意那是 LCSC 庫存，JLC 組裝庫存以索引日期的數字為準。
      - 結果寫明資料日期與來源（jlcparts），不附帶也不轉發零件資料以外的東西。
      - PCB 報價（官方 API）暫不做。
-   * (i) `lib_create_symbol`：給腳位清單（號碼、名稱、類型、方向），產生方框符號。
-   * (j) 參數化封裝：只做 SOIC / QFN / QFP / 0402–1206 / 排針等常見封裝；異形封裝仍由使用者在
+   * (i)（已完成 2026-11-11）`lib_create_symbol`：給腳位清單（號碼、名稱、類型、方向），產生方框符號。
+   * (j)（已完成 2026-11-11，見「New symbols and footprints」）參數化封裝：只做 SOIC / QFN / QFP / 0402–1206 / 排針等常見封裝；異形封裝仍由使用者在
      編輯器裡畫，立創有的零件優先用 `lcsc_fetch`。
 
 7. **（(a)–(d) 已完成 2026-11-11，見「After the alpha.4 trial」；另修正一個桌面版當掉：Agent 新增 →

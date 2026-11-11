@@ -45,6 +45,12 @@
 #include <ratsnest/ratsnest_data.h>
 #include <netlist_reader/board_netlist_updater.h>
 #include "pcb/kicadd_autoplace.h"
+#include "pcb/kicadd_fab.h"
+#include "lcsc/kicadd_parts.h"
+#include "pcb/kicadd_fpgen.h"
+#include "common/kicadd_libtable.h"
+#include <pcb_io/kicad_sexpr/pcb_io_kicad_sexpr.h>
+#include <wx/ffile.h>
 #include <project/net_settings.h>
 #include <netclass.h>
 #include <pcb_text.h>
@@ -221,6 +227,9 @@ KICADD_HANDLER_PCB::KICADD_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext ) 
     registerHandler<MoveDelta, MoveResponse>( &KICADD_HANDLER_PCB::handleMoveDelta );
     registerHandler<DeleteFootprints, MoveResponse>( &KICADD_HANDLER_PCB::handleDeleteFootprints );
     registerHandler<DeleteTracks, MoveResponse>( &KICADD_HANDLER_PCB::handleDeleteTracks );
+    registerHandler<ExportFab, ExportFabResponse>( &KICADD_HANDLER_PCB::handleExportFab );
+    registerHandler<LcscSearch, LcscSearchResponse>( &KICADD_HANDLER_PCB::handleLcscSearch );
+    registerHandler<FpCreate, FpCreateResponse>( &KICADD_HANDLER_PCB::handleFpCreate );
     registerHandler<AddFootprint, MoveResponse>( &KICADD_HANDLER_PCB::handleAddFootprint );
     registerHandler<FetchLcsc, FetchLcscResponse>( &KICADD_HANDLER_PCB::handleFetchLcsc );
     registerHandler<SyncFromSchematic, SyncFromSchematicResponse>( &KICADD_HANDLER_PCB::handleSyncFromSchematic );
@@ -1067,6 +1076,138 @@ KICADD_HANDLER_PCB::handleDeleteFootprints( const HANDLER_CONTEXT<DeleteFootprin
 
     out.set_history_label( entry.label );
     record( std::move( entry ) );
+    return out;
+}
+
+
+HANDLER_RESULT<FpCreateResponse>
+KICADD_HANDLER_PCB::handleFpCreate( const HANDLER_CONTEXT<FpCreate>& aCtx )
+{
+    BOARD* b = board();
+
+    if( !b )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
+
+    std::string name, text, err;
+    int         pads = 0;
+
+    if( !kicadd::MakeFootprint( aCtx.Request, name, text, pads, err ) )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, err ) );
+
+    if( name.find_first_of( ":/\\\"" ) != std::string::npos )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "name must not contain : / \\ \"" ) );
+
+    wxString projectDir = b->GetProject() && !b->GetProject()->GetProjectPath().IsEmpty()
+                                  ? b->GetProject()->GetProjectPath()
+                                  : wxFileName( b->GetFileName() ).GetPath();
+    wxFileName lib = wxFileName::DirName( projectDir );
+    lib.AppendDir( wxS( "kicadd.pretty" ) );
+
+    if( !lib.DirExists() && !wxFileName::Mkdir( lib.GetPath(), wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL ) )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "cannot create " + lib.GetPath().ToStdString() ) );
+
+    wxFileName file( lib.GetPath(), wxString::FromUTF8( name ), wxS( "kicad_mod" ) );
+
+    if( file.FileExists() && !aCtx.Request.replace() )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
+                                          "kicadd:" + name + " exists already (replace=true overwrites it)" ) );
+
+    {
+        wxFFile out( file.GetFullPath(), wxS( "wb" ) );
+
+        if( !out.IsOpened() || out.Write( text.data(), text.size() ) != text.size() )
+            return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "cannot write " + file.GetFullPath().ToStdString() ) );
+    }
+
+    FpCreateResponse out;
+
+    // read it back: the file has to be one KiCad loads
+    try
+    {
+        PCB_IO_KICAD_SEXPR         io;
+        std::unique_ptr<FOOTPRINT> fp( io.FootprintLoad( lib.GetPath(), wxString::FromUTF8( name ) ) );
+
+        if( !fp )
+            throw std::runtime_error( "not loaded" );
+
+        fp->BuildCourtyardCaches();
+        BOX2I cy = fp->GetCourtyard( F_CrtYd ).BBox();
+        out.mutable_courtyard()->set_x( cy.GetWidth() );
+        out.mutable_courtyard()->set_y( cy.GetHeight() );
+        out.set_pads( (int) fp->Pads().size() );
+    }
+    catch( const std::exception& e )
+    {
+        wxRemoveFile( file.GetFullPath() );
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, std::string( "footprint not made: " ) + e.what() ) );
+    }
+    catch( const IO_ERROR& e )
+    {
+        wxRemoveFile( file.GetFullPath() );
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "footprint not made: " + e.What().ToStdString() ) );
+    }
+
+    std::string note;
+
+    switch( kicadd::AddProjectLibrary( projectDir, false, "kicadd", "${KIPRJMOD}/kicadd.pretty",
+                                       "footprints made by KiCadD", note ) )
+    {
+    case kicadd::LIBTABLE_RESULT::ADDED:    out.set_registered( true ); break;
+    case kicadd::LIBTABLE_RESULT::CONFLICT: note = "the project has another library named kicadd"; break;
+    default: break;
+    }
+
+    kicadd::ReloadProjectLibrary( false, "kicadd" );
+    out.set_lib_id( "kicadd:" + name );
+    out.set_file( file.GetFullPath().ToStdString() );
+    out.set_note( note );
+    return out;
+}
+
+
+HANDLER_RESULT<LcscSearchResponse>
+KICADD_HANDLER_PCB::handleLcscSearch( const HANDLER_CONTEXT<LcscSearch>& aCtx )
+{
+    LcscSearchResponse out;
+    std::string        err;
+
+    // runs on the editor's thread: the first call downloads the index (seconds); later ones are
+    // milliseconds plus the live checks
+    if( !kicadd::lcsc::SearchParts( aCtx.Request, out, err ) )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, err ) );
+
+    return out;
+}
+
+
+HANDLER_RESULT<ExportFabResponse>
+KICADD_HANDLER_PCB::handleExportFab( const HANDLER_CONTEXT<ExportFab>& aCtx )
+{
+    BOARD* b = board();
+
+    if( !b )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
+
+    wxString dir = wxString::FromUTF8( aCtx.Request.dir() );
+    wxFileName boardFile( b->GetFileName() );
+
+    if( dir.IsEmpty() )
+    {
+        dir = boardFile.GetPath() + wxFileName::GetPathSeparator() + wxS( "fab" );
+    }
+    else if( !wxFileName( dir ).IsAbsolute() )
+    {
+        wxFileName d = wxFileName::DirName( dir );
+        d.MakeAbsolute( boardFile.GetPath() );
+        dir = d.GetPath();
+    }
+
+    ExportFabResponse out;
+    std::string       err;
+
+    if( !kicadd::ExportFab( b, dir, !aCtx.Request.no_zip(), out, err ) )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, err ) );
+
     return out;
 }
 
@@ -2395,6 +2536,21 @@ KICADD_HANDLER_PCB::handleSyncFromSchematic( const HANDLER_CONTEXT<SyncFromSchem
     updater->SetTransferGroups( false );
     updater->SetOverrideLocks( false );
     updater->SetUpdateFields( true );
+
+    // A footprint from the LCSC library may still carry the part number it was fetched for
+    // (libraries saved before that was fixed): a symbol without an LCSC number clears it, so a
+    // 1k resistor on the 10k's R0603 doesn't go into the BOM as the 10k.
+    for( unsigned i = 0; i < netlist.GetCount(); ++i )
+    {
+        COMPONENT* comp = netlist.GetComponent( i );
+        auto       fields = comp->GetFields();
+
+        if( fields.find( wxS( "LCSC" ) ) == fields.end() )
+        {
+            fields[wxS( "LCSC" )] = wxEmptyString;
+            comp->SetFields( fields );
+        }
+    }
 
     bool ok = updater->UpdateNetlist( netlist );
 

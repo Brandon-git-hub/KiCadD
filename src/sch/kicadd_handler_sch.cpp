@@ -302,6 +302,8 @@ KICADD_HANDLER_SCH::KICADD_HANDLER_SCH( std::shared_ptr<SCH_CONTEXT> aContext ) 
     registerHandler<SchMove, SchPartResponse>( &KICADD_HANDLER_SCH::handleMove );
     registerHandler<SchWire, SchWireResponse>( &KICADD_HANDLER_SCH::handleWire );
     registerHandler<SchRunErc, SchErcResponse>( &KICADD_HANDLER_SCH::handleRunErc );
+    registerHandler<SchAudit, SchAuditResponse>( &KICADD_HANDLER_SCH::handleAudit );
+    registerHandler<SchCreateSymbol, SchCreateSymbolResponse>( &KICADD_HANDLER_SCH::handleCreateSymbol );
     registerHandler<RegisterLibrary, RegisterLibraryResponse>( &KICADD_HANDLER_SCH::handleRegisterLibrary );
 }
 
@@ -2413,6 +2415,646 @@ KICADD_HANDLER_SCH::handleRegisterLibrary( const HANDLER_CONTEXT<RegisterLibrary
         out.set_items( (int) wxDir::GetAllFiles( full, &files, wxS( "*.kicad_mod" ), wxDIR_FILES ) );
     }
 
+    out.set_note( note );
+    return out;
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// Audit
+
+namespace
+{
+
+std::string upper( std::string s )
+{
+    std::transform( s.begin(), s.end(), s.begin(), ::toupper );
+    return s;
+}
+
+/// "C12" -> "C", "U3A" -> "U"
+std::string refPrefix( const std::string& aRef )
+{
+    size_t i = 0;
+
+    while( i < aRef.size() && std::isalpha( static_cast<unsigned char>( aRef[i] ) ) )
+        ++i;
+
+    return upper( aRef.substr( 0, i ) );
+}
+
+std::string bareNet( const std::string& aNet )
+{
+    size_t slash = aNet.rfind( '/' );
+    return slash == std::string::npos ? aNet : aNet.substr( slash + 1 );
+}
+
+} // namespace
+
+
+HANDLER_RESULT<SchAuditResponse> KICADD_HANDLER_SCH::handleAudit( const HANDLER_CONTEXT<SchAudit>& aCtx )
+{
+    if( !schematic() )
+        return tl::unexpected( makeError( ApiStatusCode::AS_UNHANDLED, "no schematic open" ) );
+
+    rebuildConnectivity();
+
+    struct PIN_INFO
+    {
+        std::string ref, number, name, type;
+    };
+
+    struct PART
+    {
+        std::string ref, value, libId, footprint, description;
+        int         pins = 0;
+        bool        powerIn = false;
+    };
+
+    std::map<std::string, std::vector<PIN_INFO>> nets;        // net -> its part pins
+    std::map<std::string, PART>                  parts;
+    std::set<std::string>                        powerSymbolNets;
+    std::set<std::string>                        flagged;     // PWR_FLAG on the net
+
+    for( const SCH_SHEET_PATH& sheet : schematic()->Hierarchy() )
+    {
+        for( SCH_ITEM* item : sheet.LastScreen()->Items().OfType( SCH_SYMBOL_T ) )
+        {
+            auto*       symbol = static_cast<SCH_SYMBOL*>( item );
+            std::string ref = str( symbol->GetRef( &sheet ) );
+
+            if( symbol->IsPower() || ( !ref.empty() && ref[0] == '#' ) )
+            {
+                for( SCH_PIN* pin : symbol->GetPins( &sheet ) )
+                {
+                    std::string net = pinNet( pin, sheet );
+
+                    if( net.empty() )
+                        continue;
+
+                    if( upper( str( symbol->GetLibId().GetLibItemName().wx_str() ) ).find( "PWR_FLAG" ) != std::string::npos )
+                        flagged.insert( net );
+                    else
+                        powerSymbolNets.insert( net );
+                }
+
+                continue;
+            }
+
+            PART& part = parts[ref];
+            part.ref = ref;
+            part.value = str( symbol->GetField( FIELD_T::VALUE )->GetText() );
+            part.libId = str( symbol->GetLibId().Format().wx_str() );
+            part.footprint = str( symbol->GetField( FIELD_T::FOOTPRINT )->GetText() );
+
+            if( const SCH_FIELD* d = symbol->GetField( FIELD_T::DESCRIPTION ) )
+                part.description = str( d->GetText() );
+
+            for( SCH_PIN* pin : symbol->GetPins( &sheet ) )
+            {
+                part.pins++;
+                std::string type = pinType( pin );
+                part.powerIn |= type == "power input" || type == "power_in";
+
+                std::string net = pinNet( pin, sheet );
+
+                if( !net.empty() )
+                    nets[net].push_back( { ref, str( pin->GetNumber() ), str( pin->GetShownName() ), type } );
+            }
+        }
+    }
+
+    auto isGround = [&]( const std::string& aNet ) { return groundName( bareNet( aNet ) ); };
+
+    auto isPowerType = []( const std::string& t ) { return t == "power input" || t == "power_in"; };
+    auto isOutType = []( const std::string& t ) { return t == "power output" || t == "power_out"; };
+
+    // supply nets: a power symbol names them, or power pins are on them
+    std::set<std::string> supplies;
+
+    for( const auto& [net, pins] : nets )
+    {
+        if( isGround( net ) )
+            continue;
+
+        bool power = powerSymbolNets.count( net ) > 0;
+
+        for( const PIN_INFO& p : pins )
+            power |= isPowerType( p.type ) || isOutType( p.type );
+
+        if( power )
+            supplies.insert( net );
+    }
+
+    auto isCap = [&]( const PART& p ) { return refPrefix( p.ref ) == "C" && p.pins == 2; };
+
+    auto isConnector = [&]( const PART& p )
+    {
+        std::string pre = refPrefix( p.ref );
+        std::string lib = upper( p.libId );
+
+        if( pre == "U" || pre == "IC" )
+            return false;
+
+        return pre == "J" || pre == "P" || pre == "CN" || pre == "USB" || pre == "X" || lib.find( "CONN" ) != std::string::npos;
+    };
+
+    // a connector a cable from outside plugs into (ESD matters there), not a header, a socket,
+    // a board-to-board or a module slot
+    auto isExternal = [&]( const PART& p )
+    {
+        std::string all = upper( p.value + " " + p.libId + " " + p.footprint + " " + p.description );
+
+        for( const char* key : { "USB", "RJ45", "RJ11", "RJ12", "8P8C", "HDMI", "DISPLAYPORT", "DSUB", "D-SUB", "DB9",
+                                 "DB15", "DB25", "DE9", "BARREL", "JACK", "AUDIO", "SMA", "BNC", "COAX", "U.FL", "SFP",
+                                 "TERMINALBLOCK", "TERMINAL_BLOCK", "SCREW", "PHOENIX", "XT30", "XT60", "DC_POWER",
+                                 "CAN_", "RS485", "RS232" } )
+        {
+            if( all.find( key ) != std::string::npos )
+                return true;
+        }
+
+        return false;
+    };
+
+    auto isProtection = [&]( const PART& p )
+    {
+        std::string all = upper( p.value + " " + p.libId + " " + p.footprint + " " + p.description );
+
+        for( const char* key : { "TVS", "ESD", "PESD", "SMAJ", "SMBJ", "SMCJ", "SMF", "USBLC", "SRV05", "TPD", "PRTR",
+                                 "ESDA", "RCLAMP", "TRANSIL", "SP05", "LESD", "ULC" } )
+        {
+            if( all.find( key ) != std::string::npos )
+                return true;
+        }
+
+        return false;
+    };
+
+    auto isRegulator = [&]( const PART& p )
+    {
+        std::string all = upper( p.value + " " + p.libId + " " + p.description );
+
+        for( const char* key : { "REGULATOR", "LDO", "1117", "BUCK", "BOOST", "DC-DC", "DCDC", "LM78", "78L", "7805",
+                                 "MCP170", "XC62", "RT9", "TPS", "AP2" } )
+        {
+            if( all.find( key ) != std::string::npos )
+                return true;
+        }
+
+        return false;
+    };
+
+    SchAuditResponse out;
+
+    auto finding = [&]( const char* aCat, const char* aSev, const std::string& aMsg, std::vector<std::string> aRefs )
+    {
+        SchAuditFinding* f = out.add_findings();
+        f->set_category( aCat );
+        f->set_severity( aSev );
+        f->set_message( aMsg );
+
+        for( const std::string& r : aRefs )
+            f->add_refs( r );
+    };
+
+    // --- decoupling: every IC power pin on a supply wants a capacitor from that net to ground
+    int ics = 0;
+
+    for( const auto& [ref, part] : parts )
+    {
+        if( !part.powerIn || isCap( part ) || part.pins < 3 || isConnector( part ) )
+            continue;
+
+        ics++;
+        std::map<std::string, std::vector<std::string>> pinsByNet;
+
+        for( const auto& [net, pins] : nets )
+        {
+            if( !supplies.count( net ) )
+                continue;
+
+            for( const PIN_INFO& p : pins )
+            {
+                std::vector<std::string>& list = pinsByNet[net];
+
+                if( p.ref == ref && isPowerType( p.type ) && std::find( list.begin(), list.end(), p.number ) == list.end() )
+                    list.push_back( p.number );
+            }
+
+            if( pinsByNet[net].empty() )
+                pinsByNet.erase( net );
+        }
+
+        for( const auto& [net, numbers] : pinsByNet )
+        {
+            std::vector<std::string> caps;
+
+            for( const PIN_INFO& p : nets[net] )
+            {
+                auto it = parts.find( p.ref );
+
+                if( it == parts.end() || !isCap( it->second ) )
+                    continue;
+
+                // its other pin on ground
+                bool toGround = false;
+
+                for( const auto& [otherNet, otherPins] : nets )
+                {
+                    if( !isGround( otherNet ) )
+                        continue;
+
+                    for( const PIN_INFO& q : otherPins )
+                        toGround |= q.ref == p.ref;
+                }
+
+                if( toGround )
+                {
+                    caps.push_back( p.ref );
+
+                    for( const std::string& n : numbers )
+                    {
+                        SchDecapPair* pair = out.add_decaps();
+                        pair->set_ic( ref + "." + n );
+                        pair->set_net( net );
+                        pair->set_cap( p.ref + "." + p.number );
+                    }
+                }
+            }
+
+            std::string pinText;
+
+            for( const std::string& n : numbers )
+                pinText += ( pinText.empty() ? "" : ", " ) + n;
+
+            if( caps.empty() )
+            {
+                finding( "decoupling", "warning",
+                         ref + " (" + part.value + ") power pin(s) " + pinText + " on " + net
+                                 + ": no capacitor from " + net + " to ground",
+                         { ref } );
+            }
+            else if( caps.size() < numbers.size() )
+            {
+                std::string capText;
+
+                for( const std::string& c : caps )
+                    capText += ( capText.empty() ? "" : " " ) + c;
+
+                finding( "decoupling", "info",
+                         ref + " has " + std::to_string( numbers.size() ) + " power pins on " + net + " (" + pinText
+                                 + ") and " + std::to_string( caps.size() ) + " capacitor(s) there (" + capText
+                                 + "): usually one per pin",
+                         { ref } );
+            }
+        }
+    }
+
+    // --- power: every supply has a source
+    for( const std::string& net : supplies )
+    {
+        std::vector<std::string> sources;
+
+        for( const PIN_INFO& p : nets[net] )
+        {
+            auto it = parts.find( p.ref );
+
+            if( isOutType( p.type ) || ( it != parts.end() && ( isConnector( it->second ) || isRegulator( it->second ) )
+                                         && !isPowerType( p.type ) ) )
+            {
+                sources.push_back( p.ref + "." + p.number );
+            }
+        }
+
+        if( sources.empty() && !flagged.count( net ) )
+        {
+            std::vector<std::string> users;
+
+            for( const PIN_INFO& p : nets[net] )
+                users.push_back( p.ref + "." + p.number );
+
+            finding( "power", "warning",
+                     "supply " + net + " has no source: no power output pin, regulator or connector on it ("
+                             + std::to_string( users.size() ) + " pin(s) use it). If it comes from off this "
+                             "schematic, a PWR_FLAG says so",
+                     users );
+        }
+    }
+
+    // --- ESD: nets that leave the board through a connector
+    int                      connectors = 0;
+    std::vector<std::string> internal;
+
+    for( const auto& [ref, part] : parts )
+    {
+        if( !isConnector( part ) )
+            continue;
+
+        connectors++;
+
+        if( !isExternal( part ) )
+        {
+            internal.push_back( ref );
+            continue;
+        }
+
+        std::vector<std::string> bare;
+
+        for( const auto& [net, pins] : nets )
+        {
+            bool onConnector = std::any_of( pins.begin(), pins.end(), [&]( const PIN_INFO& p ) { return p.ref == ref; } );
+
+            if( !onConnector || isGround( net ) )
+                continue;
+
+            bool protectedNet = std::any_of( pins.begin(), pins.end(),
+                                             [&]( const PIN_INFO& p )
+                                             {
+                                                 auto it = parts.find( p.ref );
+                                                 return it != parts.end() && isProtection( it->second );
+                                             } );
+
+            if( !protectedNet )
+                bare.push_back( net );
+        }
+
+        if( !bare.empty() )
+        {
+            std::string list;
+
+            for( size_t i = 0; i < bare.size() && i < 8; ++i )
+                list += ( i ? ", " : "" ) + bare[i];
+
+            if( bare.size() > 8 )
+                list += ", ... (" + std::to_string( bare.size() ) + ")";
+
+            finding( "esd", "info",
+                     ref + " (" + part.value + "): " + std::to_string( bare.size() )
+                             + " net(s) without a TVS / ESD part: " + list
+                             + " (a cable from outside plugs in here)",
+                     { ref } );
+        }
+    }
+
+    if( !internal.empty() )
+    {
+        std::string list;
+
+        for( size_t i = 0; i < internal.size() && i < 10; ++i )
+            list += ( i ? " " : "" ) + internal[i];
+
+        if( internal.size() > 10 )
+            list += " ... (" + std::to_string( internal.size() ) + ")";
+
+        finding( "esd", "info",
+                 "not checked (headers, sockets, board-to-board, module slots: no outside cable by their "
+                 "names): " + list + "; if one does take a cable, its nets want protection too",
+                 internal );
+    }
+
+    // --- nets with one pin: a label typo, or a pin connected to nothing
+    for( const auto& [net, pins] : nets )
+    {
+        if( pins.size() == 1 && !powerSymbolNets.count( net ) && !flagged.count( net ) )
+        {
+            finding( "net", "warning",
+                     "net " + net + " has one pin only (" + pins[0].ref + "." + pins[0].number
+                             + "): a misspelt label, or a missing connection",
+                     { pins[0].ref } );
+        }
+    }
+
+    out.set_ics( ics );
+    out.set_power_nets( (int) supplies.size() );
+    out.set_connectors( connectors );
+    return out;
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// New symbols
+
+HANDLER_RESULT<SchCreateSymbolResponse>
+KICADD_HANDLER_SCH::handleCreateSymbol( const HANDLER_CONTEXT<SchCreateSymbol>& aCtx )
+{
+    if( !m_context )
+        return tl::unexpected( makeError( ApiStatusCode::AS_UNHANDLED, "no project" ) );
+
+    const SchCreateSymbol& req = aCtx.Request;
+    const std::string      name = req.name();
+
+    if( name.empty() || name.find_first_of( ":/\\\"" ) != std::string::npos )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "name is required (no : / \\ \")" ) );
+
+    if( req.pins().empty() )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "pins are required" ) );
+
+    static const std::set<std::string> types = { "input",       "output",         "bidirectional", "tri_state",
+                                                 "passive",     "power_in",       "power_out",     "open_collector",
+                                                 "open_emitter", "no_connect",    "unspecified",   "free" };
+
+    struct PIN
+    {
+        std::string number, name, type, side;
+        bool        hidden;
+    };
+
+    std::vector<PIN>      pins;
+    std::set<std::string> numbers;
+
+    for( const SchSymbolPin& p : req.pins() )
+    {
+        PIN pin{ p.number(), p.name().empty() ? "~" : p.name(), p.type().empty() ? "passive" : p.type(), p.side(),
+                 p.hidden() };
+
+        std::transform( pin.type.begin(), pin.type.end(), pin.type.begin(), ::tolower );
+        std::replace( pin.type.begin(), pin.type.end(), ' ', '_' );
+
+        if( pin.type == "bidi" )
+            pin.type = "bidirectional";
+
+        if( pin.number.empty() )
+            return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "every pin needs a number" ) );
+
+        if( !numbers.insert( pin.number ).second )
+            return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "pin number " + pin.number + " twice" ) );
+
+        if( !types.count( pin.type ) )
+            return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
+                                              "pin " + pin.number + ": type " + pin.type + " unknown (input, output, "
+                                              "bidirectional, tri_state, passive, power_in, power_out, open_collector, "
+                                              "open_emitter, no_connect, unspecified)" ) );
+
+        if( pin.side.empty() )
+            pin.side = ( pin.type == "input" || pin.type == "power_in" ) ? "left" : "right";
+
+        if( pin.side == "up" )
+            pin.side = "top";
+
+        if( pin.side == "down" )
+            pin.side = "bottom";
+
+        if( pin.side != "left" && pin.side != "right" && pin.side != "top" && pin.side != "bottom" )
+            return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
+                                              "pin " + pin.number + ": side is left, right, top or bottom" ) );
+
+        pins.push_back( pin );
+    }
+
+    // Layout on the 2.54 mm grid: names inside the box, numbers on the pins
+    std::map<std::string, std::vector<const PIN*>> bySide;
+
+    for( const PIN& p : pins )
+        bySide[p.side].push_back( &p );
+
+    const double grid = 2.54, len = 2.54;
+    auto         nameWidth = [&]( const std::vector<const PIN*>& aPins )
+    {
+        size_t n = 0;
+
+        for( const PIN* p : aPins )
+            n = std::max( n, p->name == "~" ? 0 : p->name.size() );
+
+        return n * 1.27 * 0.75;     // 1.27 mm text, about 0.75 of it per character
+    };
+
+    const size_t rows = std::max( bySide["left"].size(), bySide["right"].size() );
+    const size_t cols = std::max( bySide["top"].size(), bySide["bottom"].size() );
+    double       width = std::max( { nameWidth( bySide["left"] ) + nameWidth( bySide["right"] ) + 2 * grid,
+                                     ( cols + 1 ) * grid, 2 * grid } );
+    double       height = std::max( { ( rows + 1 ) * grid, 2 * grid,
+                                      ( !bySide["top"].empty() || !bySide["bottom"].empty() ) ? 4 * grid : 0.0 } );
+
+    width = std::ceil( width / ( 2 * grid ) ) * 2 * grid;      // the pins land on the grid
+    height = std::ceil( height / ( 2 * grid ) ) * 2 * grid;
+
+    auto fmt = []( double v )
+    {
+        char buf[32];
+        std::snprintf( buf, sizeof( buf ), "%.4g", std::abs( v ) < 1e-9 ? 0.0 : v );
+        return std::string( buf );
+    };
+
+    const std::string font = "(effects (font (size 1.27 1.27)))";
+    const std::string hiddenFont = "(effects (font (size 1.27 1.27)) (hide yes))";
+    const std::string q = sexprQuote( name );
+    const std::string refPrefixText = req.reference().empty() ? "U" : req.reference();
+    const std::string top = fmt( height / 2 + 1.27 ), bottom = fmt( -height / 2 - 1.27 );
+
+    std::string text = "(symbol " + q + " (pin_names (offset 1.016)) (exclude_from_sim no) (in_bom yes) (on_board yes)\n";
+    text += "  (property \"Reference\" " + sexprQuote( refPrefixText ) + " (at " + fmt( -width / 2 ) + " " + top
+            + " 0) (effects (font (size 1.27 1.27)) (justify left)))\n";
+    text += "  (property \"Value\" " + sexprQuote( req.value().empty() ? name : req.value() ) + " (at "
+            + fmt( -width / 2 ) + " " + bottom + " 0) (effects (font (size 1.27 1.27)) (justify left)))\n";
+    text += "  (property \"Footprint\" " + sexprQuote( req.footprint() ) + " (at 0 0 0) " + hiddenFont + ")\n";
+    text += "  (property \"Datasheet\" " + sexprQuote( req.datasheet() ) + " (at 0 0 0) " + hiddenFont + ")\n";
+    text += "  (property \"Description\" " + sexprQuote( req.description() ) + " (at 0 0 0) " + hiddenFont + ")\n";
+
+    if( !req.keywords().empty() )
+        text += "  (property \"ki_keywords\" " + sexprQuote( req.keywords() ) + " (at 0 0 0) " + hiddenFont + ")\n";
+
+    if( !req.lcsc().empty() )
+        text += "  (property \"LCSC\" " + sexprQuote( req.lcsc() ) + " (at 0 0 0) " + hiddenFont + ")\n";
+
+    text += "  (symbol " + sexprQuote( name + "_0_1" ) + "\n";
+    text += "    (rectangle (start " + fmt( -width / 2 ) + " " + fmt( height / 2 ) + ") (end " + fmt( width / 2 ) + " "
+            + fmt( -height / 2 ) + ") (stroke (width 0.254) (type default)) (fill (type background)))\n";
+    text += "  )\n";
+    text += "  (symbol " + sexprQuote( name + "_1_1" ) + "\n";
+
+    // file coordinates: Y up; a pin's "at" is its connection end, the angle points to the body
+    for( const auto& [side, list] : bySide )
+    {
+        const double n = (double) list.size();
+
+        for( size_t i = 0; i < list.size(); ++i )
+        {
+            const PIN* p = list[i];
+            double     along = ( ( n - 1 ) / 2 - (double) i ) * grid;     // first pin top / left
+            double     x = 0, y = 0;
+            int        angle = 0;
+
+            if( side == "left" )        { x = -width / 2 - len; y = along; angle = 0; }
+            else if( side == "right" )  { x = width / 2 + len;  y = along; angle = 180; }
+            else if( side == "top" )    { x = -along; y = height / 2 + len;  angle = 270; }
+            else                        { x = -along; y = -height / 2 - len; angle = 90; }
+
+            text += "    (pin " + p->type + " line (at " + fmt( x ) + " " + fmt( y ) + " " + std::to_string( angle )
+                    + ") (length " + fmt( len ) + ")" + ( p->hidden ? " (hide yes)" : "" ) + " (name "
+                    + sexprQuote( p->name ) + " " + font + ") (number " + sexprQuote( p->number ) + " " + font + "))\n";
+        }
+    }
+
+    text += "  )\n)\n";
+
+    std::vector<LIB_SYMBOL*> parsed;
+
+    try
+    {
+        parsed = SCH_IO_KICAD_SEXPR::ParseLibSymbols( text, "KiCadD symbol" );
+    }
+    catch( const IO_ERROR& e )
+    {
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "symbol not made: " + str( e.What() ) ) );
+    }
+
+    if( parsed.empty() )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "symbol not made" ) );
+
+    for( size_t i = 1; i < parsed.size(); ++i )
+        delete parsed[i];
+
+    std::unique_ptr<LIB_SYMBOL> sym( parsed[0] );
+    sym->SetLibId( LIB_ID( wxS( "kicadd" ), wx( name ) ) );
+
+    const wxString   projectDir = m_context->Prj().GetProjectPath();
+    wxFileName       lib( projectDir, wxS( "kicadd.kicad_sym" ) );
+    SchCreateSymbolResponse out;
+    std::string      note;
+
+    try
+    {
+        SCH_IO_KICAD_SEXPR io;
+
+        if( !lib.FileExists() )
+            io.CreateLibrary( lib.GetFullPath() );
+
+        if( io.LoadSymbol( lib.GetFullPath(), wx( name ) ) && !req.replace() )
+            return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
+                                              "kicadd:" + name + " exists already (replace=true overwrites it)" ) );
+
+        io.SaveSymbol( lib.GetFullPath(), std::move( sym ) );
+    }
+    catch( const IO_ERROR& e )
+    {
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "saving " + str( lib.GetFullPath() ) + ": "
+                                                                                 + str( e.What() ) ) );
+    }
+
+    switch( kicadd::AddProjectLibrary( projectDir, true, "kicadd", "${KIPRJMOD}/kicadd.kicad_sym",
+                                       "symbols made by KiCadD", note ) )
+    {
+    case kicadd::LIBTABLE_RESULT::ADDED:
+        out.set_registered( true );
+        break;
+
+    case kicadd::LIBTABLE_RESULT::CONFLICT:
+        note = "the project has another library named kicadd: the symbol is in kicadd.kicad_sym but not reachable "
+               "as kicadd:" + name;
+        break;
+
+    default:
+        break;
+    }
+
+    kicadd::ReloadProjectLibrary( true, "kicadd" );
+
+    out.set_lib_id( "kicadd:" + name );
+    out.set_file( str( lib.GetFullPath() ) );
+    out.set_pins( (int) pins.size() );
+    out.set_width( width );
+    out.set_height( height );
     out.set_note( note );
     return out;
 }

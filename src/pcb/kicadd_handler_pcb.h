@@ -79,6 +79,15 @@ private:
     HANDLER_RESULT<kicadd::board::MoveResponse>
     handleDeleteFootprints( const HANDLER_CONTEXT<kicadd::board::DeleteFootprints>& aCtx );
 
+    HANDLER_RESULT<kicadd::board::FpCreateResponse>
+    handleFpCreate( const HANDLER_CONTEXT<kicadd::board::FpCreate>& aCtx );
+
+    HANDLER_RESULT<kicadd::board::LcscSearchResponse>
+    handleLcscSearch( const HANDLER_CONTEXT<kicadd::board::LcscSearch>& aCtx );
+
+    HANDLER_RESULT<kicadd::board::ExportFabResponse>
+    handleExportFab( const HANDLER_CONTEXT<kicadd::board::ExportFab>& aCtx );
+
     HANDLER_RESULT<kicadd::board::MoveResponse>
     handleDeleteTracks( const HANDLER_CONTEXT<kicadd::board::DeleteTracks>& aCtx );
 

@@ -346,6 +346,14 @@ def main():
         check(not re.search(r"^FP \S+ (B\.|bottom)", q, re.M | re.I), "undo puts them back on the top side")
         err, t = mcp.tool("save_board")
         check(not err, "board saved")
+
+        print("[export_fab: the LCSC numbers reach the BOM]")
+        err, t = mcp.tool("export_fab")
+        check(not err and "BOM: blank-bom.csv (4 lines, 5 parts)" in t, "export_fab: " + " | ".join(t.splitlines()[1:6])[:160])
+        bom = open(os.path.join(proj, "fab", "blank-bom.csv"), encoding="utf-8").read()
+        check('"C1,C2"' in bom and '"C14663"' in bom and '"C6186"' in bom and '"C25804"' in bom,
+              "BOM lines carry C6186 / C14663 (C1,C2) / C25804: " + " ".join(bom.split())[:200])
+        check("R2 (1k, R0603)" in t, "the library resistor is listed as without an LCSC number")
     finally:
         if mcp:
             mcp.close()

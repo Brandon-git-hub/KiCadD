@@ -83,6 +83,12 @@ private:
     HANDLER_RESULT<kicadd::schematic::SchWireResponse>
     handleWire( const HANDLER_CONTEXT<kicadd::schematic::SchWire>& aCtx );
 
+    HANDLER_RESULT<kicadd::schematic::SchCreateSymbolResponse>
+    handleCreateSymbol( const HANDLER_CONTEXT<kicadd::schematic::SchCreateSymbol>& aCtx );
+
+    HANDLER_RESULT<kicadd::schematic::SchAuditResponse>
+    handleAudit( const HANDLER_CONTEXT<kicadd::schematic::SchAudit>& aCtx );
+
     HANDLER_RESULT<kicadd::schematic::SchErcResponse>
     handleRunErc( const HANDLER_CONTEXT<kicadd::schematic::SchRunErc>& aCtx );
 
