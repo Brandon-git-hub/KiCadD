@@ -2556,6 +2556,17 @@ HANDLER_RESULT<SchAuditResponse> KICADD_HANDLER_SCH::handleAudit( const HANDLER_
         if( pre == "U" || pre == "IC" )
             return false;
 
+        // mounting holes, fiducials and test points often take P / J / X references: by their
+        // symbol or footprint name (not anywhere in it: "DSUB-9_..._MountingHolesOffset9.12mm")
+        std::string fp = upper( p.footprint.substr( p.footprint.find( ':' ) + 1 ) );
+        std::string sym = upper( p.libId );
+
+        for( const char* key : { "MOUNTINGHOLE", "MOUNTING_HOLE", "MOUNTING-HOLE", "FIDUCIAL", "TESTPOINT", "TEST_POINT" } )
+        {
+            if( fp.rfind( key, 0 ) == 0 || sym.find( key ) != std::string::npos )
+                return false;
+        }
+
         return pre == "J" || pre == "P" || pre == "CN" || pre == "USB" || pre == "X" || lib.find( "CONN" ) != std::string::npos;
     };
 

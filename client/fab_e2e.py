@@ -71,6 +71,7 @@ try:
     check("(14, 14" not in t, "a multi-unit part's shared power pin counted once")
     check("J1 (DB9-FEMAL): 4 net(s) without a TVS / ESD part" in t, "the DB9's nets have no ESD part")
     check(re.search(r"not checked .*P2", t) is not None and "P2 (SUPP28)" not in t, "the ZIF sockets are not treated as cable connectors")
+    check(re.search(r"\b4 connectors?\b", t) is not None and "P101" not in t, "the mounting holes P101-P106 are not connectors")
     m.close()
 finally:
     srv.stop()
