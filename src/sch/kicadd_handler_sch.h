@@ -15,6 +15,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -31,6 +32,7 @@ class wxString;
 class SCH_PIN;
 class SCH_ITEM;
 class SCH_SCREEN;
+class SCH_LINE;
 class SCH_SHEET;
 class SCH_SHEET_PATH;
 class SCH_SYMBOL;
@@ -129,6 +131,11 @@ private:
 
     /// Remove what connects a pin (stub wires with their labels, labels, no-connect flags).
     int disconnectPin( const PIN_AT& aPin, SCH_COMMIT& aCommit );
+
+    /// aSeed's wire run (through bends, up to pins / junctions / labels / branches) into aGone,
+    /// with the labels, power symbols and junctions at its ends that are left on nothing
+    /// (aKeep: an end not to clean up, the pin being disconnected).
+    void removeWireRun( SCH_SCREEN* aScreen, SCH_LINE* aSeed, const VECTOR2I* aKeep, std::set<SCH_ITEM*>& aGone );
 
     /// Net name of a placed pin after a connectivity rebuild ("" when on no net).
     std::string pinNet( SCH_ITEM* aPin, const SCH_SHEET_PATH& aSheet );

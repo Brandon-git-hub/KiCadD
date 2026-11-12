@@ -138,6 +138,26 @@ def main():
         check(not err and "1 junction" in t and f"{r3}.1" in t, "a T onto the wire: one junction, R3.1 on N1")
         nets = netlist(mcp)
         check({f"{r2}.1", f"{r3}.1"} <= nets.get("/N1", set()), f"N1 now {sorted(nets.get('N1', []))}")
+
+        print("[wires off: sch_disconnect, sch_delete wires / dangling]")
+        err, t = mcp.tool("sch_disconnect", {"pins": [f"{r2}.1"]})
+        nets = netlist(mcp)
+        on = {p for ps in nets.values() for p in ps}
+        n1 = next((ps for ps in nets.values() if f"{c1}.1" in ps), set())
+        check(not err and f"{r2}.1" not in on and f"{r3}.1" in n1,
+              f"R2.1 off: its wire up to the T is gone, R3.1 and C1.1 still joined ({sorted(n1)})")
+        err, t = mcp.tool("sch_delete", {"dangling": True})
+        check(not err and t.startswith("0 "), "nothing left hanging: " + t[:60])
+        err, t = mcp.tool("sch_wire", {"points": [[rp[0], rp[1]], [rp[0] - 5.08, rp[1]]]})
+        check(not err, "a wire from R2.1 to nowhere: " + t.splitlines()[0][:60])
+        err, t = mcp.tool("sch_delete", {"wires": [[rp[0] - 2.54, rp[1]]]})
+        check(not err and "1 wire" in t, "sch_delete wires: a point on it deletes it: " + t[:60])
+        err, t = mcp.tool("sch_delete", {"wires": [[rp[0] - 2.54, rp[1]]]})
+        check(err and "no wire at" in t, "no wire there any more")
+        mcp.tool("sch_wire", {"points": [[152.4, 152.4], [162.56, 152.4], [162.56, 160.02]]})
+        err, t = mcp.tool("sch_delete", {"dangling": True})
+        check(not err and "1 wire" in t, "dangling=true: a two-segment wire on nothing, one wire: " + t[:60])
+        check(netlist(mcp) == nets, "the nets as before")
         after_wires = nets
 
         print("[run_erc]")
@@ -161,6 +181,9 @@ def main():
         check(not err and "fp-lib-table (1 footprint" in t, "footprint library added: " + t[:90])
         table = open(os.path.join(proj, "fp-lib-table")).read()
         check('(name "Mine")' in table and "${KIPRJMOD}/mylib/Mine.pretty" in table, "fp-lib-table row on disk")
+        err, t = mcp.tool("add_footprint", {"footprint": "Mine:Jumper", "ref": "JP?", "x": 10, "y": 10})
+        check(not err and "from library table" in t, "add_footprint finds Mine:Jumper right away: " + t.splitlines()[0][:60])
+        mcp.tool("undo")
 
         print("[save, restart, sync]")
         err, t = mcp.tool("sch_save")

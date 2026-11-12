@@ -132,6 +132,39 @@ LIBTABLE_RESULT AddProjectLibrary( const wxString& aProjectDir, bool aSymbols, c
 }
 
 
+std::string FootprintProblem( const std::string& aLibId )
+{
+    size_t colon = aLibId.find( ':' );
+
+    if( colon == std::string::npos || colon == 0 || colon + 1 == aLibId.size() )
+        return "footprint " + aLibId + " is not Library:Name";
+
+    const std::string nick = aLibId.substr( 0, colon ), name = aLibId.substr( colon + 1 );
+
+    try
+    {
+        LIBRARY_MANAGER& mgr = Pgm().GetLibraryManager();
+        std::optional<LIBRARY_TABLE_ROW*> row = mgr.GetRow( LIBRARY_TABLE_TYPE::FOOTPRINT, wxString::FromUTF8( nick ) );
+
+        if( !row )
+            return "no footprint library " + nick + " in the library table (footprint " + aLibId + ")";
+
+        wxFileName dir = wxFileName::DirName( LIBRARY_MANAGER::GetFullURI( *row, true ) );
+
+        if( !dir.GetFullPath().Lower().EndsWith( wxS( ".pretty" ) + wxString( wxFileName::GetPathSeparator() ) ) )
+            return "";
+
+        if( !wxFileName( dir.GetPath(), wxString::FromUTF8( name ), wxS( "kicad_mod" ) ).FileExists() )
+            return "footprint library " + nick + " has no " + name + " (footprint " + aLibId + ")";
+    }
+    catch( ... )
+    {
+    }
+
+    return "";
+}
+
+
 bool ReloadProjectLibrary( bool aSymbols, const std::string& aNickname )
 {
     LIBRARY_TABLE_TYPE type = aSymbols ? LIBRARY_TABLE_TYPE::SYMBOL : LIBRARY_TABLE_TYPE::FOOTPRINT;

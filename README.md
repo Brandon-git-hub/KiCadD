@@ -1475,6 +1475,25 @@ SOIC-8 pad 1 against KiCad's within 0.1 mm, and a design using `kicadd:R_0603` t
      `m_undoRedoCountMax`，設定讀進那一個，裁切 undo 清單用的是 `EDA_BASE_FRAME` 那一個（永遠 0，
      不限）：上游的 bug，設定從來沒生效。已修正，KiCadD 的預設為 100 步（`max_undo_items` 0 =
      100，負數 = 不限）。Linux 桌面版實測（每輪兩次全板移動）：前 50 輪每輪 +4 MB，之後持平。
+     Windows 實測（上限 5 步）：第 3 輪後每輪 +0.17 MB（舊版 +3.46 MB）。
+
+9. **（已完成 2026-11-12）alpha.6 全工具試用（35 個）。** 33 個正常，發現並修正：
+   * (a) **新的封裝庫 `add_footprint` 找不到。** `lib_create_footprint` / `lib_register` 寫入並重讀了
+     fp-lib-table，但封裝庫的 adapter 是第一次用到才建立、在背景載入：剛註冊的庫還沒載入就回
+     `not found`。`add_footprint` 現在先同步載入那個庫。
+   * (b) **CPL 比 BOM 多。** 「不列入 BOM」的零件（P101–P106、JP1）仍在 CPL 裡，JLCPCB 上傳會對不上。
+     現在兩邊都不列。
+   * (c) **刪不掉一條導線。** `sch_delete wires=[[x, y]]`：點在導線上就刪那條線（經過轉角，到接腳、
+     接點、標籤或分岔為止），留在空處的標籤和接點一起刪；`dangling=true` 刪所有一端懸空的線。
+     `sch_disconnect` 也改成刪整條線，不再只刪接在腳位上的那一段。
+   * (d) **`lib_create_symbol` / `sch_add_part` 不檢查封裝。** 指定的封裝不在庫裡時，結果附註說明
+     （仍然建立：封裝可以之後再做）。
+   * (e) 存檔會把檔案升級成本版格式（10.99），舊版 KiCad 可能打不開：寫進 `save_board` / `sch_save`
+     的說明。
+   * (f) 立創的被動元件（R、C、L、D、晶振等）腳位原本是 unspecified，改為 passive（新抓的零件）；
+     `sync_pcb` 的 dry run 不再以錯誤狀態回傳，報告超過 25 行會註明還有幾行；Windows 上的錯誤
+     訊息不再列 `/usr/share/kicad/footprints`；「編輯器忙碌中」會說明原因（對話框或進度視窗、
+     哪個工具還在作用、拖曳中），試用時那兩次無對話框的拒絕原因未查明。
 
 保留不動：專案管理器的 Version Control（Git）面板。
 

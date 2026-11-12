@@ -41,7 +41,7 @@ try:
     err, t = m.tool("export_fab", {"refill": False})     # the fills as saved, as kicad-cli plots them
     print("      ", " | ".join(t.splitlines()[1:6]))
     fab = os.path.join(work, "p", "fab")
-    check(not err and "9 layer file(s)" in t and "63 placements" in t, "9 Gerbers, 63 placements")
+    check(not err and "9 layer file(s)" in t and "56 placements" in t, "9 Gerbers, 56 placements (63 parts, 7 not in the BOM)")
     for name in ("top_layer.gtl", "bottom_layer.gbl", "F_Mask.gts", "F_Silkscreen.gto", "Edge_Cuts.gm1", "PTH.drl", "NPTH.drl"):
         ours, ref = os.path.join(fab, "pic_programmer-" + name), os.path.join(cli, "pic_programmer-" + name)
         same = os.path.exists(ref) and body(ours) == body(ref)
@@ -55,6 +55,9 @@ try:
     check(any(r[1] == "C6,C7" and r[0] == "100nF" for r in bom), "equal parts on one line (C6,C7 100nF)")
     rows = {r[0]: r for r in csv.reader(open(os.path.join(fab, "pic_programmer-cpl.csv"), encoding="utf-8"))}
     check(rows["Designator"] == ["Designator", "Mid X", "Mid Y", "Layer", "Rotation"], "CPL header")
+    bom_refs = {x for r in bom[1:] for x in r[1].split(",")}
+    check("P101" not in rows and "JP1" not in rows and set(rows) - {"Designator"} <= bom_refs,
+          f"CPL only has parts in the BOM ({len(rows) - 1} rows, {len(bom_refs)} BOM refs)")
     x0 = float(rows["U1"][1].rstrip("mm"))
 
     print("[an unsaved move]")

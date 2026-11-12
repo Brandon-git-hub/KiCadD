@@ -1347,7 +1347,9 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        [&aIpc]( const json& a ) { return openBoard( aIpc, a ); } } );
 
     tools.push_back( { "save_board",
-                       "Write the in-memory board back to its .kicad_pcb file.",
+                       "Write the in-memory board back to its .kicad_pcb file. It is written in this build's "
+                       "file format (KiCad nightly, 10.99): a file from KiCad 9 / 10 is upgraded and those "
+                       "versions may not open it any more (as when KiCad itself saves it).",
                        schema( json::object() ),
                        [&aIpc]( const json& ) { return saveBoard( aIpc ); } } );
 

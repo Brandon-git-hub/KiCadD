@@ -32,6 +32,13 @@ LIBTABLE_RESULT AddProjectLibrary( const wxString& aProjectDir, bool aSymbols, c
                                    const std::string& aUri, const std::string& aDescr, std::string& aNote,
                                    std::string* aExistingUri = nullptr );
 
+/**
+ * Why the footprint aLibId ("Lib:Name") cannot be found, or "" when it can (or cannot be told:
+ * a library that is not a .pretty directory). Checks the footprint library table and the
+ * .kicad_mod file in it; for symbols' Footprint fields, which nothing checks until sync_pcb.
+ */
+std::string FootprintProblem( const std::string& aLibId );
+
 /// Reload one project library (after its file changed); false if the library manager refused.
 bool ReloadProjectLibrary( bool aSymbols, const std::string& aNickname );
 

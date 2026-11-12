@@ -260,6 +260,22 @@ wxString KicaddLcscSymbol( const wxString& aRequest )
 
         sym->GetReferenceField().SetText( ref );
 
+        // EasyEDA leaves the pins of passives "unspecified" (ERC then warns on every one): pins
+        // of resistors, capacitors, inductors, ferrites, fuses, crystals and diodes are passive,
+        // as in KiCad's own libraries, when the symbol says nothing else about any of them.
+        static const std::set<wxString> passives = { wxS( "R" ), wxS( "C" ), wxS( "L" ), wxS( "FB" ), wxS( "F" ),
+                                                     wxS( "Y" ), wxS( "X" ), wxS( "D" ), wxS( "LED" ), wxS( "RN" ),
+                                                     wxS( "RV" ), wxS( "TH" ), wxS( "VR" ) };
+        std::vector<SCH_PIN*> symPins = sym->GetGraphicalPins();
+
+        if( passives.count( ref.Upper() ) && !symPins.empty()
+            && std::all_of( symPins.begin(), symPins.end(),
+                            []( const SCH_PIN* p ) { return p->GetType() == ELECTRICAL_PINTYPE::PT_UNSPECIFIED; } ) )
+        {
+            for( SCH_PIN* pin : symPins )
+                pin->SetType( ELECTRICAL_PINTYPE::PT_PASSIVE );
+        }
+
         // A different part may already use this name in the library: keep both.
         SCH_IO_KICAD_SEXPR io;
         wxString           libPath = wx( library );

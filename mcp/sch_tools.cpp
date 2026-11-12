@@ -316,7 +316,9 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             } } );
 
     aTools.push_back( { "sch_disconnect",
-            "Take pins off their nets (removes the wire stub and label, or the no-connect flag).",
+            "Take pins off their nets: removes the wire from the pin (through its bends, up to where it "
+            "meets another pin, a junction, a label or another wire) with a label left on nothing, "
+            "or the no-connect flag.",
             obj( { { "pins", pinList } }, { "pins" } ),
             [&aIpc]( const json& a )
             {
@@ -429,9 +431,17 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             } } );
 
     aTools.push_back( { "sch_delete",
-            "Delete parts from the schematic, with their wire stubs and labels. A sheet's name "
-            "deletes the sheet with everything on it (its file stays on disk).",
-            obj( { { "refs", { { "type", "array" }, { "items", { { "type", "string" } } } } } }, { "refs" } ),
+            "Delete from the schematic: refs (parts, with their wire stubs and labels; a sheet's "
+            "name deletes the sheet with everything on it, its file stays on disk), wires (a point "
+            "[x, y] on a wire deletes that wire: its segments through bends, up to where it meets a "
+            "pin, junction, label or another wire; labels and junctions left on nothing go with it), "
+            "dangling=true (every wire with an end on nothing). sheet: for wires / dangling.",
+            obj( { { "refs", { { "type", "array" }, { "items", { { "type", "string" } } } } },
+                   { "wires", { { "type", "array" },
+                                { "items", { { "type", "array" }, { "items", { { "type", "number" } } } } } } },
+                   { "dangling", { { "type", "boolean" } } },
+                   { "sheet", { { "type", "string" } } } },
+                 {} ),
             [&aIpc]( const json& a )
             {
                 ks::SchDeleteParts req;
@@ -442,13 +452,31 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                         req.add_refs( r.get<std::string>() );
                 }
 
+                for( const json& p : a.value( "wires", json::array() ) )
+                {
+                    if( !p.is_array() || p.size() != 2 || !p[0].is_number() || !p[1].is_number() )
+                        return fail( "wires: [[x, y], ...] in mm, a point on each wire" );
+
+                    ks::SchPoint* pt = req.add_wires();
+                    pt->set_x( p[0].get<double>() );
+                    pt->set_y( p[1].get<double>() );
+                }
+
+                req.set_dangling( a.value( "dangling", false ) );
+                req.set_sheet( str( a, "sheet" ) );
+
+                if( req.refs().empty() && req.wires().empty() && !req.dangling() )
+                    return fail( "give refs, wires or dangling=true" );
+
                 ks::SchConnectResponse r;
                 std::string            err;
 
                 if( !aIpc.Call( req, r, err ) )
                     return fail( err );
 
-                return connectResult( r, "part(s) deleted" );
+                // "delete 1 part(s), 2 wire(s)" -> "deleted 1 part(s), 2 wire(s)"
+                const std::string& label = r.history_label();
+                return connectResult( r, label.rfind( "delete ", 0 ) == 0 ? "deleted: " + label.substr( 7 ) : "deleted" );
             } } );
 
     aTools.push_back( { "sync_pcb",
@@ -505,10 +533,10 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                     t += " (from the open Schematic Editor)";
 
                 // the updater's report, without its routine lines
-                int shown = 0;
+                int shown = 0, more = 0;
                 size_t from = 0;
 
-                while( from < r.report().size() && shown < 25 )
+                while( from < r.report().size() )
                 {
                     size_t      to = r.report().find( '\n', from );
                     std::string line = r.report().substr( from, to == std::string::npos ? std::string::npos : to - from );
@@ -522,11 +550,22 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                                                      [&]( const char* r ) { return line.rfind( r, 0 ) == 0; } ) )
                         continue;
 
-                    t += "\n  " + line;
-                    shown++;
+                    if( shown < 25 )
+                    {
+                        t += "\n  " + line;
+                        shown++;
+                    }
+                    else
+                    {
+                        more++;
+                    }
                 }
 
-                return TOOL_RESULT{ t, r.errors() > 0 };
+                if( more )
+                    t += "\n  ... " + std::to_string( more ) + " more line(s)";
+
+                // a dry run's errors are what it found, not a failure of the call
+                return TOOL_RESULT{ t, r.errors() > 0 && !req.dry_run() };
             } } );
 
     aTools.push_back( { "auto_place",
@@ -1273,7 +1312,9 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             } } );
 
     aTools.push_back( { "sch_save",
-            "Write the schematic to its .kicad_sch file.",
+            "Write the schematic to its .kicad_sch file(s), every sheet. They are written in this "
+            "build's file format (KiCad nightly, 10.99): files from KiCad 9 / 10 are upgraded and "
+            "those versions may not open them any more (as when KiCad itself saves them).",
             obj( json::object() ),
             [&aIpc]( const json& )
             {

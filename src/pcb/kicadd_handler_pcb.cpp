@@ -18,6 +18,7 @@
 #include <api/pcb_context.h>
 #include <eda_draw_frame.h>
 #include <pcb_base_frame.h>
+#include <pcb_base_edit_frame.h>
 #include <class_draw_panel_gal.h>
 #include <tool/tool_manager.h>
 #include <board_design_settings.h>
@@ -52,6 +53,8 @@
 #include <pcb_io/kicad_sexpr/pcb_io_kicad_sexpr.h>
 #include <wx/ffile.h>
 #include <project/net_settings.h>
+#include <project_pcb.h>
+#include <footprint_library_adapter.h>
 #include <netclass.h>
 #include <pcb_text.h>
 #include <pcb_field.h>
@@ -298,9 +301,28 @@ std::optional<ApiResponseStatus> KICADD_HANDLER_PCB::busy() const
     if( !m_context || m_context->CanAcceptApiCommands() )
         return std::nullopt;
 
-    return makeError( ApiStatusCode::AS_BUSY,
-                      "the editor is busy: the user is in an interactive tool (routing, moving, a "
-                      "dialog); the edit was not applied" );
+    // say why (PCB_EDIT_FRAME::CanAcceptApiCommands' tests), so a refusal with no dialog in
+    // sight can be told apart: a progress window, a tool left active
+    std::string why = "the user is in an interactive tool (routing, moving, a dialog)";
+    TOOL_MANAGER* mgr = m_context->GetToolManager();
+
+    if( auto* frame = mgr ? dynamic_cast<PCB_BASE_EDIT_FRAME*>( mgr->GetToolHolder() ) : nullptr )
+    {
+        TOOL_BASE* tool = mgr->GetCurrentTool();
+
+        if( !frame->IsEnabled() )
+            why = "the editor window is disabled: a dialog or a progress window (loading libraries, "
+                  "filling zones) is open";
+        else if( frame->UndoRedoBlocked() )
+            why = "the user is dragging or editing something";
+        else if( tool && tool->GetName() != "common.InteractiveSelection"
+                 && tool->GetName() != "pcbnew.PointEditor" )
+            why = "the tool " + tool->GetName() + " is active in the editor (Esc ends it)";
+        else
+            why = "the editor is filling zones or routing";
+    }
+
+    return makeError( ApiStatusCode::AS_BUSY, "the editor is busy: " + why + "; the edit was not applied" );
 }
 
 
@@ -847,12 +869,55 @@ wxString referencePrefix( const wxString& aRef )
 }
 
 
+/// A footprint from the library table. The library is loaded first if it is not yet: the adapter
+/// is made on first use and loads its libraries in the background, so one registered moments ago
+/// (lib_create_footprint, lib_register) would not be found yet.
+FOOTPRINT* loadFromTable( BOARD* aBoard, const LIB_ID& aLibId )
+{
+    try
+    {
+        FOOTPRINT_LIBRARY_ADAPTER* adapter = PROJECT_PCB::FootprintLibAdapter( nullptr /* ignored */ );
+        const wxString             nick = aLibId.GetLibNickname().wx_str();
+
+        if( adapter && !adapter->IsLibraryLoaded( nick ) )
+            adapter->LoadLibraryEntry( nick );
+    }
+    catch( ... )
+    {
+    }
+
+    return LoadFootprintFromProject( aBoard, aLibId );
+}
+
+
+/// The directories searched after the library table, in order.
+std::vector<wxString> footprintDirectories()
+{
+    std::vector<wxString> dirs;
+
+    if( const char* env = std::getenv( "KICADD_FOOTPRINT_DIRS" ) )
+    {
+#ifdef _WIN32
+        wxStringTokenizer tok( wxString::FromUTF8( env ), wxS( ";" ) );
+#else
+        wxStringTokenizer tok( wxString::FromUTF8( env ), wxS( ":" ) );
+#endif
+
+        while( tok.HasMoreTokens() )
+            dirs.push_back( tok.GetNextToken() );
+    }
+
+#ifndef _WIN32
+    dirs.push_back( wxS( "/usr/share/kicad/footprints" ) );
+#endif
+    return dirs;
+}
+
+
 /// A footprint from a .pretty directory: the project's lcsc.pretty for LCSC:..., then
 /// KICADD_FOOTPRINT_DIRS, then the system library.
 std::unique_ptr<FOOTPRINT> loadFromDirectories( const BOARD* aBoard, const LIB_ID& aLibId, std::string& aSource )
 {
-    std::vector<wxString> dirs;
-
     if( aLibId.GetLibNickname().compare( kicadd::lcsc::LIB_NICKNAME ) == 0 && aBoard
         && !aBoard->GetFileName().IsEmpty() )
     {
@@ -879,17 +944,7 @@ std::unique_ptr<FOOTPRINT> loadFromDirectories( const BOARD* aBoard, const LIB_I
         }
     }
 
-    if( const char* env = std::getenv( "KICADD_FOOTPRINT_DIRS" ) )
-    {
-        wxStringTokenizer tok( wxString::FromUTF8( env ), wxS( ":" ) );
-
-        while( tok.HasMoreTokens() )
-            dirs.push_back( tok.GetNextToken() );
-    }
-
-    dirs.push_back( wxS( "/usr/share/kicad/footprints" ) );
-
-    for( const wxString& dir : dirs )
+    for( const wxString& dir : footprintDirectories() )
     {
         wxFileName lib( dir, wxEmptyString );
         lib.AppendDir( aLibId.GetLibNickname().wx_str() + wxS( ".pretty" ) );
@@ -1469,7 +1524,7 @@ KICADD_HANDLER_PCB::handleAddFootprint( const HANDLER_CONTEXT<AddFootprint>& aCt
                                               "lib_id must be Nickname:Name, got " + req.lib_id() ) );
         }
 
-        if( FOOTPRINT* loaded = LoadFootprintFromProject( b, libId ) )
+        if( FOOTPRINT* loaded = loadFromTable( b, libId ) )
         {
             fp.reset( loaded );
             source = "library table";
@@ -1496,10 +1551,14 @@ KICADD_HANDLER_PCB::handleAddFootprint( const HANDLER_CONTEXT<AddFootprint>& aCt
 
         if( !fp )
         {
+            std::string where = "the library table";
+
+            for( const wxString& dir : footprintDirectories() )
+                where += ", " + dir.ToStdString();
+
             return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
-                                              "footprint " + req.lib_id()
-                                                      + " not found (library table, KICADD_FOOTPRINT_DIRS, "
-                                                        "/usr/share/kicad/footprints, board)" ) );
+                                              "footprint " + req.lib_id() + " not found (searched " + where
+                                                      + " and the board)" ) );
         }
 
         fp->SetFPID( libId );

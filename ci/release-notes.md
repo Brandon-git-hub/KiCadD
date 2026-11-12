@@ -4,7 +4,14 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 
 > ⚠️ Pre-release，僅供試用。由 GitHub Actions 自動建置；功能在 Linux 上做過端到端測試，Windows 上只有 CI 的 smoke test 與早期版本的人工試用。
 
-## 這一版（alpha.6）
+## 這一版（alpha.7）
+- **新做的封裝馬上能用：** `lib_create_footprint` 或 `lib_register` 加進來的封裝庫，`add_footprint` 之前要等一陣子才找得到，現在立即可用。
+- **CPL 與 BOM 一致：** 「不列入 BOM」的零件（例如固定孔）不再出現在 CPL，上傳 JLCPCB 時兩份檔案對得上。
+- **刪除導線：** `sch_delete wires=[[x, y]]` 刪掉經過那一點的導線；`dangling=true` 清掉所有一端懸空的線。`sch_disconnect` 會刪整條線，不再留下懸空的一段。
+- **封裝檢查：** `lib_create_symbol` / `sch_add_part` 指定的封裝不存在時會提醒。
+- **其他：** 立創被動元件的腳位改為 passive；`sync_pcb` dry run 不再以錯誤回傳、報告過長時註明省略幾行；「編輯器忙碌中」會說明原因；`save_board` / `sch_save` 的說明註明會升級檔案格式。
+
+## alpha.6
 - **反覆擺件 / undo 時記憶體一直增加：** 編輯器的 Ctrl+Z 歷史每一步都存一份改到的零件，而 KiCad 的復原步數上限設定（`max_undo_items`）因為一個上游的 bug 從來沒有生效，歷史會無限增加。已修正，預設保留 100 步（`%APPDATA%\kicad\10.99\pcbnew.json` 的 `system.max_undo_items`：0 = 100 步，負數 = 不限）。
 - **`run_drc`：** 用 `types` / `refs` 篩選時，另外列出符合篩選的數量（上面的類別統計是全板的）。
 - **`audit`：** 固定孔、光學定位點、測試點不再算成連接器（`pic_programmer` 從 10 個變成 4 個）。

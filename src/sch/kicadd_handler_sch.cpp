@@ -151,6 +151,75 @@ std::vector<SCH_LINE*> wiresEndingAt( SCH_SCREEN* aScreen, const VECTOR2I& aPos 
     return out;
 }
 
+/// A point where wires stop being one run: a pin, a sheet pin, a junction, a label, a wire
+/// passing through, or not exactly one other wire end.
+bool isWireNode( SCH_SCREEN* aScreen, const VECTOR2I& aPos, const std::set<SCH_ITEM*>& aRun )
+{
+    if( aScreen->GetPin( aPos, nullptr, true ) || aScreen->GetSheetPin( aPos ) || aScreen->IsJunction( aPos ) )
+        return true;
+
+    int ends = 0;
+
+    for( SCH_ITEM* item : aScreen->Items().Overlapping( SCH_LINE_T, aPos ) )
+    {
+        auto* line = static_cast<SCH_LINE*>( item );
+
+        if( !line->IsWire() || aRun.count( line ) )
+            continue;
+
+        if( line->GetStartPoint() == aPos || line->GetEndPoint() == aPos )
+            ends++;
+        else if( line->HitTest( aPos, 0 ) )
+            return true;   // a T: the point is on another wire's middle
+    }
+
+    if( ends != 1 )
+        return true;
+
+    for( SCH_ITEM* item : aScreen->Items().Overlapping( aPos ) )
+    {
+        if( dynamic_cast<SCH_LABEL_BASE*>( item ) && item->GetPosition() == aPos )
+            return true;
+    }
+
+    return false;
+}
+
+
+/**
+ * The run of wire segments aSeed is part of: followed through bends (a point where it meets
+ * exactly one other wire end and nothing else) up to the nodes (isWireNode). aEnds gets the
+ * run's two end points.
+ */
+std::set<SCH_ITEM*> wireRun( SCH_SCREEN* aScreen, SCH_LINE* aSeed, std::vector<VECTOR2I>* aEnds = nullptr )
+{
+    std::set<SCH_ITEM*>   run{ aSeed };
+    std::vector<VECTOR2I> todo{ aSeed->GetStartPoint(), aSeed->GetEndPoint() };
+
+    while( !todo.empty() )
+    {
+        VECTOR2I p = todo.back();
+        todo.pop_back();
+
+        if( isWireNode( aScreen, p, run ) )
+        {
+            if( aEnds )
+                aEnds->push_back( p );
+
+            continue;
+        }
+
+        for( SCH_LINE* next : wiresEndingAt( aScreen, p ) )
+        {
+            if( run.insert( next ).second )
+                todo.push_back( next->GetStartPoint() == p ? next->GetEndPoint() : next->GetStartPoint() );
+        }
+    }
+
+    return run;
+}
+
+
 SCH_NO_CONNECT* noConnectAt( SCH_SCREEN* aScreen, const VECTOR2I& aPos )
 {
     for( SCH_ITEM* item : aScreen->Items().Overlapping( SCH_NO_CONNECT_T, aPos ) )
@@ -931,6 +1000,13 @@ HANDLER_RESULT<SchPartResponse> KICADD_HANDLER_SCH::handleAddPart( const HANDLER
     rebuildConnectivity();
     announce( wxS( "Agent: " ) + what );
 
+    // nothing else checks a Footprint field until sync_pcb
+    if( std::string fp = str( placed->GetField( FIELD_T::FOOTPRINT )->GetText() ); !fp.empty() )
+    {
+        if( std::string problem = kicadd::FootprintProblem( fp ); !problem.empty() )
+            note += std::string( note.empty() ? "" : "; " ) + problem + ": sync_pcb will not find it";
+    }
+
     SchPartResponse out;
     packSymbol( placed, sheet, true, *out.mutable_symbol() );
     out.set_note( note );
@@ -967,24 +1043,66 @@ HANDLER_RESULT<SchPartResponse> KICADD_HANDLER_SCH::handleGetPart( const HANDLER
 }
 
 
+void KICADD_HANDLER_SCH::removeWireRun( SCH_SCREEN* aScreen, SCH_LINE* aSeed, const VECTOR2I* aKeep,
+                                        std::set<SCH_ITEM*>& aGone )
+{
+    std::vector<VECTOR2I> ends;
+    std::set<SCH_ITEM*>   run = wireRun( aScreen, aSeed, &ends );
+    aGone.insert( run.begin(), run.end() );
+
+    for( const VECTOR2I& end : ends )
+    {
+        if( aKeep && end == *aKeep )
+            continue;
+
+        // what is left at the end: wire ends (a wire passing through counts twice) and pins
+        int left = aScreen->GetPin( end, nullptr, true ) || aScreen->GetSheetPin( end ) ? 1 : 0;
+
+        for( SCH_ITEM* item : aScreen->Items().Overlapping( SCH_LINE_T, end ) )
+        {
+            auto* line = static_cast<SCH_LINE*>( item );
+
+            if( !line->IsWire() || aGone.count( line ) )
+                continue;
+
+            if( line->GetStartPoint() == end || line->GetEndPoint() == end )
+                left++;
+            else if( line->HitTest( end, 0 ) )
+                left += 2;
+        }
+
+        // a label or power symbol on nothing now goes with the wire; a junction of fewer than three
+        if( left == 0 )
+        {
+            for( SCH_LABEL_BASE* label : labelsAt( aScreen, end ) )
+                aGone.insert( label );
+
+            for( SCH_SYMBOL* power : powerSymbolsAt( aScreen, end ) )
+                aGone.insert( power );
+        }
+
+        if( left < 3 )
+        {
+            for( SCH_ITEM* item : aScreen->Items().Overlapping( SCH_JUNCTION_T, end ) )
+            {
+                if( item->GetPosition() == end )
+                    aGone.insert( item );
+            }
+        }
+    }
+}
+
+
 int KICADD_HANDLER_SCH::disconnectPin( const PIN_AT& aPin, SCH_COMMIT& aCommit )
 {
     std::set<SCH_ITEM*> gone;
 
+    // the whole wire from the pin, through its bends, up to where it meets something (another
+    // pin, a junction, a label): a wire left hanging off nothing is no use to anyone
     for( SCH_LINE* wire : wiresEndingAt( aPin.screen, aPin.pos ) )
     {
-        gone.insert( wire );
-        VECTOR2I farEnd = wire->GetStartPoint() == aPin.pos ? wire->GetEndPoint() : wire->GetStartPoint();
-
-        // the stub's label or power symbol, unless something else still uses that point
-        if( wiresEndingAt( aPin.screen, farEnd ).size() == 1 )
-        {
-            for( SCH_LABEL_BASE* label : labelsAt( aPin.screen, farEnd ) )
-                gone.insert( label );
-
-            for( SCH_SYMBOL* power : powerSymbolsAt( aPin.screen, farEnd ) )
-                gone.insert( power );
-        }
+        if( !gone.count( wire ) )
+            removeWireRun( aPin.screen, wire, &aPin.pos, gone );
     }
 
     for( SCH_LABEL_BASE* label : labelsAt( aPin.screen, aPin.pos ) )
@@ -1337,6 +1455,106 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleDeleteParts( const 
     SchConnectResponse out;
     SCH_COMMIT         commit( m_context->GetToolManager() );
     bool               sheetsGone = false;
+    int                wires = 0;
+
+    if( !aCtx.Request.wires().empty() || aCtx.Request.dangling() )
+    {
+        std::string                   sheetErr;
+        std::optional<SCH_SHEET_PATH> sheet = findSheet( aCtx.Request.sheet(), sheetErr );
+
+        if( !sheet )
+            return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, sheetErr ) );
+
+        SCH_SCREEN*         screen = sheet->LastScreen();
+        std::set<SCH_ITEM*> gone;
+
+        for( const SchPoint& p : aCtx.Request.wires() )
+        {
+            VECTOR2I  at( iu( p.x() ), iu( p.y() ) );
+            SCH_LINE* hit = nullptr;
+
+            // on the wire, or within half a grid step of it
+            for( int slop : { 0, iu( 0.635 ) } )
+            {
+                hit = screen->GetWire( at, slop );
+
+                if( hit )
+                    break;
+            }
+
+            char where[64];
+            std::snprintf( where, sizeof( where ), "%g,%g", p.x(), p.y() );
+
+            if( !hit )
+                out.add_errors( std::string( "no wire at " ) + where );
+            else if( gone.count( hit ) )
+                continue;
+            else
+            {
+                removeWireRun( screen, hit, nullptr, gone );
+                wires++;
+            }
+        }
+
+        if( aCtx.Request.dangling() )
+        {
+            // a run with an end on nothing at all: no pin, wire, label, sheet pin or no-connect
+            for( SCH_ITEM* item : screen->Items().OfType( SCH_LINE_T ) )
+            {
+                auto* line = static_cast<SCH_LINE*>( item );
+
+                if( !line->IsWire() || gone.count( line ) )
+                    continue;
+
+                std::vector<VECTOR2I> ends;
+                std::set<SCH_ITEM*>   run = wireRun( screen, line, &ends );
+                bool                  loose = false;
+
+                for( const VECTOR2I& end : ends )
+                {
+                    int touching = 0;
+
+                    for( SCH_ITEM* other : screen->Items().Overlapping( end ) )
+                    {
+                        if( run.count( other ) || other->Type() == SCH_SHEET_T )
+                            continue;
+
+                        if( other->Type() == SCH_LINE_T )
+                        {
+                            if( static_cast<SCH_LINE*>( other )->IsWire()
+                                && static_cast<SCH_LINE*>( other )->HitTest( end, 0 ) )
+                                touching++;
+                        }
+                        else if( other->Type() == SCH_SYMBOL_T )
+                        {
+                            if( screen->GetPin( end, nullptr, true ) )
+                                touching++;
+                        }
+                        else if( other->GetPosition() == end && other->Type() != SCH_JUNCTION_T )
+                        {
+                            touching++;
+                        }
+                    }
+
+                    if( screen->GetSheetPin( end ) )
+                        touching++;
+
+                    loose |= touching == 0;
+                }
+
+                if( loose )
+                {
+                    removeWireRun( screen, line, nullptr, gone );
+                    wires++;
+                }
+            }
+        }
+
+        for( SCH_ITEM* item : gone )
+            commit.Remove( item, screen );
+
+        out.set_done( out.done() + wires );
+    }
 
     for( const std::string& ref : aCtx.Request.refs() )
     {
@@ -1395,7 +1613,10 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleDeleteParts( const 
 
     if( out.done() )
     {
-        out.set_history_label( "delete " + std::to_string( out.done() ) + " part(s)" );
+        int parts = out.done() - wires;
+        out.set_history_label( "delete " + ( parts ? std::to_string( parts ) + " part(s)" : std::string() )
+                               + ( parts && wires ? ", " : "" )
+                               + ( wires ? std::to_string( wires ) + " wire(s)" : std::string() ) );
         commit.Push( wxS( "Agent: " ) + wx( out.history_label() ) );
 
         if( sheetsGone )
@@ -3060,6 +3281,13 @@ KICADD_HANDLER_SCH::handleCreateSymbol( const HANDLER_CONTEXT<SchCreateSymbol>& 
     }
 
     kicadd::ReloadProjectLibrary( true, "kicadd" );
+
+    if( !req.footprint().empty() )
+    {
+        if( std::string problem = kicadd::FootprintProblem( req.footprint() ); !problem.empty() )
+            note += std::string( note.empty() ? "" : "; " ) + problem
+                    + ": make it (lib_create_footprint) or fix the symbol's footprint (replace=true)";
+    }
 
     out.set_lib_id( "kicadd:" + name );
     out.set_file( str( lib.GetFullPath() ) );

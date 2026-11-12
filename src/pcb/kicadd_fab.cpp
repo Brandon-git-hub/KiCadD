@@ -227,7 +227,9 @@ bool ExportFab( BOARD* aBoard, const wxString& aDir, bool aZip, kicadd::board::E
         }
         else
         {
+            // not bought, not placed: a CPL row JLCPCB has no BOM line for is an error there
             noBom++;
+            continue;
         }
 
         if( fp->IsExcludedFromPosFiles() )
@@ -314,7 +316,7 @@ bool ExportFab( BOARD* aBoard, const wxString& aDir, bool aZip, kicadd::board::E
                         "through-hole assembly; remove their rows for SMT only" );
 
     if( noBom )
-        aOut.add_notes( std::to_string( noBom ) + " part(s) marked 'exclude from BOM' left out" );
+        aOut.add_notes( std::to_string( noBom ) + " part(s) marked 'exclude from BOM' left out of the BOM and the CPL" );
 
     aOut.add_notes( "CPL: footprint origins and KiCad rotations; JLCPCB's preview may turn some packages "
                     "(check it before ordering)" );

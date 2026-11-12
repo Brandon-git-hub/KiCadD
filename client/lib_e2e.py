@@ -36,6 +36,7 @@ def main():
         print("      ", t[:140])
         check(not err and t.startswith("made kicadd:MYLDO: 6 pins") and "added to sym-lib-table" in t, "symbol made, library registered")
         check('(name "kicadd")' in open(os.path.join(proj, "sym-lib-table")).read(), "sym-lib-table row on disk")
+        check("no footprint library kicadd" in t, "the footprint it names is not there yet: said so")
         err, t = mcp.tool("lib_create_symbol", {"name": "MYLDO", "pins": pins})
         check(err and "exists already" in t, "a second one of that name is refused")
         err, t = mcp.tool("lib_create_symbol", {"name": "MYLDO", "pins": pins + [{"number": "1"}]})
@@ -50,9 +51,20 @@ def main():
         check(types.get("VIN") == "power_in" and types.get("PG") == "open_collector", f"pin types {types}")
 
         print("[lib_create_footprint]")
+        # the first footprint registers kicadd.pretty; add_footprint finds it at once
+        err, t = mcp.tool("lib_create_footprint", {"kind": "sot23", "pins": 5})
+        check(not err and "added to fp-lib-table" in t, "SOT-23-5 made, kicadd.pretty registered")
+        err, t = mcp.tool("add_footprint", {"footprint": "kicadd:SOT-23-5", "ref": "U?", "x": 10, "y": 10})
+        check(not err and "from library table" in t, "add_footprint finds it right away: " + t.splitlines()[0][:60])
+        mcp.tool("undo")
+        err, t = mcp.tool("sch_add_part", {"lib_id": "kicadd:MYLDO", "x": 152.4, "y": 50.8})
+        check(not err and "has no" not in t and "no footprint library" not in t, "now MYLDO's footprint is found")
+        mcp.tool("sch_delete", {"refs": [re.match(r"added (\S+)", t).group(1)]})
+        err, t = mcp.tool("sch_add_part", {"lib_id": "kicadd:MYLDO", "footprint": "kicadd:Nope", "x": 152.4, "y": 50.8})
+        check(not err and "footprint library kicadd has no Nope" in t, "sch_add_part with a missing footprint: said so")
+        mcp.tool("sch_delete", {"refs": [re.match(r"added (\S+)", t).group(1)]})
         for args, pads, name in (({"kind": "chip", "size": "0603", "prefix": "R"}, 2, "R_0603"),
                                  ({"kind": "chip", "size": 402, "prefix": "C"}, 2, "C_0402"),
-                                 ({"kind": "sot23", "pins": 5}, 5, "SOT-23-5"),
                                  ({"kind": "soic", "pins": 8}, 8, "SOIC-8_3.9mm_P1.27mm"),
                                  ({"kind": "so", "pins": 14, "pitch": 0.65, "body": 4.4, "span": 6.4}, 14, "SO-14_4.4mm_P0.65mm"),
                                  ({"kind": "qfn", "pins": 32, "pitch": 0.5, "body": 5, "ep": 3.4}, 33, "QFN-32_5x5mm_P0.5mm_EP3.4mm"),

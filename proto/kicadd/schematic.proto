@@ -191,9 +191,16 @@ message SchNetlist
 
 // Returns SchConnectResponse (done = parts deleted, with their stubs and labels; a sheet's name
 // deletes the sheet with everything on it, its file stays on disk)
+// refs: parts or sheets. wires: a point on a wire deletes that wire (all its segments through
+// bends, up to where it meets a pin, junction, label or another wire); labels and junctions left
+// on nothing go with it. dangling: also every wire with an end on nothing. sheet: for wires /
+// dangling ("" = the root sheet).
 message SchDeleteParts
 {
   repeated string refs = 1;
+  repeated SchPoint wires = 2;
+  bool dangling = 3;
+  string sheet = 4;
 }
 
 // Returns SchConnectResponse
