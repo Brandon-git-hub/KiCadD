@@ -5796,7 +5796,7 @@ HANDLER_RESULT<BoardOutlineResponse> KICADD_HANDLER_PCB::handleBoardOutline( con
                     pad->SetDrillShape( PAD_DRILL_SHAPE::CIRCLE );
                     pad->SetDrillSize( VECTOR2I( h.drill, h.drill ) );
                     pad->SetLayerSet( h.plated ? PAD::PTHMask() : PAD::UnplatedHoleMask() );
-                    pad->SetNumber( h.plated ? wxS( "1" ) : wxString() );
+                    pad->SetNumber( wxString( h.plated ? wxS( "1" ) : wxS( "" ) ) );
                     fp->Add( pad );
 
                     // a courtyard round it, so nothing is placed on the screw head
