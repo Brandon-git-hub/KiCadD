@@ -3628,9 +3628,13 @@ KICADD_HANDLER_PCB::handleSyncFromSchematic( const HANDLER_CONTEXT<SyncFromSchem
     {
         REPORTER& Report( const wxString& aText, SEVERITY aSeverity = RPT_SEVERITY_UNDEFINED ) override
         {
-            wxString mark = aSeverity == RPT_SEVERITY_ERROR     ? wxS( "error: " )
-                            : aSeverity == RPT_SEVERITY_WARNING ? wxS( "warning: " )
-                                                                : wxString();
+            wxString mark;
+
+            if( aSeverity == RPT_SEVERITY_ERROR )
+                mark = wxS( "error: " );
+            else if( aSeverity == RPT_SEVERITY_WARNING )
+                mark = wxS( "warning: " );
+
             return WX_STRING_REPORTER::Report( mark + aText, aSeverity );
         }
     };

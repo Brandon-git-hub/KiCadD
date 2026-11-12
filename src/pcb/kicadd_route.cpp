@@ -671,16 +671,16 @@ void SESSION::IMPL::measure( const std::vector<PCB_TRACK*>& aNew, RESULT& aOut )
             if( aEdge )
             {
                 // the outline's lines, not a filled board shape's inside
-                bool near = false;
+                bool hit = false;
 
                 for( SHAPE* edge : static_cast<PCB_SHAPE*>( aOther )->MakeEffectiveShapes( true ) )
                 {
                     int      d = 0;
                     VECTOR2I p;
 
-                    if( a->Collide( edge, GAP_RANGE, &d, &p ) && ( !near || d < actual ) )
+                    if( a->Collide( edge, GAP_RANGE, &d, &p ) && ( !hit || d < actual ) )
                     {
-                        near = true;
+                        hit = true;
                         actual = d;
                         pos = p;
                     }
@@ -688,7 +688,7 @@ void SESSION::IMPL::measure( const std::vector<PCB_TRACK*>& aNew, RESULT& aOut )
                     delete edge;
                 }
 
-                if( !near )
+                if( !hit )
                     continue;
             }
             else
