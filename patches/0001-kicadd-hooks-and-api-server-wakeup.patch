@@ -2354,6 +2354,45 @@ index d95ea797..2a67d467 100644
      }
  
      return CLI::EXIT_CODES::OK;
+diff --git a/pcbnew/router/pns_router.cpp b/pcbnew/router/pns_router.cpp
+index 0bfeb26d..2c35835f 100644
+--- a/pcbnew/router/pns_router.cpp
++++ b/pcbnew/router/pns_router.cpp
+@@ -64,6 +64,7 @@ static ROUTER* theRouter;
+ 
+ ROUTER::ROUTER()
+ {
++    m_previousInstance = theRouter;
+     theRouter = this;
+ 
+     m_state = IDLE;
+@@ -92,7 +93,10 @@ ROUTER* ROUTER::GetInstance()
+ ROUTER::~ROUTER()
+ {
+     ClearWorld();
+-    theRouter = nullptr;
++
++    if( theRouter == this )
++        theRouter = m_previousInstance;
++
+     delete m_logger;
+ }
+ 
+diff --git a/pcbnew/router/pns_router.h b/pcbnew/router/pns_router.h
+index 79434715..37c3da86 100644
+--- a/pcbnew/router/pns_router.h
++++ b/pcbnew/router/pns_router.h
+@@ -311,6 +311,10 @@ private:
+ 
+     int               m_iterLimit;
+ 
++    ///< The router that was the instance before this one (a second router, e.g. an API
++    ///< handler's, must hand the instance back to the editor's when it is done)
++    ROUTER*           m_previousInstance;
++
+     ROUTING_SETTINGS* m_settings;
+     SIZES_SETTINGS    m_sizes;
+     ROUTER_MODE       m_mode;
 diff --git a/pcbnew/teardrop/teardrop.cpp b/pcbnew/teardrop/teardrop.cpp
 index 6ffef0eb..01d669ee 100644
 --- a/pcbnew/teardrop/teardrop.cpp

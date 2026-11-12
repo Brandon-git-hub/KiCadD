@@ -12,10 +12,12 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <map>
 #include <set>
 #include <thread>
+#include <vector>
 
 #include <kicadd/schematic.pb.h>
 #include <kicadd/board.pb.h>
@@ -503,6 +505,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "longer has.",
             obj( { { "dry_run", { { "type", "boolean" } } },
                    { "delete_extra", { { "type", "boolean" } } },
+                   { "detail", { { "type", "boolean" }, { "description", "list every change line (default: the first 25)" } } },
                    { "update_footprints", { { "type", "boolean" },
                                             { "description", "Replace footprints whose library link changed" } } } } ),
             [&aIpc]( const json& a )
@@ -540,16 +543,19 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                         t += " " + ref;
                 }
 
-                t += "; board now " + std::to_string( r.footprints() ) + " footprints, " + std::to_string( r.nets() )
-                     + " nets; " + std::to_string( r.errors() ) + " errors, " + std::to_string( r.warnings() )
-                     + " warnings";
+                t += std::string( req.dry_run() ? "; board has " : "; board now " ) + std::to_string( r.footprints() )
+                     + " footprints, " + std::to_string( r.nets() ) + " nets"
+                     + ( req.dry_run() ? " (unchanged: dry run)" : "" ) + "; " + std::to_string( r.errors() )
+                     + " errors, " + std::to_string( r.warnings() ) + " warnings";
 
                 if( r.from_editor() )
                     t += " (from the open Schematic Editor)";
 
-                // the updater's report, without its routine lines
-                int shown = 0, more = 0;
-                size_t from = 0;
+                // The updater's report without its routine lines: errors and warnings first,
+                // then the changes; "Update R1 fields." lines are only counted.
+                std::vector<std::string> problems, changes;
+                int                      fieldUpdates = 0;
+                size_t                   from = 0;
 
                 while( from < r.report().size() )
                 {
@@ -559,25 +565,46 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
 
                     // routine bookkeeping of new parts: the summary line above says it
                     static const char* routine[] = { "Processing symbol", "Updated ", "Changed REF**",
-                                                     "Connected ", "Add net ", "Added " };
+                                                     "Connected ", "Add net ", "Added ", "Total warnings" };
 
                     if( line.empty() || std::any_of( std::begin( routine ), std::end( routine ),
                                                      [&]( const char* r ) { return line.rfind( r, 0 ) == 0; } ) )
                         continue;
 
-                    if( shown < 25 )
-                    {
-                        t += "\n  " + line;
-                        shown++;
-                    }
+                    if( line.rfind( "error: ", 0 ) == 0 || line.rfind( "warning: ", 0 ) == 0 )
+                        problems.push_back( line );
+                    else if( line.rfind( "Update ", 0 ) == 0 && line.size() > 8
+                             && line.compare( line.size() - 8, 8, " fields." ) == 0 )
+                        fieldUpdates++;
                     else
+                        changes.push_back( line );
+                }
+
+                const size_t limit = a.value( "detail", false ) ? SIZE_MAX : 25;
+                size_t       shown = 0, more = 0;
+
+                for( const std::vector<std::string>* list : { &problems, &changes } )
+                {
+                    for( const std::string& line : *list )
                     {
-                        more++;
+                        if( shown < limit || list == &problems )
+                        {
+                            t += "\n  " + line;
+                            shown++;
+                        }
+                        else
+                        {
+                            more++;
+                        }
                     }
                 }
 
+                if( fieldUpdates )
+                    t += "\n  " + std::string( req.dry_run() ? "would update" : "updated" ) + " the fields of "
+                         + std::to_string( fieldUpdates ) + " footprint(s)";
+
                 if( more )
-                    t += "\n  ... " + std::to_string( more ) + " more line(s)";
+                    t += "\n  ... " + std::to_string( more ) + " more line(s) (detail=true lists all)";
 
                 // a dry run's errors are what it found, not a failure of the call
                 return TOOL_RESULT{ t, r.errors() > 0 && !req.dry_run() };
@@ -1344,7 +1371,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "for the same change on many. Value, Footprint, Datasheet, Description are the symbol's own "
             "fields; any other name is a user field (added hidden when missing; null removes it). "
             "Attributes: dnp, exclude_from_bom, exclude_from_board, exclude_from_sim, exclude_from_pos "
-            "(true / false).",
+            "(true / false). Refs that are not found are listed; the other parts are changed anyway.",
             obj( { { "parts", { { "type", "object" }, { "additionalProperties", { { "type", "object" } } } } },
                    { "refs", { { "type", "array" }, { "items", { { "type", "string" } } } } },
                    { "set", { { "type", "object" } } } },

@@ -52,6 +52,7 @@ set( KICADD_PCB_SRCS
     ${KICADD_DIR}/src/pcb/kicadd_fab.cpp
     ${KICADD_DIR}/src/pcb/kicadd_fpgen.cpp
     ${KICADD_DIR}/src/pcb/kicadd_rules.cpp
+    ${KICADD_DIR}/src/pcb/kicadd_route.cpp
     ${KICADD_DIR}/src/common/kicadd_libtable.cpp
     )
 set( KICADD_INCLUDE_DIRS ${KICADD_DIR}/src ${KICADD_CPP_OUT} )

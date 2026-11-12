@@ -347,7 +347,7 @@ void serializeTrack( const PCB_TRACK* aTrack, RenderItems& aOut )
 
     Track* t = aOut.add_tracks();
     t->set_id( aTrack->m_Uuid.AsStdString() );
-    t->set_layer( aTrack->GetLayerName().ToStdString() );
+    t->set_layer( LSET::Name( aTrack->GetLayer() ).ToStdString() );
     t->set_net( netName( aTrack ) );
     setPoint( t->mutable_a(), aTrack->GetStart() );
     setPoint( t->mutable_b(), aTrack->GetEnd() );
@@ -374,7 +374,7 @@ void serializeZone( const ZONE* aZone, Zone* aOut )
     aOut->set_keepout( aZone->GetIsRuleArea() );
 
     for( PCB_LAYER_ID layer : aZone->GetLayerSet().Seq() )
-        aOut->add_layers( aZone->GetBoard()->GetLayerName( layer ).ToStdString() );
+        aOut->add_layers( LSET::Name( layer ).ToStdString() );
 
     const SHAPE_POLY_SET* outline = aZone->Outline();
 
@@ -562,7 +562,7 @@ void RENDER_FEED::Snapshot( RenderSnapshot& aOut, bool aWithArt ) const
     for( PCB_LAYER_ID layer : m_board->GetEnabledLayers().CuStack() )
     {
         LayerInfo* li = aOut.add_layers();
-        li->set_name( m_board->GetLayerName( layer ).ToStdString() );
+        li->set_name( LSET::Name( layer ).ToStdString() );
         li->set_copper( true );
         li->set_order( order++ );
     }

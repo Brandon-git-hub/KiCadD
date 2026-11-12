@@ -1495,7 +1495,7 @@ SOIC-8 pad 1 against KiCad's within 0.1 mm, and a design using `kicadd:R_0603` t
      訊息不再列 `/usr/share/kicad/footprints`；「編輯器忙碌中」會說明原因（對話框或進度視窗、
      哪個工具還在作用、拖曳中），試用時那兩次無對話框的拒絕原因未查明。
 
-10. **（(b)–(e) 已完成 2026-11-12；(a) 佈線、(f) 待做）使用感想（alpha.6，2026-11-12）：優化方向與新功能。** 試用的 Agent 認為查連線（`sch_netlist`、
+10. **（(a)–(e) 已完成 2026-11-12；(f) 待做）使用感想（alpha.6，2026-11-12）：優化方向與新功能。** 試用的 Agent 認為查連線（`sch_netlist`、
    `query_net`、`sch_part` 直接給 KiCad 算好的結果）、每步回傳的局部 DRC、改編輯器記憶體（不和開著
    的檔案衝突、可 undo）、`auto_place` / `lcsc_fetch` / `audit` 是最大的價值；重複操作、缺的功能則
    不如寫腳本或關掉 KiCad 直接改檔。依試用者的優先順序：
@@ -1523,6 +1523,19 @@ SOIC-8 pad 1 against KiCad's within 0.1 mm, and a design using `kicadd:R_0603` t
    (e) `sch_set_fields`、`pcb_set_fields`（`FP_STATE` 加欄位與屬性，沿用 PCB 的 undo；編輯器的畫面
    把封裝欄位當成獨立物件，增刪欄位時重新登記）、`get_rules` / `set_rules`（`kicadd::rules::STATE`
    整份快照，可 undo，改完前後各跑一次 DRC）、`zones`。
+   (a) 佈線（和試用者討論後的範圍：不是自動佈線器，只代替手動重複的部分）：`route`、`route_short`、
+   `fanout`。`kicadd::route::SESSION` 在 kiface 裡用 KiCad 的 PNS（walkaround，不推擠既有走線），
+   同步一次 world 後連續佈多條，後面的會繞開前面的；PNS 交出的走線由自己的 `PNS_KICAD_IFACE_BASE`
+   子類別收下，不直接進板子，最後一個 commit、一筆 undo（`HISTORY_ENTRY::tracksAdded`）。
+   線寬、via、間距、禁止佈線區、板邊都來自 PNS 的規則解析（和互動式佈線相同）；PNS 不管的孔對孔距離、
+   銅碰到挖孔另外檢查，違反的那條當場從 session 拿掉並回報。回應附長度與直線距離比、線段數、via 數、
+   最窄間距（和什麼）；失敗時附走到哪裡、被什麼擋住。`route`：pad 對 pad、點，或省略 `to` 時接
+   最近的飛線；`waypoints`（`[x, y, "B.Cu"]` 在該點打 via 換層）、`via: [x, y]`。`route_short`：
+   依直線長度由短到長，兩端都是通孔時先 F.Cu 再 B.Cu，`max_length`、`dry_run`。`fanout`：SMD 焊盤
+   接到另一層同網路的銅箔區（跳過通孔焊盤與已接上的，沒有銅箔區就警告），via 必須落在鋪好的銅裡，
+   完成後重新鋪銅。上游改動：`PNS::ROUTER` 解構時把全域 instance 還給編輯器自己的佈線器
+   （桌面版裡兩個並存）。測試：`client/route_e2e.py`（pic_programmer 加一塊禁止佈線區、StickHub）、
+   `desktop_e2e` [5d]。
    使用說明寫成 skill：`skills/kicadd/SKILL.md`（工具怎麼搭配、各工作流程、陷阱），release 時放進
    zip 的 `share/kicadd/skills/kicadd`，並另外附 `kicadd-skill.zip`（Claude Desktop 上傳用）。
    試用者建議的分工（寫進使用說明）：了解設計、審查、擺件、局部修改用 kicadd；大量欄位或資料

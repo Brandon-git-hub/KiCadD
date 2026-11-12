@@ -205,13 +205,20 @@ bool ExportFab( BOARD* aBoard, const wxString& aDir, bool aZip, kicadd::board::E
     std::map<std::tuple<std::string, std::string, std::string>, LINE> bom;
     std::vector<std::pair<std::string, std::string>>                   cpl;   // ref, row
     int                                                                tht = 0, noBom = 0;
+    std::vector<std::string>                                           dnp;
 
     for( FOOTPRINT* fp : aBoard->Footprints() )
     {
         std::string ref = str( fp->GetReference() );
 
-        if( ref.empty() || ref[0] == '#' || fp->IsDNP() || fp->IsBoardOnly() )
+        if( ref.empty() || ref[0] == '#' || fp->IsBoardOnly() )
             continue;
+
+        if( fp->IsDNP() )
+        {
+            dnp.push_back( ref );
+            continue;
+        }
 
         std::string value = str( fp->GetValue() );
         std::string footprint = str( fp->GetFPID().GetLibItemName().wx_str() );
@@ -317,6 +324,18 @@ bool ExportFab( BOARD* aBoard, const wxString& aDir, bool aZip, kicadd::board::E
 
     if( noBom )
         aOut.add_notes( std::to_string( noBom ) + " part(s) marked 'exclude from BOM' left out of the BOM and the CPL" );
+
+    if( !dnp.empty() )
+    {
+        std::sort( dnp.begin(), dnp.end(), refLess );
+        std::string list;
+
+        for( size_t k = 0; k < dnp.size() && k < 8; ++k )
+            list += ( k ? " " : "" ) + dnp[k];
+
+        aOut.add_notes( std::to_string( dnp.size() ) + " part(s) marked DNP left out of the BOM and the CPL: " + list
+                        + ( dnp.size() > 8 ? " ..." : "" ) );
+    }
 
     aOut.add_notes( "CPL: footprint origins and KiCad rotations; JLCPCB's preview may turn some packages "
                     "(check it before ordering)" );

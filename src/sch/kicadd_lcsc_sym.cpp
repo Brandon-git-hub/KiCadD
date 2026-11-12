@@ -260,9 +260,9 @@ wxString KicaddLcscSymbol( const wxString& aRequest )
 
         sym->GetReferenceField().SetText( ref );
 
-        // EasyEDA leaves the pins of passives "unspecified" (ERC then warns on every one): pins
+        // EasyEDA leaves the pins of passives "unspecified" or, as often, "input" (C25804): pins
         // of resistors, capacitors, inductors, ferrites, fuses, crystals and diodes are passive,
-        // as in KiCad's own libraries, when the symbol says nothing else about any of them.
+        // as in KiCad's own libraries, unless the symbol gives one of them a real direction.
         static const std::set<wxString> passives = { wxS( "R" ), wxS( "C" ), wxS( "L" ), wxS( "FB" ), wxS( "F" ),
                                                      wxS( "Y" ), wxS( "X" ), wxS( "D" ), wxS( "LED" ), wxS( "RN" ),
                                                      wxS( "RV" ), wxS( "TH" ), wxS( "VR" ) };
@@ -270,7 +270,11 @@ wxString KicaddLcscSymbol( const wxString& aRequest )
 
         if( passives.count( ref.Upper() ) && !symPins.empty()
             && std::all_of( symPins.begin(), symPins.end(),
-                            []( const SCH_PIN* p ) { return p->GetType() == ELECTRICAL_PINTYPE::PT_UNSPECIFIED; } ) )
+                            []( const SCH_PIN* p )
+                            {
+                                return p->GetType() == ELECTRICAL_PINTYPE::PT_UNSPECIFIED
+                                       || p->GetType() == ELECTRICAL_PINTYPE::PT_INPUT;
+                            } ) )
         {
             for( SCH_PIN* pin : symPins )
                 pin->SetType( ELECTRICAL_PINTYPE::PT_PASSIVE );
@@ -294,7 +298,26 @@ wxString KicaddLcscSymbol( const wxString& aRequest )
 
         sym->SetName( name );
         sym->SetLibId( LIB_ID( wxS( "LCSC" ), name ) );
-        sym->GetValueField().SetText( title );
+        // A passive's value is what it is called on a schematic ("10k", "100nF"), not its
+        // manufacturer part number; EasyEDA has it as the "Value" parameter.
+        wxString value = title;
+
+        if( passives.count( ref.Upper() ) )
+        {
+            const json& head = unitDocs[0]["head"];
+
+            if( auto cp = head.find( "c_para" ); cp != head.end() && cp->is_object() )
+            {
+                wxString v = wx( jstr( *cp, "Value" ) ).Strip( wxString::both );
+                v.Replace( wxString::FromUTF8( "\xce\xa9" ), wxEmptyString );       // 10kΩ -> 10k
+                v.Replace( wxString::FromUTF8( "\xe2\x84\xa6" ), wxEmptyString );   // (ohm sign)
+
+                if( !v.IsEmpty() )
+                    value = v;
+            }
+        }
+
+        sym->GetValueField().SetText( value );
         sym->GetFootprintField().SetText( wx( jstr( req, "footprint" ) ) );
         sym->GetFootprintField().SetVisible( false );
 

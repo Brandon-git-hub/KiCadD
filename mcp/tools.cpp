@@ -218,6 +218,7 @@ std::string renderDrc( const google::protobuf::RepeatedPtrField<kb::DrcViolation
             case kb::DT_COURTYARD_OVERLAP:     byType["courtyard"]++; break;
             case kb::DT_EDGE_CLEARANCE:        byType["edge"]++; break;
             case kb::DT_COPPER_OUTSIDE_BOARD:  byType["outside_board"]++; break;
+            case kb::DT_HOLE_TO_HOLE:          byType["hole_to_hole"]++; break;
             default:                           byType["other"]++; break;
             }
         }
@@ -248,6 +249,7 @@ std::string renderDrc( const google::protobuf::RepeatedPtrField<kb::DrcViolation
         case kb::DT_HOLE_CLEARANCE:    s += "HOLE "; break;
         case kb::DT_COURTYARD_OVERLAP: s += "COURTYARD "; break;
         case kb::DT_EDGE_CLEARANCE:    s += "EDGE "; break;
+        case kb::DT_HOLE_TO_HOLE:      s += "HOLE_TO_HOLE "; break;
         case kb::DT_COPPER_OUTSIDE_BOARD:
             s += "OUTSIDE_BOARD " + v.a() + ( v.net_a().empty() ? "" : "[" + v.net_a() + "]" ) + " " + v.layer()
                  + " @" + pt( v.pos() ) + "\n";
@@ -295,18 +297,8 @@ std::string renderMoveResult( const kb::MoveResponse& r, bool aDetail = false )
 {
     std::string s;
 
-    if( !r.source().empty() )
-        s += "from " + r.source() + "\n";
-
-    if( !r.created_nets().empty() )
-    {
-        s += "new nets:";
-
-        for( const std::string& n : r.created_nets() )
-            s += " " + n;
-
-        s += "\n";
-    }
+    // The part's ref goes first (batch shows the first line): "C11 added @..., from copy of C10"
+    const bool sourceInline = !r.source().empty() && r.added_size() == 1 && r.moved_size() == 1;
 
     if( !aDetail && r.removed_size() > BRIEF_PARTS )
     {
@@ -342,7 +334,21 @@ std::string renderMoveResult( const kb::MoveResponse& r, bool aDetail = false )
 
         bool added = std::find( r.added().begin(), r.added().end(), m.ref() ) != r.added().end();
         s += m.ref() + ( added ? " added" : "" ) + " @" + pt( m.pos() )
-             + ( m.rot_decideg() ? " r" + deg( m.rot_decideg() ) : "" ) + ( m.back() ? " B.Cu" : "" ) + "\n";
+             + ( m.rot_decideg() ? " r" + deg( m.rot_decideg() ) : "" ) + ( m.back() ? " B.Cu" : "" )
+             + ( added && sourceInline ? ", from " + r.source() : "" ) + "\n";
+    }
+
+    if( !r.source().empty() && !sourceInline )
+        s += "from " + r.source() + "\n";
+
+    if( !r.created_nets().empty() )
+    {
+        s += "new nets:";
+
+        for( const std::string& n : r.created_nets() )
+            s += " " + n;
+
+        s += "\n";
     }
 
     if( !r.missing().empty() )
@@ -533,6 +539,300 @@ TOOL_RESULT deleteFootprints( IPC_CLIENT& aIpc, const json& aArgs )
         return error( err );
 
     return { renderMoveResult( r, detailOf( aArgs ) ), r.removed().empty() };
+}
+
+
+/// A route end from "U1.5" or [x, y] (mm)
+bool routeEnd( const json& aArgs, const char* aKey, kb::RouteEnd& aOut, std::string& aErr )
+{
+    const json& v = aArgs[aKey];
+
+    if( v.is_string() )
+    {
+        aOut.set_pad( v.get<std::string>() );
+        return true;
+    }
+
+    if( v.is_array() && v.size() == 2 && v[0].is_number() && v[1].is_number() )
+    {
+        aOut.mutable_pos()->set_x( std::llround( v[0].get<double>() * 1e6 ) );
+        aOut.mutable_pos()->set_y( std::llround( v[1].get<double>() * 1e6 ) );
+        return true;
+    }
+
+    aErr = std::string( aKey ) + ": a pad \"U1.5\" or a point [x, y] in mm";
+    return false;
+}
+
+
+std::string ratio( int64_t aLength, int64_t aDirect )
+{
+    if( aDirect <= 0 )
+        return "";
+
+    char buf[32];
+    std::snprintf( buf, sizeof( buf ), "%.2fx", (double) aLength / (double) aDirect );
+    return buf;
+}
+
+
+std::string renderRoute( const kb::RouteResult& r, bool aDryRun )
+{
+    std::string s = r.from() + " -> " + r.to() + " [" + r.net() + "]: ";
+
+    if( !r.ok() )
+    {
+        s += "not routed: " + r.error();
+
+        if( r.has_reached() )
+            s += "; got to " + pt( r.reached() );
+
+        if( !r.blocked_by().empty() )
+            s += "; in the way: " + r.blocked_by() + ( r.has_blocked_at() ? " at " + pt( r.blocked_at() ) : "" );
+
+        return s + "\n";
+    }
+
+    s += std::string( aDryRun ? "would route" : "routed" ) + " on " + r.layer() + ", " + mm( r.length() ) + " mm ("
+         + ratio( r.length(), r.direct() ) + " the straight line), " + std::to_string( r.segments() ) + " segment(s), "
+         + std::to_string( r.vias() ) + " via(s), width " + mm( r.width() );
+
+    if( r.min_gap() >= 0 )
+        s += ", min gap " + mm( r.min_gap() ) + " to " + r.gap_to();
+
+    return s + "\n";
+}
+
+
+TOOL_RESULT routeTrack( IPC_CLIENT& aIpc, const json& aArgs )
+{
+    kb::RouteTrack req;
+    std::string    err;
+
+    if( !aArgs.contains( "from" ) || !routeEnd( aArgs, "from", *req.mutable_from(), err ) )
+        return error( err.empty() ? "from: a pad \"U1.5\" or a point [x, y] in mm" : err );
+
+    if( aArgs.contains( "to" ) && !routeEnd( aArgs, "to", *req.mutable_to(), err ) )
+        return error( err );
+
+    req.set_layer( aArgs.value( "layer", std::string() ) );
+    req.set_dry_run( aArgs.value( "dry_run", false ) );
+
+    if( double w = 0; getNumber( aArgs, "width", w ) )
+        req.set_width( std::llround( w * 1e6 ) );
+
+    auto addStop = [&]( const json& p, const std::string& aVia ) -> bool
+    {
+        if( !p.is_array() || p.size() < 2 || p.size() > 3 || !p[0].is_number() || !p[1].is_number()
+            || ( p.size() == 3 && !p[2].is_string() ) )
+            return false;
+
+        kb::RouteStop* st = req.add_stops();
+        st->mutable_pos()->set_x( std::llround( p[0].get<double>() * 1e6 ) );
+        st->mutable_pos()->set_y( std::llround( p[1].get<double>() * 1e6 ) );
+        st->set_via_to( p.size() == 3 ? p[2].get<std::string>() : aVia );
+        return true;
+    };
+
+    if( aArgs.contains( "waypoints" ) )
+    {
+        if( !aArgs["waypoints"].is_array() )
+            return error( "waypoints: [[x, y], [x, y, \"B.Cu\"], ...] in mm" );
+
+        for( const json& p : aArgs["waypoints"] )
+        {
+            if( !addStop( p, "" ) )
+                return error( "waypoints: [[x, y], [x, y, \"B.Cu\"], ...] in mm (a layer: a via there to it)" );
+        }
+    }
+
+    if( aArgs.contains( "via" ) )
+    {
+        if( req.stops_size() )
+            return error( "via is short for one via; with waypoints, put it among them: [x, y, \"B.Cu\"]" );
+
+        if( !addStop( aArgs["via"], "other" ) )
+            return error( "via: [x, y] in mm" );
+    }
+
+    kb::RouteResponse r;
+
+    if( !aIpc.Call( req, r, err ) )
+        return error( err );
+
+    std::string s;
+    bool        ok = true;
+
+    for( const kb::RouteResult& rr : r.results() )
+    {
+        s += renderRoute( rr, r.dry_run() );
+        ok = ok && rr.ok();
+    }
+
+    if( !r.drc().empty() )
+        s += "the rules it would break:\n" + renderDrc( r.drc(), true );
+
+    if( !r.history_label().empty() )
+        s += "unconnected=" + std::to_string( r.unconnected() ) + "; undo: \"" + r.history_label()
+             + "\"; refill_zones before run_drc\n";
+    else if( !r.dry_run() )
+        s += "nothing changed; unconnected=" + std::to_string( r.unconnected() ) + "\n";
+
+    return TOOL_RESULT{ s, !ok && !r.dry_run() };
+}
+
+
+TOOL_RESULT refillZones( IPC_CLIENT& aIpc );
+
+
+/// Many routes: the failures in full, the successes in brief unless detail
+std::string renderRoutes( const kb::RouteResponse& r, bool aDetail, const char* aWhat )
+{
+    int     ok = 0, vias = 0;
+    int64_t length = 0, minGap = -1;
+    double  worst = 0;
+    std::string worstName, gapName, failed, done;
+
+    for( const kb::RouteResult& rr : r.results() )
+    {
+        if( !rr.ok() )
+        {
+            failed += "  " + renderRoute( rr, r.dry_run() );
+            continue;
+        }
+
+        ok++;
+        vias += rr.vias();
+        length += rr.length();
+
+        if( rr.direct() > 0 && (double) rr.length() / rr.direct() > worst )
+        {
+            worst = (double) rr.length() / rr.direct();
+            worstName = rr.from() + " -> " + rr.to();
+        }
+
+        if( rr.min_gap() >= 0 && ( minGap < 0 || rr.min_gap() < minGap ) )
+        {
+            minGap = rr.min_gap();
+            gapName = rr.from() + " -> " + rr.to() + " to " + rr.gap_to();
+        }
+
+        done += "  " + renderRoute( rr, r.dry_run() );
+    }
+
+    const int total = r.results_size();
+    std::string s = std::string( r.dry_run() ? "dry run: " : "" ) + std::to_string( total ) + " " + aWhat + ", "
+                    + std::to_string( ok ) + ( r.dry_run() ? " would be routed" : " routed" ) + ", "
+                    + std::to_string( total - ok ) + " not\n";
+
+    if( ok )
+    {
+        char buf[64];
+        std::snprintf( buf, sizeof( buf ), "%.2fx", worst );
+        s += "  " + mm( length ) + " mm of track, " + std::to_string( vias ) + " via(s); most detour " + buf
+             + " (" + worstName + ")" + ( minGap >= 0 ? "; min gap " + mm( minGap ) + " (" + gapName + ")" : "" ) + "\n";
+    }
+
+    if( !failed.empty() )
+        s += "not routed:\n" + failed;
+
+    if( aDetail || ok <= BRIEF_PARTS )
+        s += done.empty() ? "" : ( r.dry_run() ? "would route:\n" : "routed:\n" ) + done;
+    else
+        s += "(detail=true lists every route)\n";
+
+    if( !r.history_label().empty() )
+        s += "unconnected=" + std::to_string( r.unconnected() ) + "; undo takes all of it back: \"" + r.history_label()
+             + "\"\n";
+    else if( !r.dry_run() )
+        s += "nothing changed; unconnected=" + std::to_string( r.unconnected() ) + "\n";
+
+    return s;
+}
+
+
+TOOL_RESULT routeShort( IPC_CLIENT& aIpc, const json& aArgs )
+{
+    kb::RouteShort req;
+
+    for( const std::string& r : getStrings( aArgs, "refs" ) )
+        req.add_refs( r );
+
+    for( const std::string& n : getStrings( aArgs, "nets" ) )
+        req.add_nets( n );
+
+    if( req.refs().empty() && req.nets().empty() )
+        return error( "say which: refs and / or nets" );
+
+    if( double l = 0; getNumber( aArgs, "max_length", l ) )
+        req.set_max_length( std::llround( l * 1e6 ) );
+
+    req.set_layer( aArgs.value( "layer", std::string() ) );
+    req.set_dry_run( aArgs.value( "dry_run", false ) );
+
+    kb::RouteResponse r;
+    std::string       err;
+
+    if( !aIpc.Call( req, r, err ) )
+        return error( err );
+
+    if( r.results().empty() )
+        return { "no unrouted connections match" + std::string( req.max_length() ? " (max_length)" : "" ) + "\n" };
+
+    std::string s = renderRoutes( r, detailOf( aArgs ), "connection(s), shortest first" );
+
+    if( !r.history_label().empty() )
+        s += "copper zones keep their old shape: refill_zones before run_drc\n";
+
+    return { s };
+}
+
+
+TOOL_RESULT fanout( IPC_CLIENT& aIpc, const json& aArgs )
+{
+    kb::Fanout req;
+
+    for( const std::string& r : getStrings( aArgs, "refs" ) )
+        req.add_refs( r );
+
+    for( const std::string& n : getStrings( aArgs, "nets" ) )
+        req.add_nets( n );
+
+    if( req.nets().empty() )
+        return error( "nets: the nets to fan out, e.g. [\"GND\", \"+3V3\"]" );
+
+    req.set_layer( aArgs.value( "layer", std::string() ) );
+    req.set_dry_run( aArgs.value( "dry_run", false ) );
+
+    kb::FanoutResponse r;
+    std::string        err;
+
+    if( !aIpc.Call( req, r, err ) )
+        return error( err );
+
+    std::string s;
+
+    for( const std::string& n : r.no_zone() )
+        s += "warning: no copper zone of " + n + " to fan out to; those pads were left alone\n";
+
+    if( r.skipped_tht() )
+        s += std::to_string( r.skipped_tht() ) + " through-hole pad(s) skipped (they reach every layer)\n";
+
+    if( r.skipped_done() )
+        s += std::to_string( r.skipped_done() ) + " pad(s) already joined to the zone, skipped\n";
+
+    if( r.routes().results().empty() )
+        return { s + "no SMD pads to fan out\n" };
+
+    s += renderRoutes( r.routes(), detailOf( aArgs ), "pad(s)" );
+
+    if( !r.routes().history_label().empty() && aArgs.value( "refill", true ) )
+    {
+        TOOL_RESULT f = refillZones( aIpc );
+        s += f.text.substr( 0, f.text.find( '\n' ) ) + "\n";
+    }
+
+    return { s };
 }
 
 
@@ -1684,6 +1984,61 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                                  { "detail", DETAIL_PROP } } ),
                        [&aIpc]( const json& a ) { return deleteTracks( aIpc, a ); } } );
 
+    tools.push_back( { "route",
+                       "Draw one connection the way the interactive router does (45-degree tracks around "
+                       "obstacles; existing copper is never moved; the net class's width and via, the "
+                       "clearance, keepout and edge rules). Not an autorouter: say what to connect. from: a "
+                       "pad \"U1.5\" or a point [x, y] on the net's track / via; to: likewise, or any point "
+                       "(a free end); without to: the nearest unrouted connection of from. waypoints: "
+                       "[[x, y], ...] to pass through, [x, y, \"B.Cu\"] puts a via there and goes on on that "
+                       "layer; via: [x, y] is short for one via to the other side (the end's layer). layer: "
+                       "where to start (default: the start pad's / the end's / F.Cu); width in mm. Reports "
+                       "length vs the straight line, segments, vias and the narrowest gap; when blocked, how "
+                       "far it got and what is in the way. One undoable edit; dry_run reports without "
+                       "drawing. Mm, Y down.",
+                       schema( { { "from", { { "description", "\"U1.5\" or [x, y]" } } },
+                                 { "to", { { "description", "\"C3.1\" or [x, y]; omit for the ratsnest" } } },
+                                 { "waypoints", { { "type", "array" } } },
+                                 { "via", { { "type", "array" }, { "items", { { "type", "number" } } } } },
+                                 { "layer", { { "type", "string" } } },
+                                 { "width", { { "type", "number" } } },
+                                 { "dry_run", { { "type", "boolean" } } } },
+                               { "from" } ),
+                       [&aIpc]( const json& a ) { return routeTrack( aIpc, a ); } } );
+
+    tools.push_back( { "route_short",
+                       "Route the unrouted connections (ratsnest lines) of refs and / or nets, shortest "
+                       "first (the short ones have the fewest ways round, so they go first and block the "
+                       "least), each as route does; max_length (mm) leaves the long ones to the user. "
+                       "Through-hole to through-hole: F.Cu, then B.Cu if blocked, unless layer is given. "
+                       "No vias are added. The failures say how far they got and what is in the way "
+                       "(delete_tracks or move the part). All of it is one undoable edit; dry_run reports "
+                       "what would and would not route without drawing.",
+                       schema( { { "refs", refs },
+                                 { "nets", refs },
+                                 { "max_length", { { "type", "number" } } },
+                                 { "layer", { { "type", "string" } } },
+                                 { "dry_run", { { "type", "boolean" } } },
+                                 { "detail", DETAIL_PROP } } ),
+                       [&aIpc]( const json& a ) { return routeShort( aIpc, a ); } } );
+
+    tools.push_back( { "fanout",
+                       "Fan out SMD pads of nets (e.g. GND, +3V3) to a copper zone of the same net on "
+                       "another layer (an inner plane, or the other side of a 2-layer board): a short track "
+                       "and a via next to each pad, inside that zone, as route would draw them. "
+                       "Through-hole pads are skipped (they reach every layer), and so are pads already "
+                       "joined to the zone; a net without such a zone gets a warning, not dangling vias. "
+                       "refs: only these parts; layer: the zone's layer. One undoable edit; the zones are "
+                       "refilled afterwards (refill=false to skip); dry_run reports without drawing.",
+                       schema( { { "nets", refs },
+                                 { "refs", refs },
+                                 { "layer", { { "type", "string" } } },
+                                 { "dry_run", { { "type", "boolean" } } },
+                                 { "refill", { { "type", "boolean" } } },
+                                 { "detail", DETAIL_PROP } },
+                               { "nets" } ),
+                       [&aIpc]( const json& a ) { return fanout( aIpc, a ); } } );
+
     tools.push_back( { "get_rules",
                        "The design rules: net classes (clearance, track width, via, diff pair; unset values "
                        "come from Default) with how many nets each has, the net class assignments by net name "
@@ -1732,7 +2087,8 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        "set {...} for many. Value is the value; other names are user fields (added hidden when "
                        "missing; null removes one). Attributes: dnp, exclude_from_bom, exclude_from_pos. The "
                        "reference and footprint are not changed here. A board made from a schematic takes its "
-                       "fields from it: change them there (sch_set_fields), then sync_pcb.",
+                       "fields from it: change them there (sch_set_fields), then sync_pcb. Refs that are not "
+                       "found are listed; the other parts are changed anyway.",
                        schema( { { "parts", { { "type", "object" }, { "additionalProperties", { { "type", "object" } } } } },
                                  { "refs", refs },
                                  { "set", { { "type", "object" } } } } ),

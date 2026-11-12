@@ -396,6 +396,7 @@ const char* drcName( kb::DrcType aType )
     case kb::DT_COURTYARD_OVERLAP: return "courtyard";
     case kb::DT_EDGE_CLEARANCE:    return "edge";
     case kb::DT_COPPER_OUTSIDE_BOARD: return "outside_board";
+    case kb::DT_HOLE_TO_HOLE:      return "hole_to_hole";
     default:                       return "drc";
     }
 }

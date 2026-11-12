@@ -111,6 +111,19 @@ private:
     HANDLER_RESULT<kicadd::board::MoveResponse>
     handleDeleteTracks( const HANDLER_CONTEXT<kicadd::board::DeleteTracks>& aCtx );
 
+    HANDLER_RESULT<kicadd::board::RouteResponse>
+    handleRoute( const HANDLER_CONTEXT<kicadd::board::RouteTrack>& aCtx );
+
+    HANDLER_RESULT<kicadd::board::RouteResponse>
+    handleRouteShort( const HANDLER_CONTEXT<kicadd::board::RouteShort>& aCtx );
+
+    HANDLER_RESULT<kicadd::board::FanoutResponse>
+    handleFanout( const HANDLER_CONTEXT<kicadd::board::Fanout>& aCtx );
+
+    /// The new tracks of a routing session (or a dry run's report): one commit, one undo entry
+    void commitRoutes( std::vector<std::unique_ptr<PCB_TRACK>>&& aAdded, const std::vector<PCB_TRACK*>& aReplaced,
+                       const std::string& aLabel, kicadd::board::RouteResponse& aOut );
+
     HANDLER_RESULT<kicadd::board::MoveResponse>
     handleAddFootprint( const HANDLER_CONTEXT<kicadd::board::AddFootprint>& aCtx );
 
@@ -269,6 +282,7 @@ private:
         std::vector<FP_SNAPSHOT>    added;     ///< removed again by undo
         std::vector<FP_SNAPSHOT>    removed;   ///< put back by undo
         std::vector<TRACK_SNAPSHOT> tracksRemoved;   ///< put back by undo
+        std::vector<TRACK_SNAPSHOT> tracksAdded;     ///< taken out by undo (route)
 
         /// set_rules: the design rules before / after (nothing else in such an entry)
         std::shared_ptr<kicadd::rules::STATE> rulesBefore, rulesAfter;

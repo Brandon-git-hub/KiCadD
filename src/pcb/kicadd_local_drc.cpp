@@ -329,7 +329,7 @@ private:
         if( aB->IsConnected() )
             v.set_net_b( static_cast<const BOARD_CONNECTED_ITEM*>( aB )->GetNetname().ToStdString() );
 
-        v.set_layer( m_board->GetLayerName( aLayer ).ToStdString() );
+        v.set_layer( LSET::Name( aLayer ).ToStdString() );
         v.set_required( aRequired );
         v.set_actual( aActual );
         v.mutable_pos()->set_x( aPos.x );

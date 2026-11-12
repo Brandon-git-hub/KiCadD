@@ -4,7 +4,22 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 
 > ⚠️ Pre-release，僅供試用。由 GitHub Actions 自動建置；功能在 Linux 上做過端到端測試，Windows 上只有 CI 的 smoke test 與早期版本的人工試用。
 
-## 這一版（alpha.7）
+## 這一版（alpha.8）
+**佈線（44 → 47 個工具）**：代替手動重複的部分，不是全板自動佈線。走線的畫法和 KiCad 的互動式佈線器相同（用 KiCad 自己的推擠佈線器，繞開障礙、不推動既有走線，線寬和過孔依網路類別，遵守間距、禁止佈線區、板邊距離）；要接哪裡、在哪裡換層由 Agent 或你決定。每次呼叫是一筆 undo，你也可以在編輯器裡按 Ctrl+Z。
+- **`route`**：連一條線。`from="U1.5"` 不給 `to` 時接最近的未佈線連線，或 `to="C3.1"` / 座標；`waypoints` 指定經過點，`[x, y, "B.Cu"]` 在該點打過孔換層，`via: [x, y]` 是只換一次層的簡寫。回應附長度與直線距離的比值、線段數、過孔數、最窄的間距（和什麼）；佈不通時說明走到哪裡、被哪條線或哪個焊盤擋住。
+- **`route_short`**：把指定零件或網路的未佈線連線由短到長逐條佈（短的最不容易擋到別人），`max_length` 只佈短的，`dry_run` 先看哪些會失敗。整次呼叫一筆 undo。
+- **`fanout`**：把 SMD 焊盤用短線加過孔接到另一層同網路的銅箔區（內層的地，或雙層板背面的地）。通孔焊盤、已經接上的焊盤直接跳過；目標層沒有這個網路的銅箔區時只警告，不打空接的過孔；過孔一定落在鋪好的銅裡；完成後自動重新鋪銅。
+- 孔對孔距離、銅碰到挖孔這兩項佈線器本身不管，另外檢查，違反的那條不會畫上。
+
+**alpha.7 試用回報的修正**
+- **立創被動元件的腳位：** EasyEDA 常把電阻、電容的腳標成 input，現在一律改成 passive（已經存進專案 LCSC 庫的舊符號要加 `refresh=true` 重抓一次）。Value 改用規格值（`10k`、`100nF`），不再是料號。
+- **`get_rules` 的網路數：** 新增的網路類別只設了部分數值時，Default 的網路數沒有扣掉，加總會比總數多。
+- **`sync_pcb dry_run`：** warning 排在最前面、不會被截掉；不再每顆零件都列「Update X fields」（那是 KiCadD 自己清除舊 LCSC 編號造成的）；dry run 寫「board has N footprints (unchanged: dry run)」；`detail=true` 列出全部。
+- **`add_footprint`：** 第一行就是新零件的編號（`C11 added @..., from copy of C10`），`batch` 裡也看得到。
+- **層名稱：** 一律用 KiCad 的標準名稱（`F.Cu`、`B.Cu`），不再用板子自訂的名稱（例如 `top_layer`）。
+- **`export_fab`：** 備註也列出被排除的 DNP 零件；`sch_set_fields` / `pcb_set_fields` 的說明註明找不到的編號會列出、其他零件照改。
+
+## alpha.7
 **新工具（36 → 44 個）**
 - **電路圖的 Agent undo / redo**：`sch_undo` / `sch_redo` 撤銷 Agent 自己最近的電路圖修改（保留 50 步）；你之後改過的東西不動，你已經按 Ctrl+Z 撤銷的會直接說明。
 - **改欄位**：`sch_set_fields`（電路圖：值、封裝、LCSC、自訂欄位、DNP、不列入 BOM 等，可一次多顆）、`pcb_set_fields`（板子上的封裝欄位與屬性）。`sch_part` 會列出自訂欄位與屬性。
@@ -68,17 +83,18 @@ Claude Desktop（`%APPDATA%\Claude\claude_desktop_config.json`）或 Cursor（`m
 Claude Code：`claude mcp add kicadd -- C:\KiCadD\bin\kicadd-mcp.exe --stdio`（路徑換成你解壓的位置）。
 
 ### 建議的使用方式（skill）
-44 個工具怎麼搭配使用（先查再改、審查 / 擺件 / 找料 / 出廠流程、undo、批次、常見陷阱）寫成一份 skill，讓 Agent 照著做：
+47 個工具怎麼搭配使用（先查再改、審查 / 擺件 / 佈線 / 找料 / 出廠流程、undo、批次、常見陷阱）寫成一份 skill，讓 Agent 照著做：
 - **Claude Code**：把 `share\kicadd\skills\kicadd` 整個資料夾複製到 `%USERPROFILE%\.claude\skills\`（所有專案）或專案的 `.claude\skills\`。
 - **Claude Desktop**：在設定的 Skills 頁面上傳另外附的 `kicadd-skill.zip`。
 - **其他 Agent（Cursor 等）**：把 `SKILL.md` 的內容放進它的規則檔或系統提示。
 
-## Agent 能做的事（44 個 MCP 工具）
+## Agent 能做的事（47 個 MCP 工具）
 - **電路圖**：`sch_add_part`（符號庫、立創編號或電源符號）、`sch_connect` / `sch_disconnect`（網路名稱連接）、`sch_move`、`sch_wire`、`sch_netlist`、`sch_delete`（零件、導線、懸空線）、`sch_set_fields`、`run_erc`、`sch_save`、Agent 自己的 `sch_undo` / `sch_redo`；**階層圖紙** `sch_add_sheet`，`ports` 產生圖紙腳位，父圖紙上用 `圖紙名.腳位名` 連接。
 - **立創零件**：`lcsc_fetch` / `sch_add_part lcsc=` 依編號抓封裝與符號，存進專案的 LCSC 庫；回報庫存、價格、基礎件 / 擴展件。編輯器裡也有 Place → Add LCSC Part / Symbol。
 - **電路圖 → PCB**：`sync_pcb`（開著電路圖編輯器時直接讀編輯器內容，不會寫入你的電路圖檔）。
 - **自動擺件** `auto_place`：依連線擺放、去耦電容靠 IC 腳；選用功能：模組分群（`groups` 或 Block 欄位）、去耦電容放背面（`back_decaps`）、擺件規則（`rules`：板邊、區域、角度、距離上限）。
 - **PCB 編輯**：查詢、移動、翻面、新增 / 刪除封裝、改欄位（`pcb_set_fields`）、刪除走線、DRC、鋪銅、存檔、Agent 自己的 undo / redo。
+- **佈線**：`route`（一條線，可指定經過點與換層位置）、`route_short`（短連線由短到長）、`fanout`（SMD 焊盤打過孔接到另一層的銅箔區）。不是全板自動佈線。
 - **設計規則與銅箔區**：`get_rules` / `set_rules`（網路類別、指派、板子最小值）、`zones`（間距、優先順序、焊盤連接）。
 - **批次**：`batch` 一次跑多個工具。
 - **審查與製造**：`audit`、`export_fab`（Gerber / 鑽孔 / BOM / CPL）；依規格找料 `lcsc_search`；自建符號與封裝 `lib_create_symbol` / `lib_create_footprint`。
@@ -100,7 +116,7 @@ Claude Code：`claude mcp add kicadd -- C:\KiCadD\bin\kicadd-mcp.exe --stdio`（
 - **想先隨便開個板子試：** `share\kicad\demos\` 裡有 KiCad 的範例專案（例如 `pic_programmer`），封裝已內嵌在板子裡。
 - 立創資料來自 JLCEDA / EasyEDA 官方庫，使用條款以其網站為準；本版不附任何轉換好的零件。
 - 設定檔位置與 KiCad nightly 相同（`%APPDATA%\kicad\10.99`），不影響已安裝的正式版 KiCad 9。
-- 尚未支援：PCB / 組裝報價、立創零件的 3D 模型、同一圖紙檔重複使用、連接器伸出板邊的擺放。
+- 尚未支援：全板自動佈線、差分對 / 等長的自動佈線、PCB / 組裝報價、立創零件的 3D 模型、同一圖紙檔重複使用、連接器伸出板邊的擺放。
 - 問題回報：Help → Report Bug（開 GitHub issue）。
 
 ## CI 驗證（smoke test）

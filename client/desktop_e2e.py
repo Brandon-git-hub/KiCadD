@@ -246,6 +246,29 @@ def main():
         check(not err, "three Ctrl+Z over it: the editor runs (" + text.splitlines()[0][:50] + ")")
         d.shot(os.path.join(work, "shot-3-end.png"))
 
+        print("[5d] agent routes in the editor, user Ctrl+Z, then the user's own router still works")
+        err, text = mcp.tool("delete_tracks", {"refs": ["R9"]})
+        ripped = int(re.search(r"unconnected=(\d+)", text).group(1))
+        err, text = mcp.tool("route", {"from": "R9.2", "to": "D8.2"})
+        check(not err and "routed on" in text and f"unconnected={ripped - 1}" in text,
+              "route in the editor: " + text.splitlines()[0][:100])
+        d.keys(main_win, "ctrl+z")
+        time.sleep(1)
+        err, text = mcp.tool("query_net", {"net": "Net-(D8-A)"})
+        check(not err and "TRK" not in text, "user Ctrl+Z took the route back")
+        # the editor's interactive router (its own PNS instance) after the agent's
+        d.x("mousemove", "--sync", "700", "400")
+        d.keys(main_win, "x")
+        time.sleep(1)
+        d.x("mousemove", "--sync", "760", "430")
+        time.sleep(0.5)
+        d.keys(main_win, "Escape", "Escape")
+        time.sleep(1)
+        err, text = mcp.tool("route", {"from": "R9.2", "to": "D8.2"})
+        check(not err and "routed on" in text, "the user's router ran, the agent routes again")
+        err, text = mcp.tool("undo")
+        check(not err and "route" in text, "agent undo of the route")
+
         cache = os.environ.get("KICADD_LCSC_CACHE", "")
         if cache and os.path.exists(os.path.join(cache, "C25804.json")):
             print("[5b] agent places an LCSC part (from the cache), user Ctrl+Z")

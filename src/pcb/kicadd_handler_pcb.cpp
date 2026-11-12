@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <climits>
 #include <set>
 #include <unordered_map>
 
@@ -65,6 +66,7 @@
 #include <kiface_services.h>
 #include <kiway.h>
 #include <reporter.h>
+#include "pcb/kicadd_route.h"
 #include <wx/ffile.h>
 
 using namespace kicadd::board;
@@ -132,7 +134,7 @@ CompactItem makeItem( ItemKind aKind, const BOARD_ITEM* aItem, std::string aHand
 CompactItem describeFootprint( const FOOTPRINT* aFp )
 {
     CompactItem out = makeItem( IK_FOOTPRINT, aFp, aFp->GetReference().ToStdString() );
-    out.set_layer( aFp->GetLayerName().ToStdString() );
+    out.set_layer( LSET::Name( aFp->GetLayer() ).ToStdString() );
     out.set_rot_decideg( aFp->GetOrientation().AsTenthsOfADegree() );
 
     BOX2I body = aFp->GetBoundingBox( false );
@@ -154,7 +156,7 @@ CompactItem describePad( const PAD* aPad )
     LSET cu = aPad->GetLayerSet() & LSET::AllCuMask();
 
     if( cu.count() == 1 )
-        out.set_layer( aPad->GetLayerName().ToStdString() );
+        out.set_layer( LSET::Name( aPad->GetLayer() ).ToStdString() );
 
     return out;
 }
@@ -172,7 +174,7 @@ CompactItem describeTrack( const PCB_TRACK* aTrack )
 
     CompactItem out = makeItem( aTrack->Type() == PCB_ARC_T ? IK_ARC : IK_TRACK, aTrack,
                                 shortId( aTrack ) );
-    out.set_layer( aTrack->GetLayerName().ToStdString() );
+    out.set_layer( LSET::Name( aTrack->GetLayer() ).ToStdString() );
     setPoint( out.mutable_pos(), aTrack->GetStart() );
     setPoint( out.mutable_end(), aTrack->GetEnd() );
     out.set_width( aTrack->GetWidth() );
@@ -235,6 +237,9 @@ KICADD_HANDLER_PCB::KICADD_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext ) 
     registerHandler<Zones, ZonesResponse>( &KICADD_HANDLER_PCB::handleZones );
     registerHandler<DeleteFootprints, MoveResponse>( &KICADD_HANDLER_PCB::handleDeleteFootprints );
     registerHandler<DeleteTracks, MoveResponse>( &KICADD_HANDLER_PCB::handleDeleteTracks );
+    registerHandler<RouteTrack, RouteResponse>( &KICADD_HANDLER_PCB::handleRoute );
+    registerHandler<RouteShort, RouteResponse>( &KICADD_HANDLER_PCB::handleRouteShort );
+    registerHandler<Fanout, FanoutResponse>( &KICADD_HANDLER_PCB::handleFanout );
     registerHandler<ExportFab, ExportFabResponse>( &KICADD_HANDLER_PCB::handleExportFab );
     registerHandler<LcscSearch, LcscSearchResponse>( &KICADD_HANDLER_PCB::handleLcscSearch );
     registerHandler<FpCreate, FpCreateResponse>( &KICADD_HANDLER_PCB::handleFpCreate );
@@ -486,7 +491,7 @@ KICADD_HANDLER_PCB::handleQueryRadius( const HANDLER_CONTEXT<QueryRadius>& aCtx 
             consider( z, [&]
                       {
                           CompactItem ci = makeItem( IK_ZONE, z, shortId( z ) );
-                          ci.set_layer( z->GetLayerName().ToStdString() );
+                          ci.set_layer( LSET::Name( z->GetLayer() ).ToStdString() );
                           return ci;
                       } );
         }
@@ -560,7 +565,7 @@ KICADD_HANDLER_PCB::handleQueryNet( const HANDLER_CONTEXT<QueryNet>& aCtx )
         if( z->GetNetCode() == code )
         {
             CompactItem ci = makeItem( IK_ZONE, z, shortId( z ) );
-            ci.set_layer( z->GetLayerName().ToStdString() );
+            ci.set_layer( LSET::Name( z->GetLayer() ).ToStdString() );
             emit( std::move( ci ) );
         }
     }
@@ -1638,6 +1643,796 @@ KICADD_HANDLER_PCB::handleDeleteTracks( const HANDLER_CONTEXT<DeleteTracks>& aCt
 }
 
 
+namespace
+{
+
+/// A route end: a pad ("U1.5"), or the copper at a point (a pad, track or via there; for the
+/// far end also nothing: a free end).
+std::string ptText( const VECTOR2I& aPos )
+{
+    char buf[64];
+    std::snprintf( buf, sizeof( buf ), "%.4g,%.4g", aPos.x / 1e6, aPos.y / 1e6 );
+    return buf;
+}
+
+
+struct ROUTE_END
+{
+    BOARD_CONNECTED_ITEM* item = nullptr;
+    VECTOR2I              pos;
+    std::string           name;
+};
+
+
+std::optional<ROUTE_END> resolveEnd( BOARD* aBoard, const RouteEnd& aEnd, PCB_LAYER_ID aLayer, int aNet,
+                                     bool aFreeOk, std::string& aError )
+{
+    ROUTE_END out;
+
+    if( !aEnd.pad().empty() )
+    {
+        const std::string& name = aEnd.pad();
+        size_t             dot = name.rfind( '.' );
+        FOOTPRINT*         fp = dot == std::string::npos
+                                        ? nullptr
+                                        : aBoard->FindFootprintByReference( wxString::FromUTF8( name.substr( 0, dot ) ) );
+        PAD*               pad = fp ? fp->FindPadByNumber( wxString::FromUTF8( name.substr( dot + 1 ) ) ) : nullptr;
+
+        if( !pad )
+        {
+            aError = "no pad " + name + ( dot == std::string::npos ? " (write REF.PAD, e.g. U1.5)" : "" );
+            return std::nullopt;
+        }
+
+        out.item = pad;
+        out.pos = pad->GetPosition();
+        out.name = name;
+        return out;
+    }
+
+    if( !aEnd.has_pos() )
+    {
+        aError = "an end needs pad or pos";
+        return std::nullopt;
+    }
+
+    out.pos = VECTOR2I( aEnd.pos().x(), aEnd.pos().y() );
+    out.name = ptText( out.pos );
+
+    // The copper there: a pad, via or track (of the net, when it is known)
+    BOARD_CONNECTED_ITEM* best = nullptr;
+    int                   bestRank = 99;
+
+    auto consider = [&]( BOARD_CONNECTED_ITEM* aItem, int aRank )
+    {
+        if( aNet > 0 && aItem->GetNetCode() != aNet )
+            return;
+
+        if( aLayer != UNDEFINED_LAYER && !aItem->IsOnLayer( aLayer ) )
+            return;
+
+        if( aRank < bestRank && aItem->HitTest( out.pos, 0 ) )
+        {
+            best = aItem;
+            bestRank = aRank;
+        }
+    };
+
+    for( FOOTPRINT* fp : aBoard->Footprints() )
+    {
+        if( !fp->GetBoundingBox( false ).Contains( out.pos ) )
+            continue;
+
+        for( PAD* pad : fp->Pads() )
+            consider( pad, 0 );
+    }
+
+    for( PCB_TRACK* t : aBoard->Tracks() )
+        consider( t, t->Type() == PCB_VIA_T ? 1 : 2 );
+
+    if( best )
+    {
+        out.item = best;
+
+        // a pad or via is entered at its centre; a track where the point is, on its axis
+        if( best->Type() == PCB_PAD_T || best->Type() == PCB_VIA_T )
+            out.pos = best->GetPosition();
+        else if( best->Type() == PCB_TRACE_T )
+            out.pos = static_cast<PCB_TRACK*>( best )->GetEffectiveShape( UNDEFINED_LAYER )->Centre() == out.pos
+                              ? out.pos
+                              : SEG( static_cast<PCB_TRACK*>( best )->GetStart(),
+                                     static_cast<PCB_TRACK*>( best )->GetEnd() ).NearestPoint( out.pos );
+
+        out.name = kicadd::route::Describe( best );
+        return out;
+    }
+
+    if( !aFreeOk )
+    {
+        aError = "no copper" + std::string( aNet > 0 ? " of the net" : "" ) + " at " + out.name
+                 + ( aLayer != UNDEFINED_LAYER ? " on " + LSET::Name( aLayer ).ToStdString() : std::string() );
+        return std::nullopt;
+    }
+
+    return out;
+}
+
+
+void fillResult( RouteResult& aOut, const kicadd::route::RESULT& aRes )
+{
+    aOut.set_ok( aRes.ok );
+    aOut.set_error( aRes.error );
+    aOut.set_net( aRes.net );
+    aOut.set_layer( aRes.layer );
+    aOut.set_width( aRes.width );
+    aOut.set_length( aRes.length );
+    aOut.set_direct( aRes.direct );
+    aOut.set_segments( aRes.segments );
+    aOut.set_vias( aRes.vias );
+    aOut.set_min_gap( aRes.minGap );
+    aOut.set_gap_to( aRes.gapTo );
+    aOut.set_blocked_by( aRes.blockedBy );
+
+    if( aRes.reached )
+    {
+        aOut.mutable_reached()->set_x( aRes.reached->x );
+        aOut.mutable_reached()->set_y( aRes.reached->y );
+    }
+
+    if( aRes.blockedAt )
+    {
+        aOut.mutable_blocked_at()->set_x( aRes.blockedAt->x );
+        aOut.mutable_blocked_at()->set_y( aRes.blockedAt->y );
+    }
+}
+
+} // namespace
+
+
+HANDLER_RESULT<RouteResponse> KICADD_HANDLER_PCB::handleRoute( const HANDLER_CONTEXT<RouteTrack>& aCtx )
+{
+    if( std::optional<ApiResponseStatus> wait = busy() )
+        return tl::unexpected( *wait );
+
+    BOARD* b = board();
+
+    if( !b )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
+
+    const RouteTrack& req = aCtx.Request;
+    std::string       err;
+
+    auto layerOf = [&]( const std::string& aName, PCB_LAYER_ID& aLayer ) -> bool
+    {
+        aLayer = UNDEFINED_LAYER;
+
+        if( aName.empty() )
+            return true;
+
+        int id = b->GetLayerID( wxString::FromUTF8( aName ) );
+
+        if( id < 0 || !IsCopperLayer( id ) || !b->IsLayerEnabled( ToLAYER_ID( id ) ) )
+        {
+            err = "no copper layer " + aName;
+            return false;
+        }
+
+        aLayer = ToLAYER_ID( id );
+        return true;
+    };
+
+    kicadd::route::REQUEST r;
+
+    if( !layerOf( req.layer(), r.layer ) )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, err ) );
+
+    std::optional<ROUTE_END> from = resolveEnd( b, req.from(), r.layer, 0, false, err );
+
+    if( !from )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "from: " + err ) );
+
+    std::optional<ROUTE_END> to;
+
+    if( req.has_to() && ( !req.to().pad().empty() || req.to().has_pos() ) )
+    {
+        to = resolveEnd( b, req.to(), UNDEFINED_LAYER, from->item->GetNetCode(), true, err );
+
+        if( !to )
+            return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "to: " + err ) );
+    }
+    else
+    {
+        // The nearest unrouted connection of the start (its ratsnest line)
+        std::shared_ptr<CONNECTIVITY_DATA> conn = b->GetConnectivity();
+        RN_NET*                            rn = conn->GetRatsnestForNet( from->item->GetNetCode() );
+        unsigned                           best = UINT_MAX;
+
+        for( const CN_EDGE& edge : rn ? rn->GetEdges() : std::vector<CN_EDGE>() )
+        {
+            std::shared_ptr<const CN_ANCHOR> a = edge.GetSourceNode(), z = edge.GetTargetNode();
+
+            if( !a || !z || a->Dirty() || z->Dirty() )
+                continue;
+
+            std::shared_ptr<const CN_ANCHOR> other = a->Parent() == from->item ? z : z->Parent() == from->item ? a : nullptr;
+
+            if( other && other->Parent() && edge.GetLength() < best )
+            {
+                best = edge.GetLength();
+                to = ROUTE_END{ other->Parent(), other->Pos(), kicadd::route::Describe( other->Parent() ) };
+
+                if( other->Parent()->Type() == PCB_PAD_T || other->Parent()->Type() == PCB_VIA_T )
+                    to->pos = other->Parent()->GetPosition();
+            }
+        }
+
+        if( !to )
+            return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
+                                              from->name + " has no unrouted connection: give `to`" ) );
+    }
+
+    r.fromItem = from->item;
+    r.from = from->pos;
+    r.toItem = to->item;
+    r.to = to->pos;
+    r.width = (int) req.width();
+
+    for( const RouteStop& st : req.stops() )
+    {
+        kicadd::route::STOP stop;
+        stop.pos = VECTOR2I( st.pos().x(), st.pos().y() );
+
+        if( st.via_to() == "other" )
+            stop.otherSide = true;
+        else if( !layerOf( st.via_to(), stop.viaTo ) )
+            return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, err ) );
+
+        r.stops.push_back( stop );
+    }
+
+    RouteResponse                 out;
+    kicadd::route::SESSION        session( b );
+    kicadd::route::RESULT         res = session.Route( r );
+    RouteResult*                  rr = out.add_results();
+
+    rr->set_from( from->name );
+    rr->set_to( to->name );
+    fillResult( *rr, res );
+
+    for( const DrcViolation& v : res.drc )
+        *out.add_drc() = v;
+
+    out.set_dry_run( req.dry_run() );
+
+    // Not put on the board: a dry run, a failure, or tracks that would break a rule (the router
+    // keeps clearances; this is the check that it did)
+    if( !res.ok || req.dry_run() )
+    {
+        out.set_unconnected( (int) b->GetConnectivity()->GetUnconnectedCountNoFlush( false ) );
+        return out;
+    }
+
+    commitRoutes( session.TakeAdded(), session.Replaced(),
+                  "route " + res.net + " " + from->name + " -> " + to->name, out );
+    return out;
+}
+
+
+namespace
+{
+
+/// "R9.1" for a pad, else the router's description ("track GND (B.Cu)", "via GND")
+std::string endName( const BOARD_CONNECTED_ITEM* aItem )
+{
+    if( aItem && aItem->Type() == PCB_PAD_T )
+    {
+        const PAD* pad = static_cast<const PAD*>( aItem );
+        return pad->GetParentFootprint()->GetReference().ToStdString() + "." + pad->GetNumber().ToStdString();
+    }
+
+    return kicadd::route::Describe( aItem );
+}
+
+
+/// Where a route enters an item: a pad's or via's centre, else the anchor
+VECTOR2I entry( const BOARD_CONNECTED_ITEM* aItem, const VECTOR2I& aAnchor )
+{
+    if( aItem->Type() == PCB_PAD_T || aItem->Type() == PCB_VIA_T )
+        return aItem->GetPosition();
+
+    return aAnchor;
+}
+
+
+bool throughAll( const BOARD_CONNECTED_ITEM* aItem )
+{
+    return ( aItem->GetLayerSet() & LSET::AllCuMask() ).count() > 1;
+}
+
+} // namespace
+
+
+HANDLER_RESULT<RouteResponse> KICADD_HANDLER_PCB::handleRouteShort( const HANDLER_CONTEXT<RouteShort>& aCtx )
+{
+    if( std::optional<ApiResponseStatus> wait = busy() )
+        return tl::unexpected( *wait );
+
+    BOARD* b = board();
+
+    if( !b )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
+
+    const RouteShort& req = aCtx.Request;
+
+    if( req.refs().empty() && req.nets().empty() )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "RouteShort needs refs or nets" ) );
+
+    PCB_LAYER_ID layer = UNDEFINED_LAYER;
+
+    if( !req.layer().empty() )
+    {
+        int id = b->GetLayerID( wxString::FromUTF8( req.layer() ) );
+
+        if( id < 0 || !IsCopperLayer( id ) )
+            return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no copper layer " + req.layer() ) );
+
+        layer = ToLAYER_ID( id );
+    }
+
+    RouteResponse            out;
+    std::set<const FOOTPRINT*> parts;
+    std::set<int>            nets;
+
+    for( const std::string& ref : req.refs() )
+    {
+        FOOTPRINT* fp = b->FindFootprintByReference( wxString::FromUTF8( ref ) );
+
+        if( !fp )
+        {
+            RouteResult* r = out.add_results();
+            r->set_from( ref );
+            r->set_error( "no such part" );
+            continue;
+        }
+
+        parts.insert( fp );
+
+        for( PAD* pad : fp->Pads() )
+        {
+            if( pad->GetNetCode() > 0 )
+                nets.insert( pad->GetNetCode() );
+        }
+    }
+
+    std::set<int> onlyNets;
+
+    for( const std::string& name : req.nets() )
+    {
+        NETINFO_ITEM* net = b->FindNet( wxString::FromUTF8( name ) );
+
+        if( !net )
+        {
+            RouteResult* r = out.add_results();
+            r->set_net( name );
+            r->set_error( "no such net" );
+            continue;
+        }
+
+        onlyNets.insert( net->GetNetCode() );
+    }
+
+    if( parts.empty() )
+        nets = onlyNets;
+
+    struct CONN
+    {
+        BOARD_CONNECTED_ITEM* a;
+        BOARD_CONNECTED_ITEM* z;
+        VECTOR2I              pa, pz;
+        long long             length;
+    };
+
+    std::vector<CONN>                  conns;
+    std::shared_ptr<CONNECTIVITY_DATA> conn = b->GetConnectivity();
+
+    for( int code : nets )
+    {
+        if( !onlyNets.empty() && !onlyNets.count( code ) )
+            continue;
+
+        RN_NET* rn = conn->GetRatsnestForNet( code );
+
+        if( !rn )
+            continue;
+
+        for( const CN_EDGE& edge : rn->GetEdges() )
+        {
+            std::shared_ptr<const CN_ANCHOR> a = edge.GetSourceNode(), z = edge.GetTargetNode();
+
+            if( !a || !z || a->Dirty() || z->Dirty() || !a->Parent() || !z->Parent() )
+                continue;
+
+            if( !parts.empty() && !parts.count( a->Parent()->GetParentFootprint() )
+                && !parts.count( z->Parent()->GetParentFootprint() ) )
+                continue;
+
+            if( a->Parent()->Type() == PCB_ZONE_T || z->Parent()->Type() == PCB_ZONE_T )
+                continue;
+
+            CONN c{ a->Parent(), z->Parent(), entry( a->Parent(), a->Pos() ), entry( z->Parent(), z->Pos() ), 0 };
+            c.length = ( c.pz - c.pa ).EuclideanNorm();
+
+            if( req.max_length() > 0 && c.length > req.max_length() )
+                continue;
+
+            // start from the pad of the parts asked for, or from a pad rather than a track
+            if( ( !parts.empty() && !parts.count( c.a->GetParentFootprint() ) )
+                || ( c.a->Type() != PCB_PAD_T && c.z->Type() == PCB_PAD_T ) )
+            {
+                std::swap( c.a, c.z );
+                std::swap( c.pa, c.pz );
+            }
+
+            conns.push_back( c );
+        }
+    }
+
+    // shortest first: a short connection has the fewest ways round, a long one the most
+    std::stable_sort( conns.begin(), conns.end(), []( const CONN& x, const CONN& y ) { return x.length < y.length; } );
+
+    constexpr size_t MAX_ROUTES = 300;
+
+    if( conns.size() > MAX_ROUTES )
+        conns.resize( MAX_ROUTES );
+
+    kicadd::route::SESSION session( b );
+    int                    routed = 0;
+
+    for( const CONN& c : conns )
+    {
+        kicadd::route::REQUEST r;
+        r.fromItem = c.a;
+        r.from = c.pa;
+        r.toItem = c.z;
+        r.to = c.pz;
+
+        // the layer asked for; else as route chooses, and for through-hole at both ends F.Cu
+        // first, then B.Cu
+        std::vector<PCB_LAYER_ID> tries{ layer };
+
+        if( layer == UNDEFINED_LAYER && throughAll( c.a ) && throughAll( c.z ) )
+            tries = { F_Cu, B_Cu };
+
+        kicadd::route::RESULT res;
+
+        for( PCB_LAYER_ID l : tries )
+        {
+            r.layer = l;
+            kicadd::route::RESULT attempt = session.Route( r );
+
+            if( attempt.ok || res.error.empty() )
+                res = attempt;
+
+            if( attempt.ok )
+                break;
+        }
+
+        RouteResult* rr = out.add_results();
+        rr->set_from( endName( c.a ) );
+        rr->set_to( endName( c.z ) );
+        fillResult( *rr, res );
+        routed += res.ok ? 1 : 0;
+    }
+
+    out.set_dry_run( req.dry_run() );
+
+    if( req.dry_run() || routed == 0 )
+    {
+        out.set_unconnected( (int) conn->GetUnconnectedCountNoFlush( false ) );
+        return out;
+    }
+
+    commitRoutes( session.TakeAdded(), session.Replaced(), "route " + std::to_string( routed ) + " connection(s)", out );
+    return out;
+}
+
+
+HANDLER_RESULT<FanoutResponse> KICADD_HANDLER_PCB::handleFanout( const HANDLER_CONTEXT<Fanout>& aCtx )
+{
+    if( std::optional<ApiResponseStatus> wait = busy() )
+        return tl::unexpected( *wait );
+
+    BOARD* b = board();
+
+    if( !b )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
+
+    const Fanout& req = aCtx.Request;
+
+    if( req.nets().empty() )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "Fanout needs nets (e.g. GND)" ) );
+
+    PCB_LAYER_ID onlyLayer = UNDEFINED_LAYER;
+
+    if( !req.layer().empty() )
+    {
+        int id = b->GetLayerID( wxString::FromUTF8( req.layer() ) );
+
+        if( id < 0 || !IsCopperLayer( id ) )
+            return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no copper layer " + req.layer() ) );
+
+        onlyLayer = ToLAYER_ID( id );
+    }
+
+    FanoutResponse out;
+    RouteResponse& routes = *out.mutable_routes();
+    std::set<int>  nets;
+
+    for( const std::string& name : req.nets() )
+    {
+        if( NETINFO_ITEM* net = b->FindNet( wxString::FromUTF8( name ) ) )
+            nets.insert( net->GetNetCode() );
+        else
+            out.add_no_zone( name + " (no such net)" );
+    }
+
+    std::vector<FOOTPRINT*> parts;
+
+    if( req.refs().empty() )
+    {
+        parts.assign( b->Footprints().begin(), b->Footprints().end() );
+    }
+    else
+    {
+        for( const std::string& ref : req.refs() )
+        {
+            if( FOOTPRINT* fp = b->FindFootprintByReference( wxString::FromUTF8( ref ) ) )
+                parts.push_back( fp );
+            else
+                out.add_no_zone( ref + " (no such part)" );
+        }
+    }
+
+    std::shared_ptr<CONNECTIVITY_DATA> conn = b->GetConnectivity();
+    kicadd::route::SESSION             session( b );
+    std::set<std::string>              noZone;
+    int                                routed = 0;
+
+    static const VECTOR2D dirs[8] = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 },
+                                      { M_SQRT1_2, M_SQRT1_2 }, { -M_SQRT1_2, M_SQRT1_2 },
+                                      { M_SQRT1_2, -M_SQRT1_2 }, { -M_SQRT1_2, -M_SQRT1_2 } };
+
+    for( FOOTPRINT* fp : parts )
+    {
+        for( PAD* pad : fp->Pads() )
+        {
+            if( !nets.count( pad->GetNetCode() ) )
+                continue;
+
+            if( throughAll( pad ) )
+            {
+                out.set_skipped_tht( out.skipped_tht() + 1 );
+                continue;
+            }
+
+            PCB_LAYER_ID padLayer = LSET( pad->GetLayerSet() & LSET::AllCuMask() ).Seq().front();
+
+            // the zones of the net on another layer (or the layer asked for)
+            std::vector<std::pair<ZONE*, PCB_LAYER_ID>> zones;
+
+            for( ZONE* z : b->Zones() )
+            {
+                if( z->GetIsRuleArea() || z->GetNetCode() != pad->GetNetCode() )
+                    continue;
+
+                for( PCB_LAYER_ID l : LSET( z->GetLayerSet() & LSET::AllCuMask() ).Seq() )
+                {
+                    if( l != padLayer && ( onlyLayer == UNDEFINED_LAYER || l == onlyLayer ) )
+                        zones.emplace_back( z, l );
+                }
+            }
+
+            if( zones.empty() )
+            {
+                noZone.insert( pad->GetNetname().ToStdString() + " on "
+                               + ( onlyLayer != UNDEFINED_LAYER ? LSET::Name( onlyLayer ).ToStdString()
+                                                                : std::string( "any layer but " )
+                                                                          + LSET::Name( padLayer ).ToStdString() ) );
+                continue;
+            }
+
+            // already joined to such a zone (its fill, a via, a track)
+            bool done = false;
+
+            for( BOARD_CONNECTED_ITEM* item : conn->GetConnectedItems( pad, { PCB_ZONE_T } ) )
+            {
+                for( auto& [z, l] : zones )
+                    done = done || item == z;
+            }
+
+            if( done )
+            {
+                out.set_skipped_done( out.skipped_done() + 1 );
+                continue;
+            }
+
+            // the nearest layer first (a through via reaches all of them; the nearest is the
+            // shortest way down)
+            auto layerDist = [&]( PCB_LAYER_ID aLayer )
+            {
+                return std::abs( (int) CopperLayerToOrdinal( aLayer ) - (int) CopperLayerToOrdinal( padLayer ) );
+            };
+
+            std::stable_sort( zones.begin(), zones.end(),
+                              [&]( const auto& x, const auto& y ) { return layerDist( x.second ) < layerDist( y.second ); } );
+
+            // inside the copper of one of them (its fill; the outline while it is unfilled)
+            auto zoneAt = [&]( const VECTOR2I& aPos ) -> std::optional<PCB_LAYER_ID>
+            {
+                for( auto& [z, l] : zones )
+                {
+                    bool inside = z->IsFilled() && z->HasFilledPolysForLayer( l )
+                                          ? z->GetFilledPolysList( l )->Contains( aPos )
+                                          : z->Outline()->Contains( aPos );
+
+                    if( inside )
+                        return l;
+                }
+
+                return std::nullopt;
+            };
+
+            PCB_LAYER_ID target = zones.front().second;
+
+            // a via next to the pad: outwards from the part first, nearer first
+            const NETCLASS* cls = pad->GetEffectiveNetClass();
+            const int       viaR = ( cls && cls->HasViaDiameter() ? cls->GetViaDiameter()
+                                                                    : b->GetDesignSettings().GetCurrentViaSize() ) / 2;
+            const int       clr = cls && cls->HasClearance() ? cls->GetClearance() : b->GetDesignSettings().m_MinClearance;
+            const BOX2I     box = pad->GetBoundingBox();
+            VECTOR2D        out0 = VECTOR2D( pad->GetPosition() - fp->GetPosition() );
+
+            std::vector<VECTOR2D> order( std::begin( dirs ), std::end( dirs ) );
+            std::stable_sort( order.begin(), order.end(),
+                              [&]( const VECTOR2D& x, const VECTOR2D& y ) { return x.Dot( out0 ) > y.Dot( out0 ); } );
+
+            kicadd::route::RESULT res, first;
+            bool                  found = false;
+
+            for( int step = 0; step < 7 && !found; ++step )
+            {
+                for( const VECTOR2D& d : order )
+                {
+                    double   reach = std::abs( d.x ) * box.GetWidth() / 2.0 + std::abs( d.y ) * box.GetHeight() / 2.0;
+                    double   dist = reach + viaR + clr + step * 250000.0;
+                    VECTOR2I at = pad->GetPosition() + VECTOR2I( KiROUND( d.x * dist ), KiROUND( d.y * dist ) );
+
+                    std::optional<PCB_LAYER_ID> here = zoneAt( at );
+
+                    if( !here )
+                        continue;
+
+                    kicadd::route::REQUEST r;
+                    r.fromItem = pad;
+                    r.from = pad->GetPosition();
+                    r.to = at;
+                    r.layer = padLayer;
+                    r.endViaTo = *here;
+                    res = session.Route( r );
+
+                    if( first.error.empty() && !first.ok )
+                        first = res;
+
+                    if( res.ok && res.drc.empty() )
+                    {
+                        found = true;
+                        target = *here;
+                        break;
+                    }
+                }
+            }
+
+            RouteResult* rr = routes.add_results();
+            rr->set_from( endName( pad ) );
+            rr->set_to( "via to " + LSET::Name( target ).ToStdString() );
+
+            if( found )
+            {
+                fillResult( *rr, res );
+                routed++;
+            }
+            else
+            {
+                fillResult( *rr, first );
+                rr->set_net( pad->GetNetname().ToStdString() );
+                rr->set_ok( false );
+                rr->set_error( first.error.empty() ? "no spot near the pad inside the copper of a " + pad->GetNetname().ToStdString()
+                                                             + " zone on another layer"
+                                                   : "no room for a via near the pad (" + first.error + ")" );
+            }
+        }
+    }
+
+    for( const std::string& n : noZone )
+        out.add_no_zone( n );
+
+    routes.set_dry_run( req.dry_run() );
+
+    if( req.dry_run() || routed == 0 )
+    {
+        routes.set_unconnected( (int) conn->GetUnconnectedCountNoFlush( false ) );
+        return out;
+    }
+
+    commitRoutes( session.TakeAdded(), session.Replaced(), "fan out " + std::to_string( routed ) + " pad(s)", routes );
+    return out;
+}
+
+
+void KICADD_HANDLER_PCB::commitRoutes( std::vector<std::unique_ptr<PCB_TRACK>>&& aAdded,
+                                       const std::vector<PCB_TRACK*>& aReplaced, const std::string& aLabel,
+                                       RouteResponse& aOut )
+{
+    BOARD* b = board();
+
+    if( aAdded.empty() && aReplaced.empty() )
+        return;
+
+    HISTORY_ENTRY entry;
+    entry.label = aLabel;
+    MoveResponse moved;
+    int          tracks = 0, vias = 0;
+
+    for( const std::unique_ptr<PCB_TRACK>& t : aAdded )
+        ( t->Type() == PCB_VIA_T ? vias : tracks )++;
+
+    std::vector<PCB_TRACK*> onBoard;
+
+    runCommit(
+            [&]( BOARD_COMMIT& aCommit )
+            {
+                for( PCB_TRACK* t : aReplaced )
+                {
+                    entry.tracksRemoved.push_back( { nullptr, t->GetNetCode() > 0 ? t->GetNetname() : wxString() } );
+                    aCommit.Remove( t );
+                }
+
+                for( std::unique_ptr<PCB_TRACK>& t : aAdded )
+                {
+                    PCB_TRACK* raw = t.release();
+                    onBoard.push_back( raw );
+                    aCommit.Add( raw );
+                }
+
+                return std::vector<KIID>();
+            },
+            wxString::FromUTF8( "Agent: " + aLabel ), moved );
+
+    // the history's own copies: undo removes the board's by id, redo adds copies back
+    for( PCB_TRACK* t : onBoard )
+    {
+        PCB_TRACK* copy = static_cast<PCB_TRACK*>( t->Clone() );
+        copy->SetNet( NETINFO_LIST::OrphanedItem() );
+        copy->SetParent( nullptr );
+        entry.tracksAdded.push_back( { std::shared_ptr<PCB_TRACK>( copy ), t->GetNetCode() > 0 ? t->GetNetname() : wxString() } );
+    }
+
+    for( size_t i = 0; i < aReplaced.size(); ++i )
+    {
+        PCB_TRACK* t = editorOwnsUndo() ? static_cast<PCB_TRACK*>( aReplaced[i]->Clone() ) : aReplaced[i];
+        t->SetNet( NETINFO_LIST::OrphanedItem() );
+        t->SetParent( nullptr );
+        entry.tracksRemoved[i].track.reset( t );
+    }
+
+    aOut.set_unconnected( moved.unconnected() );
+    aOut.set_tracks_added( tracks );
+    aOut.set_vias_added( vias );
+    aOut.set_history_label( entry.label );
+    record( std::move( entry ) );
+}
+
+
 HANDLER_RESULT<MoveResponse>
 KICADD_HANDLER_PCB::handleAddFootprint( const HANDLER_CONTEXT<AddFootprint>& aCtx )
 {
@@ -2051,19 +2846,25 @@ bool KICADD_HANDLER_PCB::applyHistory( const HISTORY_ENTRY& aEntry, bool aUndo, 
     std::vector<const TRACK_SNAPSHOT*> trackAdd;
     std::vector<PCB_TRACK*>            trackRemove;
 
-    for( const TRACK_SNAPSHOT& snap : aEntry.tracksRemoved )
+    // ... and tracks it added (route): undo takes them out, redo puts them back.
+    for( const std::vector<TRACK_SNAPSHOT>* list : { &aEntry.tracksRemoved, &aEntry.tracksAdded } )
     {
-        BOARD_ITEM* item = b->ResolveItem( snap.track->m_Uuid, true );
-        PCB_TRACK*  onBoard = item && ( item->Type() == PCB_TRACE_T || item->Type() == PCB_ARC_T
-                                        || item->Type() == PCB_VIA_T )
-                                      ? static_cast<PCB_TRACK*>( item ) : nullptr;
+        const bool putBack = ( list == &aEntry.tracksRemoved ) == aUndo;
 
-        if( aUndo && !onBoard )
-            trackAdd.push_back( &snap );
-        else if( !aUndo && onBoard )
-            trackRemove.push_back( onBoard );
-        else
-            ++alreadyDone;
+        for( const TRACK_SNAPSHOT& snap : *list )
+        {
+            BOARD_ITEM* item = b->ResolveItem( snap.track->m_Uuid, true );
+            PCB_TRACK*  onBoard = item && ( item->Type() == PCB_TRACE_T || item->Type() == PCB_ARC_T
+                                            || item->Type() == PCB_VIA_T )
+                                          ? static_cast<PCB_TRACK*>( item ) : nullptr;
+
+            if( putBack && !onBoard )
+                trackAdd.push_back( &snap );
+            else if( !putBack && onBoard )
+                trackRemove.push_back( onBoard );
+            else
+                ++alreadyDone;
+        }
     }
 
     for( const FP_SNAPSHOT& snap : toRemove )
@@ -2672,7 +3473,7 @@ KICADD_HANDLER_PCB::handleGetZoneFills( const HANDLER_CONTEXT<kicadd::render::Ge
             kicadd::render::ZoneFill* zf = out.add_fills();
             zf->set_id( id );
             zf->set_net( zone->GetNetCode() > 0 ? zone->GetNetname().ToStdString() : std::string() );
-            zf->set_layer( b->GetLayerName( layer ).ToStdString() );
+            zf->set_layer( LSET::Name( layer ).ToStdString() );
 
             for( int i = 0; i < fill->OutlineCount(); ++i )
             {
@@ -2736,7 +3537,7 @@ KICADD_HANDLER_PCB::handleDescribeItems( const HANDLER_CONTEXT<DescribeItems>& a
             if( const FOOTPRINT* fp = item->GetParentFootprint() )
             {
                 d->set_kind( IK_FOOTPRINT );
-                d->set_handle( fp->GetReference().ToStdString() + ":" + item->GetLayerName().ToStdString() );
+                d->set_handle( fp->GetReference().ToStdString() + ":" + LSET::Name( item->GetLayer() ).ToStdString() );
             }
             else if( item->GetLayer() == Edge_Cuts )
             {
@@ -2746,7 +3547,7 @@ KICADD_HANDLER_PCB::handleDescribeItems( const HANDLER_CONTEXT<DescribeItems>& a
             else
             {
                 d->set_kind( item->Type() == PCB_SHAPE_T ? IK_SHAPE : IK_TEXT );
-                d->set_handle( item->GetLayerName().ToStdString() + ":" + shortId( item ) );
+                d->set_handle( LSET::Name( item->GetLayer() ).ToStdString() + ":" + shortId( item ) );
             }
 
             break;
@@ -2822,8 +3623,20 @@ KICADD_HANDLER_PCB::handleSyncFromSchematic( const HANDLER_CONTEXT<SyncFromSchem
             return tl::unexpected( makeError( ApiStatusCode::AS_UNKNOWN, "cannot write a temporary netlist" ) );
     }
 
-    WX_STRING_REPORTER reporter;
-    NETLIST            netlist;
+    // The updater's report, each warning and error marked as such (the reply lists them first)
+    struct MARKING_REPORTER : public WX_STRING_REPORTER
+    {
+        REPORTER& Report( const wxString& aText, SEVERITY aSeverity = RPT_SEVERITY_UNDEFINED ) override
+        {
+            wxString mark = aSeverity == RPT_SEVERITY_ERROR     ? wxS( "error: " )
+                            : aSeverity == RPT_SEVERITY_WARNING ? wxS( "warning: " )
+                                                                : wxString();
+            return WX_STRING_REPORTER::Report( mark + aText, aSeverity );
+        }
+    };
+
+    MARKING_REPORTER reporter;
+    NETLIST          netlist;
     netlist.SetFindByTimeStamp( true );
     netlist.SetReplaceFootprints( aCtx.Request.update_footprints() );
 
@@ -2847,13 +3660,24 @@ KICADD_HANDLER_PCB::handleSyncFromSchematic( const HANDLER_CONTEXT<SyncFromSchem
 
     // A footprint from the LCSC library may still carry the part number it was fetched for
     // (libraries saved before that was fixed): a symbol without an LCSC number clears it, so a
-    // 1k resistor on the 10k's R0603 doesn't go into the BOM as the 10k.
+    // 1k resistor on the 10k's R0603 doesn't go into the BOM as the 10k. Only where there can be
+    // a number (LCSC footprints, board footprints with one): an empty field on every other part
+    // would make the updater report "Update fields" for all of them.
+    std::set<wxString> withLcsc;
+
+    for( FOOTPRINT* fp : b->Footprints() )
+    {
+        if( const PCB_FIELD* f = fp->GetField( wxS( "LCSC" ) ); f && !f->GetText().IsEmpty() )
+            withLcsc.insert( fp->GetReference() );
+    }
+
     for( unsigned i = 0; i < netlist.GetCount(); ++i )
     {
         COMPONENT* comp = netlist.GetComponent( i );
         auto       fields = comp->GetFields();
 
-        if( fields.find( wxS( "LCSC" ) ) == fields.end() )
+        if( fields.find( wxS( "LCSC" ) ) == fields.end()
+            && ( withLcsc.count( comp->GetReference() ) || comp->GetFPID().GetLibNickname() == "LCSC" ) )
         {
             fields[wxS( "LCSC" )] = wxEmptyString;
             comp->SetFields( fields );
@@ -3686,17 +4510,27 @@ void KICADD_HANDLER_PCB::packRules( RulesResponse& aOut )
     kicadd::rules::STATE st = kicadd::rules::Capture( *b );
     std::map<wxString, int> nets;
 
-    // a net in two classes has a composite one ("POWER,Power"): count it in each
+    // A net in two classes has a composite one ("POWER,Power"): count it in each. KiCad also
+    // adds Default to a composite to fill in the values a class leaves unset; that does not
+    // make the net a Default net, so it counts there only when it is in no other class.
     for( NETINFO_ITEM* net : b->GetNetInfo() )
     {
         if( net->GetNetCode() <= 0 || !net->GetNetClass() )
             continue;
 
-        for( const auto& [name, c] : st.classes )
+        bool inClass = false;
+
+        for( const NETCLASS* nc : net->GetNetClass()->GetConstituentNetclasses() )
         {
-            if( net->GetNetClass()->ContainsNetclassWithName( name ) )
-                nets[name]++;
+            if( nc && nc->GetName() != NETCLASS::Default && st.classes.count( nc->GetName() ) )
+            {
+                nets[nc->GetName()]++;
+                inClass = true;
+            }
         }
+
+        if( !inClass )
+            nets[NETCLASS::Default]++;
     }
 
     auto mmOf = []( int aNm ) { return aNm / 1e6; };
@@ -4022,7 +4856,7 @@ HANDLER_RESULT<ZonesResponse> KICADD_HANDLER_PCB::handleZones( const HANDLER_CON
         z->set_net( zone->GetNetname().ToStdString() );
 
         for( PCB_LAYER_ID layer : zone->GetLayerSet().Seq() )
-            z->add_layers( b->GetLayerName( layer ).ToStdString() );
+            z->add_layers( LSET::Name( layer ).ToStdString() );
 
         z->set_priority( (int) zone->GetAssignedPriority() );
         z->set_clearance( mmOf( zone->GetLocalClearance().value_or( 0 ) ) );

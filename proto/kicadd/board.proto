@@ -400,6 +400,7 @@ enum DrcType
   DT_COURTYARD_OVERLAP = 4;
   DT_EDGE_CLEARANCE    = 5;   // copper closer to Edge.Cuts / Margin than copper_edge_clearance
   DT_COPPER_OUTSIDE_BOARD = 6;  // copper entirely outside the board outline (a == b)
+  DT_HOLE_TO_HOLE      = 7;   // two drilled holes closer than hole_to_hole (route / fanout vias)
 }
 
 message DrcViolation
@@ -757,4 +758,96 @@ message ZonesResponse
   repeated ZoneInfo zones  = 1;   // the zones chosen (all when none was named), as they are now
   string history_label     = 2;
   int32  changed           = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Routing: tracks drawn by KiCad's router (walkaround: around obstacles, never moving existing
+// copper; the board's clearance, keepout and edge rules). Not an autorouter: the caller says
+// what to connect and through which points / vias.
+
+message RouteEnd
+{
+  string pad = 1;        // "U1.5"
+  Point  pos = 2;        // or a point: on a track / via of the net (from), or anywhere (to)
+}
+
+message RouteStop
+{
+  Point  pos    = 1;
+  string via_to = 2;     // a via here, then on to this layer ("B.Cu"; "other": the end's layer,
+                         // else the other outer layer); empty: a waypoint
+}
+
+// One connection, one undoable edit. to: omitted: the nearest unrouted connection of `from`
+// (its ratsnest). Returns RouteResponse
+message RouteTrack
+{
+  RouteEnd           from    = 1;
+  RouteEnd           to      = 2;
+  repeated RouteStop stops   = 3;
+  string             layer   = 4;   // empty: the start's (SMD pad, track), else the end's, else F.Cu
+  int64              width   = 5;   // nm; 0: the net class / rules
+  bool               dry_run = 6;
+}
+
+message RouteResult
+{
+  string from       = 1;
+  string to         = 2;
+  bool   ok         = 3;
+  string error      = 4;
+  string net        = 5;
+  string layer      = 6;
+  int64  width      = 7;
+  int64  length     = 8;    // nm along the new tracks
+  int64  direct     = 9;    // nm in straight lines through the stops
+  int32  segments   = 10;
+  int32  vias       = 11;
+  int64  min_gap    = 12;   // nm to the nearest other-net copper / edge; -1: none within 5 mm
+  string gap_to     = 13;
+  Point  reached    = 14;   // failed: how far it got
+  string blocked_by = 16;
+  Point  blocked_at = 17;
+}
+
+message RouteResponse
+{
+  repeated RouteResult  results       = 1;
+  repeated DrcViolation drc           = 2;   // of the new tracks (clearance, edge)
+  int32                 unconnected   = 3;
+  string                history_label = 4;
+  bool                  dry_run       = 5;
+  int32                 tracks_added  = 6;
+  int32                 vias_added    = 7;
+}
+
+// Route the unrouted connections of refs / nets up to max_length, shortest first, each as
+// `route` would (THT-to-THT ones on F.Cu, then B.Cu if blocked, unless layer is given).
+// All of it one undoable edit. Returns RouteResponse (one result per connection tried).
+message RouteShort
+{
+  repeated string refs       = 1;
+  repeated string nets       = 2;
+  int64           max_length = 3;   // nm, straight-line length of the connection; 0: any
+  string          layer      = 4;
+  bool            dry_run    = 5;
+}
+
+// Fan out SMD pads to a copper zone of their net on another layer: a short track and a via
+// next to each pad, the via inside that zone. Through-hole pads are skipped (they reach every
+// layer). One undoable edit. Returns FanoutResponse
+message Fanout
+{
+  repeated string refs     = 1;   // empty: every footprint with a pad on these nets
+  repeated string nets     = 2;   // required
+  string          layer    = 3;   // the zone's layer; empty: any other layer with a zone of the net
+  bool            dry_run  = 4;
+}
+
+message FanoutResponse
+{
+  RouteResponse   routes       = 1;   // one result per pad fanned out (or failed)
+  int32           skipped_tht  = 2;
+  int32           skipped_done = 3;   // pads already reaching the zone's layer through a via / track
+  repeated string no_zone      = 4;   // "GND on B.Cu" style: nets with no zone to reach
 }

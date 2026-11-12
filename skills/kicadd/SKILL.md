@@ -1,6 +1,6 @@
 ---
 name: kicadd
-description: How to work on a KiCad schematic or PCB through the kicadd MCP tools (KiCadD): reviewing a design, editing the schematic, sourcing LCSC/JLCPCB parts, schematic-to-board, auto placement, design rules, DRC/ERC and fabrication output. Use whenever the kicadd tools (board_summary, sch_summary, auto_place, ...) are available and the task touches a schematic, board, footprint, part or manufacturing file.
+description: How to work on a KiCad schematic or PCB through the kicadd MCP tools (KiCadD): reviewing a design, editing the schematic, sourcing LCSC/JLCPCB parts, schematic-to-board, auto placement, routing (route, route_short, fanout), design rules, DRC/ERC and fabrication output. Use whenever the kicadd tools (board_summary, sch_summary, auto_place, ...) are available and the task touches a schematic, board, footprint, part or manufacturing file.
 ---
 
 # Working with KiCadD (kicadd MCP tools)
@@ -84,7 +84,26 @@ what each tool does; this skill says how to use them together.
    refilled, and that shows up as clearance / soldermask errors that are not real.
 5. Fine-tune with `move_footprints` (every reply carries a local DRC of the moved parts) and
    `check_drc`.
-6. **Routing is the user's** (there is no routing tool yet). `delete_tracks` exists for rip-up.
+
+## Routing (the repetitive part, not an autorouter)
+
+The tools draw tracks the way KiCad's interactive router does (around obstacles, never moving
+existing copper, net class widths and vias, clearance / keepout / edge rules). You decide what
+to connect and where to change layer; the user routes what needs judgement (buses, diff pairs,
+length matching, dense escapes).
+
+1. Placement first, then `fanout nets=["GND", ...]` on boards with planes or a ground pour on
+   the other side: a via next to each SMD pad. Through-hole pads are skipped; a net without a
+   zone on another layer is only warned about.
+2. `route_short` with the parts (or nets) and a `max_length` (e.g. 10 mm): decoupling caps,
+   pull-ups, LED resistors. `dry_run=true` first to see what would fail. It goes shortest first.
+3. One connection: `route from="U1.5"` (to the nearest unrouted connection) or `to="C3.1"`.
+   Steer it with `waypoints: [[x, y], ...]`; change layer with `[x, y, "B.Cu"]` among them, or
+   `via: [x, y]`. Pick via spots yourself (`query_area` around the point).
+4. Read the numbers: length vs the straight line (above ~1.5x it detours), segments, vias, the
+   narrowest gap. A failure says how far it got and what is in the way: `delete_tracks` that,
+   move a part, or give waypoints round it.
+5. Everything of one call is one `undo`. Then `refill_zones` and `run_drc`.
 
 ## Rules and zones
 
@@ -112,5 +131,6 @@ answer: when the next call depends on a result, make separate calls.
 
 ## Not available (say so instead of improvising)
 
-Routing tracks; PCB or assembly price quotes; 3D models of LCSC parts; STEP export. For those,
-the user works in the editor or on the manufacturer's site.
+Autorouting a whole board, differential pairs, length tuning, pushing (shoving) existing tracks;
+PCB or assembly price quotes; 3D models of LCSC parts; STEP export. For those, the user works in
+the editor or on the manufacturer's site.
