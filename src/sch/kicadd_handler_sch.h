@@ -24,6 +24,7 @@
 #include <lib_symbol.h>
 #include <sch_label.h>
 #include <kicadd/schematic.pb.h>
+#include "sch/kicadd_sch_history.h"
 
 class SCH_CONTEXT;
 class SCH_COMMIT;
@@ -87,6 +88,12 @@ private:
 
     HANDLER_RESULT<kicadd::schematic::SchCreateSymbolResponse>
     handleCreateSymbol( const HANDLER_CONTEXT<kicadd::schematic::SchCreateSymbol>& aCtx );
+
+    HANDLER_RESULT<kicadd::schematic::SchHistoryResponse>
+    handleUndo( const HANDLER_CONTEXT<kicadd::schematic::SchUndo>& aCtx );
+
+    HANDLER_RESULT<kicadd::schematic::SchConnectResponse>
+    handleSetFields( const HANDLER_CONTEXT<kicadd::schematic::SchSetFields>& aCtx );
 
     HANDLER_RESULT<kicadd::schematic::SchAuditResponse>
     handleAudit( const HANDLER_CONTEXT<kicadd::schematic::SchAudit>& aCtx );
@@ -154,7 +161,15 @@ private:
     /// Name the agent's edit in the status bar and repaint (desktop).
     void announce( const wxString& aWhat ) const;
 
+    /// Push an agent edit and record it in the agent's history (sch_undo / sch_redo).
+    void pushRecorded( kicadd::KICADD_SCH_COMMIT& aCommit, const wxString& aWhat );
+
+    /// Apply a history entry backwards (undo) or forwards (redo) in a new commit.
+    void applyEdit( const kicadd::SCH_EDIT& aEdit, bool aUndo, kicadd::schematic::SchHistoryResponse& aOut );
+
     std::shared_ptr<SCH_CONTEXT> m_context;
+
+    std::vector<kicadd::SCH_EDIT> m_undo, m_redo;
 
     /// Power symbols made here, by net name (the instances copy them)
     std::map<std::string, std::unique_ptr<LIB_SYMBOL>> m_powerSymbols;

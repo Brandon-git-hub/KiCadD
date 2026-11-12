@@ -318,11 +318,16 @@ jobs:
           TAG: ${{ github.ref_name }}
           GH_REPO: ${{ github.repository }}
         run: |
+          # the recommended way for an agent to use the tools (skills/kicadd): in the zip, and
+          # on its own for Claude Desktop (Settings > Capabilities > Skills takes a zip)
+          mkdir -p kicadd-windows-x64/share/kicadd/skills
+          cp -r skills/kicadd kicadd-windows-x64/share/kicadd/skills/
+          (cd skills && zip -qr -9 ../kicadd-skill.zip kicadd)
           zip -qr -9 kicadd-windows-x64.zip kicadd-windows-x64
           sha=$(sha256sum kicadd-windows-x64.zip | cut -d' ' -f1)
           # debug symbols for crash reports, as a separate asset (release assets max out at 2 GiB)
           zip -qr -9 kicadd-windows-x64-pdb.zip kicadd-windows-x64-pdb
-          assets=(kicadd-windows-x64.zip)
+          assets=(kicadd-windows-x64.zip kicadd-skill.zip)
           if [ "$(stat -c %s kicadd-windows-x64-pdb.zip)" -lt 2000000000 ]; then
             assets+=(kicadd-windows-x64-pdb.zip)
           else

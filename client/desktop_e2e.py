@@ -232,6 +232,18 @@ def main():
         check(pos("C1") is None, "user Ctrl+Y removed it again")
         err, text = mcp.tool("undo")
         check(pos("C1") is not None, "agent undo (from its own copy) restored C1")
+        print("[5a] pcb_set_fields in the editor: a field added, removed, undone, Ctrl+Z")
+        err, text = mcp.tool("pcb_set_fields", {"parts": {"C1": {"MPN": "GRM188R71C104KA01", "Value": "100n"}}})
+        check(not err and "set fields of 1" in text, "a new field on C1: " + text.splitlines()[0])
+        err, text = mcp.tool("pcb_set_fields", {"refs": ["C1"], "set": {"MPN": None}})
+        check(not err, "removed again")
+        err, text = mcp.tool("undo")
+        check(not err and "set fields" in text, "agent undo: the field back")
+        for _ in range(3):
+            d.keys(main_win, "ctrl+z")
+            time.sleep(1)
+        err, text = mcp.tool("board_summary")
+        check(not err, "three Ctrl+Z over it: the editor runs (" + text.splitlines()[0][:50] + ")")
         d.shot(os.path.join(work, "shot-3-end.png"))
 
         cache = os.environ.get("KICADD_LCSC_CACHE", "")

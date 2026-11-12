@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstdio>
 #include <map>
+#include <memory>
 
 #include <kicadd/board.pb.h>
 #include <api/common/commands/base_commands.pb.h>
@@ -179,15 +180,67 @@ std::string renderQuery( const kb::QueryResponse& aResp, int64_t aRadius = 0 )
 }
 
 
-std::string renderDrc( const google::protobuf::RepeatedPtrField<kb::DrcViolation>& aDrc )
+// Brief output (the default): long lists are cut to their first lines; detail=true lists all.
+constexpr int BRIEF_PARTS = 8;    // more moved parts than this: the first BRIEF_SHOWN, then a count
+constexpr int BRIEF_SHOWN = 5;
+constexpr int BRIEF_DRC = 10;
+
+
+bool detailOf( const json& aArgs )
+{
+    return aArgs.is_object() && aArgs.contains( "detail" ) && aArgs["detail"].is_boolean()
+           && aArgs["detail"].get<bool>();
+}
+
+
+const json DETAIL_PROP = { { "type", "boolean" },
+                           { "description", "List every part / violation (default: long lists cut short)" } };
+
+
+std::string renderDrc( const google::protobuf::RepeatedPtrField<kb::DrcViolation>& aDrc, bool aDetail = false )
 {
     if( aDrc.empty() )
         return "drc: clean\n";
 
-    std::string s = "drc: " + std::to_string( aDrc.size() ) + "\n";
+    std::string s = "drc: " + std::to_string( aDrc.size() );
+
+    if( !aDetail && aDrc.size() > BRIEF_DRC )
+    {
+        std::map<std::string, int> byType;
+
+        for( const kb::DrcViolation& v : aDrc )
+        {
+            switch( v.type() )
+            {
+            case kb::DT_CLEARANCE:             byType["clearance"]++; break;
+            case kb::DT_SHORT:                 byType["short"]++; break;
+            case kb::DT_HOLE_CLEARANCE:        byType["hole"]++; break;
+            case kb::DT_COURTYARD_OVERLAP:     byType["courtyard"]++; break;
+            case kb::DT_EDGE_CLEARANCE:        byType["edge"]++; break;
+            case kb::DT_COPPER_OUTSIDE_BOARD:  byType["outside_board"]++; break;
+            default:                           byType["other"]++; break;
+            }
+        }
+
+        std::string types;
+
+        for( const auto& [k, n] : byType )
+            types += ( types.empty() ? "" : ", " ) + k + " " + std::to_string( n );
+
+        s += " (" + types + ")";
+    }
+
+    s += "\n";
+    int shown = 0;
 
     for( const kb::DrcViolation& v : aDrc )
     {
+        if( !aDetail && shown++ >= BRIEF_DRC )
+        {
+            s += "... " + std::to_string( aDrc.size() - BRIEF_DRC ) + " more (detail=true lists all)\n";
+            break;
+        }
+
         switch( v.type() )
         {
         case kb::DT_CLEARANCE:         s += "CLEARANCE "; break;
@@ -238,7 +291,7 @@ std::string renderPending( const google::protobuf::RepeatedPtrField<std::string>
 }
 
 
-std::string renderMoveResult( const kb::MoveResponse& r )
+std::string renderMoveResult( const kb::MoveResponse& r, bool aDetail = false )
 {
     std::string s;
 
@@ -255,8 +308,20 @@ std::string renderMoveResult( const kb::MoveResponse& r )
         s += "\n";
     }
 
-    for( const std::string& ref : r.removed() )
-        s += ref + " deleted\n";
+    if( !aDetail && r.removed_size() > BRIEF_PARTS )
+    {
+        std::string list;
+
+        for( int i = 0; i < BRIEF_SHOWN; ++i )
+            list += ( i ? ", " : "" ) + r.removed( i );
+
+        s += std::to_string( r.removed_size() ) + " deleted: " + list + ", ... (detail=true lists all)\n";
+    }
+    else
+    {
+        for( const std::string& ref : r.removed() )
+            s += ref + " deleted\n";
+    }
 
     if( r.tracks_removed() > 0 )
         s += std::to_string( r.tracks_removed() ) + " track(s)/via(s) " + ( r.history_label().empty() ? "removed" : "deleted" ) + "\n";
@@ -264,8 +329,17 @@ std::string renderMoveResult( const kb::MoveResponse& r )
     if( r.tracks_locked() > 0 )
         s += std::to_string( r.tracks_locked() ) + " locked track(s)/via(s) kept (include_locked deletes them too)\n";
 
+    int shown = 0;
+
     for( const kb::MoveResult& m : r.moved() )
     {
+        if( !aDetail && r.moved_size() > BRIEF_PARTS && shown++ >= BRIEF_SHOWN )
+        {
+            s += "... " + std::to_string( r.moved_size() - BRIEF_SHOWN ) + " more part(s) "
+                 + ( r.added_size() == r.moved_size() ? "added" : "moved" ) + " (detail=true lists all)\n";
+            break;
+        }
+
         bool added = std::find( r.added().begin(), r.added().end(), m.ref() ) != r.added().end();
         s += m.ref() + ( added ? " added" : "" ) + " @" + pt( m.pos() )
              + ( m.rot_decideg() ? " r" + deg( m.rot_decideg() ) : "" ) + ( m.back() ? " B.Cu" : "" ) + "\n";
@@ -282,7 +356,7 @@ std::string renderMoveResult( const kb::MoveResponse& r )
     }
 
     s += "unconnected=" + std::to_string( r.unconnected() ) + renderPending( r.ratsnest_pending() ) + "\n";
-    s += renderDrc( r.drc() );
+    s += renderDrc( r.drc(), aDetail );
     return s;
 }
 
@@ -436,7 +510,7 @@ TOOL_RESULT moveFootprints( IPC_CLIENT& aIpc, const json& aArgs )
     if( !aIpc.Call( req, r, err ) )
         return error( err );
 
-    return { renderMoveResult( r ), r.moved().empty() };
+    return { renderMoveResult( r, detailOf( aArgs ) ), r.moved().empty() };
 }
 
 
@@ -458,7 +532,7 @@ TOOL_RESULT deleteFootprints( IPC_CLIENT& aIpc, const json& aArgs )
     if( !aIpc.Call( req, r, err ) )
         return error( err );
 
-    return { renderMoveResult( r ), r.removed().empty() };
+    return { renderMoveResult( r, detailOf( aArgs ) ), r.removed().empty() };
 }
 
 
@@ -499,7 +573,7 @@ TOOL_RESULT deleteTracks( IPC_CLIENT& aIpc, const json& aArgs )
         return error( err );
 
     std::string s = r.tracks_removed() == 0 ? std::string( "no tracks matched\n" ) : "";
-    s += renderMoveResult( r );
+    s += renderMoveResult( r, detailOf( aArgs ) );
 
     if( r.tracks_removed() > 0 )
         s += "undo: \"" + r.history_label() + "\"; copper zones keep their old shape: refill_zones before run_drc\n";
@@ -554,7 +628,7 @@ TOOL_RESULT addFootprint( IPC_CLIENT& aIpc, const json& aArgs )
     if( !aIpc.Call( req, r, err ) )
         return error( err );
 
-    return { renderMoveResult( r ), r.added().empty() };
+    return { renderMoveResult( r, detailOf( aArgs ) ), r.added().empty() };
 }
 
 
@@ -656,7 +730,351 @@ TOOL_RESULT lcscFetch( IPC_CLIENT& aIpc, const json& aArgs )
 }
 
 
-TOOL_RESULT history( IPC_CLIENT& aIpc, bool aUndo )
+TOOL_RESULT pcbSetFields( IPC_CLIENT& aIpc, const json& aArgs )
+{
+    kb::FpSetFields req;
+    std::string     bad;
+
+    auto add = [&]( const std::string& aRef, const json& aSet )
+    {
+        kb::FpFieldEdit* e = req.add_parts();
+        e->set_ref( aRef );
+
+        for( const auto& [key, v] : aSet.items() )
+        {
+            if( key == "dnp" || key == "exclude_from_bom" || key == "exclude_from_pos" )
+            {
+                if( !v.is_boolean() )
+                    bad = key + " is true or false";
+                else if( key == "dnp" )
+                    e->set_dnp( v.get<bool>() );
+                else if( key == "exclude_from_bom" )
+                    e->set_exclude_from_bom( v.get<bool>() );
+                else
+                    e->set_exclude_from_pos( v.get<bool>() );
+            }
+            else if( v.is_null() )
+                e->add_remove( key );
+            else if( v.is_string() )
+                ( *e->mutable_fields() )[key] = v.get<std::string>();
+            else if( v.is_number() )
+                ( *e->mutable_fields() )[key] = v.dump();
+            else
+                bad = key + ": a field's text is a string (null removes it)";
+        }
+    };
+
+    if( aArgs.contains( "parts" ) && aArgs["parts"].is_object() )
+    {
+        for( const auto& [ref, set] : aArgs["parts"].items() )
+        {
+            if( set.is_object() )
+                add( ref, set );
+        }
+    }
+
+    if( aArgs.contains( "set" ) && aArgs["set"].is_object() )
+    {
+        for( const std::string& ref : getStrings( aArgs, "refs" ) )
+            add( ref, aArgs["set"] );
+    }
+
+    if( !bad.empty() )
+        return error( bad );
+
+    if( req.parts().empty() )
+        return error( "give parts {ref: {field: text}} or refs [...] with set {...}" );
+
+    kb::MoveResponse r;
+    std::string      err;
+
+    if( !aIpc.Call( req, r, err ) )
+        return error( err );
+
+    std::string t = r.history_label().empty() ? "nothing changed" : r.history_label() + " (undo takes it back)";
+
+    if( !r.missing().empty() )
+    {
+        t += "\nnot found:";
+
+        for( const std::string& m : r.missing() )
+            t += " " + m;
+    }
+
+    return { t + "\n", r.history_label().empty() };
+}
+
+
+std::string renderRules( const kb::RulesResponse& r )
+{
+    auto len = []( double aMm ) { return " " + mm( (int64_t) std::llround( aMm * 1e6 ) ); };
+    std::string t = "net classes:";
+
+    for( const kb::NetclassRule& c : r.classes() )
+    {
+        std::string v;
+
+        if( c.has_clearance() )       v += ", clearance" + len( c.clearance() );
+        if( c.has_track_width() )     v += ", track" + len( c.track_width() );
+        if( c.has_via_diameter() )    v += ", via" + len( c.via_diameter() );
+        if( c.has_via_drill() )       v += " drill" + len( c.via_drill() );
+        if( c.has_diff_pair_width() ) v += ", diff pair" + len( c.diff_pair_width() );
+        if( c.has_diff_pair_gap() )   v += " gap" + len( c.diff_pair_gap() );
+
+        t += "\n  " + c.name() + ( v.empty() ? " (all from Default)" : ":" + v.substr( 1 ) )
+             + " [" + std::to_string( c.nets() ) + " net(s)]";
+    }
+
+    if( r.patterns().empty() )
+        t += "\nassignments: none (by pattern)";
+    else
+    {
+        t += "\nassignments:";
+
+        for( const kb::NetclassAssign& a : r.patterns() )
+            t += " " + a.pattern() + "->" + a.netclass() + ";";
+
+        t.pop_back();
+    }
+
+    const kb::BoardConstraints& k = r.constraints();
+    t += "\nconstraints: clearance" + len( k.min_clearance() ) + ", track" + len( k.min_track_width() )
+         + ", via" + len( k.min_via_diameter() ) + ", drill" + len( k.min_through_drill() ) + ", annular"
+         + len( k.min_annular_width() ) + ", hole clearance" + len( k.hole_clearance() ) + ", hole to hole"
+         + len( k.hole_to_hole() ) + ", copper to edge" + len( k.copper_edge_clearance() ) + " (mm)";
+    return t + "\n";
+}
+
+
+TOOL_RESULT getRules( IPC_CLIENT& aIpc )
+{
+    kb::RulesResponse r;
+    std::string       err;
+
+    if( !aIpc.Call( kb::GetRules(), r, err ) )
+        return error( err );
+
+    return { renderRules( r ) };
+}
+
+
+TOOL_RESULT setRules( IPC_CLIENT& aIpc, const json& aArgs )
+{
+    kb::SetRules req;
+
+    auto num = []( const json& aObj, const char* aKey, double& aOut )
+    {
+        if( !aObj.contains( aKey ) )
+            return false;
+
+        if( aObj[aKey].is_null() )
+        {
+            aOut = -1;
+            return true;
+        }
+
+        if( !aObj[aKey].is_number() )
+            return false;
+
+        aOut = aObj[aKey].get<double>();
+        return true;
+    };
+
+    if( aArgs.contains( "classes" ) && aArgs["classes"].is_object() )
+    {
+        for( const auto& [name, v] : aArgs["classes"].items() )
+        {
+            if( !v.is_object() )
+                return error( "classes: {name: {clearance, track_width, ...}}" );
+
+            kb::NetclassRule* c = req.add_classes();
+            c->set_name( name );
+            double d;
+
+            for( const auto& [key, val] : v.items() )
+            {
+                if( !num( v, key.c_str(), d ) )
+                    return error( name + "." + key + ": a length in mm (null: from Default)" );
+
+                if( key == "clearance" )            c->set_clearance( d );
+                else if( key == "track_width" )     c->set_track_width( d );
+                else if( key == "via_diameter" )    c->set_via_diameter( d );
+                else if( key == "via_drill" )       c->set_via_drill( d );
+                else if( key == "diff_pair_width" ) c->set_diff_pair_width( d );
+                else if( key == "diff_pair_gap" )   c->set_diff_pair_gap( d );
+                else
+                    return error( "unknown net class value " + key );
+            }
+        }
+    }
+
+    for( const std::string& r : getStrings( aArgs, "remove_classes" ) )
+        req.add_remove_classes( r );
+
+    if( aArgs.contains( "assign" ) && aArgs["assign"].is_object() )
+    {
+        for( const auto& [pattern, nc] : aArgs["assign"].items() )
+        {
+            kb::NetclassAssign* a = req.add_assign();
+            a->set_pattern( pattern );
+            a->set_netclass( nc.is_string() ? nc.get<std::string>() : "" );
+        }
+    }
+
+    if( aArgs.contains( "constraints" ) && aArgs["constraints"].is_object() )
+    {
+        const json&           k = aArgs["constraints"];
+        kb::BoardConstraints* c = req.mutable_constraints();
+        double                d;
+
+        for( const auto& [key, val] : k.items() )
+        {
+            if( !num( k, key.c_str(), d ) || d < 0 )
+                return error( "constraints." + key + ": a length in mm" );
+
+            if( key == "min_clearance" )                c->set_min_clearance( d );
+            else if( key == "min_track_width" )         c->set_min_track_width( d );
+            else if( key == "min_via_diameter" )        c->set_min_via_diameter( d );
+            else if( key == "min_through_drill" )       c->set_min_through_drill( d );
+            else if( key == "min_annular_width" )       c->set_min_annular_width( d );
+            else if( key == "hole_clearance" )          c->set_hole_clearance( d );
+            else if( key == "hole_to_hole" )            c->set_hole_to_hole( d );
+            else if( key == "copper_edge_clearance" )   c->set_copper_edge_clearance( d );
+            else
+                return error( "unknown constraint " + key );
+        }
+    }
+
+    const bool  drc = !aArgs.contains( "drc" ) || !aArgs["drc"].is_boolean() || aArgs["drc"].get<bool>();
+    DRC_REPORT  before, after;
+    std::string err;
+
+    auto total = []( const std::map<std::string, int>& m )
+    {
+        int n = 0;
+
+        for( const auto& [k, v] : m )
+            n += v;
+
+        return n;
+    };
+
+    if( drc && !RunFullDrc( aIpc, before, err ) )
+        return error( "DRC before the change: " + err );
+
+    kb::RulesResponse r;
+
+    if( !aIpc.Call( req, r, err ) )
+        return error( err );
+
+    std::string t = r.history_label().empty() ? std::string( "nothing changed\n" )
+                                              : r.history_label() + " (undo takes it back; save_board keeps it, in the project file)\n";
+
+    if( drc && !r.history_label().empty() )
+    {
+        if( !RunFullDrc( aIpc, after, err ) )
+            return error( "DRC after the change: " + err );
+
+        t += "DRC errors " + std::to_string( total( before.errors ) ) + " -> " + std::to_string( total( after.errors ) );
+
+        std::set<std::string> types;
+
+        for( const auto& [k, v] : before.errors ) types.insert( k );
+        for( const auto& [k, v] : after.errors )  types.insert( k );
+
+        std::string diff;
+
+        for( const std::string& k : types )
+        {
+            int a = before.errors.count( k ) ? before.errors.at( k ) : 0;
+            int b = after.errors.count( k ) ? after.errors.at( k ) : 0;
+
+            if( a != b )
+                diff += ( diff.empty() ? "" : ", " ) + k + " " + std::to_string( a ) + "->" + std::to_string( b );
+        }
+
+        t += ( diff.empty() ? std::string( " (no change)" ) : " (" + diff + ")" ) + "; run_drc lists them\n";
+    }
+
+    return { t + renderRules( r ) };
+}
+
+
+TOOL_RESULT refillZones( IPC_CLIENT& aIpc );
+
+
+TOOL_RESULT zonesTool( IPC_CLIENT& aIpc, const json& aArgs )
+{
+    kb::Zones req;
+
+    for( const std::string& n : getStrings( aArgs, "nets" ) )
+        req.add_nets( n );
+
+    for( const std::string& l : getStrings( aArgs, "layers" ) )
+        req.add_layers( l );
+
+    for( const std::string& i : getStrings( aArgs, "ids" ) )
+        req.add_ids( i );
+
+    req.set_all( aArgs.value( "all", false ) );
+    double d;
+
+    if( getNumber( aArgs, "clearance", d ) )     req.set_clearance( d );
+    if( getNumber( aArgs, "min_width", d ) )     req.set_min_width( d );
+    if( getNumber( aArgs, "priority", d ) )      req.set_priority( (int) d );
+    if( getNumber( aArgs, "thermal_gap", d ) )   req.set_thermal_gap( d );
+    if( getNumber( aArgs, "thermal_spoke", d ) ) req.set_thermal_spoke( d );
+
+    if( aArgs.contains( "connection" ) && aArgs["connection"].is_string() )
+        req.set_connection( aArgs["connection"].get<std::string>() );
+
+    kb::ZonesResponse r;
+    std::string       err;
+
+    if( !aIpc.Call( req, r, err ) )
+        return error( err );
+
+    std::string t;
+
+    if( !r.history_label().empty() )
+    {
+        t = r.history_label() + " (undo takes it back)\n";
+
+        if( !aArgs.contains( "refill" ) || !aArgs["refill"].is_boolean() || aArgs["refill"].get<bool>() )
+        {
+            TOOL_RESULT f = refillZones( aIpc );
+            t += f.text.substr( 0, f.text.find( '\n' ) ) + "\n";
+        }
+        else
+        {
+            t += "not refilled (refill_zones before run_drc)\n";
+        }
+    }
+
+    t += std::to_string( r.zones_size() ) + " copper zone(s):";
+
+    for( const kb::ZoneInfo& z : r.zones() )
+    {
+        std::string layers;
+
+        for( const std::string& l : z.layers() )
+            layers += ( layers.empty() ? "" : "," ) + l;
+
+        auto len = []( double aMm ) { return mm( (int64_t) std::llround( aMm * 1e6 ) ); };
+        t += "\n  " + z.id() + " " + ( z.net().empty() ? "(no net)" : z.net() ) + " " + layers
+             + ( z.name().empty() ? "" : " \"" + z.name() + "\"" ) + " priority " + std::to_string( z.priority() )
+             + ", clearance " + len( z.clearance() ) + ", min width " + len( z.min_width() ) + ", pads "
+             + z.connection() + ( z.connection().rfind( "thermal", 0 ) == 0
+                                          ? " (gap " + len( z.thermal_gap() ) + ", spoke " + len( z.thermal_spoke() ) + ")"
+                                          : "" )
+             + ( z.filled() ? "" : ", not filled" );
+    }
+
+    return { t + "\n" };
+}
+
+
+TOOL_RESULT history( IPC_CLIENT& aIpc, bool aUndo, bool aDetail )
 {
     kb::HistoryResponse r;
     std::string         err;
@@ -721,7 +1139,7 @@ TOOL_RESULT history( IPC_CLIENT& aIpc, bool aUndo )
 
     kb::MoveResponse shown = res;   // the changed parts are listed above, not as "not found"
     shown.clear_missing();
-    return { t + renderMoveResult( shown ) + renderHistory( r ) };
+    return { t + renderMoveResult( shown, aDetail ) + renderHistory( r ) };
 }
 
 
@@ -755,7 +1173,7 @@ TOOL_RESULT checkDrc( IPC_CLIENT& aIpc, const json& aArgs )
         s += "\n";
     }
 
-    return { s + renderDrc( r.drc() ) };
+    return { s + renderDrc( r.drc(), detailOf( aArgs ) ) };
 }
 
 
@@ -1206,7 +1624,8 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                                              { "description", "Move to the other side (F.Cu <-> B.Cu), mirrored left-right" } } },
                                  { "pivot", { { "type", "string" }, { "enum", { "each", "group" } },
                                               { "description", "Rotate/flip each part around its own anchor (default) or "
-                                                               "the parts as one group around their common centre" } } } },
+                                                               "the parts as one group around their common centre" } } },
+                                 { "detail", DETAIL_PROP } },
                                { "refs" } ),
                        [&aIpc]( const json& a ) { return moveFootprints( aIpc, a ); } } );
 
@@ -1239,14 +1658,15 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                                  { "rotate", { { "type", "number" }, { "description", "Orientation, degrees CCW" } } },
                                  { "back", { { "type", "boolean" }, { "description", "Place on the bottom side" } } },
                                  { "nets", { { "type", "object" }, { "additionalProperties", { { "type", "string" } } },
-                                             { "description", "Pad number -> net name, e.g. {\"1\": \"+3V3\", \"2\": \"GND\"}" } } } },
+                                             { "description", "Pad number -> net name, e.g. {\"1\": \"+3V3\", \"2\": \"GND\"}" } } },
+                                 { "detail", DETAIL_PROP } },
                                { "x", "y" } ),
                        [&aIpc]( const json& a ) { return addFootprint( aIpc, a ); } } );
 
     tools.push_back( { "delete_footprints",
                        "Delete footprints as one undoable edit (undo restores them with their nets). "
                        "Tracks and vias stay. Returns the new unrouted count.",
-                       schema( { { "refs", refs } }, { "refs" } ),
+                       schema( { { "refs", refs }, { "detail", DETAIL_PROP } }, { "refs" } ),
                        [&aIpc]( const json& a ) { return deleteFootprints( aIpc, a ); } } );
 
     tools.push_back( { "delete_tracks",
@@ -1260,24 +1680,79 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                                  { "refs", refs },
                                  { "region", { { "type", "array" }, { "items", { { "type", "number" } } } } },
                                  { "include_locked", { { "type", "boolean" } } },
-                                 { "keep_vias", { { "type", "boolean" } } } } ),
+                                 { "keep_vias", { { "type", "boolean" } } },
+                                 { "detail", DETAIL_PROP } } ),
                        [&aIpc]( const json& a ) { return deleteTracks( aIpc, a ); } } );
+
+    tools.push_back( { "get_rules",
+                       "The design rules: net classes (clearance, track width, via, diff pair; unset values "
+                       "come from Default) with how many nets each has, the net class assignments by net name "
+                       "pattern, and the board's minimum constraints. Lengths in mm.",
+                       schema( json::object() ),
+                       [&aIpc]( const json& ) { return getRules( aIpc ); } } );
+
+    tools.push_back( { "set_rules",
+                       "Change the design rules as one undoable edit (undo / redo; save_board writes them "
+                       "to the project file). classes: {\"Power\": {\"track_width\": 0.5, \"clearance\": 0.25}} "
+                       "adds or changes a class (only the values given; null: take it from Default); "
+                       "remove_classes: [...]; assign: {\"+5V\": \"Power\", \"/USB_D*\": \"USB\", \"GND\": null} "
+                       "sets or drops net name patterns; constraints: {\"min_clearance\", \"min_track_width\", "
+                       "\"min_via_diameter\", \"min_through_drill\", \"min_annular_width\", \"hole_clearance\", "
+                       "\"hole_to_hole\", \"copper_edge_clearance\"} (mm). Existing tracks keep their width. "
+                       "drc (default true) runs DRC before and after and reports the change in errors.",
+                       schema( { { "classes", { { "type", "object" } } },
+                                 { "remove_classes", refs },
+                                 { "assign", { { "type", "object" } } },
+                                 { "constraints", { { "type", "object" } } },
+                                 { "drc", { { "type", "boolean" } } } } ),
+                       [&aIpc]( const json& a ) { return setRules( aIpc, a ); } } );
+
+    tools.push_back( { "zones",
+                       "Copper zones: list them (id, net, layers, priority, clearance, minimum width, pad "
+                       "connection), or change their settings as one undoable edit. Choose with nets, layers, "
+                       "ids (from the list) or all=true; change clearance, min_width (mm), priority, "
+                       "connection (solid / thermal / none / thermal_tht), thermal_gap, thermal_spoke (mm). "
+                       "Refilled afterwards unless refill=false.",
+                       schema( { { "nets", refs },
+                                 { "layers", refs },
+                                 { "ids", refs },
+                                 { "all", { { "type", "boolean" } } },
+                                 { "clearance", { { "type", "number" } } },
+                                 { "min_width", { { "type", "number" } } },
+                                 { "priority", { { "type", "integer" } } },
+                                 { "connection", { { "type", "string" }, { "enum", { "solid", "thermal", "none", "thermal_tht" } } } },
+                                 { "thermal_gap", { { "type", "number" } } },
+                                 { "thermal_spoke", { { "type", "number" } } },
+                                 { "refill", { { "type", "boolean" } } } } ),
+                       [&aIpc]( const json& a ) { return zonesTool( aIpc, a ); } } );
+
+    tools.push_back( { "pcb_set_fields",
+                       "Change footprints' fields and attributes on the board as one undoable edit. parts: "
+                       "{\"R1\": {\"Value\": \"10k\", \"LCSC\": \"C25804\", \"dnp\": true}}, or refs [...] with "
+                       "set {...} for many. Value is the value; other names are user fields (added hidden when "
+                       "missing; null removes one). Attributes: dnp, exclude_from_bom, exclude_from_pos. The "
+                       "reference and footprint are not changed here. A board made from a schematic takes its "
+                       "fields from it: change them there (sch_set_fields), then sync_pcb.",
+                       schema( { { "parts", { { "type", "object" }, { "additionalProperties", { { "type", "object" } } } } },
+                                 { "refs", refs },
+                                 { "set", { { "type", "object" } } } } ),
+                       [&aIpc]( const json& a ) { return pcbSetFields( aIpc, a ); } } );
 
     tools.push_back( { "undo",
                        "Undo the last KiCadD edit (move/rotate/flip/add/delete/auto_place/delete_tracks), restoring the exact previous "
                        "state. Parts the user changed since are left alone; an edit the user already undid "
                        "in the editor (Ctrl+Z) is reported as such. Returns what was undone, new positions and local DRC.",
-                       schema( json::object() ),
-                       [&aIpc]( const json& ) { return history( aIpc, true ); } } );
+                       schema( { { "detail", DETAIL_PROP } } ),
+                       [&aIpc]( const json& a ) { return history( aIpc, true, detailOf( a ) ); } } );
 
     tools.push_back( { "redo",
                        "Redo the last undone edit.",
-                       schema( json::object() ),
-                       [&aIpc]( const json& ) { return history( aIpc, false ); } } );
+                       schema( { { "detail", DETAIL_PROP } } ),
+                       [&aIpc]( const json& a ) { return history( aIpc, false, detailOf( a ) ); } } );
 
     tools.push_back( { "check_drc",
                        "Local DRC for the given footprints against their surroundings, without moving them.",
-                       schema( { { "refs", refs } }, { "refs" } ),
+                       schema( { { "refs", refs }, { "detail", DETAIL_PROP } }, { "refs" } ),
                        [&aIpc]( const json& a ) { return checkDrc( aIpc, a ); } } );
 
     tools.push_back( { "flush_ratsnest",
@@ -1354,6 +1829,105 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        [&aIpc]( const json& ) { return saveBoard( aIpc ); } } );
 
     AddSchematicTools( tools, aIpc );     // M5a, sch_tools.cpp
+
+    // batch: a list of the tools above in one call (a copy of the table: the list is handed
+    // over to the server afterwards)
+    auto table = std::make_shared<std::vector<TOOL>>( tools );
+
+    tools.push_back( { "batch",
+                       "Run several tools in one call, in order: steps [{\"tool\": \"move_footprints\", "
+                       "\"args\": {...}}, ...], repeated repeat times (default 1). Each step answers with its "
+                       "first line (show=\"full\": everything; \"last\": everything of the last step only). "
+                       "Stops at the first error unless stop_on_error=false. At most 500 calls. For repeated "
+                       "or routine work (the same edit on many parts, edit-check loops); a step's answer "
+                       "cannot feed the next one's arguments.",
+                       schema( { { "steps", { { "type", "array" },
+                                              { "items", { { "type", "object" },
+                                                           { "properties", { { "tool", { { "type", "string" } } },
+                                                                             { "args", { { "type", "object" } } } } },
+                                                           { "required", { "tool" } } } } } },
+                                 { "repeat", { { "type", "integer" } } },
+                                 { "stop_on_error", { { "type", "boolean" } } },
+                                 { "show", { { "type", "string" }, { "enum", { "line", "last", "full" } } } } },
+                               { "steps" } ),
+                       [table]( const json& a ) -> TOOL_RESULT
+                       {
+                           const json& steps = a.value( "steps", json::array() );
+                           const int   repeat = std::max( 1, a.value( "repeat", 1 ) );
+                           const bool  stop = a.value( "stop_on_error", true );
+                           const std::string show = a.value( "show", std::string( "line" ) );
+
+                           if( !steps.is_array() || steps.empty() )
+                               return error( "steps: [{\"tool\": name, \"args\": {...}}, ...]" );
+
+                           if( steps.size() * repeat > 500 )
+                               return error( "at most 500 calls (steps x repeat)" );
+
+                           std::vector<const TOOL*> resolved;
+
+                           for( const json& st : steps )
+                           {
+                               std::string name = st.is_object() ? st.value( "tool", std::string() ) : std::string();
+                               auto it = std::find_if( table->begin(), table->end(),
+                                                       [&]( const TOOL& t ) { return t.name == name; } );
+
+                               if( name == "batch" || it == table->end() )
+                                   return error( "no tool " + name + ( name == "batch" ? " inside a batch" : "" ) );
+
+                               resolved.push_back( &*it );
+                           }
+
+                           const auto t0 = std::chrono::steady_clock::now();
+                           std::string body;
+                           int         done = 0, failed = 0, total = (int) steps.size() * repeat;
+                           bool        stopped = false;
+                           std::string lastText;
+
+                           for( int r = 0; r < repeat && !stopped; ++r )
+                           {
+                               for( size_t i = 0; i < steps.size(); ++i )
+                               {
+                                   json args = steps[i].contains( "args" ) && steps[i]["args"].is_object()
+                                                       ? steps[i]["args"] : json::object();
+                                   TOOL_RESULT res = resolved[i]->run( args );
+                                   done++;
+                                   failed += res.isError;
+                                   lastText = res.text;
+
+                                   std::string tag = repeat > 1 ? std::to_string( r + 1 ) + "." + std::to_string( i + 1 )
+                                                                : std::to_string( i + 1 );
+                                   std::string text = res.text;
+
+                                   while( !text.empty() && text.back() == '\n' )
+                                       text.pop_back();
+
+                                   if( show != "full" )
+                                       text = text.substr( 0, text.find( '\n' ) );
+
+                                   body += "[" + tag + "] " + resolved[i]->name + ( res.isError ? " ERROR: " : ": " )
+                                           + text + "\n";
+
+                                   if( res.isError && stop )
+                                   {
+                                       stopped = true;
+                                       break;
+                                   }
+                               }
+                           }
+
+                           const double secs = std::chrono::duration<double>( std::chrono::steady_clock::now() - t0 ).count();
+                           char head[160];
+                           std::snprintf( head, sizeof( head ), "batch: %d of %d call(s) run, %d error(s), %.1f s%s\n",
+                                          done, total, failed, secs, stopped ? " (stopped at the error)" : "" );
+
+                           std::string out = head + body;
+
+                           if( show == "last" )
+                               out += "--- last step in full:\n" + lastText;
+
+                           return { out, failed > 0 && stop };
+                       } } );
+
     return tools;
 }
 

@@ -84,6 +84,21 @@ std::string symbolLine( const ks::SchSymbol& s )
     if( !s.sheet().empty() && s.sheet() != "/" )
         t += " on " + s.sheet();
 
+    for( const std::string& attr : s.attributes() )
+        t += " " + attr;
+
+    if( !s.fields().empty() )
+    {
+        // sorted: the map's order is not stable
+        std::map<std::string, std::string> fields( s.fields().begin(), s.fields().end() );
+        t += "\n  fields:";
+
+        for( const auto& [k, v] : fields )
+            t += " " + k + "=" + ( v.size() > 60 ? v.substr( 0, 57 ) + "..." : v ) + ";";
+
+        t.pop_back();
+    }
+
     return t;
 }
 
@@ -609,6 +624,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                                 { "description", "apply the result even when the current placement is better" } } },
                    { "measure_only", { { "type", "boolean" },
                                        { "description", "move nothing, report the numbers for the parts as they are" } } },
+                   { "detail", { { "type", "boolean" }, { "description", "list every moved part (default: the first 15)" } } },
                    { "rules", { { "type", "object" },
                                 { "description",
                                   "placement rules; refs may be patterns (\"J*\"). edge: {\"J1\": \"left\"} "
@@ -796,9 +812,19 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                 if( r.moved() )
                 {
                     t += ":";
+                    const bool detail = a.value( "detail", false );
+                    int        n = 0;
 
                     for( const std::string& ref : r.refs() )
+                    {
+                        if( !detail && n++ >= 15 )
+                        {
+                            t += " ... (" + std::to_string( r.refs_size() ) + " in all; detail=true lists them)";
+                            break;
+                        }
+
                         t += " " + ref;
+                    }
                 }
 
                 t += std::string( r.kept_current() ? "; wire length (half-perimeter) now " : "; wire length (half-perimeter) " )
@@ -1310,6 +1336,148 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
 
                 return TOOL_RESULT{ t, false };
             } } );
+
+    aTools.push_back( { "sch_set_fields",
+            "Change parts' fields and attributes as one edit (all units; sch_undo takes it back; "
+            "sync_pcb carries it to the board). parts: {\"R1\": {\"Value\": \"10k\", \"LCSC\": "
+            "\"C25804\", \"Footprint\": \"Lib:Name\", \"dnp\": true}}, or refs [...] with set {...} "
+            "for the same change on many. Value, Footprint, Datasheet, Description are the symbol's own "
+            "fields; any other name is a user field (added hidden when missing; null removes it). "
+            "Attributes: dnp, exclude_from_bom, exclude_from_board, exclude_from_sim, exclude_from_pos "
+            "(true / false).",
+            obj( { { "parts", { { "type", "object" }, { "additionalProperties", { { "type", "object" } } } } },
+                   { "refs", { { "type", "array" }, { "items", { { "type", "string" } } } } },
+                   { "set", { { "type", "object" } } } },
+                 {} ),
+            [&aIpc]( const json& a )
+            {
+                ks::SchSetFields req;
+                std::string      bad;
+
+                auto add = [&]( const std::string& aRef, const json& aSet )
+                {
+                    ks::SchFieldEdit* e = req.add_parts();
+                    e->set_ref( aRef );
+
+                    for( const auto& [key, v] : aSet.items() )
+                    {
+                        if( key == "dnp" || key.rfind( "exclude_from_", 0 ) == 0 )
+                        {
+                            if( !v.is_boolean() )
+                            {
+                                bad = key + " is true or false";
+                                continue;
+                            }
+
+                            bool b = v.get<bool>();
+
+                            if( key == "dnp" )                          e->set_dnp( b );
+                            else if( key == "exclude_from_bom" )        e->set_exclude_from_bom( b );
+                            else if( key == "exclude_from_board" )      e->set_exclude_from_board( b );
+                            else if( key == "exclude_from_sim" )        e->set_exclude_from_sim( b );
+                            else if( key == "exclude_from_pos" )        e->set_exclude_from_pos( b );
+                            else                                        bad = "unknown attribute " + key;
+                        }
+                        else if( v.is_null() )
+                        {
+                            e->add_remove( key );
+                        }
+                        else if( v.is_string() )
+                        {
+                            ( *e->mutable_fields() )[key] = v.get<std::string>();
+                        }
+                        else if( v.is_number() )
+                        {
+                            ( *e->mutable_fields() )[key] = v.dump();
+                        }
+                        else
+                        {
+                            bad = key + ": a field's text is a string (null removes it)";
+                        }
+                    }
+                };
+
+                if( a.contains( "parts" ) && a["parts"].is_object() )
+                {
+                    for( const auto& [ref, set] : a["parts"].items() )
+                    {
+                        if( set.is_object() )
+                            add( ref, set );
+                    }
+                }
+
+                if( a.contains( "set" ) && a["set"].is_object() )
+                {
+                    for( const json& r : a.value( "refs", json::array() ) )
+                    {
+                        if( r.is_string() )
+                            add( r.get<std::string>(), a["set"] );
+                    }
+                }
+
+                if( !bad.empty() )
+                    return fail( bad );
+
+                if( req.parts().empty() )
+                    return fail( "give parts {ref: {field: text}} or refs [...] with set {...}" );
+
+                ks::SchConnectResponse r;
+                std::string            err;
+
+                if( !aIpc.Call( req, r, err ) )
+                    return fail( err );
+
+                return connectResult( r, "part(s) changed" );
+            } } );
+
+    for( bool redo : { false, true } )
+    {
+        aTools.push_back( { redo ? "sch_redo" : "sch_undo",
+                redo ? "Redo the agent's last undone schematic edit."
+                     : "Undo the agent's last schematic edit (sch_add_part, sch_connect, sch_wire, sch_move, "
+                       "sch_delete, ...; not the user's). What the user changed since is left as it is and "
+                       "counted; an edit the user already undid in the editor (Ctrl+Z) is said so. The "
+                       "agent keeps its last 50 edits; PCB edits have undo / redo.",
+                obj( json::object() ),
+                [&aIpc, redo]( const json& )
+                {
+                    ks::SchUndo req;
+                    req.set_redo( redo );
+                    ks::SchHistoryResponse r;
+                    std::string            err;
+
+                    if( !aIpc.Call( req, r, err ) )
+                        return fail( err );
+
+                    const std::string verb = redo ? "redo" : "undo";
+                    std::string       t;
+
+                    if( r.label().empty() )
+                        t = "nothing to " + verb;
+                    else if( r.ok() )
+                        t = std::string( redo ? "redid: " : "undid: " ) + r.label() + " ("
+                            + std::to_string( r.items() ) + " item(s))";
+                    else if( r.changed() == 0 )
+                        t = "\"" + r.label() + "\" was already " + ( redo ? "redone" : "undone" )
+                            + " (in the editor); nothing changed";
+                    else
+                        t = "did not " + verb + " \"" + r.label() + "\": its items were changed since";
+
+                    if( r.ok() && r.changed() )
+                        t += "; " + std::to_string( r.changed() ) + " item(s) changed since, left as they are";
+
+                    if( r.ok() && r.already() )
+                        t += "; " + std::to_string( r.already() ) + " already as they were";
+
+                    t += "\nschematic history: " + std::to_string( r.undo_size() ) + " undo, "
+                         + std::to_string( r.redo_size() ) + " redo";
+
+                    if( !r.next_undo().empty() )
+                        t += "; next undo: " + r.next_undo();
+
+                    return TOOL_RESULT{ t, false };
+                } } );
+    }
 
     aTools.push_back( { "sch_save",
             "Write the schematic to its .kicad_sch file(s), every sheet. They are written in this "

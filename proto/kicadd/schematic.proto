@@ -38,6 +38,8 @@ message SchSymbol
   string lcsc      = 10;
   repeated SchPin pins = 11;
   string sheet     = 12;   // the sheet it is on: "/" (root), "/Power/"
+  map<string, string> fields = 13;   // with pins only: the user fields (LCSC aside) and Datasheet / Description when set
+  repeated string attributes = 14;   // with pins only: dnp, exclude_from_bom, exclude_from_board, exclude_from_sim, exclude_from_pos
 }
 
 // A hierarchical sheet: its symbol on the parent sheet, its own file, its pins (one per port of
@@ -365,4 +367,45 @@ message SchCreateSymbolResponse
   double height  = 5;
   bool   registered = 6;    // the library was added to sym-lib-table now
   string note    = 7;
+}
+
+// The agent's own schematic history: undo / redo its last edit (not the user's). Items changed
+// since (by the user) are left as they are and counted; an edit the user already undid in the
+// editor (Ctrl+Z) is said so and moved over. Returns SchHistoryResponse
+message SchUndo
+{
+  bool redo = 1;
+}
+
+message SchHistoryResponse
+{
+  bool   ok          = 1;   // something was undone / redone
+  string label       = 2;   // the edit ("add R3", "connect 4 pin(s)")
+  int32  items       = 3;   // items put back as they were
+  int32  changed     = 4;   // items changed since, left as they are
+  int32  already     = 5;   // items already as they were (the editor's undo did it)
+  int32  undo_size   = 6;
+  int32  redo_size   = 7;
+  string next_undo   = 8;
+}
+
+// Change parts' fields and attributes as one edit (all units of a part; sch_undo takes it back).
+// fields: name -> text; "Value", "Footprint", "Datasheet", "Description" are the symbol's own
+// fields (any case), other names are user fields, added (hidden) when missing. remove: user
+// fields to delete. sync_pcb carries the changes to the board. Returns SchConnectResponse
+message SchFieldEdit
+{
+  string              ref    = 1;
+  map<string, string> fields = 2;
+  repeated string     remove = 3;
+  optional bool dnp                 = 4;
+  optional bool exclude_from_bom    = 5;
+  optional bool exclude_from_board  = 6;
+  optional bool exclude_from_sim    = 7;
+  optional bool exclude_from_pos    = 8;
+}
+
+message SchSetFields
+{
+  repeated SchFieldEdit parts = 1;
 }

@@ -641,3 +641,120 @@ message FpCreateResponse
   bool   registered = 5;
   string note     = 6;
 }
+
+// Change footprints' fields and attributes on the board as one undoable edit (undo / redo).
+// fields: name -> text; "Value" is the value, other names user fields (added hidden when
+// missing); remove: user fields to delete. The reference and the footprint are not changed
+// here. A board made from a schematic gets its fields from it (sync_pcb): change them there.
+// Returns MoveResponse (history_label; missing: refs not found)
+message FpFieldEdit
+{
+  string              ref    = 1;
+  map<string, string> fields = 2;
+  repeated string     remove = 3;
+  optional bool dnp              = 4;
+  optional bool exclude_from_bom = 5;
+  optional bool exclude_from_pos = 6;
+}
+
+message FpSetFields
+{
+  repeated FpFieldEdit parts = 1;
+}
+
+// Design rules: net classes, net class assignments by net name pattern, the board's minimum
+// constraints. Lengths in mm. GetRules returns RulesResponse.
+message NetclassRule
+{
+  string name = 1;
+  // a value < 0 in SetRules: unset (taken from the Default class); not given: left as is
+  optional double clearance       = 2;
+  optional double track_width     = 3;
+  optional double via_diameter    = 4;
+  optional double via_drill       = 5;
+  optional double diff_pair_width = 6;
+  optional double diff_pair_gap   = 7;
+  int32 nets = 8;   // in RulesResponse: the nets in this class now
+}
+
+message NetclassAssign
+{
+  string pattern  = 1;   // a net name pattern: "+3V3", "/USB_*", regex "/D[+-]/"
+  string netclass = 2;   // "" in SetRules: drop this pattern
+}
+
+message BoardConstraints
+{
+  optional double min_clearance         = 1;
+  optional double min_track_width       = 2;
+  optional double min_via_diameter      = 3;
+  optional double min_through_drill     = 4;
+  optional double min_annular_width     = 5;
+  optional double hole_clearance        = 6;
+  optional double hole_to_hole          = 7;
+  optional double copper_edge_clearance = 8;
+}
+
+message GetRules
+{
+}
+
+// Change the rules as one undoable edit (undo / redo). classes: add or change (only the values
+// given); remove_classes: drop (their patterns go too); assign: add / change / drop patterns.
+// Returns RulesResponse
+message SetRules
+{
+  repeated NetclassRule   classes        = 1;
+  repeated string         remove_classes = 2;
+  repeated NetclassAssign assign         = 3;
+  BoardConstraints        constraints    = 4;
+}
+
+message RulesResponse
+{
+  repeated NetclassRule   classes       = 1;
+  repeated NetclassAssign patterns      = 2;
+  BoardConstraints        constraints   = 3;
+  string                  history_label = 4;
+}
+
+// Copper zones: list them, or change their settings as one undoable edit (undo / redo).
+// Which zones: nets, layers, ids (from the list), or all; nothing to change: just the list.
+// Lengths in mm. connection: solid, thermal, none, thermal_tht (thermal reliefs on through-hole
+// pads only). The fill is not redone here (refill_zones; kicadd-mcp does it by default).
+// Returns ZonesResponse
+message ZoneInfo
+{
+  string id            = 1;
+  string name          = 2;
+  string net           = 3;
+  repeated string layers = 4;
+  int32  priority      = 5;
+  double clearance     = 6;
+  double min_width     = 7;
+  string connection    = 8;
+  double thermal_gap   = 9;
+  double thermal_spoke = 10;
+  bool   filled        = 11;
+}
+
+message Zones
+{
+  repeated string nets   = 1;
+  repeated string layers = 2;
+  repeated string ids    = 3;
+  bool all               = 4;
+  optional double clearance     = 5;
+  optional double min_width     = 6;
+  optional int32  priority      = 7;
+  string          connection    = 8;
+  optional double thermal_gap   = 9;
+  optional double thermal_spoke = 10;
+}
+
+message ZonesResponse
+{
+  repeated ZoneInfo zones  = 1;   // the zones chosen (all when none was named), as they are now
+  string history_label     = 2;
+  int32  changed           = 3;
+}

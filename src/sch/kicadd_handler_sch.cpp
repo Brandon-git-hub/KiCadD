@@ -373,6 +373,8 @@ KICADD_HANDLER_SCH::KICADD_HANDLER_SCH( std::shared_ptr<SCH_CONTEXT> aContext ) 
     registerHandler<SchRunErc, SchErcResponse>( &KICADD_HANDLER_SCH::handleRunErc );
     registerHandler<SchAudit, SchAuditResponse>( &KICADD_HANDLER_SCH::handleAudit );
     registerHandler<SchCreateSymbol, SchCreateSymbolResponse>( &KICADD_HANDLER_SCH::handleCreateSymbol );
+    registerHandler<SchUndo, SchHistoryResponse>( &KICADD_HANDLER_SCH::handleUndo );
+    registerHandler<SchSetFields, SchConnectResponse>( &KICADD_HANDLER_SCH::handleSetFields );
     registerHandler<RegisterLibrary, RegisterLibraryResponse>( &KICADD_HANDLER_SCH::handleRegisterLibrary );
 }
 
@@ -694,6 +696,20 @@ void KICADD_HANDLER_SCH::packSymbol( SCH_SYMBOL* aSymbol, const SCH_SHEET_PATH& 
     if( !aWithPins )
         return;
 
+    for( const SCH_FIELD& field : aSymbol->GetFields() )
+    {
+        const bool own = field.GetId() == FIELD_T::DATASHEET || field.GetId() == FIELD_T::DESCRIPTION;
+
+        if( ( field.GetId() == FIELD_T::USER && field.GetName() != wxS( "LCSC" ) ) || ( own && !field.GetText().IsEmpty() && field.GetText() != wxS( "~" ) ) )
+            ( *aOut.mutable_fields() )[str( field.GetName() )] = str( field.GetText() );
+    }
+
+    if( aSymbol->GetDNP( &aSheet ) )                  aOut.add_attributes( "dnp" );
+    if( aSymbol->GetExcludedFromBOM( &aSheet ) )      aOut.add_attributes( "exclude_from_bom" );
+    if( aSymbol->GetExcludedFromBoard( &aSheet ) )    aOut.add_attributes( "exclude_from_board" );
+    if( aSymbol->GetExcludedFromSim( &aSheet ) )      aOut.add_attributes( "exclude_from_sim" );
+    if( aSymbol->GetExcludedFromPosFiles( &aSheet ) ) aOut.add_attributes( "exclude_from_pos" );
+
     for( SCH_PIN* pin : aSymbol->GetPins( &aSheet ) )
     {
         PIN_AT      at;
@@ -992,10 +1008,10 @@ HANDLER_RESULT<SchPartResponse> KICADD_HANDLER_SCH::handleAddPart( const HANDLER
     symbol->AutoplaceFields( screen, AUTOPLACE_AUTO );
 
     SCH_SYMBOL* placed = symbol.release();
-    SCH_COMMIT  commit( m_context->GetToolManager() );
+    kicadd::KICADD_SCH_COMMIT commit( m_context->GetToolManager() );
     commit.Add( placed, screen );
     wxString what = wxString::Format( wxS( "add %s" ), placed->GetRef( &sheet ) );
-    commit.Push( wxS( "Agent: " ) + what );
+    pushRecorded( commit, what );
 
     rebuildConnectivity();
     announce( wxS( "Agent: " ) + what );
@@ -1135,7 +1151,7 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleConnect( const HAND
     rebuildConnectivity();
 
     SchConnectResponse out;
-    SCH_COMMIT         commit( m_context->GetToolManager() );
+    kicadd::KICADD_SCH_COMMIT commit( m_context->GetToolManager() );
     int                added = 0;
 
     // ports: "VOUT" or "VOUT:output"
@@ -1317,7 +1333,7 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleConnect( const HAND
     if( added )
     {
         out.set_history_label( "connect " + std::to_string( added ) + " pin" + ( added > 1 ? "s" : "" ) );
-        commit.Push( wxS( "Agent: " ) + wx( out.history_label() ) );
+        pushRecorded( commit, wx( out.history_label() ) );
         rebuildConnectivity();
         announce( wxS( "Agent: " ) + wx( out.history_label() ) );
     }
@@ -1339,7 +1355,7 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleDisconnect( const H
         return tl::unexpected( *err );
 
     SchConnectResponse out;
-    SCH_COMMIT         commit( m_context->GetToolManager() );
+    kicadd::KICADD_SCH_COMMIT commit( m_context->GetToolManager() );
     int                removed = 0;
 
     for( const SchPinNet& p : aCtx.Request.pins() )
@@ -1363,7 +1379,7 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleDisconnect( const H
     if( removed )
     {
         out.set_history_label( "disconnect " + std::to_string( out.done() ) + " pin(s)" );
-        commit.Push( wxS( "Agent: " ) + wx( out.history_label() ) );
+        pushRecorded( commit, wx( out.history_label() ) );
         rebuildConnectivity();
         announce( wxS( "Agent: " ) + wx( out.history_label() ) );
     }
@@ -1453,7 +1469,7 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleDeleteParts( const 
         return tl::unexpected( *err );
 
     SchConnectResponse out;
-    SCH_COMMIT         commit( m_context->GetToolManager() );
+    kicadd::KICADD_SCH_COMMIT commit( m_context->GetToolManager() );
     bool               sheetsGone = false;
     int                wires = 0;
 
@@ -1617,7 +1633,7 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleDeleteParts( const 
         out.set_history_label( "delete " + ( parts ? std::to_string( parts ) + " part(s)" : std::string() )
                                + ( parts && wires ? ", " : "" )
                                + ( wires ? std::to_string( wires ) + " wire(s)" : std::string() ) );
-        commit.Push( wxS( "Agent: " ) + wx( out.history_label() ) );
+        pushRecorded( commit, wx( out.history_label() ) );
 
         if( sheetsGone )
             hierarchyChanged();
@@ -1797,10 +1813,10 @@ HANDLER_RESULT<SchSheetResponse> KICADD_HANDLER_SCH::handleAddSheet( const HANDL
 
     sheet->AutoplaceFields( parentScreen, AUTOPLACE_AUTO );
 
-    SCH_COMMIT commit( m_context->GetToolManager() );
+    kicadd::KICADD_SCH_COMMIT commit( m_context->GetToolManager() );
     commit.Add( sheet, parentScreen );
     wxString what = wxS( "add sheet " ) + name;
-    commit.Push( wxS( "Agent: " ) + what );
+    pushRecorded( commit, what );
 
     hierarchyChanged();
     rebuildConnectivity();
@@ -2015,7 +2031,7 @@ HANDLER_RESULT<SchPartResponse> KICADD_HANDLER_SCH::handleMove( const HANDLER_CO
 
     rebuildConnectivity();
 
-    SCH_COMMIT  commit( m_context->GetToolManager() );
+    kicadd::KICADD_SCH_COMMIT commit( m_context->GetToolManager() );
     std::string note;
     int         dragged = 0;
 
@@ -2232,7 +2248,7 @@ HANDLER_RESULT<SchPartResponse> KICADD_HANDLER_SCH::handleMove( const HANDLER_CO
                 + " wire(s) dragged along (they may now run diagonally: redraw with sch_wire)";
 
     wxString what = wxS( "move " ) + wx( req.ref() );
-    commit.Push( wxS( "Agent: " ) + what );
+    pushRecorded( commit, what );
     rebuildConnectivity();
     announce( wxS( "Agent: " ) + what );
 
@@ -2307,7 +2323,7 @@ HANDLER_RESULT<SchWireResponse> KICADD_HANDLER_SCH::handleWire( const HANDLER_CO
     }
 
     std::vector<SCH_ITEM*> wires;
-    SCH_COMMIT             commit( m_context->GetToolManager() );
+    kicadd::KICADD_SCH_COMMIT commit( m_context->GetToolManager() );
     std::string            note;
     bool                   diagonal = false;
 
@@ -2391,7 +2407,7 @@ HANDLER_RESULT<SchWireResponse> KICADD_HANDLER_SCH::handleWire( const HANDLER_CO
     out.set_segments( (int) wires.size() );
     out.set_junctions( (int) junctions.size() );
     out.set_history_label( "wire " + std::to_string( wires.size() ) + " segment" + ( wires.size() == 1 ? "" : "s" ) );
-    commit.Push( wxS( "Agent: " ) + wx( out.history_label() ) );
+    pushRecorded( commit, wx( out.history_label() ) );
     rebuildConnectivity();
     announce( wxS( "Agent: " ) + wx( out.history_label() ) );
 
@@ -3295,5 +3311,312 @@ KICADD_HANDLER_SCH::handleCreateSymbol( const HANDLER_CONTEXT<SchCreateSymbol>& 
     out.set_width( width );
     out.set_height( height );
     out.set_note( note );
+    return out;
+}
+
+
+void KICADD_HANDLER_SCH::pushRecorded( kicadd::KICADD_SCH_COMMIT& aCommit, const wxString& aWhat )
+{
+    aCommit.Push( wxS( "Agent: " ) + aWhat );
+
+    kicadd::SCH_EDIT edit = aCommit.TakeEdit( str( aWhat ) );
+    edit.root = schematic()->Root().m_Uuid;
+
+    if( edit.changes.empty() )
+        return;
+
+    // edits of a schematic that was closed since are no use
+    if( !m_undo.empty() && m_undo.back().root != edit.root )
+        m_undo.clear();
+
+    m_undo.push_back( std::move( edit ) );
+    m_redo.clear();
+
+    // the agent's history is for its last steps, not a full record
+    if( m_undo.size() > 50 )
+        m_undo.erase( m_undo.begin() );
+}
+
+
+void KICADD_HANDLER_SCH::applyEdit( const kicadd::SCH_EDIT& aEdit, bool aUndo, SchHistoryResponse& aOut )
+{
+    using kicadd::SCH_CHANGE;
+
+    std::set<SCH_SCREEN*> screens;
+
+    for( const SCH_SHEET_PATH& sheet : schematic()->Hierarchy() )
+        screens.insert( sheet.LastScreen() );
+
+    auto live = []( SCH_SCREEN* aScreen, const KIID& aId ) -> SCH_ITEM*
+    {
+        for( SCH_ITEM* item : aScreen->Items() )
+        {
+            if( item->m_Uuid == aId )
+                return item;
+        }
+
+        return nullptr;
+    };
+
+    auto same = []( const SCH_ITEM* a, const SCH_ITEM* b )
+    {
+        return a && b && static_cast<const SCH_ITEM&>( *a ) == static_cast<const SCH_ITEM&>( *b );
+    };
+
+    SCH_COMMIT commit( m_context->GetToolManager() );
+    bool       sheets = false;
+    int        items = 0, changed = 0, already = 0;
+
+    // backwards for undo: a wire split by the edit comes back before what was split off goes
+    for( size_t k = 0; k < aEdit.changes.size(); ++k )
+    {
+        const SCH_CHANGE& c = *aEdit.changes[aUndo ? aEdit.changes.size() - 1 - k : k];
+
+        if( !screens.count( c.screen ) )
+        {
+            changed++;   // its sheet is gone
+            continue;
+        }
+
+        SCH_ITEM*       now = live( c.screen, c.id );
+        const SCH_ITEM* from = aUndo ? c.after.get() : c.before.get();   // the state the edit left / found
+        const SCH_ITEM* to = aUndo ? c.before.get() : c.after.get();     // the state to put back
+        const bool      take = aUndo ? c.kind == SCH_CHANGE::ADDED : c.kind == SCH_CHANGE::REMOVED;
+        const bool      give = aUndo ? c.kind == SCH_CHANGE::REMOVED : c.kind == SCH_CHANGE::ADDED;
+
+        if( take )
+        {
+            if( !now )
+                already++;
+            else if( !same( now, from ) )
+                changed++;
+            else
+            {
+                sheets |= now->Type() == SCH_SHEET_T;
+                commit.Remove( now, c.screen );
+                items++;
+            }
+        }
+        else if( give )
+        {
+            if( now )
+            {
+                already++;
+            }
+            else
+            {
+                SCH_ITEM* copy = static_cast<SCH_ITEM*>( to->Clone() );
+                copy->SetParent( nullptr );
+                sheets |= copy->Type() == SCH_SHEET_T;
+                commit.Add( copy, c.screen );
+                items++;
+            }
+        }
+        else   // modified
+        {
+            if( !now || same( now, to ) )
+                ( now ? already : changed )++;
+            else if( !same( now, from ) )
+                changed++;
+            else
+            {
+                commit.Modify( now, c.screen );
+                SCH_ITEM* image = static_cast<SCH_ITEM*>( to->Clone() );
+                now->SwapItemData( image );
+                delete image;
+                sheets |= now->Type() == SCH_SHEET_T;
+                items++;
+            }
+        }
+    }
+
+    aOut.set_label( aEdit.label );
+    aOut.set_items( items );
+    aOut.set_changed( changed );
+    aOut.set_already( already );
+    aOut.set_ok( items > 0 );
+
+    if( commit.Empty() )
+    {
+        commit.Revert();
+        return;
+    }
+
+    commit.Push( wxS( "Agent: " ) + wxString( aUndo ? "undo " : "redo " ) + wx( aEdit.label ) );
+
+    if( sheets )
+        hierarchyChanged();
+
+    rebuildConnectivity();
+    announce( wxS( "Agent: " ) + wxString( aUndo ? "undid " : "redid " ) + wx( aEdit.label ) );
+}
+
+
+HANDLER_RESULT<SchHistoryResponse> KICADD_HANDLER_SCH::handleUndo( const HANDLER_CONTEXT<SchUndo>& aCtx )
+{
+    if( !schematic() )
+        return tl::unexpected( makeError( ApiStatusCode::AS_UNHANDLED, "no schematic open" ) );
+
+    if( auto err = busy() )
+        return tl::unexpected( *err );
+
+    const bool          redo = aCtx.Request.redo();
+
+    for( auto* list : { &m_undo, &m_redo } )
+    {
+        if( !list->empty() && list->back().root != schematic()->Root().m_Uuid )
+            list->clear();
+    }
+
+    auto&               from = redo ? m_redo : m_undo;
+    auto&               to = redo ? m_undo : m_redo;
+    SchHistoryResponse out;
+
+    if( !from.empty() )
+    {
+        kicadd::SCH_EDIT edit = std::move( from.back() );
+        from.pop_back();
+        applyEdit( edit, !redo, out );
+
+        // done, done already in the editor, or left as is because it was changed since: off this
+        // list either way (one that cannot be applied would block every older one)
+        if( out.ok() || out.changed() == 0 )
+            to.push_back( std::move( edit ) );
+    }
+
+    out.set_undo_size( (int) m_undo.size() );
+    out.set_redo_size( (int) m_redo.size() );
+
+    if( !m_undo.empty() )
+        out.set_next_undo( m_undo.back().label );
+
+    return out;
+}
+
+
+HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleSetFields( const HANDLER_CONTEXT<SchSetFields>& aCtx )
+{
+    if( !schematic() )
+        return tl::unexpected( makeError( ApiStatusCode::AS_UNHANDLED, "no schematic open" ) );
+
+    if( auto err = busy() )
+        return tl::unexpected( *err );
+
+    SchConnectResponse        out;
+    kicadd::KICADD_SCH_COMMIT commit( m_context->GetToolManager() );
+
+    auto mandatory = []( const std::string& aName ) -> std::optional<FIELD_T>
+    {
+        std::string n = upper( aName );
+
+        if( n == "VALUE" )       return FIELD_T::VALUE;
+        if( n == "FOOTPRINT" )   return FIELD_T::FOOTPRINT;
+        if( n == "DATASHEET" )   return FIELD_T::DATASHEET;
+        if( n == "DESCRIPTION" ) return FIELD_T::DESCRIPTION;
+        return std::nullopt;
+    };
+
+    for( const SchFieldEdit& edit : aCtx.Request.parts() )
+    {
+        auto symbols = findSymbols( edit.ref() );
+
+        if( symbols.empty() )
+        {
+            out.add_errors( "no part " + edit.ref() );
+            continue;
+        }
+
+        std::string bad;
+
+        for( const auto& [name, text] : edit.fields() )
+        {
+            if( upper( name ) == "REFERENCE" )
+                bad = "the reference is not a field to set here";
+            else if( name.empty() )
+                bad = "a field needs a name";
+        }
+
+        for( const std::string& name : edit.remove() )
+        {
+            if( mandatory( name ) || upper( name ) == "REFERENCE" )
+                bad = name + " cannot be removed (it is one of the symbol's own fields; set it to \"\")";
+        }
+
+        if( !bad.empty() )
+        {
+            out.add_errors( edit.ref() + ": " + bad );
+            continue;
+        }
+
+        for( auto& [symbol, sheet] : symbols )
+        {
+            commit.Modify( symbol, sheet.LastScreen() );
+
+            for( const auto& [name, text] : edit.fields() )
+            {
+                SCH_FIELD* field = nullptr;
+
+                if( std::optional<FIELD_T> id = mandatory( name ) )
+                {
+                    field = symbol->GetField( *id );
+                }
+                else if( !( field = symbol->GetField( wx( name ) ) ) )
+                {
+                    field = symbol->AddField( SCH_FIELD( symbol, FIELD_T::USER, wx( name ) ) );
+                    field->SetPosition( symbol->GetPosition() );
+                    field->SetVisible( false );
+                }
+
+                if( field->GetId() == FIELD_T::VALUE )
+                    symbol->SetValueFieldText( wx( text ) );
+                else if( field->GetId() == FIELD_T::FOOTPRINT )
+                    symbol->SetFootprintFieldText( wx( text ) );
+                else
+                    field->SetText( wx( text ) );
+            }
+
+            for( const std::string& name : edit.remove() )
+                symbol->RemoveField( wx( name ) );
+
+            if( edit.has_dnp() )
+                symbol->SetDNP( edit.dnp(), &sheet );
+
+            if( edit.has_exclude_from_bom() )
+                symbol->SetExcludedFromBOM( edit.exclude_from_bom(), &sheet );
+
+            if( edit.has_exclude_from_board() )
+                symbol->SetExcludedFromBoard( edit.exclude_from_board(), &sheet );
+
+            if( edit.has_exclude_from_sim() )
+                symbol->SetExcludedFromSim( edit.exclude_from_sim(), &sheet );
+
+            if( edit.has_exclude_from_pos() )
+                symbol->SetExcludedFromPosFiles( edit.exclude_from_pos(), &sheet );
+        }
+
+        for( const auto& [name, text] : edit.fields() )
+        {
+            if( mandatory( name ) == FIELD_T::FOOTPRINT && !text.empty() )
+            {
+                if( std::string problem = kicadd::FootprintProblem( text ); !problem.empty() )
+                    out.add_errors( edit.ref() + ": " + problem + " (set anyway; sync_pcb will not find it)" );
+            }
+        }
+
+        out.set_done( out.done() + 1 );
+    }
+
+    if( out.done() )
+    {
+        out.set_history_label( "set fields of " + std::to_string( out.done() ) + " part(s)" );
+        pushRecorded( commit, wx( out.history_label() ) );
+        rebuildConnectivity();
+        announce( wxS( "Agent: " ) + wx( out.history_label() ) );
+    }
+    else
+    {
+        commit.Revert();
+    }
+
     return out;
 }

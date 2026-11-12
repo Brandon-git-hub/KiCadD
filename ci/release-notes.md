@@ -5,6 +5,18 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 > ⚠️ Pre-release，僅供試用。由 GitHub Actions 自動建置；功能在 Linux 上做過端到端測試，Windows 上只有 CI 的 smoke test 與早期版本的人工試用。
 
 ## 這一版（alpha.7）
+**新工具（36 → 44 個）**
+- **電路圖的 Agent undo / redo**：`sch_undo` / `sch_redo` 撤銷 Agent 自己最近的電路圖修改（保留 50 步）；你之後改過的東西不動，你已經按 Ctrl+Z 撤銷的會直接說明。
+- **改欄位**：`sch_set_fields`（電路圖：值、封裝、LCSC、自訂欄位、DNP、不列入 BOM 等，可一次多顆）、`pcb_set_fields`（板子上的封裝欄位與屬性）。`sch_part` 會列出自訂欄位與屬性。
+- **設計規則**：`get_rules` / `set_rules`（網路類別的線寬、間距、過孔、差分對；依網路名稱指派類別；板子的最小值）。改完自動跑 DRC 回報錯誤數的變化，可 undo，存檔時寫進專案檔。
+- **銅箔區**：`zones` 列出或修改銅箔區的間距、最小寬度、優先順序、焊盤連接方式（實心 / 散熱焊盤），改完自動重新鋪銅，可 undo。
+- **批次**：`batch` 一次呼叫依序跑多個工具（可重複、遇錯停止），每步只回一行。
+
+**精簡輸出**：`undo` / `redo` / `move_footprints` / `add_footprint` / `delete_*` 超過 8 顆零件時只列前 5 顆，局部 DRC 超過 10 筆時附分類統計；`auto_place` 只列前 15 個零件編號。`detail=true` 列出全部。
+
+**建議的使用方式（skill）**：release 附上 `kicadd-skill.zip`（zip 裡也有 `share\kicadd\skills\kicadd`），教 Agent 怎麼搭配這些工具，安裝方式見下方「接上 Agent」。
+
+**修正**
 - **新做的封裝馬上能用：** `lib_create_footprint` 或 `lib_register` 加進來的封裝庫，`add_footprint` 之前要等一陣子才找得到，現在立即可用。
 - **CPL 與 BOM 一致：** 「不列入 BOM」的零件（例如固定孔）不再出現在 CPL，上傳 JLCPCB 時兩份檔案對得上。
 - **刪除導線：** `sch_delete wires=[[x, y]]` 刪掉經過那一點的導線；`dangling=true` 清掉所有一端懸空的線。`sch_disconnect` 會刪整條線，不再留下懸空的一段。
@@ -55,14 +67,23 @@ Claude Desktop（`%APPDATA%\Claude\claude_desktop_config.json`）或 Cursor（`m
 ```
 Claude Code：`claude mcp add kicadd -- C:\KiCadD\bin\kicadd-mcp.exe --stdio`（路徑換成你解壓的位置）。
 
-## Agent 能做的事（36 個 MCP 工具）
-- **電路圖**：`sch_add_part`（符號庫、立創編號或電源符號）、`sch_connect` / `sch_disconnect`（網路名稱連接）、`sch_move`、`sch_wire`、`sch_netlist`、`sch_delete`、`run_erc`、`sch_save`；**階層圖紙** `sch_add_sheet`，`ports` 產生圖紙腳位，父圖紙上用 `圖紙名.腳位名` 連接。
+### 建議的使用方式（skill）
+44 個工具怎麼搭配使用（先查再改、審查 / 擺件 / 找料 / 出廠流程、undo、批次、常見陷阱）寫成一份 skill，讓 Agent 照著做：
+- **Claude Code**：把 `share\kicadd\skills\kicadd` 整個資料夾複製到 `%USERPROFILE%\.claude\skills\`（所有專案）或專案的 `.claude\skills\`。
+- **Claude Desktop**：在設定的 Skills 頁面上傳另外附的 `kicadd-skill.zip`。
+- **其他 Agent（Cursor 等）**：把 `SKILL.md` 的內容放進它的規則檔或系統提示。
+
+## Agent 能做的事（44 個 MCP 工具）
+- **電路圖**：`sch_add_part`（符號庫、立創編號或電源符號）、`sch_connect` / `sch_disconnect`（網路名稱連接）、`sch_move`、`sch_wire`、`sch_netlist`、`sch_delete`（零件、導線、懸空線）、`sch_set_fields`、`run_erc`、`sch_save`、Agent 自己的 `sch_undo` / `sch_redo`；**階層圖紙** `sch_add_sheet`，`ports` 產生圖紙腳位，父圖紙上用 `圖紙名.腳位名` 連接。
 - **立創零件**：`lcsc_fetch` / `sch_add_part lcsc=` 依編號抓封裝與符號，存進專案的 LCSC 庫；回報庫存、價格、基礎件 / 擴展件。編輯器裡也有 Place → Add LCSC Part / Symbol。
 - **電路圖 → PCB**：`sync_pcb`（開著電路圖編輯器時直接讀編輯器內容，不會寫入你的電路圖檔）。
 - **自動擺件** `auto_place`：依連線擺放、去耦電容靠 IC 腳；選用功能：模組分群（`groups` 或 Block 欄位）、去耦電容放背面（`back_decaps`）、擺件規則（`rules`：板邊、區域、角度、距離上限）。
-- **PCB 編輯**：查詢、移動、翻面、新增 / 刪除封裝、刪除走線、DRC、鋪銅、存檔、Agent 自己的 undo / redo。
+- **PCB 編輯**：查詢、移動、翻面、新增 / 刪除封裝、改欄位（`pcb_set_fields`）、刪除走線、DRC、鋪銅、存檔、Agent 自己的 undo / redo。
+- **設計規則與銅箔區**：`get_rules` / `set_rules`（網路類別、指派、板子最小值）、`zones`（間距、優先順序、焊盤連接）。
+- **批次**：`batch` 一次跑多個工具。
 - **審查與製造**：`audit`、`export_fab`（Gerber / 鑽孔 / BOM / CPL）；依規格找料 `lcsc_search`；自建符號與封裝 `lib_create_symbol` / `lib_create_footprint`。
 - **與你協同**：Agent 的修改就是編輯器的提交，你按 Ctrl+Z 就能撤銷；你在互動工具中（走線、畫線、對話框）時，Agent 的修改會被擋下，不會干擾你。走線由你來做。
+- **怎麼分工最有效**（試用心得）：了解設計、審查、擺件、局部修改用 Agent；大量欄位修改可以用 `sch_set_fields` / `batch`，或在 KiCad 關閉時直接改檔再用 `kicad-cli` 驗證；DRC / ERC / 匯出等批次工作用 `kicad-cli` 或腳本。
 
 ## 這一版拿掉了什麼
 | 拿掉 | 影響 |

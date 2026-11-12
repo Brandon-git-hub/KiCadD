@@ -33,6 +33,7 @@
 #include <board.h>
 #include <board_commit.h>
 #include <footprint.h>
+#include <view/view.h>
 #include <pad.h>
 #include <pcb_track.h>
 #include <geometry/shape_arc.h>
@@ -228,6 +229,10 @@ KICADD_HANDLER_PCB::KICADD_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext ) 
     registerHandler<QueryRadius, QueryResponse>( &KICADD_HANDLER_PCB::handleQueryRadius );
     registerHandler<QueryNet, QueryResponse>( &KICADD_HANDLER_PCB::handleQueryNet );
     registerHandler<MoveDelta, MoveResponse>( &KICADD_HANDLER_PCB::handleMoveDelta );
+    registerHandler<FpSetFields, MoveResponse>( &KICADD_HANDLER_PCB::handleSetFields );
+    registerHandler<GetRules, RulesResponse>( &KICADD_HANDLER_PCB::handleGetRules );
+    registerHandler<SetRules, RulesResponse>( &KICADD_HANDLER_PCB::handleSetRules );
+    registerHandler<Zones, ZonesResponse>( &KICADD_HANDLER_PCB::handleZones );
     registerHandler<DeleteFootprints, MoveResponse>( &KICADD_HANDLER_PCB::handleDeleteFootprints );
     registerHandler<DeleteTracks, MoveResponse>( &KICADD_HANDLER_PCB::handleDeleteTracks );
     registerHandler<ExportFab, ExportFabResponse>( &KICADD_HANDLER_PCB::handleExportFab );
@@ -684,13 +689,29 @@ void KICADD_HANDLER_PCB::applyFootprintEdit( const std::vector<FOOTPRINT*>& aTar
 }
 
 
-KICADD_HANDLER_PCB::FP_STATE KICADD_HANDLER_PCB::stateOf( const FOOTPRINT* aFp )
+KICADD_HANDLER_PCB::FP_STATE KICADD_HANDLER_PCB::stateOf( const FOOTPRINT* aFp, bool aWithFields )
 {
-    return { aFp->m_Uuid, aFp->GetPosition(), aFp->GetOrientation(), aFp->IsFlipped() };
+    FP_STATE st{ aFp->m_Uuid, aFp->GetPosition(), aFp->GetOrientation(), aFp->IsFlipped() };
+
+    if( aWithFields )
+    {
+        st.withFields = true;
+        st.attrs = aFp->GetAttributes();
+
+        for( const PCB_FIELD* field : aFp->GetFields() )
+        {
+            if( field && !field->IsReference() && field->GetId() != FIELD_T::FOOTPRINT )
+                st.fields.emplace_back( field->GetName(), field->GetText() );
+        }
+
+        std::sort( st.fields.begin(), st.fields.end() );
+    }
+
+    return st;
 }
 
 
-void KICADD_HANDLER_PCB::setState( FOOTPRINT* aFp, const FP_STATE& aState )
+void KICADD_HANDLER_PCB::setState( FOOTPRINT* aFp, const FP_STATE& aState, KIGFX::VIEW* aView )
 {
     // Side first: a flip mirrors the orientation, which is then set exactly.
     if( aFp->IsFlipped() != aState.back )
@@ -701,6 +722,69 @@ void KICADD_HANDLER_PCB::setState( FOOTPRINT* aFp, const FP_STATE& aState )
 
     if( aFp->GetPosition() != aState.pos )
         aFp->SetPosition( aState.pos );
+
+    if( !aState.withFields )
+        return;
+
+    if( aView )
+        aView->Remove( aFp );
+
+    aFp->SetAttributes( aState.attrs );
+    std::map<wxString, wxString> want( aState.fields.begin(), aState.fields.end() );
+
+    std::vector<PCB_FIELD*> fields( aFp->GetFields().begin(), aFp->GetFields().end() );
+
+    for( PCB_FIELD* field : fields )
+    {
+        if( !field || field->IsReference() || field->GetId() == FIELD_T::FOOTPRINT )
+            continue;
+
+        auto it = want.find( field->GetName() );
+
+        if( it == want.end() )
+        {
+            if( !field->IsMandatory() )
+            {
+                aFp->Remove( field );
+                delete field;
+            }
+
+            continue;
+        }
+
+        field->SetText( it->second );
+        want.erase( it );
+    }
+
+    for( const auto& [name, text] : want )
+        addUserField( aFp, name, text );
+
+    if( aView )
+        aView->Add( aFp );
+}
+
+
+KIGFX::VIEW* KICADD_HANDLER_PCB::view() const
+{
+    TOOL_MANAGER* mgr = m_context ? m_context->GetToolManager() : nullptr;
+    return mgr && editorOwnsUndo() ? mgr->GetView() : nullptr;
+}
+
+
+void KICADD_HANDLER_PCB::addUserField( FOOTPRINT* aFp, const wxString& aName, const wxString& aText )
+{
+    // as BOARD_NETLIST_UPDATER adds one: hidden, on the fab layer, at the anchor
+    PCB_FIELD* field = new PCB_FIELD( aFp, FIELD_T::USER );
+    aFp->Add( field );
+    field->SetName( aName );
+    field->SetText( aText );
+    field->SetVisible( false );
+    field->SetLayer( aFp->GetLayer() == F_Cu ? F_Fab : B_Fab );
+    field->SetPosition( aFp->GetPosition() );
+    field->Rotate( aFp->GetPosition(), aFp->GetOrientation() );
+
+    if( BOARD* b = aFp->GetBoard() )
+        field->StyleFromSettings( b->GetDesignSettings(), true );
 }
 
 
@@ -991,6 +1075,108 @@ std::unique_ptr<FOOTPRINT> copyAsNew( const FOOTPRINT* aSource )
 }
 
 } // namespace
+
+
+HANDLER_RESULT<MoveResponse>
+KICADD_HANDLER_PCB::handleSetFields( const HANDLER_CONTEXT<FpSetFields>& aCtx )
+{
+    if( std::optional<ApiResponseStatus> wait = busy() )
+        return tl::unexpected( *wait );
+
+    BOARD* b = board();
+
+    if( !b )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
+
+    MoveResponse                                         out;
+    std::vector<std::pair<FOOTPRINT*, const FpFieldEdit*>> edits;
+
+    for( const FpFieldEdit& e : aCtx.Request.parts() )
+    {
+        for( const auto& [name, text] : e.fields() )
+        {
+            std::string n = name;
+            std::transform( n.begin(), n.end(), n.begin(), ::toupper );
+
+            if( n == "REFERENCE" || n == "FOOTPRINT" )
+                return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
+                                                  e.ref() + ": " + name + " is not changed here" ) );
+        }
+
+        if( FOOTPRINT* fp = b->FindFootprintByReference( wxString::FromUTF8( e.ref() ) ) )
+            edits.emplace_back( fp, &e );
+        else
+            out.add_missing( e.ref() );
+    }
+
+    if( edits.empty() )
+        return out;
+
+    HISTORY_ENTRY           entry;
+    std::vector<FOOTPRINT*> targets;
+
+    for( auto& [fp, e] : edits )
+    {
+        entry.before.push_back( stateOf( fp, true ) );
+        targets.push_back( fp );
+    }
+
+    entry.label = "set fields of " + std::to_string( targets.size() ) + " footprint(s)";
+    std::map<const FOOTPRINT*, const FpFieldEdit*> byFp( edits.begin(), edits.end() );
+
+    applyFootprintEdit( targets,
+                        [&]( FOOTPRINT* fp )
+                        {
+                            const FpFieldEdit& e = *byFp[fp];
+                            KIGFX::VIEW*       v = view();
+
+                            if( v )
+                                v->Remove( fp );
+
+                            for( const auto& [name, text] : e.fields() )
+                            {
+                                wxString n = wxString::FromUTF8( name );
+
+                                if( n.CmpNoCase( wxS( "Value" ) ) == 0 )
+                                    fp->SetValue( wxString::FromUTF8( text ) );
+                                else if( PCB_FIELD* f = fp->GetField( n ) )
+                                    f->SetText( wxString::FromUTF8( text ) );
+                                else
+                                    addUserField( fp, n, wxString::FromUTF8( text ) );
+                            }
+
+                            for( const std::string& name : e.remove() )
+                            {
+                                PCB_FIELD* f = fp->GetField( wxString::FromUTF8( name ) );
+
+                                if( f && !f->IsMandatory() )
+                                {
+                                    fp->Remove( f );
+                                    delete f;
+                                }
+                            }
+
+                            if( e.has_dnp() )
+                                fp->SetDNP( e.dnp() );
+
+                            if( e.has_exclude_from_bom() )
+                                fp->SetExcludedFromBOM( e.exclude_from_bom() );
+
+                            if( e.has_exclude_from_pos() )
+                                fp->SetExcludedFromPosFiles( e.exclude_from_pos() );
+
+                            if( v )
+                                v->Add( fp );
+                        },
+                        wxString::FromUTF8( "Agent: " + entry.label ), out );
+
+    for( const FOOTPRINT* fp : targets )
+        entry.after.push_back( stateOf( fp, true ) );
+
+    out.set_history_label( entry.label );
+    record( std::move( entry ) );
+    return out;
+}
 
 
 HANDLER_RESULT<MoveResponse>
@@ -1778,6 +1964,71 @@ bool KICADD_HANDLER_PCB::applyHistory( const HISTORY_ENTRY& aEntry, bool aUndo, 
 {
     BOARD* b = board();
 
+    if( aEntry.rulesBefore && aEntry.rulesAfter )
+    {
+        const kicadd::rules::STATE& expect = aUndo ? *aEntry.rulesAfter : *aEntry.rulesBefore;
+        const kicadd::rules::STATE& target = aUndo ? *aEntry.rulesBefore : *aEntry.rulesAfter;
+        kicadd::rules::STATE        now = kicadd::rules::Capture( *b );
+
+        if( now == target )
+        {
+            aOut.set_already_there( 1 );
+            return false;
+        }
+
+        if( !( now == expect ) )
+        {
+            aOut.add_missing( "design rules (changed since; left as they are)" );
+            return false;
+        }
+
+        kicadd::rules::Apply( *b, target );
+        rulesChanged();
+        return true;
+    }
+
+    if( !aEntry.zonesBefore.empty() )
+    {
+        const std::vector<ZONE_STATE>& expect = aUndo ? aEntry.zonesAfter : aEntry.zonesBefore;
+        const std::vector<ZONE_STATE>& target = aUndo ? aEntry.zonesBefore : aEntry.zonesAfter;
+        std::vector<std::pair<ZONE*, const ZONE_STATE*>> todo;
+        int already = 0;
+
+        for( size_t i = 0; i < target.size(); ++i )
+        {
+            BOARD_ITEM* item = b->ResolveItem( target[i].id, true );
+            ZONE*       zone = item && item->Type() == PCB_ZONE_T ? static_cast<ZONE*>( item ) : nullptr;
+
+            if( !zone )
+                aOut.add_missing( "zone " + target[i].id.AsStdString() + " (gone)" );
+            else if( zoneStateOf( zone ) == target[i] )
+                already++;
+            else if( zoneStateOf( zone ) == expect[i] )
+                todo.emplace_back( zone, &target[i] );
+            else
+                aOut.add_missing( "zone " + zone->GetNetname().ToStdString() + " (changed since; left as is)" );
+        }
+
+        aOut.set_already_there( already );
+
+        if( todo.empty() )
+            return false;
+
+        runCommit(
+                [&]( BOARD_COMMIT& aCommit )
+                {
+                    for( auto& [zone, st] : todo )
+                    {
+                        aCommit.Modify( zone );
+                        setZoneState( zone, *st );
+                    }
+
+                    return std::vector<KIID>();
+                },
+                wxString::FromUTF8( std::string( "Agent: " ) + ( aUndo ? "undo " : "redo " ) + aEntry.label ), aOut );
+        return true;
+    }
+
     const std::vector<FP_SNAPSHOT>& toRemove = aUndo ? aEntry.added : aEntry.removed;
     const std::vector<FP_SNAPSHOT>& toAdd = aUndo ? aEntry.removed : aEntry.added;
     const std::vector<FP_STATE>&    states = aUndo ? aEntry.before : aEntry.after;
@@ -1841,8 +2092,7 @@ bool KICADD_HANDLER_PCB::applyHistory( const HISTORY_ENTRY& aEntry, bool aUndo, 
         {
             if( e.id == aFp->m_Uuid )
             {
-                FP_STATE now = stateOf( aFp );
-                return now.pos == e.pos && now.orient == e.orient && now.back == e.back;
+                return stateOf( aFp, e.withFields ) == e;
             }
         }
 
@@ -1853,8 +2103,7 @@ bool KICADD_HANDLER_PCB::applyHistory( const HISTORY_ENTRY& aEntry, bool aUndo, 
     // Ctrl+Z on the agent's commit). Nothing to do for it, and not "changed by someone else".
     auto atTarget = [&]( const FOOTPRINT* aFp, const FP_STATE& aSt )
     {
-        FP_STATE now = stateOf( aFp );
-        return now.pos == aSt.pos && now.orient == aSt.orient && now.back == aSt.back;
+        return stateOf( aFp, aSt.withFields ) == aSt;
     };
 
     int alreadyThere = alreadyDone;
@@ -1903,7 +2152,7 @@ bool KICADD_HANDLER_PCB::applyHistory( const HISTORY_ENTRY& aEntry, bool aUndo, 
                 for( auto& [fp, st] : modifying )
                 {
                     aCommit.Modify( fp );
-                    setState( fp, *st );
+                    setState( fp, *st, view() );
                     ids.push_back( fp->m_Uuid );
                 }
 
@@ -3412,5 +3661,386 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::finishAutoPlace( AUTOPLACE
     out.set_decap_after_mm( res.satAfter );
     out.set_hpwl_before_mm( res.hpwlBefore );
     out.set_hpwl_after_mm( res.hpwlAfter );
+    return out;
+}
+
+
+void KICADD_HANDLER_PCB::rulesChanged()
+{
+    m_context->SetContentModified();
+    TOOL_MANAGER* mgr = m_context->GetToolManager();
+
+    // as after Board Setup: the editor saves the project with the board, redraws clearances
+    if( auto* frame = mgr ? dynamic_cast<PCB_BASE_EDIT_FRAME*>( mgr->GetToolHolder() ) : nullptr )
+    {
+        frame->Prj().IncrementNetclassesTicker();
+        frame->OnModify();
+        frame->GetCanvas()->Refresh();
+    }
+}
+
+
+void KICADD_HANDLER_PCB::packRules( RulesResponse& aOut )
+{
+    BOARD*               b = board();
+    kicadd::rules::STATE st = kicadd::rules::Capture( *b );
+    std::map<wxString, int> nets;
+
+    // a net in two classes has a composite one ("POWER,Power"): count it in each
+    for( NETINFO_ITEM* net : b->GetNetInfo() )
+    {
+        if( net->GetNetCode() <= 0 || !net->GetNetClass() )
+            continue;
+
+        for( const auto& [name, c] : st.classes )
+        {
+            if( net->GetNetClass()->ContainsNetclassWithName( name ) )
+                nets[name]++;
+        }
+    }
+
+    auto mmOf = []( int aNm ) { return aNm / 1e6; };
+
+    for( const auto& [name, c] : st.classes )
+    {
+        NetclassRule* r = aOut.add_classes();
+        r->set_name( name.ToStdString() );
+
+        if( c.clearance )     r->set_clearance( mmOf( *c.clearance ) );
+        if( c.trackWidth )    r->set_track_width( mmOf( *c.trackWidth ) );
+        if( c.viaDiameter )   r->set_via_diameter( mmOf( *c.viaDiameter ) );
+        if( c.viaDrill )      r->set_via_drill( mmOf( *c.viaDrill ) );
+        if( c.diffPairWidth ) r->set_diff_pair_width( mmOf( *c.diffPairWidth ) );
+        if( c.diffPairGap )   r->set_diff_pair_gap( mmOf( *c.diffPairGap ) );
+
+        r->set_nets( nets.count( name ) ? nets[name] : 0 );
+    }
+
+    for( const auto& [pattern, nc] : st.patterns )
+    {
+        NetclassAssign* a = aOut.add_patterns();
+        a->set_pattern( pattern.ToStdString() );
+        a->set_netclass( nc.ToStdString() );
+    }
+
+    BoardConstraints* k = aOut.mutable_constraints();
+    k->set_min_clearance( mmOf( st.minClearance ) );
+    k->set_min_track_width( mmOf( st.minTrackWidth ) );
+    k->set_min_via_diameter( mmOf( st.minViaDiameter ) );
+    k->set_min_through_drill( mmOf( st.minThroughDrill ) );
+    k->set_min_annular_width( mmOf( st.minAnnularWidth ) );
+    k->set_hole_clearance( mmOf( st.holeClearance ) );
+    k->set_hole_to_hole( mmOf( st.holeToHole ) );
+    k->set_copper_edge_clearance( mmOf( st.copperEdgeClearance ) );
+}
+
+
+HANDLER_RESULT<RulesResponse> KICADD_HANDLER_PCB::handleGetRules( const HANDLER_CONTEXT<GetRules>& aCtx )
+{
+    if( !board() )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
+
+    RulesResponse out;
+    packRules( out );
+    return out;
+}
+
+
+HANDLER_RESULT<RulesResponse> KICADD_HANDLER_PCB::handleSetRules( const HANDLER_CONTEXT<SetRules>& aCtx )
+{
+    if( std::optional<ApiResponseStatus> wait = busy() )
+        return tl::unexpected( *wait );
+
+    BOARD* b = board();
+
+    if( !b )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
+
+    using kicadd::rules::STATE;
+    const SetRules& req = aCtx.Request;
+    const STATE     before = kicadd::rules::Capture( *b );
+    STATE           st = before;
+    const wxString  dflt = NETCLASS::Default;
+
+    auto bad = [&]( const std::string& aMsg ) { return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, aMsg ) ); };
+    auto nm = []( double aMm ) { return (int) std::llround( aMm * 1e6 ); };
+
+    for( const NetclassRule& c : req.classes() )
+    {
+        if( c.name().empty() || c.name().find( ',' ) != std::string::npos )
+            return bad( "a net class needs a name without commas" );
+
+        const wxString          name = wxString::FromUTF8( c.name() );
+        kicadd::rules::CLASS&   k = st.classes[name];
+
+        auto set = [&]( bool aHas, double aMm, std::optional<int>& aField, const char* aWhat ) -> std::string
+        {
+            if( !aHas )
+                return "";
+
+            if( aMm < 0 && name == dflt )
+                return std::string( "the Default class needs a " ) + aWhat;
+
+            aField = aMm < 0 ? std::nullopt : std::optional<int>( nm( aMm ) );
+            return "";
+        };
+
+        for( const std::string& e : { set( c.has_clearance(), c.clearance(), k.clearance, "clearance" ),
+                                      set( c.has_track_width(), c.track_width(), k.trackWidth, "track width" ),
+                                      set( c.has_via_diameter(), c.via_diameter(), k.viaDiameter, "via diameter" ),
+                                      set( c.has_via_drill(), c.via_drill(), k.viaDrill, "via drill" ),
+                                      set( c.has_diff_pair_width(), c.diff_pair_width(), k.diffPairWidth, "diff pair width" ),
+                                      set( c.has_diff_pair_gap(), c.diff_pair_gap(), k.diffPairGap, "diff pair gap" ) } )
+        {
+            if( !e.empty() )
+                return bad( e );
+        }
+
+        if( k.viaDiameter && k.viaDrill && *k.viaDrill >= *k.viaDiameter )
+            return bad( c.name() + ": the via drill must be smaller than its diameter" );
+    }
+
+    for( const std::string& r : req.remove_classes() )
+    {
+        const wxString name = wxString::FromUTF8( r );
+
+        if( name == dflt )
+            return bad( "the Default class cannot be removed" );
+
+        if( !st.classes.erase( name ) )
+            return bad( "no net class " + r );
+
+        std::erase_if( st.patterns, [&]( const auto& p ) { return p.second == name; } );
+    }
+
+    for( const NetclassAssign& a : req.assign() )
+    {
+        const wxString pattern = wxString::FromUTF8( a.pattern() ), nc = wxString::FromUTF8( a.netclass() );
+
+        if( pattern.IsEmpty() )
+            return bad( "an assignment needs a net name pattern" );
+
+        auto it = std::find_if( st.patterns.begin(), st.patterns.end(),
+                                [&]( const auto& p ) { return p.first == pattern; } );
+
+        if( nc.IsEmpty() )
+        {
+            if( it == st.patterns.end() )
+                return bad( "no assignment for the pattern " + a.pattern() );
+
+            st.patterns.erase( it );
+            continue;
+        }
+
+        if( !st.classes.count( nc ) )
+            return bad( "no net class " + a.netclass() + " (add it in classes)" );
+
+        if( it != st.patterns.end() )
+            it->second = nc;
+        else
+            st.patterns.emplace_back( pattern, nc );
+    }
+
+    const BoardConstraints& k = req.constraints();
+
+    if( k.has_min_clearance() )         st.minClearance = nm( k.min_clearance() );
+    if( k.has_min_track_width() )       st.minTrackWidth = nm( k.min_track_width() );
+    if( k.has_min_via_diameter() )      st.minViaDiameter = nm( k.min_via_diameter() );
+    if( k.has_min_through_drill() )     st.minThroughDrill = nm( k.min_through_drill() );
+    if( k.has_min_annular_width() )     st.minAnnularWidth = nm( k.min_annular_width() );
+    if( k.has_hole_clearance() )        st.holeClearance = nm( k.hole_clearance() );
+    if( k.has_hole_to_hole() )          st.holeToHole = nm( k.hole_to_hole() );
+    if( k.has_copper_edge_clearance() ) st.copperEdgeClearance = nm( k.copper_edge_clearance() );
+
+    RulesResponse out;
+
+    if( !( st == before ) )
+    {
+        kicadd::rules::Apply( *b, st );
+        rulesChanged();
+
+        std::vector<std::string> what;
+
+        if( req.classes_size() )
+            what.push_back( std::to_string( req.classes_size() ) + " net class(es)" );
+
+        if( req.remove_classes_size() )
+            what.push_back( std::to_string( req.remove_classes_size() ) + " removed" );
+
+        if( req.assign_size() )
+            what.push_back( std::to_string( req.assign_size() ) + " assignment(s)" );
+
+        if( req.has_constraints() )
+            what.push_back( "constraints" );
+
+        std::string label = "set rules:";
+
+        for( size_t i = 0; i < what.size(); ++i )
+            label += ( i ? ", " : " " ) + what[i];
+
+        HISTORY_ENTRY entry;
+        entry.label = label;
+        entry.rulesBefore = std::make_shared<STATE>( before );
+        entry.rulesAfter = std::make_shared<STATE>( st );
+        record( std::move( entry ) );
+        out.set_history_label( label );
+    }
+
+    packRules( out );
+    return out;
+}
+
+
+KICADD_HANDLER_PCB::ZONE_STATE KICADD_HANDLER_PCB::zoneStateOf( const ZONE* aZone )
+{
+    ZONE_STATE st;
+    st.id = aZone->m_Uuid;
+    st.clearance = aZone->GetLocalClearance().value_or( 0 );
+    st.minWidth = aZone->GetMinThickness();
+    st.gap = aZone->GetThermalReliefGap();
+    st.spoke = aZone->GetThermalReliefSpokeWidth();
+    st.priority = aZone->GetAssignedPriority();
+    st.connection = (int) aZone->GetPadConnection();
+    return st;
+}
+
+
+void KICADD_HANDLER_PCB::setZoneState( ZONE* aZone, const ZONE_STATE& aState )
+{
+    aZone->SetLocalClearance( aState.clearance );
+    aZone->SetMinThickness( aState.minWidth );
+    aZone->SetThermalReliefGap( aState.gap );
+    aZone->SetThermalReliefSpokeWidth( aState.spoke );
+    aZone->SetAssignedPriority( aState.priority );
+    aZone->SetPadConnection( (ZONE_CONNECTION) aState.connection );
+}
+
+
+HANDLER_RESULT<ZonesResponse> KICADD_HANDLER_PCB::handleZones( const HANDLER_CONTEXT<Zones>& aCtx )
+{
+    BOARD* b = board();
+
+    if( !b )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
+
+    const Zones& req = aCtx.Request;
+    const bool   change = req.has_clearance() || req.has_min_width() || req.has_priority() || !req.connection().empty()
+                        || req.has_thermal_gap() || req.has_thermal_spoke();
+    const bool   chosen = req.all() || !req.nets().empty() || !req.layers().empty() || !req.ids().empty();
+
+    auto bad = [&]( const std::string& aMsg ) { return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, aMsg ) ); };
+
+    if( change && !chosen )
+        return bad( "which zones: nets, layers, ids or all=true" );
+
+    std::optional<ZONE_CONNECTION> conn;
+
+    if( req.connection() == "solid" )             conn = ZONE_CONNECTION::FULL;
+    else if( req.connection() == "thermal" )      conn = ZONE_CONNECTION::THERMAL;
+    else if( req.connection() == "none" )         conn = ZONE_CONNECTION::NONE;
+    else if( req.connection() == "thermal_tht" )  conn = ZONE_CONNECTION::THT_THERMAL;
+    else if( !req.connection().empty() )
+        return bad( "connection is solid, thermal, none or thermal_tht" );
+
+    std::vector<ZONE*> zones;
+
+    for( ZONE* zone : b->Zones() )
+    {
+        if( zone->GetIsRuleArea() || zone->IsTeardropArea() )
+            continue;
+
+        bool take = req.all() || !chosen;
+
+        for( const std::string& n : req.nets() )
+            take |= zone->GetNetname() == wxString::FromUTF8( n ) || zone->GetNetname() == wxS( "/" ) + wxString::FromUTF8( n );
+
+        for( const std::string& l : req.layers() )
+            take |= zone->GetLayerSet().Contains( b->GetLayerID( wxString::FromUTF8( l ) ) );
+
+        for( const std::string& id : req.ids() )
+            take |= zone->m_Uuid.AsStdString().rfind( id, 0 ) == 0;
+
+        if( take )
+            zones.push_back( zone );
+    }
+
+    if( change && zones.empty() )
+        return bad( "no copper zone matches" );
+
+    ZonesResponse out;
+
+    if( change )
+    {
+        if( std::optional<ApiResponseStatus> wait = busy() )
+            return tl::unexpected( *wait );
+
+        auto nm = []( double aMm ) { return (int) std::llround( aMm * 1e6 ); };
+        HISTORY_ENTRY entry;
+        MoveResponse  ignored;
+
+        for( ZONE* zone : zones )
+            entry.zonesBefore.push_back( zoneStateOf( zone ) );
+
+        runCommit(
+                [&]( BOARD_COMMIT& aCommit )
+                {
+                    for( ZONE* zone : zones )
+                    {
+                        aCommit.Modify( zone );
+
+                        if( req.has_clearance() )     zone->SetLocalClearance( nm( req.clearance() ) );
+                        if( req.has_min_width() )     zone->SetMinThickness( nm( req.min_width() ) );
+                        if( req.has_priority() )      zone->SetAssignedPriority( (unsigned) std::max( 0, req.priority() ) );
+                        if( conn )                    zone->SetPadConnection( *conn );
+                        if( req.has_thermal_gap() )   zone->SetThermalReliefGap( nm( req.thermal_gap() ) );
+                        if( req.has_thermal_spoke() ) zone->SetThermalReliefSpokeWidth( nm( req.thermal_spoke() ) );
+                    }
+
+                    return std::vector<KIID>();
+                },
+                wxString::Format( wxS( "Agent: zone settings (%d)" ), (int) zones.size() ), ignored );
+
+        for( ZONE* zone : zones )
+            entry.zonesAfter.push_back( zoneStateOf( zone ) );
+
+        if( entry.zonesAfter != entry.zonesBefore )
+        {
+            entry.label = "zone settings of " + std::to_string( zones.size() ) + " zone(s)";
+            out.set_history_label( entry.label );
+            out.set_changed( (int) zones.size() );
+            record( std::move( entry ) );
+        }
+    }
+
+    auto mmOf = []( int aNm ) { return aNm / 1e6; };
+
+    for( ZONE* zone : zones )
+    {
+        ZoneInfo* z = out.add_zones();
+        z->set_id( zone->m_Uuid.AsStdString() );   // older files have ids that differ only at the end
+        z->set_name( zone->GetZoneName().ToStdString() );
+        z->set_net( zone->GetNetname().ToStdString() );
+
+        for( PCB_LAYER_ID layer : zone->GetLayerSet().Seq() )
+            z->add_layers( b->GetLayerName( layer ).ToStdString() );
+
+        z->set_priority( (int) zone->GetAssignedPriority() );
+        z->set_clearance( mmOf( zone->GetLocalClearance().value_or( 0 ) ) );
+        z->set_min_width( mmOf( zone->GetMinThickness() ) );
+
+        switch( zone->GetPadConnection() )
+        {
+        case ZONE_CONNECTION::FULL:        z->set_connection( "solid" ); break;
+        case ZONE_CONNECTION::THERMAL:     z->set_connection( "thermal" ); break;
+        case ZONE_CONNECTION::NONE:        z->set_connection( "none" ); break;
+        case ZONE_CONNECTION::THT_THERMAL: z->set_connection( "thermal_tht" ); break;
+        default:                           z->set_connection( "inherited" ); break;
+        }
+
+        z->set_thermal_gap( mmOf( zone->GetThermalReliefGap() ) );
+        z->set_thermal_spoke( mmOf( zone->GetThermalReliefSpokeWidth() ) );
+        z->set_filled( zone->IsFilled() );
+    }
+
     return out;
 }

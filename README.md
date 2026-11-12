@@ -1495,7 +1495,7 @@ SOIC-8 pad 1 against KiCad's within 0.1 mm, and a design using `kicadd:R_0603` t
      訊息不再列 `/usr/share/kicad/footprints`；「編輯器忙碌中」會說明原因（對話框或進度視窗、
      哪個工具還在作用、拖曳中），試用時那兩次無對話框的拒絕原因未查明。
 
-10. **使用感想（alpha.6，2026-11-12）：優化方向與新功能。** 試用的 Agent 認為查連線（`sch_netlist`、
+10. **（(b)–(e) 已完成 2026-11-12；(a) 佈線、(f) 待做）使用感想（alpha.6，2026-11-12）：優化方向與新功能。** 試用的 Agent 認為查連線（`sch_netlist`、
    `query_net`、`sch_part` 直接給 KiCad 算好的結果）、每步回傳的局部 DRC、改編輯器記憶體（不和開著
    的檔案衝突、可 undo）、`auto_place` / `lcsc_fetch` / `audit` 是最大的價值；重複操作、缺的功能則
    不如寫腳本或關掉 KiCad 直接改檔。依試用者的優先順序：
@@ -1516,6 +1516,15 @@ SOIC-8 pad 1 against KiCad's within 0.1 mm, and a design using `kicadd:R_0603` t
      等）；銅箔區參數（間距、散熱焊盤、優先順序）。改完回傳受影響的 DRC。
    * (f) 依賴 GUI 狀態：編輯器忙碌時的拒絕要少、要說明原因（第 9 項 (f) 已加原因）；
      `kicadd-mcp` 對忙碌已重試 10 秒，可再考慮排隊等使用者結束互動工具後自動套用。
+   完成的部分：(b) `detail` 參數，預設超過 8 顆零件只列 5 顆、局部 DRC 超過 10 筆附分類統計、
+   `auto_place` 只列 15 個編號；(c) `batch`（steps、repeat、stop_on_error、show）；(d) `sch_undo` /
+   `sch_redo`：`KICADD_SCH_COMMIT` 在 `Stage()` 記下每個增刪改的物件（含 KiCad 推送時清理動作改到的
+   導線、接點）的修改前與修改後複本，undo 依 UUID 找回、比對「之後被改過」再用 `SwapItemData` 還原；
+   (e) `sch_set_fields`、`pcb_set_fields`（`FP_STATE` 加欄位與屬性，沿用 PCB 的 undo；編輯器的畫面
+   把封裝欄位當成獨立物件，增刪欄位時重新登記）、`get_rules` / `set_rules`（`kicadd::rules::STATE`
+   整份快照，可 undo，改完前後各跑一次 DRC）、`zones`。
+   使用說明寫成 skill：`skills/kicadd/SKILL.md`（工具怎麼搭配、各工作流程、陷阱），release 時放進
+   zip 的 `share/kicadd/skills/kicadd`，並另外附 `kicadd-skill.zip`（Claude Desktop 上傳用）。
    試用者建議的分工（寫進使用說明）：了解設計、審查、擺件、局部修改用 kicadd；大量欄位或資料
    修改在 KiCad 關閉時直接改檔，再用工具或 `kicad-cli` 驗證；批次、重複或無介面的工作（DRC、
    ERC、匯出、壓力測試）用 `kicad-cli` 或腳本。

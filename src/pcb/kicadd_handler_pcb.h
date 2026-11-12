@@ -24,13 +24,16 @@
 
 #include <api/api_handler.h>
 #include <kicadd/board.pb.h>
+#include "pcb/kicadd_rules.h"
 #include <kicadd/render.pb.h>
 
 #include "pcb/kicadd_autoplace.h"
 
 class BOARD;
+namespace KIGFX { class VIEW; }
 class BOARD_COMMIT;
 class FOOTPRINT;
+class ZONE;
 class NETINFO_ITEM;
 class PCB_TRACK;
 class PCB_CONTEXT;
@@ -75,6 +78,23 @@ private:
 
     HANDLER_RESULT<kicadd::board::MoveResponse>
     handleMoveDelta( const HANDLER_CONTEXT<kicadd::board::MoveDelta>& aCtx );
+
+    HANDLER_RESULT<kicadd::board::MoveResponse>
+    handleSetFields( const HANDLER_CONTEXT<kicadd::board::FpSetFields>& aCtx );
+
+    HANDLER_RESULT<kicadd::board::RulesResponse>
+    handleGetRules( const HANDLER_CONTEXT<kicadd::board::GetRules>& aCtx );
+
+    HANDLER_RESULT<kicadd::board::RulesResponse>
+    handleSetRules( const HANDLER_CONTEXT<kicadd::board::SetRules>& aCtx );
+
+    void packRules( kicadd::board::RulesResponse& aOut );
+
+    HANDLER_RESULT<kicadd::board::ZonesResponse>
+    handleZones( const HANDLER_CONTEXT<kicadd::board::Zones>& aCtx );
+
+    /// The rules changed (set_rules, its undo): nets re-resolved, the editor told.
+    void rulesChanged();
 
     HANDLER_RESULT<kicadd::board::MoveResponse>
     handleDeleteFootprints( const HANDLER_CONTEXT<kicadd::board::DeleteFootprints>& aCtx );
@@ -199,6 +219,18 @@ private:
         VECTOR2I  pos;
         EDA_ANGLE orient;
         bool      back = false;
+
+        /// pcb_set_fields: the fields too (Value and the user fields, name -> text) and the
+        /// attributes (DNP, BOM, position files); compared and restored only then
+        bool                                        withFields = false;
+        std::vector<std::pair<wxString, wxString>>  fields;
+        int                                         attrs = 0;
+
+        bool operator==( const FP_STATE& aOther ) const
+        {
+            return pos == aOther.pos && orient == aOther.orient && back == aOther.back
+                   && ( !withFields || ( fields == aOther.fields && attrs == aOther.attrs ) );
+        }
     };
 
     /// A footprint off the board (deleted, or kept to redo an add). Owned by the history,
@@ -216,6 +248,19 @@ private:
         wxString                   net;
     };
 
+    struct ZONE_STATE
+    {
+        KIID     id;
+        int      clearance = 0, minWidth = 0, gap = 0, spoke = 0;
+        unsigned priority = 0;
+        int      connection = 0;
+
+        bool operator==( const ZONE_STATE& ) const = default;
+    };
+
+    static ZONE_STATE zoneStateOf( const ZONE* aZone );
+    static void       setZoneState( ZONE* aZone, const ZONE_STATE& aState );
+
     struct HISTORY_ENTRY
     {
         std::string                 label;
@@ -224,10 +269,22 @@ private:
         std::vector<FP_SNAPSHOT>    added;     ///< removed again by undo
         std::vector<FP_SNAPSHOT>    removed;   ///< put back by undo
         std::vector<TRACK_SNAPSHOT> tracksRemoved;   ///< put back by undo
+
+        /// set_rules: the design rules before / after (nothing else in such an entry)
+        std::shared_ptr<kicadd::rules::STATE> rulesBefore, rulesAfter;
+
+        /// zones: their settings before / after
+        std::vector<ZONE_STATE> zonesBefore, zonesAfter;
     };
 
-    static FP_STATE stateOf( const FOOTPRINT* aFp );
-    static void     setState( FOOTPRINT* aFp, const FP_STATE& aState );
+    static FP_STATE stateOf( const FOOTPRINT* aFp, bool aWithFields = false );
+    /// aView: the editor's canvas, which keeps a footprint's fields as items of their own
+    /// (re-added when fields come and go); null headless
+    static void     setState( FOOTPRINT* aFp, const FP_STATE& aState, KIGFX::VIEW* aView = nullptr );
+
+    /// The editor's canvas, null headless.
+    KIGFX::VIEW*    view() const;
+    static void     addUserField( FOOTPRINT* aFp, const wxString& aName, const wxString& aText );
 
     /// Detach aFp (owned by the caller from now on) into a snapshot.
     static FP_SNAPSHOT detach( FOOTPRINT* aFp );

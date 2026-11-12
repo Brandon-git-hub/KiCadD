@@ -51,6 +51,7 @@ set( KICADD_PCB_SRCS
     ${KICADD_DIR}/src/pcb/kicadd_autoplace.cpp
     ${KICADD_DIR}/src/pcb/kicadd_fab.cpp
     ${KICADD_DIR}/src/pcb/kicadd_fpgen.cpp
+    ${KICADD_DIR}/src/pcb/kicadd_rules.cpp
     ${KICADD_DIR}/src/common/kicadd_libtable.cpp
     )
 set( KICADD_INCLUDE_DIRS ${KICADD_DIR}/src ${KICADD_CPP_OUT} )
@@ -59,6 +60,7 @@ set( KICADD_SCH_SRCS
     ${KICADD_DIR}/src/sch/kicadd_lcsc_sym.cpp
     ${KICADD_DIR}/src/sch/kicadd_lcsc_sch_tool.cpp
     ${KICADD_DIR}/src/sch/kicadd_handler_sch.cpp
+    ${KICADD_DIR}/src/sch/kicadd_sch_history.cpp
     ${KICADD_DIR}/src/common/kicadd_libtable.cpp
     )
 
