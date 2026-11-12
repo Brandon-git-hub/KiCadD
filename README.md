@@ -1495,6 +1495,31 @@ SOIC-8 pad 1 against KiCad's within 0.1 mm, and a design using `kicadd:R_0603` t
      訊息不再列 `/usr/share/kicad/footprints`；「編輯器忙碌中」會說明原因（對話框或進度視窗、
      哪個工具還在作用、拖曳中），試用時那兩次無對話框的拒絕原因未查明。
 
+10. **使用感想（alpha.6，2026-11-12）：優化方向與新功能。** 試用的 Agent 認為查連線（`sch_netlist`、
+   `query_net`、`sch_part` 直接給 KiCad 算好的結果）、每步回傳的局部 DRC、改編輯器記憶體（不和開著
+   的檔案衝突、可 undo）、`auto_place` / `lcsc_fetch` / `audit` 是最大的價值；重複操作、缺的功能則
+   不如寫腳本或關掉 KiCad 直接改檔。依試用者的優先順序：
+   * (a) **佈線工具（最想要）。** 現在能刪走線不能加，板子佈不完。方向：用 KiCad 自己的推擠
+     路由器（PNS）在 kiface 裡跑，`route` 依 pad 對 pad 或整個網路走線（walkaround / shove、
+     依網路類別的線寬與間距），結果是一個 commit、可 undo；先做兩點之間與短網路，差分對、
+     等長之後。不接外部的 Freerouting（Java、另一個行程）。
+   * (b) **精簡輸出。** `undo` / `redo` / `move_footprints` / `auto_place` 預設只回摘要（幾個零件、
+     線長、DRC 數），`detail=true` 才逐一列出座標；一輪「擺件 + undo」20 次時，逐顆列出的座標
+     佔掉大半上下文。
+   * (c) **批次操作。** 一次呼叫跑一串工具（`batch: [{tool, args}, ...]`，可設遇錯停止），每步只回
+     一行；或常見的重複動作直接收多個目標（多數工具已收 refs 清單的保持）。
+   * (d) **電路圖的 Agent undo / redo。** PCB 有自己的歷史紀錄，電路圖只能靠編輯器的 Ctrl+Z
+     （無頭模式下沒有）。比照 PCB：Agent 的每個電路圖修改一筆，`undo` / `redo` 不影響使用者的
+     修改。（刪除獨立導線已在第 9 項 (c) 完成。）
+   * (e) **修改欄位與設計規則。** 電路圖零件的欄位（值、封裝、LCSC、DNP、不列入 BOM、自訂欄位，
+     可一次多顆）；PCB 封裝的欄位；網路類別（線寬、間距、過孔）與網路指派；板子設定（最小線寬
+     等）；銅箔區參數（間距、散熱焊盤、優先順序）。改完回傳受影響的 DRC。
+   * (f) 依賴 GUI 狀態：編輯器忙碌時的拒絕要少、要說明原因（第 9 項 (f) 已加原因）；
+     `kicadd-mcp` 對忙碌已重試 10 秒，可再考慮排隊等使用者結束互動工具後自動套用。
+   試用者建議的分工（寫進使用說明）：了解設計、審查、擺件、局部修改用 kicadd；大量欄位或資料
+   修改在 KiCad 關閉時直接改檔，再用工具或 `kicad-cli` 驗證；批次、重複或無介面的工作（DRC、
+   ERC、匯出、壓力測試）用 `kicad-cli` 或腳本。
+
 保留不動：專案管理器的 Version Control（Git）面板。
 
 ## License
