@@ -70,6 +70,7 @@ message BoardSummaryResponse
   int32  copper_layers = 7;
   Point  bbox_min   = 8;
   Point  bbox_max   = 9;
+  repeated string duplicate_refs = 10;   // "R22 x2": a reference on more than one footprint
 }
 
 // Items whose bounding box intersects a circle.
@@ -144,6 +145,7 @@ message MoveResponse
   repeated string       created_nets = 12;     // AddFootprint: nets that did not exist before
   int32                 tracks_removed = 14;   // DeleteTracks: tracks / arcs / vias removed
   int32                 tracks_locked  = 15;   // DeleteTracks: matched but locked, kept
+  int32                 changed = 16;          // Undo/Redo of sync_pcb: footprints put back as they were
   int32                 already_there = 13;    // Undo/Redo: footprints already in the target state
                                                // (undone / redone in the editor), left alone
 }
@@ -222,6 +224,7 @@ message SyncFromSchematicResponse
   int32  footprints = 6;        // on the board afterwards
   int32  nets       = 7;
   bool   from_editor = 8;       // the netlist came from the open Schematic Editor (unsaved edits too)
+  string history_label = 9;     // the agent's undo entry for it (empty: nothing changed)
 }
 
 // M5c: automatic placement (src/pcb/kicadd_autoplace.h). Moves the chosen parts inside the
@@ -565,6 +568,7 @@ message ExportFabResponse
   repeated string no_lcsc = 9;  // BOM lines without an LCSC number: "C3 C4 (100n, C_0402)"
   repeated string notes   = 10;
   int32  layers     = 11;       // Gerber files
+  repeated string problems = 12;   // what would go wrong at the assembler: a reference twice, parts off the board
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -694,6 +698,8 @@ message BoardConstraints
   optional double hole_clearance        = 6;
   optional double hole_to_hole          = 7;
   optional double copper_edge_clearance = 8;
+  optional double min_silk_text_height    = 9;
+  optional double min_silk_text_thickness = 10;
 }
 
 message GetRules
@@ -709,6 +715,7 @@ message SetRules
   repeated string         remove_classes = 2;
   repeated NetclassAssign assign         = 3;
   BoardConstraints        constraints    = 4;
+  string                  preset         = 5;   // a fab's process first ("jlcpcb_2layer"), then the rest
 }
 
 message RulesResponse
@@ -717,6 +724,7 @@ message RulesResponse
   repeated NetclassAssign patterns      = 2;
   BoardConstraints        constraints   = 3;
   string                  history_label = 4;
+  string                  note          = 5;   // preset: where its numbers come from
 }
 
 // Copper zones: list them, or change their settings as one undoable edit (undo / redo).
@@ -751,6 +759,21 @@ message Zones
   string          connection    = 8;
   optional double thermal_gap   = 9;
   optional double thermal_spoke = 10;
+  ZoneCreate      create        = 11;   // a new zone instead (one undoable edit)
+}
+
+// Zones.create: a new copper zone (a pour), filled afterwards by kicadd-mcp. outline: the board
+// outline (default) or points (mm).
+message ZoneCreate
+{
+  string          net        = 1;   // "" : no net (an island of copper is rarely wanted)
+  repeated string layers     = 2;   // default F.Cu and B.Cu (all copper layers: "all")
+  repeated Point  outline    = 3;   // nm; empty: the board outline
+  int32           priority   = 4;
+  optional double clearance  = 5;   // mm; default the board's zone defaults
+  optional double min_width  = 6;
+  string          connection = 7;   // solid, thermal (default), none, thermal_tht
+  string          name       = 8;
 }
 
 message ZonesResponse
@@ -758,6 +781,65 @@ message ZonesResponse
   repeated ZoneInfo zones  = 1;   // the zones chosen (all when none was named), as they are now
   string history_label     = 2;
   int32  changed           = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Board outline: Edge.Cuts drawn anew (the old board-level Edge.Cuts shapes go, footprints'
+// stay), cut-outs, mounting holes. One undoable edit. Returns BoardOutlineResponse
+message OutlineShape
+{
+  repeated double rect   = 1;   // [x0, y0, x1, y1] mm
+  repeated double circle = 2;   // [cx, cy, diameter] mm
+  double corner_radius   = 3;   // rect: mm
+}
+
+message MountingHole
+{
+  double x = 1;
+  double y = 2;
+  double diameter = 3;      // mm, the drill
+  bool   plated   = 4;      // a plated hole with a ring (pad = 1.8 x drill), else NPTH
+  string net      = 5;      // plated: e.g. GND
+}
+
+message BoardOutline
+{
+  OutlineShape          outline = 1;
+  repeated OutlineShape cutouts = 2;
+  repeated MountingHole holes   = 3;
+  double hole_inset   = 4;    // > 0: holes at the 4 corners, this far in from the outline (mm)
+  double hole_diameter = 5;   // with hole_inset (default 3.2, M3)
+  bool   keep_old     = 6;    // keep the Edge.Cuts there are (add to them)
+}
+
+message BoardOutlineResponse
+{
+  double width  = 1;     // mm, the outline's bounding box
+  double height = 2;
+  double area   = 3;     // mm^2, inside the outline less the cut-outs
+  int32  removed_shapes = 4;
+  repeated string holes = 5;          // "H1 @x,y d3.2"
+  repeated string outside = 6;        // parts now (partly) outside the outline
+  string history_label = 7;
+}
+
+// The board's layers and stackup: no change asked: just what it is. Changing the copper layer
+// count makes the stackup anew (like Board Setup's default), with the thickness and copper
+// weights given (else kept). One undoable edit. Returns BoardSetupResponse
+message BoardSetup
+{
+  optional int32  copper_layers = 1;
+  optional double thickness     = 2;   // mm
+  optional double outer_copper_oz = 3;
+  optional double inner_copper_oz = 4;
+}
+
+message BoardSetupResponse
+{
+  int32  copper_layers = 1;
+  double thickness     = 2;   // mm
+  repeated string stackup = 3;   // top to bottom
+  string history_label = 4;
 }
 
 // ---------------------------------------------------------------------------
@@ -849,5 +931,5 @@ message FanoutResponse
   RouteResponse   routes       = 1;   // one result per pad fanned out (or failed)
   int32           skipped_tht  = 2;
   int32           skipped_done = 3;   // pads already reaching the zone's layer through a via / track
-  repeated string no_zone      = 4;   // "GND on B.Cu" style: nets with no zone to reach
+  repeated string no_zone      = 4;   // "VCC: R22.1, JP1.1": a net with no zone on another layer, its pads left alone; "X (no such net)"
 }

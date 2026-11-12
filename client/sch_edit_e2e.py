@@ -248,6 +248,64 @@ def main():
         err, s = mcp.tool("board_summary")
         n = int(re.search(r"footprints=(\d+)", s).group(1))
         check(not err and n == 5, f"sync_pcb: 5 parts, no #PWR footprints (footprints={n})")
+        check("undo takes all of it back" in t, "the sync is one undoable edit")
+
+        print("[sync_pcb: undo, a reference twice]")
+        err, t = mcp.tool("sync_pcb")
+        check(not err and "undo takes" not in t, "again: nothing changed, nothing to undo")
+        err, t = mcp.tool("add_footprint", {"footprint": FP, "ref": "R77", "x": 120, "y": 120})
+        check(not err and t.startswith("R77"), "R77 placed by hand on the board")
+        err, s = mcp.tool("board_summary")
+        nets0 = int(re.search(r"nets=(\d+)", s).group(1))
+        err, t = mcp.tool("sch_add_part", {"lib_id": "Device:R", "ref": "R77", "value": "4k7", "footprint": FP,
+                                           "x": 76.2, "y": 127})
+        check(not err and t.startswith("added R77"), "a symbol R77 on the schematic: " + t.splitlines()[0][:50])
+        err, t = mcp.tool("sch_connect", {"pin": "R77.1", "net": "NEWNET"})
+        err, t = mcp.tool("sync_pcb", {"dry_run": True})
+        check("warning: R77 is already on the board, placed by hand" in t and "would add a second R77" in t,
+              "dry run warns: " + next((ln for ln in t.splitlines() if "R77" in ln), t)[:120])
+        err, t = mcp.tool("sync_pcb")
+        check("warning: R77 is already on the board" in t and "undo takes all of it back" in t,
+              "the sync warns too, and is undoable")
+        err, s = mcp.tool("board_summary")
+        check(int(re.search(r"footprints=(\d+)", s).group(1)) == 7, "two R77 on the board now")
+        err, t = mcp.tool("run_drc")
+        check("same reference on more than one footprint" in t and "R77 x2" in t, "run_drc says R77 is there twice")
+        err, t = mcp.tool("export_fab", {"dir": os.path.join(work, "fab")})
+        check("warning: the same reference on more than one footprint" in t and "R77 x2" in t,
+              "export_fab warns about R77 first: " + " | ".join(t.splitlines()[:4])[:300])
+        check("outside the board outline" in t, "and about the parts outside the board: "
+              + next((ln for ln in t.splitlines() if "outside" in ln), "")[:110])
+        err, t = mcp.tool("undo")
+        check(not err and t.startswith("undid: sync_pcb"), "undo: " + t.splitlines()[0])
+        err, s = mcp.tool("board_summary")
+        check(int(re.search(r"footprints=(\d+)", s).group(1)) == 6, "undo takes the new R77 off the board")
+        check(int(re.search(r"nets=(\d+)", s).group(1)) == nets0, f"and the net it made (nets={nets0})")
+        err, t = mcp.tool("redo")
+        err, s = mcp.tool("board_summary")
+        check(not err and int(re.search(r"footprints=(\d+)", s).group(1)) == 7, "redo puts it back")
+        mcp.tool("undo")
+
+        # a changed value: the sync changes the footprint, undo puts it back
+        err, t = mcp.tool("delete_footprints", {"refs": ["R77"]})
+        err, t = mcp.tool("sync_pcb")
+        err, t = mcp.tool("sch_set_fields", {"parts": {"R77": {"Value": "10k"}}})
+        fab = os.path.join(work, "fab2")
+
+        def bom_value():
+            mcp.tool("export_fab", {"dir": fab, "zip": False})
+            bom = [f for f in os.listdir(fab) if f.endswith("-bom.csv")][0]
+            line = next(ln for ln in open(os.path.join(fab, bom)) if "R77" in ln)
+            return line.split(",")[0].strip('"')
+
+        v0 = bom_value()
+        err, t = mcp.tool("sync_pcb")
+        v1 = bom_value()
+        err, t = mcp.tool("undo")
+        v2 = bom_value()
+        check("put back as they were" in t and (v0, v1, v2) == ("4k7", "10k", "4k7"),
+              f"a value the sync changed comes back with undo: {v0} -> {v1} -> {v2}; "
+              + " ".join(t.split())[:80])
     finally:
         mcp.close()
         server.stop()

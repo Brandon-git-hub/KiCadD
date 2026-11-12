@@ -36,6 +36,7 @@ struct DRC_REPORT
     int                        excluded = 0;
     int                        ignored = 0;
     double                     seconds = 0;
+    std::vector<std::string>   duplicateRefs;   ///< "R22 x2" (not a KiCad DRC check without a netlist)
 };
 
 /// Run upstream DRC on the open board and translate its markers. Blocks until done.

@@ -37,6 +37,7 @@ struct PART
 {
     std::string                lcsc;          ///< "C8734"
     std::string                title;         ///< part name, e.g. "STM32F103C8T6"
+    std::string                value;         ///< a passive's value ("10k", "100nF"), as the symbol has it
     std::string                package;       ///< footprint name, e.g. "LQFP-48_L7.0-W7.0-P0.50-LS9.0-BL"
     std::string                description;
     std::string                datasheet;

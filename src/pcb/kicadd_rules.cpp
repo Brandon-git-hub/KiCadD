@@ -65,6 +65,8 @@ STATE Capture( BOARD& aBoard )
     st.holeClearance = bds.m_HoleClearance;
     st.holeToHole = bds.m_HoleToHoleMin;
     st.copperEdgeClearance = bds.m_CopperEdgeClearance;
+    st.minSilkTextHeight = bds.m_MinSilkTextHeight;
+    st.minSilkTextThickness = bds.m_MinSilkTextThickness;
     return st;
 }
 
@@ -106,6 +108,8 @@ void Apply( BOARD& aBoard, const STATE& aState )
     bds.m_HoleClearance = aState.holeClearance;
     bds.m_HoleToHoleMin = aState.holeToHole;
     bds.m_CopperEdgeClearance = aState.copperEdgeClearance;
+    bds.m_MinSilkTextHeight = aState.minSilkTextHeight;
+    bds.m_MinSilkTextThickness = aState.minSilkTextThickness;
 
     ns.ClearAllCaches();
     aBoard.SynchronizeNetsAndNetClasses( false );

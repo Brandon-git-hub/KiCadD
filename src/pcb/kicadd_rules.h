@@ -35,7 +35,8 @@ struct STATE
     std::vector<std::pair<wxString, wxString>>  patterns;   ///< net name pattern -> class, in order
 
     int minClearance = 0, minTrackWidth = 0, minViaDiameter = 0, minThroughDrill = 0, minAnnularWidth = 0,
-        holeClearance = 0, holeToHole = 0, copperEdgeClearance = 0;
+        holeClearance = 0, holeToHole = 0, copperEdgeClearance = 0, minSilkTextHeight = 0,
+        minSilkTextThickness = 0;
 
     bool operator==( const STATE& ) const = default;
 };

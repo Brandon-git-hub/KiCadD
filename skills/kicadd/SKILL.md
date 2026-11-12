@@ -1,6 +1,6 @@
 ---
 name: kicadd
-description: How to work on a KiCad schematic or PCB through the kicadd MCP tools (KiCadD): reviewing a design, editing the schematic, sourcing LCSC/JLCPCB parts, schematic-to-board, auto placement, routing (route, route_short, fanout), design rules, DRC/ERC and fabrication output. Use whenever the kicadd tools (board_summary, sch_summary, auto_place, ...) are available and the task touches a schematic, board, footprint, part or manufacturing file.
+description: How to work on a KiCad schematic or PCB through the kicadd MCP tools (KiCadD): reviewing a design, editing the schematic, sourcing LCSC/JLCPCB parts, a new board's outline / layers / pours / fab rules, schematic-to-board, auto placement, routing (route, route_short, fanout), design rules, DRC/ERC and fabrication output. Use whenever the kicadd tools (board_summary, sch_summary, auto_place, ...) are available and the task touches a schematic, board, footprint, part or manufacturing file.
 ---
 
 # Working with KiCadD (kicadd MCP tools)
@@ -70,9 +70,33 @@ what each tool does; this skill says how to use them together.
    `lib_create_symbol` (a box symbol from a pin list, `footprint` set to the new one); libraries
    already on disk: `lib_register`.
 
+## A new board (outline, layers, rules, pours)
+
+From a blank project, before placing parts:
+
+1. `board_setup` shows the layers and stackup. `copper_layers=4` (and `thickness`,
+   `outer_copper_oz`, `inner_copper_oz`) makes a new stackup like Board Setup's default.
+   Fewer layers only once the inner ones are empty.
+2. `set_rules preset="jlcpcb_2layer"` (or `jlcpcb_4layer`) sets the board minimums to the
+   fab's standard process and raises the Default class to them. Add net classes in the same
+   call. The numbers are the fab's published ones as of a date; tell the user to check them
+   before ordering.
+3. `board_outline rect=[x0, y0, x1, y1] corner_radius=1 hole_inset=3.5` replaces the outline
+   and puts M3 holes (H1..H4, out of the BOM and the CPL) at the corners. `cutouts` adds
+   slots or round holes in the board; `holes` adds holes at chosen points (plated to GND
+   with `{"x", "y", "plated": true, "net": "GND"}`). `keep_old=true` adds to the outline
+   there is.
+4. `zones create={"net": "GND"}` pours GND over the board outline on F.Cu and B.Cu (or
+   `layers: ["In1.Cu"]` for a plane). Pour after sync_pcb, once the net exists.
+5. All of them are one `undo` each.
+
 ## Schematic to board, placement
 
-1. `sync_pcb dry_run=true`, read it, then `sync_pcb`. New footprints land outside the outline.
+1. `sync_pcb dry_run=true`, read it, then `sync_pcb` (one `undo` takes it all back). New
+   footprints land outside the outline. A warning that a reference "is already on the board"
+   means a part placed by hand (`add_footprint`) has the same ref as a symbol: the sync adds a
+   second one. Delete or renumber the board's one first. `run_drc` and `export_fab` also warn
+   about a reference used twice, and `export_fab` about parts outside the outline.
 2. `auto_place` (default: the parts outside the board). Useful options: `groups` or the Block
    field to keep functional blocks together, `rules` (edge, region, rotation, near), `fixed`
    for parts that must not move (place connectors first, then fix them), `back_decaps`.
@@ -102,7 +126,10 @@ length matching, dense escapes).
    `via: [x, y]`. Pick via spots yourself (`query_area` around the point).
 4. Read the numbers: length vs the straight line (above ~1.5x it detours), segments, vias, the
    narrowest gap. A failure says how far it got and what is in the way: `delete_tracks` that,
-   move a part, or give waypoints round it.
+   move a part, or give waypoints round it. Between close pads (a solder jumper, fine pitch)
+   "the way out ... is tight": a narrower `width`, or start at a point inside the pad on the side
+   the track leaves (`from: [x, y]`), not at its centre.
+   A route that changes layer reports them in order ("F.Cu -> B.Cu").
 5. Everything of one call is one `undo`. Then `refill_zones` and `run_drc`.
 
 ## Rules and zones
@@ -111,7 +138,8 @@ length matching, dense escapes).
   (`{"+5V": "Power", "/USB_D*": "USB"}`) and sets board minimums; it reports the DRC error
   count before and after. Existing tracks keep their width.
 - `zones` lists copper zones; with `nets` / `layers` / `ids` / `all` and new values it changes
-  clearance, minimum width, priority or pad connection and refills.
+  clearance, minimum width, priority or pad connection and refills. `create` makes a new one
+  (see "A new board").
 
 ## Manufacturing (JLCPCB)
 

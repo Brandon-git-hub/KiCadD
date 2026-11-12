@@ -108,6 +108,7 @@ bool RunFullDrc( IPC_CLIENT& aIpc, DRC_REPORT& aReport, std::string& aError )
         return false;
 
     aReport.ignored = result.ignored_count();
+    aReport.duplicateRefs.assign( summary.duplicate_refs().begin(), summary.duplicate_refs().end() );
     aReport.excluded = result.excluded_count();
 
     // Translate every referenced KIID in one round trip.

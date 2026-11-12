@@ -502,7 +502,8 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "(new footprints from each symbol's Footprint field, nets on the pads, changed values). "
             "New footprints land outside the board outline until placed (auto_place). dry_run "
             "reports without changing anything; delete_extra removes footprints the schematic no "
-            "longer has.",
+            "longer has. A reference already on the board but not linked to its symbol (placed "
+            "by hand) is warned about: the sync would add it a second time. One undoable edit.",
             obj( { { "dry_run", { { "type", "boolean" } } },
                    { "delete_extra", { { "type", "boolean" } } },
                    { "detail", { { "type", "boolean" }, { "description", "list every change line (default: the first 25)" } } },
@@ -605,6 +606,9 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
 
                 if( more )
                     t += "\n  ... " + std::to_string( more ) + " more line(s) (detail=true lists all)";
+
+                if( !r.history_label().empty() )
+                    t += "\nundo takes all of it back: \"" + r.history_label() + "\"";
 
                 // a dry run's errors are what it found, not a failure of the call
                 return TOOL_RESULT{ t, r.errors() > 0 && !req.dry_run() };

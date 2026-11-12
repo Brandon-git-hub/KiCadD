@@ -1542,6 +1542,63 @@ SOIC-8 pad 1 against KiCad's within 0.1 mm, and a design using `kicadd:R_0603` t
    修改在 KiCad 關閉時直接改檔，再用工具或 `kicad-cli` 驗證；批次、重複或無介面的工作（DRC、
    ERC、匯出、壓力測試）用 `kicad-cli` 或腳本。
 
+11. **（已完成 2026-11-13）alpha.8 試用（佈線工具 + 6 項修正，評分 7.5 → 8.5）。** 6 項修正都已生效；
+   新問題與建議都已處理：
+   * `sync_pcb` 一筆 Agent undo：同步前把所有封裝複製一份（`copyOf`）、記下走線與銅箔區的網路，
+     同步後比對成 `HISTORY_ENTRY` 的 `added` / `removed` / `replaced`（整顆換回，`matches` 比對
+     形狀、欄位、屬性、位置、焊盤網路）/ `netChanges` / `netsCreated`（undo 後沒人用的網路移除）。
+   * 重複編號：符號的封裝還不在板上、板上卻已有同編號的封裝（手動放的）時，`sync_pcb`（含 dry run）
+     警告；`board_summary` 帶 `duplicate_refs`，`run_drc` 與 `export_fab` 也警告。
+   * `export_fab` 的 `problems`：重複編號、板框外的零件（原點與本體中心都不在板框內），列在最前面。
+   * `add_footprint lcsc=`：被動元件的 Value 用 EasyEDA 的 Value 參數（和符號端相同）。
+   * 佈線：`from=[x, y]` 在焊盤內時從該點出線；焊盤旁太擠時提示改細線寬或焊盤內的出線點；
+     `route`（自動終點）與 `route_short` 的目標佈不到時改試同一組的焊盤與過孔（由近到遠 4 個）；
+     走線、過孔終點附座標；換層的線列出各層（`F.Cu -> B.Cu`）；`fanout` 沒有銅箔區的網路合併成一行。
+   * 順手修正：`GetConnectedItems( pad, { PCB_ZONE_T } )` 把型別當成旗標傳入（第二個參數是 flags）。
+   測試：`sch_edit_e2e`（重複編號、undo / redo、改值 undo）、`route_e2e`（焊盤內出線、太擠的提示、
+   JP1 的終點備案、層的順序、fanout 警告）。未處理：`delete_footprints` 留下的空網路（存檔時無影響）。
+
+12. **（(a) 已完成 2026-11-13，見下方說明；其餘待做）從空白專案一路做到下單（alpha.8 試用後的建議，2026-11-13）。** 依試用者的順序（第 1 項
+   「sync 可 undo、重複編號、出貨前檢查」已在第 11 項完成），附評估：
+   * (a) **板子設定（最大缺口）。** 現在只能改既有的東西。
+     - 板框：矩形 / 圓角矩形（Edge.Cuts 的 `PCB_SHAPE`），挖槽、固定孔（`MountingHole` 由
+       `lib_create_footprint` 產生，避免用官方庫）。工作量小。
+     - 新建銅箔區：`zones` 加 create（網路、層、板框或指定多邊形、優先順序），建完重鋪。工作量小。
+     - 疊層與層數：2 / 4 層、板厚、銅厚（`BOARD_STACKUP`）；加層要處理既有走線與銅箔區。中等。
+     - 廠商製程預設：`set_rules preset="jlcpcb_2layer"` 等，數值依 JLCPCB 公開的製程能力自己整理
+       成表（最小線寬、間距、孔徑、環寬、孔到板邊）。工作量小，要註明數值的日期。
+   * (b) **批次配對 LCSC 料號。** 依 Value + 封裝用 `lcsc_search` 的本地索引找 basic 料號（電阻、電容、
+     電感、LED 先做），dry run 列出候選，確認後一次寫進 LCSC 欄位（電路圖，再 sync）；整份 BOM 的
+     庫存、價格、停產檢查沿用 `lcsc_fetch` 的即時查詢。中等。
+   * (c) **出圖給 Agent 看。** 整板或某區域輸出 PNG / SVG（沿用遠端檢視的 renderer 或 SVG plotter），
+     MCP 以 image 內容回傳，可選圖層（銅、絲印、Fab）與高亮的零件。中等，價值高（絲印重疊、方向、
+     美觀現在只能靠座標）。
+   * (d) **佈線補強。** 縫合過孔（GND，依格距、避開其他網路、落在兩層銅裡）；淚滴（用上游的
+     teardrop 產生器）；依電流算線寬（IPC-2152 自己實作公式，結果寫進網路類別）；差分對、等長之後
+     （PNS 有 diff pair / meander，但要另外包）。從焊盤內任一點出線已在第 11 項完成。
+   * (e) **審查擴充（`audit`）。** 電源網路線寬對電流；高壓網路間距（例如 VPP 13 V，依 IPC-2221
+     表）；絲印壓焊盤；板外零件（`export_fab` 已有）；測試點。
+   * (f) **設計比對（diff）。** 和上次存檔（或指定檔案）比：零件（增刪、位置、值、欄位）、網路、
+     走線數與長度。另外載入一份 `BOARD` 依 KIID 比對。中等。
+   * (g) **電路圖。** 重新編號並同步到板子（KiCad 的 annotate；板子端 `sync_pcb` 依路徑對應，編號會
+     跟著改）；整理排版：先做「相關零件排在一起」，全自動排版難度高、延後。
+   * (h) **製造輸出。** 絲印整理（編號移到不重疊、不壓焊盤的位置）；電路圖 PDF、組裝圖；STEP 需要
+     OpenCascade，精簡版目前沒有編進去（`KICADD_NO_OCC`），要另外評估大小；`export_fab` 在 DRC
+     未清乾淨時警告（或 `strict=true` 時拒絕）。
+   建議順序：(a) 板框與新建銅箔區 → 製程預設與疊層 → (b) 批次配對料號 → (c) 出圖 → (d) 縫合過孔、
+   淚滴 → 其餘。(a) 前兩項完成後，Agent 就能從空白專案做到下單。
+   完成的部分 (a)：`board_outline`（Edge.Cuts 的 `PCB_SHAPE` 矩形 / 圓角矩形 / 圓，取代原本板層級的
+   Edge.Cuts；挖槽必須在板內；固定孔是程式產生的封裝 H1..：NPTH，或鍍銅 1.8 倍孔徑並可接網路，
+   不進 BOM / CPL、Board only，加一圈 courtyard）；`zones` 的 `create`（`ZONE_SETTINGS` 預設值、
+   板框最大的那一塊或指定點、預設 F.Cu + B.Cu）；`board_setup`（`src/pcb/kicadd_setup.*`：
+   `kicadd::setup::STATE` = 銅層數、啟用層、板厚、`BOARD_STACKUP`；改層數或厚度時暫時改設定、用
+   `BuildDefaultStackupList` 重建，再設銅厚、介電層平分剩下的厚度；減層前檢查被移除的層是空的；
+   桌面版重建圖層列表）；`set_rules preset`（`kicadd::setup::Preset`，JLCPCB 標準製程，數值依官方
+   製程能力頁、2026-11，比絕對極限略保守；Default 類別調到不低於最小值；絲印字高 / 筆畫加進
+   `kicadd::rules::STATE`）。Undo：`HISTORY_ENTRY` 加 `itemsAdded` / `itemsRemoved`（板上圖形與
+   銅箔區，依 KIID，網路存名稱）與 `setupBefore` / `setupAfter`。測試：`client/setup_e2e.py`（空白
+   專案到 4 層板與製造檔）、`desktop_e2e` [5e]（編輯器裡改層數、建內層、Ctrl+Z、undo）。
+
 保留不動：專案管理器的 Version Control（Git）面板。
 
 ## License

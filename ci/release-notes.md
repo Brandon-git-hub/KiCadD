@@ -4,7 +4,23 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 
 > ⚠️ Pre-release，僅供試用。由 GitHub Actions 自動建置；功能在 Linux 上做過端到端測試，Windows 上只有 CI 的 smoke test 與早期版本的人工試用。
 
-## 這一版（alpha.8）
+## 這一版（alpha.9）
+**從空白專案開始的新板子（47 → 49 個工具）**
+- **`board_outline`（新）：** 畫板框，可以是矩形、圓角矩形或圓形，原本的板框會被取代。`cutouts` 在板內挖槽或挖圓孔；`hole_inset=3.5` 在四個角各放一個 M3 固定孔（H1～H4，不進 BOM 和 CPL），`holes` 放在指定位置，也可以做成接 GND 的鍍銅孔。回應附尺寸、面積、還在板外的零件。可以 undo。
+- **`board_setup`（新）：** 查看或設定層數（2、4、6…）、板厚、內外層銅厚。疊層會依 KiCad 預設的方式重新產生。要減少層數時，被移除的內層必須是空的。可以 undo。
+- **`zones create`：** 新建銅箔區，例如 `{"net": "GND"}` 會依板框在 F.Cu 和 B.Cu 鋪 GND，或用 `layers: ["In1.Cu"]` 做內層的地。建好後自動鋪銅，可以 undo。
+- **`set_rules preset`：** `jlcpcb_2layer`、`jlcpcb_4layer`、`jlcpcb_6layer`，一次把板子的最小線寬、間距、孔徑、環寬、銅到板邊距離、絲印字高設成 JLCPCB 不加價的標準製程，Default 網路類別也一起調到不低於這些值。數值依 JLCPCB 官方製程能力頁（2026-11 查閱），下單前請再核對。
+
+**alpha.8 試用回報的修正**
+- **`sync_pcb` 可以 undo：** 整次同步是一筆 Agent undo（新增、刪除、改值或欄位的零件、換網路的走線都會還原，同步新建、undo 後沒用到的網路也會移除），`redo` 可再做一次。
+- **重複編號：** 板子上已經有一顆手動放的 R22（`add_footprint`，沒有連到電路圖），電路圖又加了 R22 時，`sync_pcb`（含 dry run）會先警告「會再加一顆 R22」。`run_drc` 和 `export_fab` 也會提醒同一個編號用在多顆零件上。
+- **`export_fab` 提醒板外的零件：** 不在板框內、但仍會寫進 BOM 和 CPL 的零件，列在最前面。
+- **`add_footprint lcsc=`：** 被動元件的 Value 改用規格值（`10k`），和符號端一致，不再是料號。
+- **從焊盤內任一點出線：** `route from=[x, y]` 指在焊盤內、不在中心的點時，從那一點出線（兩個焊盤很近時，例如焊接跳線）。焊盤旁太擠佈不出去時，會提示改用較細的線寬或焊盤內的出線點。
+- **終點在另一層的備案：** `route` 不給終點、或 `route_short` 時，最近的目標（例如另一層的走線）佈不到，會改試同一組已接上的焊盤和過孔（由近到遠）。
+- **回應更清楚：** 接到走線或過孔時附上座標（`track VCC (B.Cu) @145.1,97.47`）；換層的線依序列出各層（`routed on F.Cu -> B.Cu`）；`fanout` 沒有銅箔區的網路合併成一行（`no copper zone of VCC ...; skipped R22.1, JP1.1`）。
+
+## alpha.8
 **佈線（44 → 47 個工具）**：代替手動重複的部分，不是全板自動佈線。走線的畫法和 KiCad 的互動式佈線器相同（用 KiCad 自己的推擠佈線器，繞開障礙、不推動既有走線，線寬和過孔依網路類別，遵守間距、禁止佈線區、板邊距離）；要接哪裡、在哪裡換層由 Agent 或你決定。每次呼叫是一筆 undo，你也可以在編輯器裡按 Ctrl+Z。
 - **`route`**：連一條線。`from="U1.5"` 不給 `to` 時接最近的未佈線連線，或 `to="C3.1"` / 座標；`waypoints` 指定經過點，`[x, y, "B.Cu"]` 在該點打過孔換層，`via: [x, y]` 是只換一次層的簡寫。回應附長度與直線距離的比值、線段數、過孔數、最窄的間距（和什麼）；佈不通時說明走到哪裡、被哪條線或哪個焊盤擋住。
 - **`route_short`**：把指定零件或網路的未佈線連線由短到長逐條佈（短的最不容易擋到別人），`max_length` 只佈短的，`dry_run` 先看哪些會失敗。整次呼叫一筆 undo。
@@ -83,18 +99,19 @@ Claude Desktop（`%APPDATA%\Claude\claude_desktop_config.json`）或 Cursor（`m
 Claude Code：`claude mcp add kicadd -- C:\KiCadD\bin\kicadd-mcp.exe --stdio`（路徑換成你解壓的位置）。
 
 ### 建議的使用方式（skill）
-47 個工具怎麼搭配使用（先查再改、審查 / 擺件 / 佈線 / 找料 / 出廠流程、undo、批次、常見陷阱）寫成一份 skill，讓 Agent 照著做：
+49 個工具怎麼搭配使用（先查再改、新板設定、審查 / 擺件 / 佈線 / 找料 / 出廠流程、undo、批次、常見陷阱）寫成一份 skill，讓 Agent 照著做：
 - **Claude Code**：把 `share\kicadd\skills\kicadd` 整個資料夾複製到 `%USERPROFILE%\.claude\skills\`（所有專案）或專案的 `.claude\skills\`。
 - **Claude Desktop**：在設定的 Skills 頁面上傳另外附的 `kicadd-skill.zip`。
 - **其他 Agent（Cursor 等）**：把 `SKILL.md` 的內容放進它的規則檔或系統提示。
 
-## Agent 能做的事（47 個 MCP 工具）
+## Agent 能做的事（49 個 MCP 工具）
 - **電路圖**：`sch_add_part`（符號庫、立創編號或電源符號）、`sch_connect` / `sch_disconnect`（網路名稱連接）、`sch_move`、`sch_wire`、`sch_netlist`、`sch_delete`（零件、導線、懸空線）、`sch_set_fields`、`run_erc`、`sch_save`、Agent 自己的 `sch_undo` / `sch_redo`；**階層圖紙** `sch_add_sheet`，`ports` 產生圖紙腳位，父圖紙上用 `圖紙名.腳位名` 連接。
 - **立創零件**：`lcsc_fetch` / `sch_add_part lcsc=` 依編號抓封裝與符號，存進專案的 LCSC 庫；回報庫存、價格、基礎件 / 擴展件。編輯器裡也有 Place → Add LCSC Part / Symbol。
 - **電路圖 → PCB**：`sync_pcb`（開著電路圖編輯器時直接讀編輯器內容，不會寫入你的電路圖檔）。
 - **自動擺件** `auto_place`：依連線擺放、去耦電容靠 IC 腳；選用功能：模組分群（`groups` 或 Block 欄位）、去耦電容放背面（`back_decaps`）、擺件規則（`rules`：板邊、區域、角度、距離上限）。
 - **PCB 編輯**：查詢、移動、翻面、新增 / 刪除封裝、改欄位（`pcb_set_fields`）、刪除走線、DRC、鋪銅、存檔、Agent 自己的 undo / redo。
 - **佈線**：`route`（一條線，可指定經過點與換層位置）、`route_short`（短連線由短到長）、`fanout`（SMD 焊盤打過孔接到另一層的銅箔區）。不是全板自動佈線。
+- **新板設定**：`board_outline`（板框、挖槽、固定孔）、`board_setup`（層數、板厚、銅厚、疊層）、`set_rules preset`（JLCPCB 製程預設）、`zones create`（新建銅箔區）。
 - **設計規則與銅箔區**：`get_rules` / `set_rules`（網路類別、指派、板子最小值）、`zones`（間距、優先順序、焊盤連接）。
 - **批次**：`batch` 一次跑多個工具。
 - **審查與製造**：`audit`、`export_fab`（Gerber / 鑽孔 / BOM / CPL）；依規格找料 `lcsc_search`；自建符號與封裝 `lib_create_symbol` / `lib_create_footprint`。

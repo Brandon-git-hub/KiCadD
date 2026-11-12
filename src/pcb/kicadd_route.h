@@ -56,7 +56,7 @@ struct RESULT
     bool        ok = false;
     std::string error;          ///< why not (ok == false)
     std::string net;
-    std::string layer;          ///< the first layer
+    std::string layer;          ///< the layers in route order: "B.Cu", "B.Cu -> F.Cu"
     int         width = 0;
     long long   length = 0;     ///< nm, along the new tracks
     long long   direct = 0;     ///< nm, from -> stops -> to in straight lines

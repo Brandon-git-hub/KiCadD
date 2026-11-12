@@ -206,13 +206,31 @@ bool ExportFab( BOARD* aBoard, const wxString& aDir, bool aZip, kicadd::board::E
     std::vector<std::pair<std::string, std::string>>                   cpl;   // ref, row
     int                                                                tht = 0, noBom = 0;
     std::vector<std::string>                                           dnp;
+    std::map<std::string, int>                                         refCount;
+    std::vector<std::string>                                           outside;
+
+    SHAPE_POLY_SET outline;
+    const bool     haveOutline = aBoard->GetBoardPolygonOutlines( outline, false ) && outline.OutlineCount() > 0;
 
     for( FOOTPRINT* fp : aBoard->Footprints() )
     {
         std::string ref = str( fp->GetReference() );
 
-        if( ref.empty() || ref[0] == '#' || fp->IsBoardOnly() )
+        if( ref.empty() || ref[0] == '#' )
             continue;
+
+        refCount[ref]++;   // any two footprints of one reference: one of them is not what it says
+
+        if( fp->IsBoardOnly() )
+            continue;
+
+        if( !fp->IsDNP() && !fp->IsExcludedFromBOM() )
+        {
+            // not on the board: neither its origin nor the middle of its body is inside the outline
+            if( haveOutline && !outline.Contains( fp->GetPosition() )
+                && !outline.Contains( fp->GetBoundingBox( false ).GetCenter() ) )
+                outside.push_back( ref );
+        }
 
         if( fp->IsDNP() )
         {
@@ -317,6 +335,36 @@ bool ExportFab( BOARD* aBoard, const wxString& aDir, bool aZip, kicadd::board::E
     aOut.set_bom_lines( (int) lines.size() );
     aOut.set_bom_parts( parts );
     aOut.set_placed( (int) cpl.size() );
+
+    // What would go wrong at the assembler: listed first
+    {
+        std::vector<std::string> dup;
+
+        for( const auto& [ref, n] : refCount )
+        {
+            if( n > 1 )
+                dup.push_back( ref + " x" + std::to_string( n ) );
+        }
+
+        auto list = []( std::vector<std::string> aRefs )
+        {
+            std::sort( aRefs.begin(), aRefs.end(), refLess );
+            std::string text;
+
+            for( size_t k = 0; k < aRefs.size() && k < 10; ++k )
+                text += ( k ? ", " : "" ) + aRefs[k];
+
+            return text + ( aRefs.size() > 10 ? ", ..." : "" );
+        };
+
+        if( !dup.empty() )
+            aOut.add_problems( "the same reference on more than one footprint (the BOM and the CPL can't tell them apart): "
+                               + list( dup ) + "; renumber or delete the extra ones" );
+
+        if( !outside.empty() )
+            aOut.add_problems( std::to_string( outside.size() ) + " part(s) outside the board outline, in the BOM and "
+                               "the CPL all the same: " + list( outside ) + "; place them (auto_place) or delete them" );
+    }
 
     if( tht )
         aOut.add_notes( std::to_string( tht ) + " through-hole part(s) in the CPL: JLCPCB places them only with "

@@ -812,8 +812,18 @@ TOOL_RESULT fanout( IPC_CLIENT& aIpc, const json& aArgs )
 
     std::string s;
 
+    // "VCC: R22.1, JP1.1" (a net with no zone on another layer, and its pads), or
+    // "X (no such net)"
     for( const std::string& n : r.no_zone() )
-        s += "warning: no copper zone of " + n + " to fan out to; those pads were left alone\n";
+    {
+        size_t colon = n.find( ": " );
+
+        if( colon == std::string::npos )
+            s += "warning: " + n + "\n";
+        else
+            s += "warning: no copper zone of " + n.substr( 0, colon ) + " on another layer to fan out to; skipped "
+                 + n.substr( colon + 2 ) + "\n";
+    }
 
     if( r.skipped_tht() )
         s += std::to_string( r.skipped_tht() ) + " through-hole pad(s) skipped (they reach every layer)\n";
@@ -1141,7 +1151,8 @@ std::string renderRules( const kb::RulesResponse& r )
     t += "\nconstraints: clearance" + len( k.min_clearance() ) + ", track" + len( k.min_track_width() )
          + ", via" + len( k.min_via_diameter() ) + ", drill" + len( k.min_through_drill() ) + ", annular"
          + len( k.min_annular_width() ) + ", hole clearance" + len( k.hole_clearance() ) + ", hole to hole"
-         + len( k.hole_to_hole() ) + ", copper to edge" + len( k.copper_edge_clearance() ) + " (mm)";
+         + len( k.hole_to_hole() ) + ", copper to edge" + len( k.copper_edge_clearance() ) + ", silk text"
+         + len( k.min_silk_text_height() ) + " high" + len( k.min_silk_text_thickness() ) + " stroke (mm)";
     return t + "\n";
 }
 
@@ -1240,10 +1251,14 @@ TOOL_RESULT setRules( IPC_CLIENT& aIpc, const json& aArgs )
             else if( key == "hole_clearance" )          c->set_hole_clearance( d );
             else if( key == "hole_to_hole" )            c->set_hole_to_hole( d );
             else if( key == "copper_edge_clearance" )   c->set_copper_edge_clearance( d );
+            else if( key == "min_silk_text_height" )    c->set_min_silk_text_height( d );
+            else if( key == "min_silk_text_thickness" ) c->set_min_silk_text_thickness( d );
             else
                 return error( "unknown constraint " + key );
         }
     }
+
+    req.set_preset( aArgs.value( "preset", std::string() ) );
 
     const bool  drc = !aArgs.contains( "drc" ) || !aArgs["drc"].is_boolean() || aArgs["drc"].get<bool>();
     DRC_REPORT  before, after;
@@ -1269,6 +1284,9 @@ TOOL_RESULT setRules( IPC_CLIENT& aIpc, const json& aArgs )
 
     std::string t = r.history_label().empty() ? std::string( "nothing changed\n" )
                                               : r.history_label() + " (undo takes it back; save_board keeps it, in the project file)\n";
+
+    if( !r.note().empty() )
+        t += "preset: " + r.note() + "\n";
 
     if( drc && !r.history_label().empty() )
     {
@@ -1328,6 +1346,43 @@ TOOL_RESULT zonesTool( IPC_CLIENT& aIpc, const json& aArgs )
     if( aArgs.contains( "connection" ) && aArgs["connection"].is_string() )
         req.set_connection( aArgs["connection"].get<std::string>() );
 
+    if( aArgs.contains( "create" ) )
+    {
+        const json& c = aArgs["create"];
+
+        if( !c.is_object() )
+            return error( "create: {net, layers, outline, priority, clearance, min_width, connection, name}" );
+
+        kb::ZoneCreate* z = req.mutable_create();
+        z->set_net( c.value( "net", std::string() ) );
+
+        for( const std::string& l : getStrings( c, "layers" ) )
+            z->add_layers( l );
+
+        if( c.contains( "outline" ) )
+        {
+            if( !c["outline"].is_array() )
+                return error( "create.outline: [[x, y], ...] in mm (default: the board outline)" );
+
+            for( const json& p : c["outline"] )
+            {
+                if( !p.is_array() || p.size() != 2 || !p[0].is_number() || !p[1].is_number() )
+                    return error( "create.outline: [[x, y], ...] in mm" );
+
+                kb::Point* pt = z->add_outline();
+                pt->set_x( std::llround( p[0].get<double>() * 1e6 ) );
+                pt->set_y( std::llround( p[1].get<double>() * 1e6 ) );
+            }
+        }
+
+        if( getNumber( c, "priority", d ) )  z->set_priority( (int) d );
+        if( getNumber( c, "clearance", d ) ) z->set_clearance( d );
+        if( getNumber( c, "min_width", d ) ) z->set_min_width( d );
+
+        z->set_connection( c.value( "connection", std::string() ) );
+        z->set_name( c.value( "name", std::string() ) );
+    }
+
     kb::ZonesResponse r;
     std::string       err;
 
@@ -1344,6 +1399,17 @@ TOOL_RESULT zonesTool( IPC_CLIENT& aIpc, const json& aArgs )
         {
             TOOL_RESULT f = refillZones( aIpc );
             t += f.text.substr( 0, f.text.find( '\n' ) ) + "\n";
+
+            // the list as it is after the fill
+            kb::Zones again;
+
+            for( const kb::ZoneInfo& z : r.zones() )
+                again.add_ids( z.id() );
+
+            kb::ZonesResponse filled;
+
+            if( !again.ids().empty() && aIpc.Call( again, filled, err ) )
+                *r.mutable_zones() = filled.zones();
         }
         else
         {
@@ -1369,6 +1435,174 @@ TOOL_RESULT zonesTool( IPC_CLIENT& aIpc, const json& aArgs )
                                           : "" )
              + ( z.filled() ? "" : ", not filled" );
     }
+
+    return { t + "\n" };
+}
+
+
+bool outlineShape( const json& aObj, kb::OutlineShape& aOut, std::string& aErr )
+{
+    for( const char* key : { "rect", "circle" } )
+    {
+        if( !aObj.contains( key ) )
+            continue;
+
+        if( !aObj[key].is_array() )
+        {
+            aErr = std::string( key ) + ": numbers in mm";
+            return false;
+        }
+
+        for( const json& v : aObj[key] )
+        {
+            if( !v.is_number() )
+            {
+                aErr = std::string( key ) + ": numbers in mm";
+                return false;
+            }
+
+            ( std::string( key ) == "rect" ? aOut.add_rect( v.get<double>() ) : aOut.add_circle( v.get<double>() ) );
+        }
+    }
+
+    double r = 0;
+
+    if( getNumber( aObj, "corner_radius", r ) )
+        aOut.set_corner_radius( r );
+
+    return true;
+}
+
+
+TOOL_RESULT boardOutline( IPC_CLIENT& aIpc, const json& aArgs )
+{
+    kb::BoardOutline req;
+    std::string      err;
+
+    if( aArgs.contains( "rect" ) || aArgs.contains( "circle" ) )
+    {
+        if( !outlineShape( aArgs, *req.mutable_outline(), err ) )
+            return error( err );
+    }
+
+    if( aArgs.contains( "cutouts" ) )
+    {
+        if( !aArgs["cutouts"].is_array() )
+            return error( "cutouts: [{\"rect\": [x0, y0, x1, y1], \"corner_radius\": r} | {\"circle\": [cx, cy, d]}]" );
+
+        for( const json& c : aArgs["cutouts"] )
+        {
+            if( !c.is_object() || !outlineShape( c, *req.add_cutouts(), err ) )
+                return error( err.empty() ? "cutouts: [{rect} | {circle}]" : "cutouts: " + err );
+        }
+    }
+
+    if( aArgs.contains( "holes" ) )
+    {
+        if( !aArgs["holes"].is_array() )
+            return error( "holes: [[x, y, d], {x, y, diameter, plated, net}]" );
+
+        for( const json& h : aArgs["holes"] )
+        {
+            kb::MountingHole* m = req.add_holes();
+
+            if( h.is_array() && ( h.size() == 2 || h.size() == 3 ) && h[0].is_number() && h[1].is_number() )
+            {
+                m->set_x( h[0].get<double>() );
+                m->set_y( h[1].get<double>() );
+
+                if( h.size() == 3 && h[2].is_number() )
+                    m->set_diameter( h[2].get<double>() );
+            }
+            else if( h.is_object() && h.contains( "x" ) && h.contains( "y" ) )
+            {
+                double v = 0;
+                getNumber( h, "x", v );
+                m->set_x( v );
+                getNumber( h, "y", v );
+                m->set_y( v );
+
+                if( getNumber( h, "diameter", v ) || getNumber( h, "d", v ) )
+                    m->set_diameter( v );
+
+                m->set_plated( h.value( "plated", false ) );
+                m->set_net( h.value( "net", std::string() ) );
+            }
+            else
+            {
+                return error( "holes: [[x, y, d], {x, y, diameter, plated, net}]" );
+            }
+        }
+    }
+
+    double d = 0;
+
+    if( getNumber( aArgs, "hole_inset", d ) )    req.set_hole_inset( d );
+    if( getNumber( aArgs, "hole_diameter", d ) ) req.set_hole_diameter( d );
+
+    req.set_keep_old( aArgs.value( "keep_old", false ) );
+
+    kb::BoardOutlineResponse r;
+
+    if( !aIpc.Call( req, r, err ) )
+        return error( err );
+
+    char head[160];
+    std::snprintf( head, sizeof( head ), "board %.4g x %.4g mm, %.5g mm^2", r.width(), r.height(), r.area() );
+    std::string t = std::string( head ) + ( r.removed_shapes() ? "; " + std::to_string( r.removed_shapes() )
+                                                                    + " old Edge.Cuts shape(s) replaced" : "" ) + "\n";
+
+    if( r.holes_size() )
+    {
+        t += "mounting holes:";
+
+        for( const std::string& h : r.holes() )
+            t += " " + h + ";";
+
+        t.back() = '\n';
+    }
+
+    if( r.outside_size() )
+    {
+        t += "warning: " + std::to_string( r.outside_size() ) + " part(s) not (wholly) inside the outline:";
+
+        for( int i = 0; i < r.outside_size() && i < 15; ++i )
+            t += " " + r.outside( i );
+
+        t += r.outside_size() > 15 ? " ...\n" : "\n";
+    }
+
+    t += "undo takes it back: \"" + r.history_label() + "\"; zones create for a pour, refill_zones after moving parts\n";
+    return { t };
+}
+
+
+TOOL_RESULT boardSetup( IPC_CLIENT& aIpc, const json& aArgs )
+{
+    kb::BoardSetup req;
+    double         d = 0;
+
+    if( getNumber( aArgs, "copper_layers", d ) )   req.set_copper_layers( (int) d );
+    if( getNumber( aArgs, "thickness", d ) )       req.set_thickness( d );
+    if( getNumber( aArgs, "outer_copper_oz", d ) ) req.set_outer_copper_oz( d );
+    if( getNumber( aArgs, "inner_copper_oz", d ) ) req.set_inner_copper_oz( d );
+
+    kb::BoardSetupResponse r;
+    std::string            err;
+
+    if( !aIpc.Call( req, r, err ) )
+        return error( err );
+
+    char head[96];
+    std::snprintf( head, sizeof( head ), "%d copper layers, %.3g mm thick", r.copper_layers(), r.thickness() );
+    std::string t = ( r.history_label().empty() ? std::string() : r.history_label() + " (undo takes it back)\n" ) + head
+                    + "\nstackup (top to bottom):";
+
+    for( const std::string& line : r.stackup() )
+        t += "\n  " + line;
+
+    if( r.stackup().empty() )
+        t += " none defined (board_setup thickness=1.6 makes one)";
 
     return { t + "\n" };
 }
@@ -1436,6 +1670,10 @@ TOOL_RESULT history( IPC_CLIENT& aIpc, bool aUndo, bool aDetail )
 
     if( already > 0 )
         t += "  " + std::to_string( already ) + " part(s) were already in place\n";
+
+    if( res.changed() > 0 )
+        t += "  " + std::to_string( res.changed() ) + " part(s) " + ( aUndo ? "put back as they were" : "changed again" )
+             + " (values, fields, pad nets)\n";
 
     kb::MoveResponse shown = res;   // the changed parts are listed above, not as "not found"
     shown.clear_missing();
@@ -1568,6 +1806,17 @@ TOOL_RESULT runDrc( IPC_CLIENT& aIpc, const json& aArgs )
     std::string s = head;
     s += "errors: " + counts( report.errors ) + "\n";
     s += "warnings: " + counts( report.warnings ) + "\n";
+
+    if( !report.duplicateRefs.empty() )
+    {
+        s += "warning: the same reference on more than one footprint (the BOM and the placement file list "
+             "it twice):";
+
+        for( const std::string& d : report.duplicateRefs )
+            s += " " + d;
+
+        s += "\n";
+    }
 
     int  shown = 0, matching = 0;
     bool filtered = !types.empty() || !refs.empty() || !warnings;
@@ -1793,7 +2042,12 @@ TOOL_RESULT exportFab( IPC_CLIENT& aIpc, const json& aArgs )
     if( !aIpc.Call( req, r, err ) )
         return error( err );
 
-    std::string s = head + "fabrication files in " + r.dir() + ":\n";
+    std::string s = head;
+
+    for( const std::string& p : r.problems() )
+        s += "warning: " + p + "\n";
+
+    s += "fabrication files in " + r.dir() + ":\n";
 
     if( !r.zip().empty() )
         s += "  upload (Gerbers + drill): " + r.zip() + "\n";
@@ -1988,7 +2242,8 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        "Draw one connection the way the interactive router does (45-degree tracks around "
                        "obstacles; existing copper is never moved; the net class's width and via, the "
                        "clearance, keepout and edge rules). Not an autorouter: say what to connect. from: a "
-                       "pad \"U1.5\" or a point [x, y] on the net's track / via; to: likewise, or any point "
+                       "pad \"U1.5\" or a point [x, y] on the net's pad / track / via (inside a pad: the track leaves the "
+                       "pad there, for a way out between close pads); to: likewise, or any point "
                        "(a free end); without to: the nearest unrouted connection of from. waypoints: "
                        "[[x, y], ...] to pass through, [x, y, \"B.Cu\"] puts a via there and goes on on that "
                        "layer; via: [x, y] is short for one via to the other side (the end's layer). layer: "
@@ -1996,7 +2251,7 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        "length vs the straight line, segments, vias and the narrowest gap; when blocked, how "
                        "far it got and what is in the way. One undoable edit; dry_run reports without "
                        "drawing. Mm, Y down.",
-                       schema( { { "from", { { "description", "\"U1.5\" or [x, y]" } } },
+                       schema( { { "from", { { "description", "\"U1.5\" or [x, y] (a point inside a pad: the track leaves the pad there, not at its centre)" } } },
                                  { "to", { { "description", "\"C3.1\" or [x, y]; omit for the ratsnest" } } },
                                  { "waypoints", { { "type", "array" } } },
                                  { "via", { { "type", "array" }, { "items", { { "type", "number" } } } } },
@@ -2010,7 +2265,9 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        "Route the unrouted connections (ratsnest lines) of refs and / or nets, shortest "
                        "first (the short ones have the fewest ways round, so they go first and block the "
                        "least), each as route does; max_length (mm) leaves the long ones to the user. "
-                       "Through-hole to through-hole: F.Cu, then B.Cu if blocked, unless layer is given. "
+                       "Through-hole to through-hole: F.Cu, then B.Cu if blocked, unless layer is given; "
+                       "when the nearest copper of the other end can't be reached (a track on the far "
+                       "layer), the pads and vias joined to it, nearest first. "
                        "No vias are added. The failures say how far they got and what is in the way "
                        "(delete_tracks or move the part). All of it is one undoable edit; dry_run reports "
                        "what would and would not route without drawing.",
@@ -2053,9 +2310,13 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        "remove_classes: [...]; assign: {\"+5V\": \"Power\", \"/USB_D*\": \"USB\", \"GND\": null} "
                        "sets or drops net name patterns; constraints: {\"min_clearance\", \"min_track_width\", "
                        "\"min_via_diameter\", \"min_through_drill\", \"min_annular_width\", \"hole_clearance\", "
-                       "\"hole_to_hole\", \"copper_edge_clearance\"} (mm). Existing tracks keep their width. "
+                       "\"hole_to_hole\", \"copper_edge_clearance\", \"min_silk_text_height\", "
+                       "\"min_silk_text_thickness\"} (mm). preset: a fab's standard process as the board minimums "
+                       "(and the Default class raised to them): jlcpcb_2layer, jlcpcb_4layer, jlcpcb_6layer; the "
+                       "rest of the call goes on top. Existing tracks keep their width. "
                        "drc (default true) runs DRC before and after and reports the change in errors.",
-                       schema( { { "classes", { { "type", "object" } } },
+                       schema( { { "preset", { { "type", "string" }, { "enum", { "jlcpcb_2layer", "jlcpcb_4layer", "jlcpcb_6layer" } } } },
+                                 { "classes", { { "type", "object" } } },
                                  { "remove_classes", refs },
                                  { "assign", { { "type", "object" } } },
                                  { "constraints", { { "type", "object" } } },
@@ -2078,8 +2339,42 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                                  { "connection", { { "type", "string" }, { "enum", { "solid", "thermal", "none", "thermal_tht" } } } },
                                  { "thermal_gap", { { "type", "number" } } },
                                  { "thermal_spoke", { { "type", "number" } } },
+                                 { "create", { { "type", "object" },
+                                               { "description", "a new zone: {net, layers (default [\"F.Cu\", \"B.Cu\"]; "
+                                                                "\"all\"), outline [[x, y], ...] (default the board "
+                                                                "outline), priority, clearance, min_width, connection, name}" } } },
                                  { "refill", { { "type", "boolean" } } } } ),
                        [&aIpc]( const json& a ) { return zonesTool( aIpc, a ); } } );
+
+    tools.push_back( { "board_outline",
+                       "Draw the board outline on Edge.Cuts (the old board-level Edge.Cuts shapes are "
+                       "replaced unless keep_old): rect [x0, y0, x1, y1] with corner_radius, or circle [cx, cy, "
+                       "diameter] (mm, Y down). cutouts: [{rect, corner_radius} | {circle}] inside it. Mounting "
+                       "holes: hole_inset (mm from the corners, 4 holes of hole_diameter, default 3.2 = M3) and / or "
+                       "holes [[x, y, d], {x, y, diameter, plated, net}]: NPTH, or plated with a ring (e.g. to GND); "
+                       "they become footprints H1, H2 ... out of the BOM and the CPL. Reports the size, area, and "
+                       "the parts now outside. One undoable edit. Then zones create for a pour.",
+                       schema( { { "rect", { { "type", "array" }, { "items", { { "type", "number" } } } } },
+                                 { "circle", { { "type", "array" }, { "items", { { "type", "number" } } } } },
+                                 { "corner_radius", { { "type", "number" } } },
+                                 { "cutouts", { { "type", "array" } } },
+                                 { "holes", { { "type", "array" } } },
+                                 { "hole_inset", { { "type", "number" } } },
+                                 { "hole_diameter", { { "type", "number" } } },
+                                 { "keep_old", { { "type", "boolean" } } } } ),
+                       [&aIpc]( const json& a ) { return boardOutline( aIpc, a ); } } );
+
+    tools.push_back( { "board_setup",
+                       "The board's layers and stackup. No arguments: what they are (copper layers, thickness, "
+                       "each layer of the stackup). copper_layers (2, 4, 6, ...), thickness (mm, e.g. 1.6), "
+                       "outer_copper_oz / inner_copper_oz (e.g. 1 and 0.5): the stackup is made anew like Board "
+                       "Setup's default. Fewer layers only when the ones that go are empty. One undoable edit. "
+                       "Pair with set_rules preset (e.g. jlcpcb_4layer) and zones create on the inner layers.",
+                       schema( { { "copper_layers", { { "type", "integer" } } },
+                                 { "thickness", { { "type", "number" } } },
+                                 { "outer_copper_oz", { { "type", "number" } } },
+                                 { "inner_copper_oz", { { "type", "number" } } } } ),
+                       [&aIpc]( const json& a ) { return boardSetup( aIpc, a ); } } );
 
     tools.push_back( { "pcb_set_fields",
                        "Change footprints' fields and attributes on the board as one undoable edit. parts: "

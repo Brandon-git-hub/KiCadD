@@ -5,11 +5,13 @@ usage: python3 -I route_e2e.py --build BUILD --kicad KICAD_SRC --work DIR
 pic_programmer (2 layers, through-hole), with a keepout added across the straight line R9.2 -> D8.2:
   route        R9's connections ripped up and routed back from the ratsnest; dry run changes
                nothing; quality numbers in the reply; a via ([x, y]) and a waypoint are where they
-               were asked; the keepout is gone round; a waypoint inside another net's pad fails
-               and names it; undo takes a route back
+               were asked, the layers named in order; a start inside a pad off its centre; too wide
+               to leave a pad says so; the keepout is gone round; a waypoint inside another net's
+               pad fails and names it; undo takes a route back
   route_short  every track ripped up, then routed shortest first: dry run first, then for real as
                one edit; after a refill, DRC has nothing but unrouted connections; one undo
   fanout       through-hole pads are skipped, a net without a zone on the other side is warned
+               once, with its pads
 StickHub (2 layers, SMD, GND on both sides):
   fanout       GND ripped up, fanned out again: vias inside the other side's GND, DRC with
                nothing but unrouted connections, one undo
@@ -120,6 +122,7 @@ def pic(a, work):
 
         err, t = mcp.tool("route", {"from": "R9.1", "via": [132, 74]})
         check(not err and "1 via(s)" in t, "via where asked: " + t.split("\n")[0][:120])
+        check(re.search(r"routed on [FB]\.Cu -> [FB]\.Cu,", t), "the layers in order")
         err, q = mcp.tool("query_area", {"x": 132, "y": 74, "radius": 0.05, "kinds": ["via"]})
         check(re.search(r"VIA \S+ \[Net-\(Q2-C\)\] @132,74", q), "the via is at 132,74")
         mcp.tool("undo")
@@ -145,6 +148,24 @@ def pic(a, work):
                 if KEEPOUT[0] < px < KEEPOUT[2] and KEEPOUT[1] < py < KEEPOUT[3]:
                     inside.append((px, py))
         check(not inside, f"no new track inside the keepout ({len(inside)} points)")
+        mcp.tool("undo")
+
+        # off the pad's centre: the track leaves the pad where asked
+        err, t = mcp.tool("route", {"from": [149.525, 77.47], "to": "D8.2"})
+        check(not err and "@149.5,77.47" in t, "a start inside the pad, off its centre: " + t.split("\n")[0][:120])
+        err, q = mcp.tool("query_area", {"x": 149.525, "y": 77.47, "radius": 0.02, "kinds": ["track"]})
+        check("[Net-(D8-A)]" in q, "a track starts there")
+        mcp.tool("undo")
+
+        # JP1 (a solder jumper on B.Cu, its pads 1.45 mm apart): from the ratsnest the nearest VCC
+        # is a track on F.Cu; the pad that track goes to is on B.Cu too
+        mcp.tool("delete_tracks", {"refs": ["JP1"]})
+        err, t = mcp.tool("route", {"from": "JP1.1", "dry_run": True})
+        check(not err and "-> pad Q3.3 [VCC]" in t, "the ratsnest's end on the far layer: its pad instead: "
+              + t.split("\n")[0][:100])
+        # too wide to leave the pad: says so
+        err, t = mcp.tool("route", {"from": "JP1.1", "to": "Q3.3", "width": 2.5})
+        check(err and "the way out of JP1.1 is tight at width 2.5" in t, "a way out too narrow: " + t.split("; got")[0][-120:])
         mcp.tool("undo")
 
         # a waypoint in the middle of another net's pad
@@ -181,7 +202,9 @@ def pic(a, work):
         print("[fanout, through-hole]")
         err, t = mcp.tool("fanout", {"nets": ["GND", "VCC"]})
         check(re.search(r"\d+ through-hole pad\(s\) skipped", t), "through-hole pads skipped: " + t.split("\n")[1][:60])
-        check("warning: no copper zone of VCC" in t, "VCC has no zone to reach: warned")
+        vcc = [ln for ln in t.splitlines() if "no copper zone of VCC" in ln]
+        check(len(vcc) == 1 and "; skipped " in vcc[0], "VCC has no zone to reach: one warning, its pads: "
+              + (vcc[0][:120] if vcc else t[:100]))
     finally:
         mcp.close()
         server.stop()

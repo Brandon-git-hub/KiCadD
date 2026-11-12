@@ -492,6 +492,19 @@ RESULT SESSION::Route( const REQUEST& aReq )
         if( out.blockedBy.empty() )
             m.blocker( aReached, aTarget, aLayer, out.width, net, out );
 
+        // Stuck at a pad (between close pads, e.g. a solder jumper): the way out may be too
+        // narrow for the width, from the pad's centre
+        for( const auto& [item, pos] : { std::pair( aReq.fromItem, aReq.from ), std::pair( aReq.toItem, aReq.to ) } )
+        {
+            if( item && item->Type() == PCB_PAD_T && ( aReached - pos ).EuclideanNorm() < 1000000 )
+            {
+                out.error += "; the way out of " + handle( item ) + " is tight at width " + mm( out.width )
+                             + ": try a narrower width, or start / end at a point inside the pad ([x, y]) "
+                               "on the side the track leaves";
+                break;
+            }
+        }
+
         return out;
     };
 
@@ -639,6 +652,16 @@ RESULT SESSION::Route( const REQUEST& aReq )
                     "(e.g. hole to hole); not kept";
         return out;
     }
+
+    // the layers in the order the route takes them: "B.Cu -> F.Cu"
+    for( const STOP& s : stops )
+    {
+        if( s.viaTo != UNDEFINED_LAYER )
+            out.layer += " -> " + str( LSET::Name( s.viaTo ) );
+    }
+
+    if( aReq.endViaTo != UNDEFINED_LAYER )
+        out.layer += " -> " + str( LSET::Name( aReq.endViaTo ) );
 
     out.ok = true;
     return out;

@@ -25,11 +25,13 @@
 #include <api/api_handler.h>
 #include <kicadd/board.pb.h>
 #include "pcb/kicadd_rules.h"
+#include "pcb/kicadd_setup.h"
 #include <kicadd/render.pb.h>
 
 #include "pcb/kicadd_autoplace.h"
 
 class BOARD;
+class BOARD_ITEM;
 namespace KIGFX { class VIEW; }
 class BOARD_COMMIT;
 class FOOTPRINT;
@@ -92,6 +94,18 @@ private:
 
     HANDLER_RESULT<kicadd::board::ZonesResponse>
     handleZones( const HANDLER_CONTEXT<kicadd::board::Zones>& aCtx );
+
+    /// zones create: the new zone, on the board (one undoable edit); null: aError
+    ZONE* createZone( const kicadd::board::ZoneCreate& aReq, std::string& aError, std::string& aLabel );
+
+    HANDLER_RESULT<kicadd::board::BoardOutlineResponse>
+    handleBoardOutline( const HANDLER_CONTEXT<kicadd::board::BoardOutline>& aCtx );
+
+    HANDLER_RESULT<kicadd::board::BoardSetupResponse>
+    handleBoardSetup( const HANDLER_CONTEXT<kicadd::board::BoardSetup>& aCtx );
+
+    /// The layers / stackup changed (board_setup, its undo): the editor's layer lists redone.
+    void setupChanged();
 
     /// The rules changed (set_rules, its undo): nets re-resolved, the editor told.
     void rulesChanged();
@@ -289,7 +303,44 @@ private:
 
         /// zones: their settings before / after
         std::vector<ZONE_STATE> zonesBefore, zonesAfter;
+
+        /// sync_pcb: footprints it changed, as they were / are (undo / redo swaps them whole)
+        std::vector<std::pair<FP_SNAPSHOT, FP_SNAPSHOT>> replaced;
+
+        /// sync_pcb: tracks, vias and zones it moved to another net (a renamed net)
+        struct NET_CHANGE
+        {
+            KIID     id;
+            wxString before, after;
+        };
+
+        std::vector<NET_CHANGE> netChanges;
+
+        /// sync_pcb: the nets it made; undo takes out those nothing is on any more
+        std::vector<wxString> netsCreated;
+
+        /// board_outline, zones create: board graphics and zones it added / removed (by KIID;
+        /// a zone's net by name)
+        struct ITEM_SNAPSHOT
+        {
+            std::shared_ptr<BOARD_ITEM> item;
+            wxString                    net;
+        };
+
+        std::vector<ITEM_SNAPSHOT> itemsAdded, itemsRemoved;
+
+        /// board_setup: layers and stackup before / after (nothing else in such an entry)
+        std::shared_ptr<kicadd::setup::STATE> setupBefore, setupAfter;
     };
+
+    /// A copy of a board item off the board (same KIID), its net kept by name.
+    static HISTORY_ENTRY::ITEM_SNAPSHOT snapshotItem( const BOARD_ITEM* aItem );
+
+    /// A copy of aFp (still on the board) into a snapshot.
+    static FP_SNAPSHOT copyOf( const FOOTPRINT* aFp );
+
+    /// aFp is as aSnap has it (shape, fields, attributes, place, pad nets).
+    static bool matches( const FOOTPRINT* aFp, const FP_SNAPSHOT& aSnap );
 
     static FP_STATE stateOf( const FOOTPRINT* aFp, bool aWithFields = false );
     /// aView: the editor's canvas, which keeps a footprint's fields as items of their own

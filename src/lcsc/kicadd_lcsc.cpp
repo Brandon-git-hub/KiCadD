@@ -40,6 +40,7 @@
 #include <wx/utils.h>
 
 #include <cctype>
+#include <set>
 #include <cstdlib>
 #include <chrono>
 #include <cmath>
@@ -322,6 +323,28 @@ bool convert( const json& aResult, const std::string& aLcsc, PART& aPart, std::s
 
         if( aPart.datasheet.empty() )
             aPart.datasheet = str( symPara, "link" );
+
+        // A passive's value is what it is called on a schematic ("10k"), not its part number:
+        // EasyEDA's "Value" parameter, as the LCSC symbol takes it (src/sch/kicadd_lcsc_sym.cpp)
+        static const std::set<std::string> passives = { "R", "C", "L", "FB", "F", "Y", "X", "D", "LED",
+                                                        "RN", "RV", "TH", "VR" };
+        std::string prefix;
+
+        for( char c : str( symPara, "pre" ) )
+        {
+            if( !std::isalpha( (unsigned char) c ) )
+                break;
+
+            prefix += (char) std::toupper( (unsigned char) c );
+        }
+
+        if( passives.count( prefix ) )
+        {
+            wxString v = wxString::FromUTF8( str( symPara, "Value" ) ).Strip( wxString::both );
+            v.Replace( wxString::FromUTF8( "\xce\xa9" ), wxEmptyString );       // 10k + ohm -> 10k
+            v.Replace( wxString::FromUTF8( "\xe2\x84\xa6" ), wxEmptyString );   // (ohm sign)
+            aPart.value = v.ToStdString( wxConvUTF8 );
+        }
     }
 
     aPart.description = str( aResult, "description" );
@@ -397,7 +420,8 @@ bool convert( const json& aResult, const std::string& aLcsc, PART& aPart, std::s
     fp.SetLibDescription( desc );
     fp.SetKeywords( wxString::FromUTF8( aLcsc + " " + aPart.title + " LCSC EasyEDA" ) );
     fp.SetReference( wxS( "REF**" ) );
-    fp.SetValue( wxString::FromUTF8( aPart.title.empty() ? aPart.package : aPart.title ) );
+    fp.SetValue( wxString::FromUTF8( !aPart.value.empty() ? aPart.value
+                                     : aPart.title.empty() ? aPart.package : aPart.title ) );
 
     if( !aPart.datasheet.empty() )
         fp.GetField( FIELD_T::DATASHEET )->SetText( wxString::FromUTF8( aPart.datasheet ) );
