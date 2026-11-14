@@ -12,11 +12,14 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 - **其他參數：** `sheet` 指定圖紙（名稱或路徑），`area` 指定區域，`frame=true` 出整頁（含圖框和標題欄），`path` 另外存檔。
 - **指定的零件或網路不在這張圖紙上時：** 回應會說它在哪一張。
 
+**改名：`render_board` → `board_render`**
+- 和 `board_summary` / `sch_summary` 一樣，PCB 的工具以 `board_` 開頭，電路圖的工具以 `sch_` 開頭，所以出圖工具改成 `board_render` / `sch_render` 一對。舊名稱不保留，呼叫時會回「unknown tool」。
+
 **alpha.10 試用回報的修正**
 - **認不得的參數改成報錯：** 以前打錯或猜錯的參數名稱會被忽略。例如 `zones create` 給了 `area`，結果建出一塊全板大小的銅箔區。現在所有工具遇到不認得的參數（包含 `create` 裡面的）都會回錯誤，並列出可用的參數。`zones create` 也新增了 `rect: [x0, y0, x1, y1]`。
 - **`add_footprint like=` 複製出的零件不再連到電路圖：** 以前複製時連電路圖的連結也一起帶過去，`pcb_set_fields` 因此誤報「這顆來自電路圖」，`sync_pcb` 也可能把複製品當成原本那顆。現在複製品就是手動放的零件。
 - **`add_footprint` 的 undo 會移除它新建的網路：** 沒有其他東西用到的網路才會移除，和 `sync_pcb` 的 undo 一樣。
-- **`render_board layers=["silk"]` 不再畫銅：** 改成畫阻焊開窗（看得出焊盤位置）、絲印和板框。層名稱改用標準名稱，板子有自訂名稱時寫在括號裡，例如 `F.Cu (top_layer)`。
+- **`board_render layers=["silk"]` 不再畫銅：** 改成畫阻焊開窗（看得出焊盤位置）、絲印和板框。層名稱改用標準名稱，板子有自訂名稱時寫在括號裡，例如 `F.Cu (top_layer)`。
 - **`lcsc_match` 的庫存寫清楚：** 分成「JLCPCB 組裝庫存（索引日期）」、「JLCPCB 現在能不能組裝」和「LCSC 零售庫存」三項。原本的「(121 in stock)」其實是符合條件的料號數量，現在寫成「first of 121 matching parts」。LCSC 零售缺貨但 JLCPCB 能組裝的基礎件，不再被跳過。
 - **疊層板厚：** 套用 JLCPCB 疊層後，回應會說明板厚是 JLCPCB 表上各層的加總：4 層在 1.45 到 1.65 mm 之間，6 層在 1.52 到 1.59 mm 之間，標稱都是 1.6 mm。
 
@@ -147,7 +150,7 @@ Claude Code：`claude mcp add kicadd -- C:\KiCadD\bin\kicadd-mcp.exe --stdio`（
 - **新板設定**：`board_outline`（板框、挖槽、固定孔）、`board_setup`（層數、板厚、銅厚、疊層，或 JLCPCB 的阻抗疊層）、`set_rules preset`（JLCPCB 製程預設）、`zones create`（新建銅箔區）。
 - **設計規則與銅箔區**：`get_rules` / `set_rules`（網路類別、指派、板子最小值）、`zones`（間距、優先順序、焊盤連接）。
 - **批次**：`batch` 一次跑多個工具。
-- **審查與製造**：`audit`、`render_board`（PNG 圖）、`export_fab`（先跑 DRC，再輸出 Gerber / 鑽孔 / BOM / CPL）；依規格找料 `lcsc_search`、批次配料號 `lcsc_match`；自建符號與封裝 `lib_create_symbol` / `lib_create_footprint`。
+- **審查與製造**：`audit`、`board_render`（PNG 圖）、`export_fab`（先跑 DRC，再輸出 Gerber / 鑽孔 / BOM / CPL）；依規格找料 `lcsc_search`、批次配料號 `lcsc_match`；自建符號與封裝 `lib_create_symbol` / `lib_create_footprint`。
 - **與你協同**：Agent 的修改就是編輯器的提交，你按 Ctrl+Z 就能撤銷；你在互動工具中（走線、畫線、對話框）時，Agent 的修改會被擋下，不會干擾你。走線由你來做。
 - **怎麼分工最有效**（試用心得）：了解設計、審查、擺件、局部修改用 Agent；大量欄位修改可以用 `sch_set_fields` / `batch`，或在 KiCad 關閉時直接改檔再用 `kicad-cli` 驗證；DRC / ERC / 匯出等批次工作用 `kicad-cli` 或腳本。
 

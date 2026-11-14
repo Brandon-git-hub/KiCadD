@@ -166,7 +166,7 @@ length matching, dense escapes).
 
 ## Look at it
 
-`render_board` returns a PNG of the board as it is (KiCad's own plot: copper, pads, pours,
+`board_render` returns a PNG of the board as it is (KiCad's own plot: copper, pads, pours,
 silkscreen, outline) with mm rulers on the top and left and the unrouted connections as thin
 white lines. `refs` frames parts (and zooms to them), `nets` draws nets in cyan, `area`
 crops, `layers: ["silk"]` (silkscreen, the mask openings where the pads are, outline) /

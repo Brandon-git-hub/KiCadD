@@ -112,10 +112,10 @@ try:
     check(not err and "\nDRC: no errors" in t, "U1 back: strict writes the files")
     m.tool("redo")
 
-    print("[render_board]")
+    print("[board_render]")
     import base64
     def shot(args):
-        r = m.rpc("tools/call", {"name": "render_board", "arguments": args})["result"]
+        r = m.rpc("tools/call", {"name": "board_render", "arguments": args})["result"]
         text = "".join(c.get("text", "") for c in r["content"])
         img = [base64.b64decode(c["data"]) for c in r["content"] if c["type"] == "image"]
         return r.get("isError", False), text, (img[0] if img else b"")
@@ -174,7 +174,7 @@ try:
     check(err and "no sheet nope" in t, "an unknown sheet is refused")
 
     print("[unknown arguments, add_footprint like]")
-    err, t = m.tool("render_board", {"zom": True})
+    err, t = m.tool("board_render", {"zom": True})
     check(err and "unknown argument(s) zom" in t and "zoom" in t, "an unknown argument is an error, with the ones there are")
     err, t = m.tool("zones", {"create": {"net": "GND", "area": [100, 60, 120, 80]}})
     check(err and "unknown argument(s) create.area" in t and "in create" in t and "rect" in t, "create.area: " + t[:120])

@@ -2217,7 +2217,7 @@ TOOL_RESULT lcscSearch( IPC_CLIENT& aIpc, const json& aArgs )
 }
 
 
-TOOL_RESULT renderBoard( IPC_CLIENT& aIpc, const json& aArgs )
+TOOL_RESULT boardRender( IPC_CLIENT& aIpc, const json& aArgs )
 {
     kb::RenderBoard req;
 
@@ -2860,7 +2860,7 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                                  { "update", { { "type", "boolean" }, { "description", "fetch the index again now" } } } } ),
                        [&aIpc]( const json& a ) { return lcscSearch( aIpc, a ); } } );
 
-    tools.push_back( { "render_board",
+    tools.push_back( { "board_render",
                        "A picture (PNG) of the board as it is now, to look at what coordinates do not "
                        "show: silkscreen over pads or other text, part orientation, crowding, how tracks "
                        "run, what is left unrouted. KiCad's own plot of the layers (default front: all "
@@ -2883,7 +2883,7 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                                  { "labels", { { "type", "boolean" } } },
                                  { "back", { { "type", "boolean" } } },
                                  { "path", { { "type", "string" } } } } ),
-                       [&aIpc]( const json& a ) { return renderBoard( aIpc, a ); } } );
+                       [&aIpc]( const json& a ) { return boardRender( aIpc, a ); } } );
 
     tools.push_back( { "export_fab",
                        "Write the fabrication files for JLCPCB from the board as it is now (unsaved edits "

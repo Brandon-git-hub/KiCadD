@@ -182,10 +182,10 @@ def main():
 
         err, text = mcp.tool("board_summary")
         check(not err and "footprints=63" in text, "agent reads the editor's board: " + text.splitlines()[0])
-        r = mcp.rpc("tools/call", {"name": "render_board", "arguments": {"refs": ["U3"], "size": 500}}).get("result", {})
+        r = mcp.rpc("tools/call", {"name": "board_render", "arguments": {"refs": ["U3"], "size": 500}}).get("result", {})
         img = [c for c in r.get("content", []) if c.get("type") == "image"]
         check(not r.get("isError") and img and len(img[0].get("data", "")) > 1000,
-              "render_board in the editor: a PNG of U3 (" + "".join(c.get("text", "") for c in r.get("content", [])).splitlines()[0][:60] + ")")
+              "board_render in the editor: a PNG of U3 (" + "".join(c.get("text", "") for c in r.get("content", [])).splitlines()[0][:60] + ")")
 
         if a.upto < 2:
             raise SkipRest()

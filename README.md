@@ -1666,6 +1666,8 @@ SOIC-8 pad 1 against KiCad's within 0.1 mm, and a design using `kicadd:R_0603` t
    疊上零件框（`GetBodyAndPinsBoundingBox`）、網路（`SCH_CONNECTIVITY` 依路徑查導線、標籤、腳位、
    圖紙腳位的網路名稱；`VPP` 也對到 `/VPP`、`/Sheet/VPP`）和 mm 尺規（格距取 1.27 mm 的倍數）。
    預設範圍是圖上有東西的地方加 5 mm，不是整頁。測試：`fab_e2e`、`desktop_sch_e2e`。
+   同時把 `render_board` 改名為 `board_render`（PCB 工具 `board_`、電路圖工具 `sch_` 開頭，成對），
+   不留別名；第 14、15 項記的是改名前的名稱。
 
 保留不動：專案管理器的 Version Control（Git）面板。
 
