@@ -4,14 +4,30 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 
 > ⚠️ Pre-release，僅供試用。由 GitHub Actions 自動建置；功能在 Linux 上做過端到端測試，Windows 上只有 CI 的 smoke test 與早期版本的人工試用。
 
-## 這一版（alpha.10）
+## 這一版（alpha.11）
+**新功能：`sch_render` 電路圖出圖（共 54 個工具）**
+- **出一張圖紙的 PNG 給 Agent 看：** 用 KiCad 自己的 plot（符號、導線、標籤、欄位），可以看出零件或文字重疊、導線交叉、標籤離開導線、整張圖好不好讀。上方和左邊有 mm 尺規，座標和 `sch_summary` 一致。
+- **`refs`：** 框出並標示零件，圖會放大到它們那一帶，並自動切到第一顆零件所在的圖紙。
+- **`nets`：** 把網路的導線、標籤和腳位畫成藍色，階層圖紙裡的也算。
+- **其他參數：** `sheet` 指定圖紙（名稱或路徑），`area` 指定區域，`frame=true` 出整頁（含圖框和標題欄），`path` 另外存檔。
+- **指定的零件或網路不在這張圖紙上時：** 回應會說它在哪一張。
+
+**alpha.10 試用回報的修正**
+- **認不得的參數改成報錯：** 以前打錯或猜錯的參數名稱會被忽略。例如 `zones create` 給了 `area`，結果建出一塊全板大小的銅箔區。現在所有工具遇到不認得的參數（包含 `create` 裡面的）都會回錯誤，並列出可用的參數。`zones create` 也新增了 `rect: [x0, y0, x1, y1]`。
+- **`add_footprint like=` 複製出的零件不再連到電路圖：** 以前複製時連電路圖的連結也一起帶過去，`pcb_set_fields` 因此誤報「這顆來自電路圖」，`sync_pcb` 也可能把複製品當成原本那顆。現在複製品就是手動放的零件。
+- **`add_footprint` 的 undo 會移除它新建的網路：** 沒有其他東西用到的網路才會移除，和 `sync_pcb` 的 undo 一樣。
+- **`render_board layers=["silk"]` 不再畫銅：** 改成畫阻焊開窗（看得出焊盤位置）、絲印和板框。層名稱改用標準名稱，板子有自訂名稱時寫在括號裡，例如 `F.Cu (top_layer)`。
+- **`lcsc_match` 的庫存寫清楚：** 分成「JLCPCB 組裝庫存（索引日期）」、「JLCPCB 現在能不能組裝」和「LCSC 零售庫存」三項。原本的「(121 in stock)」其實是符合條件的料號數量，現在寫成「first of 121 matching parts」。LCSC 零售缺貨但 JLCPCB 能組裝的基礎件，不再被跳過。
+- **疊層板厚：** 套用 JLCPCB 疊層後，回應會說明板厚是 JLCPCB 表上各層的加總：4 層在 1.45 到 1.65 mm 之間，6 層在 1.52 到 1.59 mm 之間，標稱都是 1.6 mm。
+
+## alpha.10
 **新功能（4 個新工具，共 53 個）**
 - **`export_fab` 先跑 DRC：** 鋪銅後跑完整 DRC，錯誤數（依類別）列在回應最前面。`strict=true` 時，只要 DRC 有錯、有重複編號或零件在板框外，就一個檔案都不寫並說明原因；`drc=false` 可以跳過 DRC。
 - **`lcsc_match` 批次配對立創料號：** 電路圖裡還沒有 LCSC 編號的電阻、電容、電感、磁珠、LED（貼片封裝 0402、0603 等），同值同封裝的歸成一組，從本機料號索引裡選一顆（基礎件優先，再來是優選件，最後依庫存），並即時查一次今天的庫存，每組約 1 秒。先 dry run 列出結果，`apply=true` 才一次寫入（一次 `sch_undo` 就能還原）。`pick {"R1": "C25804"}` 可以為某一組指定別的料號，也可以補上沒配到的組。值裡可以寫規格，例如 `"100nF 50V X7R"`、`"10k 1%"`；LED 要在值裡寫顏色。配不到的會說明原因（插件封裝、沒有封裝、不是被動元件等）。
 - **`render_board` 出圖給 Agent 看：** 用 KiCad 自己的 plot 畫出 PNG（銅、焊盤、鋪銅、絲印等），預設是正面全板。`refs` 會框出並標示零件，`nets` 用青色畫出網路；給了其中之一時，圖會放大到那一帶。也可用 `area` 指定區域，`back=true` 從背面看，`layers` 可選 `silk`、`fab`、`copper` 或指定層名。上方和左邊有 mm 尺規，飛線以白線顯示；`path` 可另外存檔。用來看絲印重疊、零件方向和擁擠程度。
 - **`stitch_vias` 縫合過孔：** 依格點（預設 5 mm）在某個網路（預設 GND）的鋪銅裡打過孔，只放在兩層以上都有該網路銅的位置。過孔會避開焊盤、走線、孔、板邊、禁止區，也不放在零件的 courtyard 裡。格點放完後，還沒有過孔的銅島會各補一個。執行前後都會重新鋪銅，一次 undo 就能還原。在 pic_programmer 上（雙面 GND）打了 213 個，DRC 0 錯誤。
 - **`teardrops` 淚滴：** 用 KiCad 自己的淚滴，加在過孔和插件焊盤上；`smd=true` 時也加在貼片焊盤上，`remove=true` 移除。之後移動零件或走線時會自動跟著更新，和在編輯器裡一樣。一次 undo 就能還原。
-- **`board_setup stackup="JLC04161H-7628"`：** 套用 JLCPCB 的阻抗疊層：18 種 4 層、8 種 6 層，都是 1.6 mm。每一層 prepreg / core 的厚度和介電常數都照官方頁面填入，`stackup="list"` 可列出名稱。介電常數取自 jlcpcb.com/impedance（2026-11-14）；JLCPCB 的下單頁寫的數值不同，計算控制阻抗的線寬前，請先用 JLCPCB 的阻抗計算器核對。
+- **`board_setup stackup="JLC04161H-7628"`：** 套用 JLCPCB 的阻抗疊層：18 種 4 層、8 種 6 層，標稱 1.6 mm。每一層 prepreg / core 的厚度和介電常數都照官方頁面填入，`stackup="list"` 可列出名稱。介電常數取自 jlcpcb.com/impedance（2026-11-14）；JLCPCB 的下單頁寫的數值不同，計算控制阻抗的線寬前，請先用 JLCPCB 的阻抗計算器核對。
 
 **alpha.9 試用回報的修正**
 - **`zones` 的工具說明：** 說明現在先講怎麼新建銅箔區（附兩個例子），`create` 底下的每個參數也都列出來了。alpha.9 的說明只寫了列出和修改。
@@ -116,13 +132,13 @@ Claude Desktop（`%APPDATA%\Claude\claude_desktop_config.json`）或 Cursor（`m
 Claude Code：`claude mcp add kicadd -- C:\KiCadD\bin\kicadd-mcp.exe --stdio`（路徑換成你解壓的位置）。
 
 ### 建議的使用方式（skill）
-53 個工具怎麼搭配使用（先查再改、新板設定、審查 / 擺件 / 佈線 / 找料 / 出廠流程、undo、批次、常見陷阱）寫成一份 skill，讓 Agent 照著做：
+54 個工具怎麼搭配使用（先查再改、新板設定、審查 / 擺件 / 佈線 / 找料 / 出廠流程、undo、批次、常見陷阱）寫成一份 skill，讓 Agent 照著做：
 - **Claude Code**：把 `share\kicadd\skills\kicadd` 整個資料夾複製到 `%USERPROFILE%\.claude\skills\`（所有專案）或專案的 `.claude\skills\`。
 - **Claude Desktop**：在設定的 Skills 頁面上傳另外附的 `kicadd-skill.zip`。
 - **其他 Agent（Cursor 等）**：把 `SKILL.md` 的內容放進它的規則檔或系統提示。
 
-## Agent 能做的事（53 個 MCP 工具）
-- **電路圖**：`sch_add_part`（符號庫、立創編號或電源符號）、`sch_connect` / `sch_disconnect`（網路名稱連接）、`sch_move`、`sch_wire`、`sch_netlist`、`sch_delete`（零件、導線、懸空線）、`sch_set_fields`、`run_erc`、`sch_save`、Agent 自己的 `sch_undo` / `sch_redo`；**階層圖紙** `sch_add_sheet`，`ports` 產生圖紙腳位，父圖紙上用 `圖紙名.腳位名` 連接。
+## Agent 能做的事（54 個 MCP 工具）
+- **電路圖**：`sch_add_part`（符號庫、立創編號或電源符號）、`sch_connect` / `sch_disconnect`（網路名稱連接）、`sch_move`、`sch_wire`、`sch_netlist`、`sch_delete`（零件、導線、懸空線）、`sch_set_fields`、`run_erc`、`sch_render`（PNG 圖）、`sch_save`、Agent 自己的 `sch_undo` / `sch_redo`；**階層圖紙** `sch_add_sheet`，`ports` 產生圖紙腳位，父圖紙上用 `圖紙名.腳位名` 連接。
 - **立創零件**：`lcsc_fetch` / `sch_add_part lcsc=` 依編號抓封裝與符號，存進專案的 LCSC 庫；回報庫存、價格、基礎件 / 擴展件。編輯器裡也有 Place → Add LCSC Part / Symbol。
 - **電路圖 → PCB**：`sync_pcb`（開著電路圖編輯器時直接讀編輯器內容，不會寫入你的電路圖檔）。
 - **自動擺件** `auto_place`：依連線擺放、去耦電容靠 IC 腳；選用功能：模組分群（`groups` 或 Block 欄位）、去耦電容放背面（`back_decaps`）、擺件規則（`rules`：板邊、區域、角度、距離上限）。

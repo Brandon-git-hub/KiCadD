@@ -1644,7 +1644,28 @@ SOIC-8 pad 1 against KiCad's within 0.1 mm, and a design using `kicadd:R_0603` t
    測試：`fab_e2e`（DRC、strict、render_board）、`match_e2e`（新）、`copper_e2e`（新）、`setup_e2e`、
    `desktop_e2e` [1]（編輯器裡出圖）。
    剩下：(d) IPC-2152 線寬、差分對 / 等長；(e) audit 擴充；(f) 設計比對；(g) 重新編號、排版；
-   (h) 絲印整理、PDF、STEP；第 10 項 (f) 忙碌時排隊；電路圖出圖。
+   (h) 絲印整理、PDF、STEP；第 10 項 (f) 忙碌時排隊。
+
+15. **（已完成 2026-11-14）alpha.10 試用（4 個新工具、6 項修正都可用；6 個小問題）。**
+   * 認不得的參數被靜默忽略（`zones create` 給 `area` 建出全板銅箔區）：`MCP_SERVER::handleToolsCall`
+     依工具的 inputSchema 檢查參數（含巢狀物件，`additionalProperties` 的不檢查），不認得就回錯誤並
+     列出可用的。順便發現 `desktop_sch_e2e` 給 `sch_netlist` 的 `refs` 一直被忽略。`zones create` 加 `rect`。
+   * `add_footprint like=` 的複製品帶著原零件的電路圖路徑（`copyAsNew` 沒清 `m_path` / sheet 名稱）。
+   * `add_footprint` 的 undo 不移除新網路：記進 `HISTORY_ENTRY::netsCreated`（沿用 sync_pcb 的處理）。
+   * `render_board` 的 `silk` 原本包含近側銅層，改成阻焊層；層名稱用 `BOARD::GetStandardLayerName`，
+     自訂名稱放括號。
+   * `lcsc_match` 的庫存：JLC 組裝庫存（索引日期）／現在能否組裝／LCSC 零售庫存分開寫；候選數量
+     寫成 "first of N matching parts"；即時檢查以「JLCPCB 能組裝」為準，不看 LCSC 零售庫存。
+   * 疊層板厚：JLCPCB 表上各層加總 4 層 1.45–1.65 mm、6 層 1.52–1.59 mm（標稱 1.6 mm），寫進回應的
+     note 和工具說明。
+   測試：`fab_e2e`（未知參數、rect、複製品、網路 undo、silk）、`match_e2e`、`setup_e2e`、`desktop_sch_e2e`。
+
+16. **（已完成 2026-11-14）電路圖出圖 `sch_render`。** `src/sch/kicadd_sch_render.cpp`：切到要畫的圖紙
+   （`SetCurrentSheet` + `UpdateAllScreenReferences`，畫完還原，階層圖紙的編號依路徑）、`SCH_RENDER_SETTINGS`
+   照 `kicad-cli sch export` 的設定、`PNG_PLOTTER` + `SCH_SCREEN::Plot`；`frame=true` 加 `PlotDrawingSheet`。
+   疊上零件框（`GetBodyAndPinsBoundingBox`）、網路（`SCH_CONNECTIVITY` 依路徑查導線、標籤、腳位、
+   圖紙腳位的網路名稱；`VPP` 也對到 `/VPP`、`/Sheet/VPP`）和 mm 尺規（格距取 1.27 mm 的倍數）。
+   預設範圍是圖上有東西的地方加 5 mm，不是整頁。測試：`fab_e2e`、`desktop_sch_e2e`。
 
 保留不動：專案管理器的 Version Control（Git）面板。
 

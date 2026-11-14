@@ -1134,6 +1134,12 @@ std::unique_ptr<FOOTPRINT> copyAsNew( const FOOTPRINT* aSource )
     fp->RunOnChildren( []( BOARD_ITEM* aChild ) { aChild->ResetUuid(); }, RECURSE_MODE::RECURSE );
     fp->ClearAllNets();
 
+    // a new part, placed by hand: not the schematic symbol the original belongs to (sync_pcb
+    // would take the copy for that symbol)
+    fp->SetPath( KIID_PATH() );
+    fp->SetSheetname( wxEmptyString );
+    fp->SetSheetfile( wxEmptyString );
+
     if( fp->IsFlipped() )
         fp->Flip( fp->GetPosition(), FLIP_DIRECTION::LEFT_RIGHT );
 
@@ -3404,6 +3410,11 @@ KICADD_HANDLER_PCB::handleAddFootprint( const HANDLER_CONTEXT<AddFootprint>& aCt
     HISTORY_ENTRY entry;
     entry.label = label;
     entry.added.push_back( detach( static_cast<FOOTPRINT*>( placed->Clone() ) ) );
+
+    // the nets it made: undo takes out those nothing is on any more (as for sync_pcb)
+    for( const std::string& n : out.created_nets() )
+        entry.netsCreated.push_back( wxString::FromUTF8( n ) );
+
     out.set_history_label( entry.label );
     record( std::move( entry ) );
     return out;
@@ -6926,10 +6937,17 @@ HANDLER_RESULT<BoardSetupResponse> KICADD_HANDLER_PCB::handleBoardSetup( const H
         }
     }
 
-    if( fab )
-        out.set_note( kicadd::setup::FabStackupSource() );
-
     kicadd::setup::STATE now = kicadd::setup::Capture( *b );
+
+    if( fab )
+    {
+        char buf[200];
+        std::snprintf( buf, sizeof( buf ), "%s is one of JLCPCB's 1.6 mm stackups; the layers in its table add up "
+                       "to %.3f mm (the thickness above). ",
+                       wxString::FromUTF8( req.stackup() ).Upper().ToStdString().c_str(), now.thickness / 1e6 );
+        out.set_note( buf + kicadd::setup::FabStackupSource() );
+    }
+
     out.set_copper_layers( now.copperLayers );
     out.set_thickness( now.thickness / 1e6 );
 

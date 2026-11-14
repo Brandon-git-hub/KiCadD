@@ -518,7 +518,8 @@ TOOL_RESULT lcscMatch( IPC_CLIENT& aIpc, const json& aArgs )
                     if( h.lcsc() == chosen.lcsc() )
                         chosen = h;      // with its live numbers, good or not
 
-                    if( h.live_stock() > 0 && h.live_smt() )
+                    // JLCPCB assembles from its own stock: LCSC's retail stock may be 0 for a basic part
+                    if( h.live_smt() )
                     {
                         chosen = h;
                         ok = true;
@@ -533,17 +534,18 @@ TOOL_RESULT lcscMatch( IPC_CLIENT& aIpc, const json& aArgs )
 
         g.lcsc = chosen.lcsc();
         g.line = std::string( chosen.basic() ? "BASIC" : chosen.preferred() ? "preferred" : "extended" ) + " "
-                 + chosen.mfr() + ", JLC stock " + std::to_string( chosen.stock() );
+                 + chosen.mfr() + "; JLCPCB assembly stock " + std::to_string( chosen.stock() ) + " (index "
+                 + r.index_date() + ")";
 
-        if( chosen.live_stock() >= 0 )
-            g.line += ", LCSC now " + std::to_string( chosen.live_stock() )
-                      + ( chosen.live_smt() ? "" : ", NOT assembled by JLCPCB now" );
+        if( !chosen.live_class().empty() || chosen.live_stock() >= 0 )
+            g.line += std::string( chosen.live_smt() ? ", JLCPCB assembles it now" : ", NOT assembled by JLCPCB now" )
+                      + ", LCSC retail stock now " + std::to_string( std::max<int64_t>( 0, chosen.live_stock() ) );
 
         g.line += "; " + ( chosen.description().size() > 110 ? chosen.description().substr( 0, 107 ) + "..."
                                                               : chosen.description() );
 
         if( r.total() > 1 )
-            g.line += " (" + std::to_string( r.total() ) + " in stock)";
+            g.line += "; first of " + std::to_string( r.total() ) + " matching parts";
 
         matched++;
     }
@@ -1953,6 +1955,94 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                     return fail( err );
 
                 return connectResult( r, "part(s) changed" );
+            } } );
+
+    aTools.push_back( { "sch_render",
+            "A picture (PNG) of one schematic sheet as it is now, to see what the coordinates do not "
+            "show: overlapping parts or text, crossing wires, labels away from their wires, how the "
+            "sheet reads. KiCad's own plot. refs are framed and labelled, nets drawn bright (wires, "
+            "labels, pins); with either it zooms to them (zoom=false keeps the sheet) and picks the "
+            "sheet of the first ref. sheet: a name or path (default the root); area [x0, y0, x1, y1] "
+            "mm; frame=true the whole page with its title block. mm rulers on the top and left. size: "
+            "pixels on the long side (default 1600). path also saves the PNG (relative: the project "
+            "folder).",
+            obj( { { "sheet", { { "type", "string" } } },
+                   { "refs", { { "type", "array" }, { "items", { { "type", "string" } } } } },
+                   { "nets", { { "type", "array" }, { "items", { { "type", "string" } } } } },
+                   { "area", { { "type", "array" }, { "items", { { "type", "number" } } },
+                               { "description", "[x0, y0, x1, y1] mm" } } },
+                   { "zoom", { { "type", "boolean" } } },
+                   { "frame", { { "type", "boolean" } } },
+                   { "size", { { "type", "integer" } } },
+                   { "margin", { { "type", "number" }, { "description", "mm around a zoom (5)" } } },
+                   { "path", { { "type", "string" } } } } ),
+            [&aIpc]( const json& a )
+            {
+                ks::SchRender req;
+                req.set_sheet( str( a, "sheet" ) );
+
+                for( const char* key : { "refs", "nets" } )
+                {
+                    for( const json& v : a.value( key, json::array() ) )
+                    {
+                        if( v.is_string() )
+                            ( std::string( key ) == "refs" ? req.add_refs( v.get<std::string>() )
+                                                           : req.add_nets( v.get<std::string>() ) );
+                    }
+                }
+
+                if( a.contains( "area" ) )
+                {
+                    const json& b = a["area"];
+
+                    if( !b.is_array() || b.size() != 4
+                        || !std::all_of( b.begin(), b.end(), []( const json& v ) { return v.is_number(); } ) )
+                        return fail( "area is [x0, y0, x1, y1] in mm" );
+
+                    for( const json& v : b )
+                        req.add_area( v.get<double>() );
+                }
+
+                req.set_zoom( a.value( "zoom", req.refs_size() + req.nets_size() > 0 ) );
+                req.set_frame( a.value( "frame", false ) );
+                req.set_size( a.value( "size", 0 ) );
+                req.set_margin( a.value( "margin", 0.0 ) );
+                req.set_path( str( a, "path" ) );
+
+                ks::SchRenderResponse r;
+                std::string           err;
+
+                if( !aIpc.Call( req, r, err ) )
+                    return fail( err );
+
+                std::string t = "picture of " + r.sheet() + " " + std::to_string( r.width() ) + "x"
+                                + std::to_string( r.height() ) + " px, " + num( r.mm_per_px() * 1000 ) + " um/px; x "
+                                + num( r.area( 0 ) ) + " .. " + num( r.area( 2 ) ) + ", y " + num( r.area( 1 ) )
+                                + " .. " + num( r.area( 3 ) ) + " mm (rulers on the top and left)";
+
+                if( req.refs_size() )
+                    t += "\nmagenta frames: the parts asked for";
+
+                if( req.nets_size() )
+                    t += "\nblue: the nets asked for (wires, labels, pins)";
+
+                for( const std::string& e : r.elsewhere() )
+                    t += "\nelsewhere: " + e;
+
+                if( !r.missing().empty() )
+                {
+                    t += "\nnot found:";
+
+                    for( const std::string& m : r.missing() )
+                        t += " " + m;
+                }
+
+                if( !r.path().empty() )
+                    t += "\nsaved: " + r.path();
+
+                TOOL_RESULT out{ t, false };
+                out.image = r.png();
+                return out;
             } } );
 
     aTools.push_back( { "lcsc_match",

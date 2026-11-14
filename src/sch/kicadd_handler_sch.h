@@ -104,6 +104,9 @@ private:
     HANDLER_RESULT<kicadd::schematic::RegisterLibraryResponse>
     handleRegisterLibrary( const HANDLER_CONTEXT<kicadd::schematic::RegisterLibrary>& aCtx );
 
+    HANDLER_RESULT<kicadd::schematic::SchRenderResponse>
+    handleRender( const HANDLER_CONTEXT<kicadd::schematic::SchRender>& aCtx );
+
     /// A power symbol for net @a aNet ("GND", "+3V3"): the project's power library if it has
     /// one, else made here (KiCadD ships no libraries): a ground or a supply shape.
     const LIB_SYMBOL* powerSymbol( const std::string& aNet, LIB_ID& aId );

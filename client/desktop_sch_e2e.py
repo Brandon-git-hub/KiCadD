@@ -128,7 +128,7 @@ def main():
         check(not err and ref, "agent added " + t.splitlines()[0][:80])
         err, t = mcp.tool("sch_connect", {"nets": {"VPP": [f"{ref}.1"], "AGENT_PULLUP": [f"{ref}.2"]}})
         check(not err and t.startswith("2 pin(s) connected"), "agent connected it: " + t[:70])
-        err, t = mcp.tool("sch_netlist", {"refs": [ref]})
+        err, t = mcp.tool("sch_part", {"ref": ref})
         check("VPP" in t and "AGENT_PULLUP" in t, "its pins on VPP and AGENT_PULLUP: " + " ".join(t.split())[:100])
         time.sleep(1)
         titles = d.titles()
@@ -136,10 +136,15 @@ def main():
               f"the editor shows the schematic modified: {[t for t in titles if 'Schematic' in t]}")
         d.shot(os.path.join(work, "shot-1-agent-edit.png"))
 
+        r = mcp.rpc("tools/call", {"name": "sch_render", "arguments": {"refs": [ref], "size": 600}}).get("result", {})
+        img = [c for c in r.get("content", []) if c.get("type") == "image"]
+        check(not r.get("isError") and img and len(img[0].get("data", "")) > 1000,
+              "sch_render in the editor: a PNG of " + ref)
+
         print("[3] user Ctrl+Z")
         canvas_keys(sch_win, "ctrl+z")
         time.sleep(1)
-        err, t = mcp.tool("sch_netlist", {"refs": [ref]})
+        err, t = mcp.tool("sch_part", {"ref": ref})
         check("AGENT_PULLUP" not in t, "first Ctrl+Z takes the connection back")
         canvas_keys(sch_win, "ctrl+z")
         time.sleep(1)

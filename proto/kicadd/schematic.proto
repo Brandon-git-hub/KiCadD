@@ -409,3 +409,33 @@ message SchSetFields
 {
   repeated SchFieldEdit parts = 1;
 }
+
+// A picture (PNG) of one sheet of the schematic in memory, for the agent to look at: KiCad's own
+// plot (symbols, wires, labels, fields), with what to look at marked: parts framed and
+// labelled, nets drawn bright, a millimetre ruler on the top and left (the coordinates the
+// other tools use). Returns SchRenderResponse
+message SchRender
+{
+  string          sheet  = 1;   // name or path; default: the sheet of the first ref, else the root
+  repeated string refs   = 2;   // framed
+  repeated string nets   = 3;   // drawn bright (on this sheet)
+  repeated double area   = 4;   // [x0, y0, x1, y1] mm
+  bool            zoom   = 5;   // to the refs / nets (with a margin)
+  int32           size   = 6;   // pixels on the long side (default 1600, 200..4000)
+  bool            frame  = 7;   // the whole page with its frame and title block
+  string          path   = 8;   // also write the PNG there
+  double          margin = 9;   // mm around a zoom (default 5)
+}
+
+message SchRenderResponse
+{
+  bytes  png       = 1;
+  int32  width     = 2;
+  int32  height    = 3;
+  double mm_per_px = 4;
+  repeated double area = 5;      // [x0, y0, x1, y1] mm drawn (without the ruler strips)
+  string sheet     = 6;          // its path ("/", "/Power/")
+  repeated string missing   = 7; // refs / nets not found anywhere
+  repeated string elsewhere = 8; // "U5 on /Power/", "net VBUS not on this sheet"
+  string path      = 9;
+}

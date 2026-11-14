@@ -376,6 +376,7 @@ KICADD_HANDLER_SCH::KICADD_HANDLER_SCH( std::shared_ptr<SCH_CONTEXT> aContext ) 
     registerHandler<SchUndo, SchHistoryResponse>( &KICADD_HANDLER_SCH::handleUndo );
     registerHandler<SchSetFields, SchConnectResponse>( &KICADD_HANDLER_SCH::handleSetFields );
     registerHandler<RegisterLibrary, RegisterLibraryResponse>( &KICADD_HANDLER_SCH::handleRegisterLibrary );
+    registerHandler<SchRender, SchRenderResponse>( &KICADD_HANDLER_SCH::handleRender );
 }
 
 

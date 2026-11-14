@@ -88,6 +88,9 @@ def main():
         check(not err and t.startswith("12 group(s)"), "12 groups (R1 R2 one, C1 C2 one; R6 and R7 left out)")
         check("1 part(s) have one already" in t and "1 not assembled" in t, "R6 (has one) and R7 (DNP) counted apart")
         check(re.search(r"-> C\d+ BASIC", lines.get("R1 R2", "")) is not None, "R1 R2 10k 0603: a basic part")
+        check(re.search(r"JLCPCB assembly stock \d+ \(index \d{4}-\d\d-\d\d\)", lines.get("R1 R2", "")) is not None
+              and re.search(r"first of \d+ matching parts$", lines.get("R1 R2", "")) is not None
+              and "in stock)" not in t, "the stock says whose it is; the candidate count says what it is")
         check(re.search(r"-> C\d+ .*4\.7kΩ.*±1%", lines.get("R3", "")) is not None, "R3 4k7 1% 0402: 4.7k, 1%")
         check("not a chip package" in lines.get("R4", ""), "R4 axial: not a chip package")
         check("no footprint" in lines.get("R5", ""), "R5: no footprint")

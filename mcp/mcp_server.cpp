@@ -8,6 +8,8 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <string>
+#include <vector>
 #include <exception>
 
 using json = nlohmann::json;
@@ -98,6 +100,38 @@ json MCP_SERVER::handleToolsList() const
 namespace
 {
 
+/// Arguments the tool's schema does not have (an object with "properties" and no
+/// "additionalProperties"), nested objects too: "create.rect"
+void unknownArgs( const json& aSchema, const json& aArgs, const std::string& aPrefix, std::vector<std::string>& aOut )
+{
+    if( !aArgs.is_object() || !aSchema.is_object() || !aSchema.contains( "properties" )
+        || aSchema.contains( "additionalProperties" ) )
+        return;
+
+    const json& props = aSchema["properties"];
+
+    for( const auto& [key, value] : aArgs.items() )
+    {
+        if( !props.contains( key ) )
+            aOut.push_back( aPrefix + key );
+        else
+            unknownArgs( props[key], value, aPrefix + key + ".", aOut );
+    }
+}
+
+
+std::string knownArgs( const json& aSchema )
+{
+    std::string s;
+
+    const json props = aSchema.value( "properties", json::object() );   // a copy: items() of a temporary dangles
+
+    for( const auto& [key, value] : props.items() )
+        s += ( s.empty() ? "" : ", " ) + key;
+
+    return s;
+}
+
 std::string Base64( const std::string& aBytes )
 {
     static const char* abc = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -150,6 +184,35 @@ json MCP_SERVER::handleToolsCall( const json& aParams )
         throw std::invalid_argument( "unknown tool: " + name );
 
     TOOL_RESULT r;
+
+    // an argument the tool does not know is an error, not silently nothing
+    std::vector<std::string> unknown;
+    unknownArgs( it->inputSchema, args, "", unknown );
+
+    if( !unknown.empty() )
+    {
+        std::string list, where;
+
+        for( const std::string& u : unknown )
+            list += ( list.empty() ? "" : ", " ) + u;
+
+        // the arguments of the object the first unknown one is in
+        const json* schema = &it->inputSchema;
+        std::string path = unknown.front();
+
+        for( size_t dot; ( dot = path.find( '.' ) ) != std::string::npos; path = path.substr( dot + 1 ) )
+            schema = &( *schema )["properties"][path.substr( 0, dot )];
+
+        where = unknown.front().find( '.' ) == std::string::npos
+                        ? std::string()
+                        : " in " + unknown.front().substr( 0, unknown.front().rfind( '.' ) );
+
+        r = { name + ": unknown argument(s) " + list + "; the arguments" + where + " are: " + knownArgs( *schema ),
+              true };
+
+        return { { "content", json::array( { { { "type", "text" }, { "text", r.text } } } ) },
+                 { "isError", true } };
+    }
 
     {
         std::lock_guard<std::mutex> lock( m_callMutex );

@@ -160,7 +160,7 @@ bool RenderBoardPng( BOARD* aBoard, const kicadd::board::RenderBoard& aReq,
         else if( low == "copper" )
             layers |= cu | LSET( { Edge_Cuts } );
         else if( low == "silk" || low == "silkscreen" )
-            layers |= LSET( { nearCu, back ? B_SilkS : F_SilkS, Edge_Cuts } );
+            layers |= LSET( { back ? B_Mask : F_Mask, back ? B_SilkS : F_SilkS, Edge_Cuts } );   // the mask openings show the pads
         else if( low == "fab" || low == "assembly" )
             layers |= LSET( { back ? B_Fab : F_Fab, back ? B_CrtYd : F_CrtYd, Edge_Cuts } );
         else
@@ -199,8 +199,12 @@ bool RenderBoardPng( BOARD* aBoard, const kicadd::board::RenderBoard& aReq,
                    return ra < rb;
                } );
 
+    // the standard names ("F.Cu"), the board's own after it when it has one ("F.Cu (top_layer)")
     for( PCB_LAYER_ID l : seq )
-        aOut.add_layers( str( aBoard->GetLayerName( l ) ) );
+    {
+        std::string name = str( BOARD::GetStandardLayerName( l ) ), own = str( aBoard->GetLayerName( l ) );
+        aOut.add_layers( own == name ? name : name + " (" + own + ")" );
+    }
 
     // --- what to mark
     std::vector<FOOTPRINT*> marked;

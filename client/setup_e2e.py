@@ -184,7 +184,8 @@ def main():
         print("      ", " | ".join(t.splitlines()[:8])[:400])
         check(not err and "4 copper layers, 1.61 mm thick" in t
               and "prepreg 7628 0.218 mm (er 4.4) + 7628 0.218 mm (er 4.4) + 2116 0.1164 mm (er 4.16)" in t
-              and "core FR4 0.4 mm (er 4.6)" in t and "In1.Cu copper 0.0152 mm" in t and "note: JLCPCB's" in t,
+              and "core FR4 0.4 mm (er 4.6)" in t and "In1.Cu copper 0.0152 mm" in t and "note: JLC04161H-7628B is one of JLCPCB's 1.6 mm stackups" in t
+              and "add up to 1.605 mm" in t,
               "JLC04161H-7628B: its sheets, thicknesses and Dk")
         err, t = mcp.tool("board_setup", {"stackup": "JLC04161H-7628", "thickness": 1.2})
         check(err and "give it alone" in t, "a fab stackup with a thickness: refused")

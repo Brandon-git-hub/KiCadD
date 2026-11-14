@@ -1528,6 +1528,25 @@ TOOL_RESULT zonesTool( IPC_CLIENT& aIpc, const json& aArgs )
         for( const std::string& l : getStrings( c, "layers" ) )
             z->add_layers( l );
 
+        if( c.contains( "rect" ) )
+        {
+            const json& b = c["rect"];
+
+            if( c.contains( "outline" ) || !b.is_array() || b.size() != 4
+                || !std::all_of( b.begin(), b.end(), []( const json& v ) { return v.is_number(); } ) )
+                return error( "create.rect: [x0, y0, x1, y1] in mm (or outline [[x, y], ...], not both)" );
+
+            const double x0 = b[0].get<double>(), y0 = b[1].get<double>(), x1 = b[2].get<double>(),
+                         y1 = b[3].get<double>();
+
+            for( auto [x, y] : { std::pair{ x0, y0 }, std::pair{ x1, y0 }, std::pair{ x1, y1 }, std::pair{ x0, y1 } } )
+            {
+                kb::Point* pt = z->add_outline();
+                pt->set_x( toNm( x ) );
+                pt->set_y( toNm( y ) );
+            }
+        }
+
         if( c.contains( "outline" ) )
         {
             if( !c["outline"].is_array() )
@@ -2688,7 +2707,7 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        "layers, priority, clearance, minimum width, pad connection). create: a new zone, e.g. "
                        "{\"create\": {\"net\": \"GND\"}} pours GND on F.Cu and B.Cu over the whole board; "
                        "{\"create\": {\"net\": \"GND\", \"layers\": [\"In1.Cu\"]}} makes an inner plane; "
-                       "outline [[x, y], ...] (mm) for a part of the board. Where zones of different nets "
+                       "rect [x0, y0, x1, y1] or outline [[x, y], ...] (mm) for a part of the board. Where zones of different nets "
                        "overlap, the higher priority is filled and the other keeps clear: a new zone inside a "
                        "bigger one is put above it, and an overlap at the same priority is warned about. "
                        "Change settings: choose with nets, layers, ids (from the list) or all=true, and give "
@@ -2712,6 +2731,8 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                                        { { "net", { { "type", "string" }, { "description", "e.g. GND" } } },
                                          { "layers", { { "type", "array" }, { "items", { { "type", "string" } } },
                                                        { "description", "default [\"F.Cu\", \"B.Cu\"]; [\"all\"]: every copper layer" } } },
+                                         { "rect", { { "type", "array" }, { "items", { { "type", "number" } } },
+                                                     { "description", "[x0, y0, x1, y1] in mm: a rectangle" } } },
                                          { "outline", { { "type", "array" },
                                                         { "description", "[[x, y], ...] in mm; default the board outline" } } },
                                          { "priority", { { "type", "integer" },
@@ -2748,7 +2769,7 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        "each layer of the stackup). copper_layers (2, 4, 6, ...), thickness (mm, e.g. 1.6), "
                        "outer_copper_oz / inner_copper_oz (e.g. 1 and 0.5): the stackup is made anew like Board "
                        "Setup's default. stackup=\"JLC04161H-7628\" (or another of JLCPCB's impedance "
-                       "stackups, 4 and 6 layers, 1.6 mm; stackup=\"list\" names them) sets the fab's own: "
+                       "stackups, 4 and 6 layers, nominal 1.6 mm, though the layers in JLCPCB's tables add up to 1.45-1.65 mm; stackup=\"list\" names them) sets the fab's own: "
                        "layer count, prepreg / core thicknesses and dielectric constants, for controlled-"
                        "impedance widths. Fewer layers only when the ones that go are empty. One undoable edit. "
                        "Pair with set_rules preset (e.g. jlcpcb_4layer) and zones create on the inner layers.",

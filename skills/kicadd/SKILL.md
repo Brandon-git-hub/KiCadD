@@ -30,7 +30,9 @@ what each tool does; this skill says how to use them together.
 6. **Keep answers short.** Long lists are cut by default; pass `detail=true` only when you need
    every position or violation. For repeated or routine work use `batch` (one call, one line per
    step) instead of many single calls.
-7. **Units:** mm everywhere, Y grows downwards. The schematic snaps to the 1.27 mm grid. Angles
+7. **Arguments are checked:** a name a tool does not have is an error that lists the ones it
+   has; read it and call again rather than guessing.
+8. **Units:** mm everywhere, Y grows downwards. The schematic snaps to the 1.27 mm grid. Angles
    in degrees, counter-clockwise.
 
 ## Review a design
@@ -98,7 +100,7 @@ From a blank project, before placing parts:
    part or through a track, a cut-out through tracks, and tracks outside a new outline are
    listed at once (DRC would show them later).
 4. `zones create={"net": "GND"}` pours GND over the board outline on F.Cu and B.Cu (or
-   `layers: ["In1.Cu"]` for a plane). Pour after sync_pcb, once the net exists. Two zones of
+   `layers: ["In1.Cu"]` for a plane; `rect: [x0, y0, x1, y1]` or `outline` for part of the board). Pour after sync_pcb, once the net exists. Two zones of
    different nets on the same layer need different priorities: the higher one is filled, the
    other keeps clear. A new zone inside a bigger one gets the higher priority by itself; an
    overlap at the same priority comes with a warning and the `zones ids=[...] priority=1`
@@ -167,9 +169,16 @@ length matching, dense escapes).
 `render_board` returns a PNG of the board as it is (KiCad's own plot: copper, pads, pours,
 silkscreen, outline) with mm rulers on the top and left and the unrouted connections as thin
 white lines. `refs` frames parts (and zooms to them), `nets` draws nets in cyan, `area`
-crops, `layers: ["silk"]` / `["fab"]` / names, `back=true` from below (mirrored). Use it for
+crops, `layers: ["silk"]` (silkscreen, the mask openings where the pads are, outline) /
+`["fab"]` / names, `back=true` from below (mirrored). Use it for
 what coordinates do not show: silkscreen over pads, part orientation, crowding, how a route
 runs. Keep `size` modest (default 1200 px) unless the detail needs more.
+
+`sch_render` does the same for a schematic sheet: KiCad's plot with mm rulers in the
+coordinates `sch_summary` gives. `refs` frames parts (and goes to their sheet), `nets` draws a
+net's wires, labels and pins in blue, `sheet` / `area` / `frame=true` (the whole page with its
+title block). Look at it after a group of `sch_add_part` / `sch_connect` edits: overlapping
+symbols or text, labels away from their wires, a sheet that does not read well.
 
 ## Manufacturing (JLCPCB)
 
@@ -192,6 +201,5 @@ answer: when the next call depends on a result, make separate calls.
 ## Not available (say so instead of improvising)
 
 Autorouting a whole board, differential pairs, length tuning, pushing (shoving) existing tracks;
-a picture of the schematic;
 PCB or assembly price quotes; 3D models of LCSC parts; STEP export. For those, the user works in
 the editor or on the manufacturer's site.
