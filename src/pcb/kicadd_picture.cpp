@@ -143,7 +143,7 @@ bool RenderBoardPng( BOARD* aBoard, const kicadd::board::RenderBoard& aReq,
     // --- the layers
     LSET layers;
     const LSET cu = LSET::AllCuMask( copper ) & enabled;
-    const PCB_LAYER_ID near = back ? B_Cu : F_Cu;
+    const PCB_LAYER_ID nearCu = back ? B_Cu : F_Cu;
 
     std::vector<std::string> names( aReq.layers().begin(), aReq.layers().end() );
 
@@ -160,7 +160,7 @@ bool RenderBoardPng( BOARD* aBoard, const kicadd::board::RenderBoard& aReq,
         else if( low == "copper" )
             layers |= cu | LSET( { Edge_Cuts } );
         else if( low == "silk" || low == "silkscreen" )
-            layers |= LSET( { near, back ? B_SilkS : F_SilkS, Edge_Cuts } );
+            layers |= LSET( { nearCu, back ? B_SilkS : F_SilkS, Edge_Cuts } );
         else if( low == "fab" || low == "assembly" )
             layers |= LSET( { back ? B_Fab : F_Fab, back ? B_CrtYd : F_CrtYd, Edge_Cuts } );
         else
@@ -435,7 +435,7 @@ bool RenderBoardPng( BOARD* aBoard, const kicadd::board::RenderBoard& aReq,
                     continue;
 
                 SHAPE_POLY_SET poly;
-                PCB_LAYER_ID   side = p->IsOnLayer( near ) ? near : p->GetPrincipalLayer();
+                PCB_LAYER_ID   side = p->IsOnLayer( nearCu ) ? nearCu : p->GetPrincipalLayer();
                 p->TransformShapeToPolygon( poly, side, 0, aBoard->GetDesignSettings().m_MaxError, ERROR_INSIDE );
 
                 for( int o = 0; o < poly.OutlineCount(); ++o )
