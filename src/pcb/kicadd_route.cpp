@@ -359,6 +359,37 @@ std::vector<PCB_TRACK*> SESSION::Replaced() const
 }
 
 
+RESULT SESSION::PlaceVia( const VECTOR2I& aPos, int aNetCode, int aDiameter, int aDrill )
+{
+    IMPL&  m = *m_impl;
+    RESULT out;
+
+    auto v = std::make_unique<PCB_VIA>( m.board );
+    v->SetPosition( aPos );
+    v->SetWidth( PADSTACK::TEMP_ALL_LAYERS, aDiameter );
+    v->SetDrill( aDrill );
+    v->SetNetCode( aNetCode );
+    v->SetViaType( VIATYPE::THROUGH );   // before SetLayerPair
+    v->SetLayerPair( F_Cu, B_Cu );
+
+    PCB_VIA* raw = v.get();
+    out.net = str( raw->GetNetname() );
+    m.iface.added.push_back( std::move( v ) );
+    m.measure( { raw }, out );
+
+    if( !out.drc.empty() )
+    {
+        std::erase_if( m.iface.added, [&]( const std::unique_ptr<PCB_TRACK>& a ) { return a.get() == raw; } );
+        out.error = "the via would break " + std::to_string( out.drc.size() ) + " rule(s)";
+        return out;
+    }
+
+    out.ok = true;
+    out.vias = 1;
+    return out;
+}
+
+
 RESULT SESSION::Route( const REQUEST& aReq )
 {
     IMPL&        m = *m_impl;

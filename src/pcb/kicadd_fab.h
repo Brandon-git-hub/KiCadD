@@ -9,6 +9,7 @@
 #include <kicadd/board.pb.h>
 
 #include <string>
+#include <vector>
 
 class BOARD;
 class wxString;
@@ -20,5 +21,9 @@ namespace kicadd
 /// file could not be written.
 bool ExportFab( BOARD* aBoard, const wxString& aDir, bool aZip, kicadd::board::ExportFabResponse& aOut,
                 std::string& aError );
+
+/// What would go wrong at the assembler, without writing anything: a reference on more than one
+/// footprint, parts in the BOM that are outside the outline.
+std::vector<std::string> FabProblems( BOARD* aBoard );
 
 } // namespace kicadd

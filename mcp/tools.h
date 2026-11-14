@@ -25,6 +25,7 @@ struct TOOL_RESULT
 {
     std::string text;
     bool        isError = false;
+    std::string image;        ///< PNG bytes, sent after the text as an image content block
 };
 
 struct TOOL

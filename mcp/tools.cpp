@@ -362,6 +362,10 @@ std::string renderMoveResult( const kb::MoveResponse& r, bool aDetail = false )
     }
 
     s += "unconnected=" + std::to_string( r.unconnected() ) + renderPending( r.ratsnest_pending() ) + "\n";
+
+    for( const std::string& n : r.notes() )
+        s += "note: " + n + "\n";
+
     s += renderDrc( r.drc(), aDetail );
     return s;
 }
@@ -846,6 +850,168 @@ TOOL_RESULT fanout( IPC_CLIENT& aIpc, const json& aArgs )
 }
 
 
+std::string mmText( double aMm )
+{
+    char b[32];
+    std::snprintf( b, sizeof( b ), "%.2f", aMm );
+    std::string s = b;
+
+    while( s.back() == '0' )
+        s.pop_back();
+
+    if( s.back() == '.' )
+        s.pop_back();
+
+    return s;
+}
+
+
+
+TOOL_RESULT stitchVias( IPC_CLIENT& aIpc, const json& aArgs )
+{
+    kb::StitchVias req;
+    req.set_net( aArgs.value( "net", std::string() ) );
+
+    double v = 0;
+
+    if( getNumber( aArgs, "spacing", v ) )
+    {
+        if( v <= 0 )
+            return error( "spacing is in mm, more than 0" );
+
+        req.set_spacing( toNm( v ) );
+    }
+
+    if( getNumber( aArgs, "max", v ) )
+        req.set_max( (int) v );
+
+    if( aArgs.contains( "area" ) )
+    {
+        const json& a = aArgs["area"];
+
+        if( !a.is_array() || a.size() != 4 || !std::all_of( a.begin(), a.end(), []( const json& x ) { return x.is_number(); } ) )
+            return error( "area is [x0, y0, x1, y1] in mm" );
+
+        req.mutable_area_min()->set_x( toNm( a[0].get<double>() ) );
+        req.mutable_area_min()->set_y( toNm( a[1].get<double>() ) );
+        req.mutable_area_max()->set_x( toNm( a[2].get<double>() ) );
+        req.mutable_area_max()->set_y( toNm( a[3].get<double>() ) );
+    }
+
+    req.set_under_parts( aArgs.value( "under_parts", false ) );
+    req.set_no_islands( !aArgs.value( "islands", true ) );
+    req.set_dry_run( aArgs.value( "dry_run", false ) );
+
+    std::string head;
+
+    // the vias go inside the fills: they must be today's
+    if( aArgs.value( "refill", true ) )
+    {
+        TOOL_RESULT f = refillZones( aIpc );
+
+        if( f.isError )
+            return error( "refill_zones before stitching failed: " + f.text );
+    }
+
+    kb::StitchViasResponse r;
+    std::string            err;
+
+    if( !aIpc.Call( req, r, err ) )
+        return error( err );
+
+    std::string layers;
+
+    for( const std::string& l : r.layers() )
+        layers += ( layers.empty() ? "" : " " ) + l;
+
+    std::string s = std::string( r.dry_run() ? "would add " : "added " ) + std::to_string( r.vias_added() ) + " stitching via(s) "
+                    + mmText( r.via_diameter() / 1e6 ) + "/" + mmText( r.via_drill() / 1e6 ) + " mm joining "
+                    + layers + "\n";
+    s += "grid: " + std::to_string( r.grid_points() ) + " point(s), " + std::to_string( r.in_copper() )
+         + " inside the net's copper on 2+ layers; " + std::to_string( r.near_existing() )
+         + " left out (a via or hole of the net near), " + std::to_string( r.blocked() )
+         + " blocked (pads, tracks, parts, clearance)\n";
+
+    if( r.islands_joined() )
+        s += std::to_string( r.islands_joined() ) + " island(s) of copper with no via joined by one\n";
+
+    if( !r.islands_left().empty() )
+    {
+        s += "islands still without a via (no free spot: parts, pads, tracks):";
+
+        for( const std::string& i : r.islands_left() )
+            s += " " + i + ";";
+
+        s.back() = '\n';
+    }
+
+    for( const std::string& n : r.notes() )
+        s += "note: " + n + "\n";
+
+    if( !r.history_label().empty() )
+    {
+        s += "unconnected=" + std::to_string( r.unconnected() ) + "; undo takes it back\n";
+
+        if( aArgs.value( "refill", true ) )
+        {
+            TOOL_RESULT f = refillZones( aIpc );
+            s += f.text.substr( 0, f.text.find( '\n' ) ) + "\n";
+        }
+    }
+
+    return { s };
+}
+
+
+TOOL_RESULT teardrops( IPC_CLIENT& aIpc, const json& aArgs )
+{
+    kb::Teardrops req;
+    req.set_remove( aArgs.value( "remove", false ) );
+    req.set_no_vias( !aArgs.value( "vias", true ) );
+    req.set_no_pth( !aArgs.value( "pth", true ) );
+    req.set_smd( aArgs.value( "smd", false ) );
+    req.set_dry_run( aArgs.value( "dry_run", false ) );
+
+    for( const std::string& n : getStrings( aArgs, "nets" ) )
+        req.add_nets( n );
+
+    for( const std::string& r : getStrings( aArgs, "refs" ) )
+        req.add_refs( r );
+
+    kb::TeardropsResponse r;
+    std::string           err;
+
+    if( !aIpc.Call( req, r, err ) )
+        return error( err );
+
+    const char* what = req.remove() ? "off" : "on";
+    std::string s;
+
+    if( r.dry_run() )
+        s = "would switch teardrops " + std::string( what ) + " for " + std::to_string( r.changed() ) + " pad(s) / via(s)";
+    else
+        s = "teardrops switched " + std::string( what ) + " for " + std::to_string( r.changed() ) + " pad(s) / via(s): "
+            + std::to_string( r.before() ) + " -> " + std::to_string( r.after() ) + " teardrop(s) on the board";
+
+    if( r.already() )
+        s += "; " + std::to_string( r.already() ) + " were already";
+
+    s += "\n";
+
+    for( const std::string& m : r.missing() )
+        s += "not found: " + m + "\n";
+
+    if( !r.history_label().empty() )
+    {
+        s += std::string( req.remove() ? "" : "they follow the parts and tracks from now on; " ) + "undo takes it back\n";
+        TOOL_RESULT f = refillZones( aIpc );
+        s += f.text.substr( 0, f.text.find( '\n' ) ) + "\n";
+    }
+
+    return { s };
+}
+
+
 TOOL_RESULT deleteTracks( IPC_CLIENT& aIpc, const json& aArgs )
 {
     kb::DeleteTracks req;
@@ -1102,6 +1268,9 @@ TOOL_RESULT pcbSetFields( IPC_CLIENT& aIpc, const json& aArgs )
         return error( err );
 
     std::string t = r.history_label().empty() ? "nothing changed" : r.history_label() + " (undo takes it back)";
+
+    for( const std::string& n : r.notes() )
+        t += "\nnote: " + n;
 
     if( !r.missing().empty() )
     {
@@ -1395,6 +1564,9 @@ TOOL_RESULT zonesTool( IPC_CLIENT& aIpc, const json& aArgs )
     {
         t = r.history_label() + " (undo takes it back)\n";
 
+        for( const std::string& n : r.notes() )
+            t += n + "\n";
+
         if( !aArgs.contains( "refill" ) || !aArgs["refill"].is_boolean() || aArgs["refill"].get<bool>() )
         {
             TOOL_RESULT f = refillZones( aIpc );
@@ -1572,6 +1744,12 @@ TOOL_RESULT boardOutline( IPC_CLIENT& aIpc, const json& aArgs )
         t += r.outside_size() > 15 ? " ...\n" : "\n";
     }
 
+    for( const std::string& p : r.problems() )
+        t += "warning: " + p + "\n";
+
+    if( r.history_label().empty() )
+        return { t + "nothing changed\n" };
+
     t += "undo takes it back: \"" + r.history_label() + "\"; zones create for a pour, refill_zones after moving parts\n";
     return { t };
 }
@@ -1586,6 +1764,9 @@ TOOL_RESULT boardSetup( IPC_CLIENT& aIpc, const json& aArgs )
     if( getNumber( aArgs, "thickness", d ) )       req.set_thickness( d );
     if( getNumber( aArgs, "outer_copper_oz", d ) ) req.set_outer_copper_oz( d );
     if( getNumber( aArgs, "inner_copper_oz", d ) ) req.set_inner_copper_oz( d );
+
+    if( aArgs.contains( "stackup" ) && aArgs["stackup"].is_string() )
+        req.set_stackup( aArgs["stackup"].get<std::string>() );
 
     kb::BoardSetupResponse r;
     std::string            err;
@@ -1603,6 +1784,9 @@ TOOL_RESULT boardSetup( IPC_CLIENT& aIpc, const json& aArgs )
 
     if( r.stackup().empty() )
         t += " none defined (board_setup thickness=1.6 makes one)";
+
+    if( !r.note().empty() )
+        t += "\nnote: " + r.note();
 
     return { t + "\n" };
 }
@@ -2014,6 +2198,90 @@ TOOL_RESULT lcscSearch( IPC_CLIENT& aIpc, const json& aArgs )
 }
 
 
+TOOL_RESULT renderBoard( IPC_CLIENT& aIpc, const json& aArgs )
+{
+    kb::RenderBoard req;
+
+    for( const std::string& l : getStrings( aArgs, "layers" ) )
+        req.add_layers( l );
+
+    for( const std::string& r : getStrings( aArgs, "refs" ) )
+        req.add_refs( r );
+
+    for( const std::string& n : getStrings( aArgs, "nets" ) )
+        req.add_nets( n );
+
+    if( aArgs.contains( "area" ) )
+    {
+        const json& a = aArgs["area"];
+
+        if( !a.is_array() || a.size() != 4 || !std::all_of( a.begin(), a.end(), []( const json& v ) { return v.is_number(); } ) )
+            return error( "area is [x0, y0, x1, y1] in mm" );
+
+        req.mutable_area_min()->set_x( toNm( a[0].get<double>() ) );
+        req.mutable_area_min()->set_y( toNm( a[1].get<double>() ) );
+        req.mutable_area_max()->set_x( toNm( a[2].get<double>() ) );
+        req.mutable_area_max()->set_y( toNm( a[3].get<double>() ) );
+    }
+
+    req.set_zoom( aArgs.value( "zoom", req.refs_size() + req.nets_size() > 0 ) );
+    req.set_no_ratsnest( !aArgs.value( "ratsnest", true ) );
+    req.set_labels( aArgs.value( "labels", false ) );
+    req.set_back( aArgs.value( "back", false ) );
+
+    double v = 0;
+
+    if( getNumber( aArgs, "size", v ) )
+        req.set_size( (int) v );
+
+    if( getNumber( aArgs, "margin", v ) )
+        req.set_margin( v );
+
+    if( aArgs.contains( "path" ) && aArgs["path"].is_string() )
+        req.set_path( aArgs["path"].get<std::string>() );
+
+    kb::RenderBoardResponse r;
+    std::string             err;
+
+    if( !aIpc.Call( req, r, err ) )
+        return error( err );
+
+    std::string s = "picture " + std::to_string( r.width() ) + "x" + std::to_string( r.height() ) + " px, "
+                    + mmText( r.mm_per_px() * 1000 ) + " um/px; "
+                    + ( req.back() ? "seen from below (mirrored): x grows to the left; " : "" ) + "x "
+                    + mmText( r.origin().x() / 1e6 ) + " .. " + mmText( r.extent().x() / 1e6 ) + ", y "
+                    + mmText( r.origin().y() / 1e6 ) + " .. " + mmText( r.extent().y() / 1e6 )
+                    + " mm (rulers on the top and left)\nlayers, bottom first:";
+
+    for( const std::string& l : r.layers() )
+        s += " " + l;
+
+    if( req.refs_size() )
+        s += "\nmagenta frames: the parts asked for";
+
+    if( req.nets_size() )
+        s += "\ncyan: the nets asked for";
+
+    if( !req.no_ratsnest() )
+        s += "\n" + std::to_string( r.unrouted() ) + " unrouted connection(s) as thin white lines";
+
+    if( !r.missing().empty() )
+    {
+        s += "\nnot found:";
+
+        for( const std::string& m : r.missing() )
+            s += " " + m;
+    }
+
+    if( !r.path().empty() )
+        s += "\nsaved: " + r.path();
+
+    TOOL_RESULT out{ s };
+    out.image = r.png();
+    return out;
+}
+
+
 TOOL_RESULT exportFab( IPC_CLIENT& aIpc, const json& aArgs )
 {
     std::string head;
@@ -2029,6 +2297,65 @@ TOOL_RESULT exportFab( IPC_CLIENT& aIpc, const json& aArgs )
         head = r.text;
     }
 
+    // DRC of the board as it will be made: errors are reported first; strict refuses to write
+    const bool strict = aArgs.value( "strict", false );
+    std::string drcText, drcErrors;
+
+    if( aArgs.value( "drc", true ) || strict )
+    {
+        DRC_REPORT  report;
+        std::string derr;
+
+        if( !RunFullDrc( aIpc, report, derr ) )
+            return error( "DRC before the export failed: " + derr );
+
+        int nErr = 0, nWarn = 0;
+        std::string types;
+
+        for( const auto& [k, v] : report.errors )
+        {
+            nErr += v;
+            types += ( types.empty() ? "" : ", " ) + k + " " + std::to_string( v );
+        }
+
+        for( const auto& [k, v] : report.warnings )
+            nWarn += v;
+
+        if( nErr )
+        {
+            drcErrors = "DRC: " + std::to_string( nErr ) + " error(s) (" + types + ")";
+            drcText = "warning: " + drcErrors + ": the board would be made with them; run_drc for the list, "
+                      "fix them (or agree with the user that they may stay) before ordering\n";
+        }
+        else
+        {
+            drcText = "DRC: no errors, " + std::to_string( nWarn ) + " warning(s)\n";
+        }
+    }
+
+    if( strict )
+    {
+        kb::ExportFab check;
+        check.set_check_only( true );
+        kb::ExportFabResponse c;
+        std::string           cerr;
+
+        if( !aIpc.Call( check, c, cerr ) )
+            return error( cerr );
+
+        std::string why;
+
+        if( !drcErrors.empty() )
+            why += "- " + drcErrors + ": run_drc for the list\n";
+
+        for( const std::string& p : c.problems() )
+            why += "- " + p + "\n";
+
+        if( !why.empty() )
+            return error( head + "nothing written (strict):\n" + why
+                          + "fix them, or export_fab without strict to write the files anyway" );
+    }
+
     kb::ExportFab req;
 
     if( aArgs.contains( "dir" ) && aArgs["dir"].is_string() )
@@ -2042,7 +2369,7 @@ TOOL_RESULT exportFab( IPC_CLIENT& aIpc, const json& aArgs )
     if( !aIpc.Call( req, r, err ) )
         return error( err );
 
-    std::string s = head;
+    std::string s = head + drcText;
 
     for( const std::string& p : r.problems() )
         s += "warning: " + p + "\n";
@@ -2296,6 +2623,39 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                                { "nets" } ),
                        [&aIpc]( const json& a ) { return fanout( aIpc, a ); } } );
 
+    tools.push_back( { "stitch_vias",
+                       "Stitching vias for a net's pours (default GND): through vias on a grid (spacing, "
+                       "default 5 mm; area [x0, y0, x1, y1] mm, default the whole pour), each inside the net's "
+                       "filled copper on two or more layers, clear of pads, tracks, holes, the edge and rule "
+                       "areas, and outside the parts' courtyards (under_parts=true allows them there). Then "
+                       "one via in each island of the net's copper that has none (islands=false skips it). "
+                       "Net class via size. The zones are refilled before and after; one undoable edit; "
+                       "dry_run counts without adding.",
+                       schema( { { "net", { { "type", "string" } } },
+                                 { "spacing", { { "type", "number" }, { "description", "mm" } } },
+                                 { "area", { { "type", "array" }, { "items", { { "type", "number" } } } } },
+                                 { "under_parts", { { "type", "boolean" } } },
+                                 { "islands", { { "type", "boolean" } } },
+                                 { "max", { { "type", "integer" } } },
+                                 { "dry_run", { { "type", "boolean" } } },
+                                 { "refill", { { "type", "boolean" } } } } ),
+                       [&aIpc]( const json& a ) { return stitchVias( aIpc, a ); } } );
+
+    tools.push_back( { "teardrops",
+                       "Teardrops (KiCad's own: copper that widens a track into its pad or via) on every "
+                       "via and through-hole pad, or remove=true to take them off. smd=true adds SMD pads; "
+                       "vias=false / pth=false leave those out; nets / refs narrow it (refs alone: those "
+                       "parts' pads only). They follow later edits as in the editor. One undoable edit; the "
+                       "zones are refilled.",
+                       schema( { { "remove", { { "type", "boolean" } } },
+                                 { "vias", { { "type", "boolean" } } },
+                                 { "pth", { { "type", "boolean" } } },
+                                 { "smd", { { "type", "boolean" } } },
+                                 { "nets", refs },
+                                 { "refs", refs },
+                                 { "dry_run", { { "type", "boolean" } } } } ),
+                       [&aIpc]( const json& a ) { return teardrops( aIpc, a ); } } );
+
     tools.push_back( { "get_rules",
                        "The design rules: net classes (clearance, track width, via, diff pair; unset values "
                        "come from Default) with how many nets each has, the net class assignments by net name "
@@ -2324,11 +2684,17 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        [&aIpc]( const json& a ) { return setRules( aIpc, a ); } } );
 
     tools.push_back( { "zones",
-                       "Copper zones: list them (id, net, layers, priority, clearance, minimum width, pad "
-                       "connection), or change their settings as one undoable edit. Choose with nets, layers, "
-                       "ids (from the list) or all=true; change clearance, min_width (mm), priority, "
-                       "connection (solid / thermal / none / thermal_tht), thermal_gap, thermal_spoke (mm). "
-                       "Refilled afterwards unless refill=false.",
+                       "Copper zones (pours): list, create, or change them. No arguments: the list (id, net, "
+                       "layers, priority, clearance, minimum width, pad connection). create: a new zone, e.g. "
+                       "{\"create\": {\"net\": \"GND\"}} pours GND on F.Cu and B.Cu over the whole board; "
+                       "{\"create\": {\"net\": \"GND\", \"layers\": [\"In1.Cu\"]}} makes an inner plane; "
+                       "outline [[x, y], ...] (mm) for a part of the board. Where zones of different nets "
+                       "overlap, the higher priority is filled and the other keeps clear: a new zone inside a "
+                       "bigger one is put above it, and an overlap at the same priority is warned about. "
+                       "Change settings: choose with nets, layers, ids (from the list) or all=true, and give "
+                       "clearance, min_width (mm), priority, connection (solid / thermal / none / thermal_tht), "
+                       "thermal_gap, thermal_spoke (mm). Each is one undoable edit, refilled afterwards unless "
+                       "refill=false.",
                        schema( { { "nets", refs },
                                  { "layers", refs },
                                  { "ids", refs },
@@ -2339,10 +2705,21 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                                  { "connection", { { "type", "string" }, { "enum", { "solid", "thermal", "none", "thermal_tht" } } } },
                                  { "thermal_gap", { { "type", "number" } } },
                                  { "thermal_spoke", { { "type", "number" } } },
-                                 { "create", { { "type", "object" },
-                                               { "description", "a new zone: {net, layers (default [\"F.Cu\", \"B.Cu\"]; "
-                                                                "\"all\"), outline [[x, y], ...] (default the board "
-                                                                "outline), priority, clearance, min_width, connection, name}" } } },
+                                 { "create",
+                                   { { "type", "object" },
+                                     { "description", "a new zone (not together with nets / layers / ids / all)" },
+                                     { "properties",
+                                       { { "net", { { "type", "string" }, { "description", "e.g. GND" } } },
+                                         { "layers", { { "type", "array" }, { "items", { { "type", "string" } } },
+                                                       { "description", "default [\"F.Cu\", \"B.Cu\"]; [\"all\"]: every copper layer" } } },
+                                         { "outline", { { "type", "array" },
+                                                        { "description", "[[x, y], ...] in mm; default the board outline" } } },
+                                         { "priority", { { "type", "integer" },
+                                                         { "description", "default 0, or above the bigger zones it lies in" } } },
+                                         { "clearance", { { "type", "number" } } },
+                                         { "min_width", { { "type", "number" } } },
+                                         { "connection", { { "type", "string" }, { "enum", { "solid", "thermal", "none", "thermal_tht" } } } },
+                                         { "name", { { "type", "string" } } } } } } },
                                  { "refill", { { "type", "boolean" } } } } ),
                        [&aIpc]( const json& a ) { return zonesTool( aIpc, a ); } } );
 
@@ -2352,8 +2729,10 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        "diameter] (mm, Y down). cutouts: [{rect, corner_radius} | {circle}] inside it. Mounting "
                        "holes: hole_inset (mm from the corners, 4 holes of hole_diameter, default 3.2 = M3) and / or "
                        "holes [[x, y, d], {x, y, diameter, plated, net}]: NPTH, or plated with a ring (e.g. to GND); "
-                       "they become footprints H1, H2 ... out of the BOM and the CPL. Reports the size, area, and "
-                       "the parts now outside. One undoable edit. Then zones create for a pour.",
+                       "they become footprints H1, H2 ... out of the BOM and the CPL; one where a part already has "
+                       "a hole is left out. Reports the size, area, the parts now outside or on a cut-out, and "
+                       "warns of holes on parts or tracks and of tracks a cut-out or the outline cuts. One "
+                       "undoable edit. Then zones create for a pour.",
                        schema( { { "rect", { { "type", "array" }, { "items", { { "type", "number" } } } } },
                                  { "circle", { { "type", "array" }, { "items", { { "type", "number" } } } } },
                                  { "corner_radius", { { "type", "number" } } },
@@ -2368,9 +2747,13 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        "The board's layers and stackup. No arguments: what they are (copper layers, thickness, "
                        "each layer of the stackup). copper_layers (2, 4, 6, ...), thickness (mm, e.g. 1.6), "
                        "outer_copper_oz / inner_copper_oz (e.g. 1 and 0.5): the stackup is made anew like Board "
-                       "Setup's default. Fewer layers only when the ones that go are empty. One undoable edit. "
+                       "Setup's default. stackup=\"JLC04161H-7628\" (or another of JLCPCB's impedance "
+                       "stackups, 4 and 6 layers, 1.6 mm; stackup=\"list\" names them) sets the fab's own: "
+                       "layer count, prepreg / core thicknesses and dielectric constants, for controlled-"
+                       "impedance widths. Fewer layers only when the ones that go are empty. One undoable edit. "
                        "Pair with set_rules preset (e.g. jlcpcb_4layer) and zones create on the inner layers.",
-                       schema( { { "copper_layers", { { "type", "integer" } } },
+                       schema( { { "stackup", { { "type", "string" } } },
+                                 { "copper_layers", { { "type", "integer" } } },
                                  { "thickness", { { "type", "number" } } },
                                  { "outer_copper_oz", { { "type", "number" } } },
                                  { "inner_copper_oz", { { "type", "number" } } } } ),
@@ -2380,10 +2763,12 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        "Change footprints' fields and attributes on the board as one undoable edit. parts: "
                        "{\"R1\": {\"Value\": \"10k\", \"LCSC\": \"C25804\", \"dnp\": true}}, or refs [...] with "
                        "set {...} for many. Value is the value; other names are user fields (added hidden when "
-                       "missing; null removes one). Attributes: dnp, exclude_from_bom, exclude_from_pos. The "
-                       "reference and footprint are not changed here. A board made from a schematic takes its "
-                       "fields from it: change them there (sch_set_fields), then sync_pcb. Refs that are not "
-                       "found are listed; the other parts are changed anyway.",
+                       "missing; null removes one). Reference renumbers the part: {\"R22\": {\"Reference\": \"R23\"}} "
+                       "(to a reference no other part has; of two parts with the same one, the one placed by "
+                       "hand). Attributes: dnp, exclude_from_bom, exclude_from_pos. The footprint is not "
+                       "changed here. A board made from a schematic takes its fields and references from it: "
+                       "change them there (sch_set_fields), then sync_pcb. Refs that are not found are listed; "
+                       "the other parts are changed anyway.",
                        schema( { { "parts", { { "type", "object" }, { "additionalProperties", { { "type", "object" } } } } },
                                  { "refs", refs },
                                  { "set", { { "type", "object" } } } } ),
@@ -2454,13 +2839,44 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                                  { "update", { { "type", "boolean" }, { "description", "fetch the index again now" } } } } ),
                        [&aIpc]( const json& a ) { return lcscSearch( aIpc, a ); } } );
 
+    tools.push_back( { "render_board",
+                       "A picture (PNG) of the board as it is now, to look at what coordinates do not "
+                       "show: silkscreen over pads or other text, part orientation, crowding, how tracks "
+                       "run, what is left unrouted. KiCad's own plot of the layers (default front: all "
+                       "copper, front silkscreen, outline; back=true from below, mirrored). refs are framed "
+                       "and labelled, nets drawn in cyan, and with either the picture zooms to them (zoom=false "
+                       "keeps the whole board); area [x0, y0, x1, y1] mm for a region. Rulers in mm on the "
+                       "top and left. size: pixels on the long side (default 1200). labels=true writes every "
+                       "part's reference. path also saves the PNG (relative: in the project folder).",
+                       schema( { { "layers", { { "type", "array" }, { "items", { { "type", "string" } } },
+                                               { "description", "front, back, copper, silk, fab, assembly, or "
+                                                                "layer names (F.Cu, In1.Cu, F.Silkscreen, F.Fab, ...)" } } },
+                                 { "refs", { { "type", "array" }, { "items", { { "type", "string" } } } } },
+                                 { "nets", { { "type", "array" }, { "items", { { "type", "string" } } } } },
+                                 { "area", { { "type", "array" }, { "items", { { "type", "number" } } },
+                                             { "description", "[x0, y0, x1, y1] mm" } } },
+                                 { "zoom", { { "type", "boolean" } } },
+                                 { "size", { { "type", "integer" } } },
+                                 { "margin", { { "type", "number" }, { "description", "mm around a zoom (3)" } } },
+                                 { "ratsnest", { { "type", "boolean" }, { "description", "default true" } } },
+                                 { "labels", { { "type", "boolean" } } },
+                                 { "back", { { "type", "boolean" } } },
+                                 { "path", { { "type", "string" } } } } ),
+                       [&aIpc]( const json& a ) { return renderBoard( aIpc, a ); } } );
+
     tools.push_back( { "export_fab",
                        "Write the fabrication files for JLCPCB from the board as it is now (unsaved edits "
                        "included): Gerbers (Protel extensions, X2, job file) and Excellon drill (mm) zipped "
                        "for the upload, BOM (Comment, Designator, Footprint, LCSC Part #) and CPL "
                        "(Designator, Mid X, Mid Y, Layer, Rotation) as CSV. Refills the zones first "
-                       "(refill=false skips it). dir defaults to <project>/fab. Run run_drc before.",
+                       "(refill=false skips it), then runs the full DRC and puts its error count first "
+                       "(drc=false skips it). strict=true writes nothing when DRC has errors, a reference "
+                       "is on two footprints or a part is outside the outline. dir defaults to <project>/fab.",
                        schema( { { "dir", { { "type", "string" } } },
+                                 { "drc", { { "type", "boolean" }, { "description", "default true" } } },
+                                 { "strict", { { "type", "boolean" },
+                                               { "description", "refuse to write when DRC has errors or a "
+                                                                "reference / placement problem is found" } } },
                                  { "zip", { { "type", "boolean" }, { "description", "default true" } } },
                                  { "refill", { { "type", "boolean" }, { "description", "default true" } } } } ),
                        [&aIpc]( const json& a ) { return exportFab( aIpc, a ); } } );

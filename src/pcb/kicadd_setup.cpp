@@ -19,6 +19,7 @@
 #include <cmath>
 #include <cstdio>
 #include <map>
+#include <board_stackup_manager/stackup_predefined_prms.h>
 
 namespace kicadd::setup
 {
@@ -35,7 +36,109 @@ std::string mm( int aNm )
     return buf;
 }
 
+// ---------------------------------------------------------------------------------------------
+// JLCPCB's impedance-controlled stackups, 1.6 mm, 1 oz outside (the "JLC04161H-..." /
+// "JLC06161H-..." names), from https://jlcpcb.com/impedance as read on 2026-11-14: each
+// dielectric between two copper layers as its prepreg sheets or core, mm. Inner copper is the
+// 0.0152 mm the page gives (H/HOZ cores). Dk as the page states them (no frequency given):
+// prepreg 7628 4.4, 3313 4.1, 2116 4.16, 1080 3.91; core 4.6; solder mask 3.8. JLCPCB's order
+// page (cart.jlcpcb.com) gives other Dk values (7628 4.6, 3313 4.05, 2116 4.25): check with the
+// fab's own impedance calculator before ordering.
+
+struct SHEET
+{
+    const char* material;   // "7628", ...; "core"
+    double      mm;
+};
+
+struct FAB_STACKUP
+{
+    const char*                     name;
+    int                             layers;
+    std::vector<std::vector<SHEET>> gaps;   // top to bottom, one per pair of copper layers
+};
+
+const std::vector<FAB_STACKUP>& fabStackups()
+{
+    using G = std::vector<SHEET>;
+    auto four = []( const char* aName, G aPP, double aCore )
+    {
+        G down( aPP.rbegin(), aPP.rend() );
+        return FAB_STACKUP{ aName, 4, { aPP, G{ { "core", aCore } }, down } };
+    };
+    auto six = []( const char* aName, G aOuter, double aCore, G aMiddle )
+    {
+        G down( aOuter.rbegin(), aOuter.rend() );
+        return FAB_STACKUP{ aName, 6, { aOuter, G{ { "core", aCore } }, aMiddle, G{ { "core", aCore } }, down } };
+    };
+
+    // the prepregs from the top copper down to the first core
+    static const std::vector<FAB_STACKUP> all = {
+        four( "JLC04161H-7628", { { "7628", 0.2104 } }, 1.065 ),
+        four( "JLC04161H-3313", { { "3313", 0.0994 } }, 1.265 ),
+        four( "JLC04161H-1080", { { "1080", 0.0764 } }, 1.265 ),
+        four( "JLC04161H-2116", { { "2116", 0.1164 } }, 1.265 ),
+        four( "JLC04161H-7628A", { { "7628", 0.218 }, { "1080", 0.0764 } }, 0.865 ),
+        four( "JLC04161H-3313A", { { "3313", 0.107 }, { "3313", 0.0994 } }, 1.065 ),
+        four( "JLC04161H-1080A", { { "1080", 0.084 }, { "1080", 0.0764 } }, 1.065 ),
+        four( "JLC04161H-7628B", { { "7628", 0.218 }, { "7628", 0.218 }, { "2116", 0.1164 } }, 0.4 ),
+        four( "JLC04161H-2116A", { { "2116", 0.124 }, { "7628", 0.218 }, { "2116", 0.1164 } }, 0.6 ),
+        four( "JLC04161H-2116B", { { "2116", 0.124 }, { "7628", 0.2104 } }, 0.865 ),
+        four( "JLC04161H-2116C", { { "2116", 0.124 }, { "1080", 0.0764 } }, 1.065 ),
+        four( "JLC04161H-1080B", { { "1080", 0.084 }, { "1080", 0.084 }, { "1080", 0.0764 } }, 1.065 ),
+        four( "JLC04161H-7628G", { { "7628", 0.218 }, { "7628", 0.218 }, { "1080", 0.0764 } }, 0.5 ),
+        four( "JLC04161H-7628E", { { "7628", 0.218 }, { "7628", 0.2104 } }, 0.6 ),
+        four( "JLC04161H-2116D", { { "2116", 0.124 }, { "7628", 0.2104 } }, 0.7 ),
+        four( "JLC04161H-7628F", { { "7628", 0.218 }, { "7628", 0.218 }, { "7628", 0.2104 } }, 0.25 ),
+        four( "JLC04161H-2116E", { { "2116", 0.124 }, { "2116", 0.1164 } }, 0.865 ),
+        four( "JLC04161H-7628C", { { "7628", 0.218 }, { "7628", 0.218 }, { "7628", 0.2104 } }, 0.15 ),
+        six( "JLC06161H-3313", { { "3313", 0.0994 } }, 0.55, { { "2116", 0.1088 } } ),
+        six( "JLC06161H-7628", { { "7628", 0.2104 } }, 0.4, { { "7628", 0.2028 } } ),
+        six( "JLC06161H-7628D", { { "7628", 0.216 }, { "7628", 0.2084 } }, 0.2, { { "7628", 0.2008 } } ),
+        six( "JLC06161H-1080", { { "1080", 0.0764 } }, 0.55, { { "7628", 0.2104 } } ),
+        six( "JLC06161H-1080A", { { "1080", 0.0764 } }, 0.6, { { "3313", 0.0994 } } ),
+        six( "JLC06161H-3313B", { { "3313", 0.0994 } }, 0.4, { { "7628", 0.2104 }, { "7628", 0.2104 } } ),
+        six( "JLC06161H-2116B", { { "2116", 0.1164 } }, 0.5, { { "1080", 0.0764 }, { "1080", 0.0764 } } ),
+        six( "JLC06161H-7628B", { { "7628", 0.218 }, { "1080", 0.0764 } }, 0.35, { { "1080", 0.0764 }, { "1080", 0.0764 } } ),
+    };
+
+    return all;
+}
+
+double dkOf( const std::string& aMaterial )
+{
+    static const std::map<std::string, double> dk = {
+        { "7628", 4.4 }, { "3313", 4.1 }, { "2116", 4.16 }, { "1080", 3.91 }, { "core", 4.6 } };
+    auto it = dk.find( aMaterial );
+    return it == dk.end() ? 4.5 : it->second;
+}
+
+std::string upper( std::string s )
+{
+    std::transform( s.begin(), s.end(), s.begin(), ::toupper );
+    return s;
+}
+
 } // namespace
+
+
+std::vector<std::string> FabStackups()
+{
+    std::vector<std::string> out;
+
+    for( const FAB_STACKUP& f : fabStackups() )
+        out.push_back( f.name );
+
+    return out;
+}
+
+
+std::string FabStackupSource()
+{
+    return "JLCPCB's impedance stackups from https://jlcpcb.com/impedance (read 2026-11-14): Dk 7628 4.4, 3313 4.1, "
+           "2116 4.16, 1080 3.91, core 4.6, mask 3.8 (no frequency given; the order page says 7628 4.6, 3313 4.05, "
+           "2116 4.25): check the widths with JLCPCB's impedance calculator before ordering";
+}
 
 
 std::vector<std::string> Describe( const STATE& aState )
@@ -56,9 +159,20 @@ std::vector<std::string> Describe( const STATE& aState )
         }
 
         case BS_ITEM_TYPE_DIELECTRIC:
-            out.push_back( item->GetTypeName().ToStdString() + " " + item->GetMaterial().ToStdString() + " "
-                           + mm( item->GetThickness() ) + " mm" );
+        {
+            std::string line = item->GetTypeName().ToStdString();
+
+            for( int k = 0; k < item->GetSublayersCount(); ++k )
+            {
+                char er[32];
+                std::snprintf( er, sizeof( er ), "%.3g", item->GetEpsilonR( k ) );
+                line += std::string( k ? " +" : "" ) + " " + item->GetMaterial( k ).ToStdString() + " "
+                        + mm( item->GetThickness( k ) ) + " mm (er " + er + ")";
+            }
+
+            out.push_back( line );
             break;
+        }
 
         case BS_ITEM_TYPE_SOLDERMASK:
             out.push_back( LSET::Name( item->GetBrdLayerId() ).ToStdString() + " mask " + mm( item->GetThickness() )
@@ -133,7 +247,32 @@ void Apply( BOARD& aBoard, const STATE& aState )
 std::optional<STATE> Changed( BOARD& aBoard, const STATE& aFrom, const CHANGE& aChange, std::string& aError )
 {
     STATE st = aFrom;
-    const int n = aChange.copperLayers.value_or( aFrom.copperLayers );
+    const FAB_STACKUP* fab = nullptr;
+
+    if( aChange.fab )
+    {
+        for( const FAB_STACKUP& f : fabStackups() )
+        {
+            if( upper( *aChange.fab ) == f.name )
+                fab = &f;
+        }
+
+        if( !fab )
+        {
+            aError = "no stackup " + *aChange.fab + " (stackup=\"list\" for the names)";
+            return std::nullopt;
+        }
+
+        if( ( aChange.copperLayers && *aChange.copperLayers != fab->layers ) || aChange.thickness || aChange.outerOz
+            || aChange.innerOz )
+        {
+            aError = std::string( fab->name ) + " fixes the layers (" + std::to_string( fab->layers )
+                     + "), the thickness and the copper: give it alone";
+            return std::nullopt;
+        }
+    }
+
+    const int n = fab ? fab->layers : aChange.copperLayers.value_or( aFrom.copperLayers );
 
     if( n < 1 || n > 32 || ( n > 1 && n % 2 ) )
     {
@@ -272,6 +411,48 @@ std::optional<STATE> Changed( BOARD& aBoard, const STATE& aFrom, const CHANGE& a
             if( item->GetType() == BS_ITEM_TYPE_DIELECTRIC )
                 item->SetThickness( each );
         }
+    }
+
+    // a fab's stackup: its sheets, thicknesses and Dk in place of the shared-out dielectrics
+    if( fab )
+    {
+        size_t gap = 0;
+        int    total = 0;
+
+        for( BOARD_STACKUP_ITEM* item : st.stackup.GetList() )
+        {
+            if( item->GetType() == BS_ITEM_TYPE_COPPER )
+            {
+                bool outside = item->GetBrdLayerId() == F_Cu || item->GetBrdLayerId() == B_Cu;
+                item->SetThickness( outside ? 35000 : 15200 );
+                total += item->GetThickness();
+            }
+            else if( item->GetType() == BS_ITEM_TYPE_SOLDERMASK )
+            {
+                item->SetEpsilonR( 3.8 );
+            }
+            else if( item->GetType() == BS_ITEM_TYPE_DIELECTRIC && gap < fab->gaps.size() )
+            {
+                const std::vector<SHEET>& sheets = fab->gaps[gap++];
+                const bool                core = std::string( sheets[0].material ) == "core";
+
+                item->SetTypeName( core ? KEY_CORE : KEY_PREPREG );
+
+                while( item->GetSublayersCount() < (int) sheets.size() )
+                    item->AddDielectricPrms( item->GetSublayersCount() );
+
+                for( int k = 0; k < (int) sheets.size(); ++k )
+                {
+                    item->SetMaterial( core ? wxString( wxS( "FR4" ) ) : wxString::FromUTF8( sheets[k].material ), k );
+                    item->SetThickness( KiROUND( sheets[k].mm * 1e6 ), k );
+                    item->SetEpsilonR( dkOf( sheets[k].material ), k );
+                    total += item->GetThickness( k );
+                }
+            }
+        }
+
+        st.thickness = total;
+        st.stackup.m_HasDielectricConstrains = true;
     }
 
     st.hasStackup = true;

@@ -264,6 +264,7 @@ def main():
         err, t = mcp.tool("sync_pcb", {"dry_run": True})
         check("warning: R77 is already on the board, placed by hand" in t and "would add a second R77" in t,
               "dry run warns: " + next((ln for ln in t.splitlines() if "R77" in ln), t)[:120])
+        check('pcb_set_fields {"R77": {"Reference": "..."}}' in t, "and says how to renumber the board's one")
         err, t = mcp.tool("sync_pcb")
         check("warning: R77 is already on the board" in t and "undo takes all of it back" in t,
               "the sync warns too, and is undoable")
@@ -276,6 +277,13 @@ def main():
               "export_fab warns about R77 first: " + " | ".join(t.splitlines()[:4])[:300])
         check("outside the board outline" in t, "and about the parts outside the board: "
               + next((ln for ln in t.splitlines() if "outside" in ln), "")[:110])
+        err, t = mcp.tool("pcb_set_fields", {"parts": {"R77": {"Reference": "R78"}}})
+        check(not err and "R77 is now R78" in t and "2 parts are R77: renumbered the one at 120,120 (placed by hand" in t,
+              "of the two R77, the one placed by hand is renumbered: " + " | ".join(t.splitlines()[:2])[:200])
+        err, t = mcp.tool("run_drc")
+        check("same reference on more than one footprint" not in t, "run_drc: no reference twice any more")
+        err, t = mcp.tool("undo")
+        check(not err and t.startswith("undid: set fields"), "undo the renumbering: " + t.splitlines()[0])
         err, t = mcp.tool("undo")
         check(not err and t.startswith("undid: sync_pcb"), "undo: " + t.splitlines()[0])
         err, s = mcp.tool("board_summary")
@@ -284,6 +292,13 @@ def main():
         err, t = mcp.tool("redo")
         err, s = mcp.tool("board_summary")
         check(not err and int(re.search(r"footprints=(\d+)", s).group(1)) == 7, "redo puts it back")
+        mcp.tool("undo")
+
+        # the way the warning says: renumber the board's one first, and the sync has nothing to warn of
+        err, t = mcp.tool("pcb_set_fields", {"parts": {"R77": {"Reference": "R78"}}})
+        check(not err and "R77 is now R78" in t and "note:" not in t, "the hand-placed R77 renumbered: " + t.splitlines()[0])
+        err, t = mcp.tool("sync_pcb", {"dry_run": True})
+        check("already on the board" not in t, "then the dry run has no warning")
         mcp.tool("undo")
 
         # a changed value: the sync changes the footprint, undo puts it back

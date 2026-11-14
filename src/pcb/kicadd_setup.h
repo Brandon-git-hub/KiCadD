@@ -46,7 +46,12 @@ struct CHANGE
     std::optional<int>    copperLayers;
     std::optional<int>    thickness;       ///< nm
     std::optional<double> outerOz, innerOz;
+    std::optional<std::string> fab;       ///< a fab's stackup by name: layers, thicknesses, materials
 };
+
+/// The fab stackups there are, and where their numbers come from.
+std::vector<std::string> FabStackups();
+std::string              FabStackupSource();
 
 /// aFrom changed as aChange asks: a stackup made anew for the layer count and thickness, the
 /// copper weights set. Fails (aError) when a copper layer that would go has something on it.

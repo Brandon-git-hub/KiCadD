@@ -96,7 +96,8 @@ private:
     handleZones( const HANDLER_CONTEXT<kicadd::board::Zones>& aCtx );
 
     /// zones create: the new zone, on the board (one undoable edit); null: aError
-    ZONE* createZone( const kicadd::board::ZoneCreate& aReq, std::string& aError, std::string& aLabel );
+    ZONE* createZone( const kicadd::board::ZoneCreate& aReq, std::string& aError, std::string& aLabel,
+                      std::vector<std::string>& aNotes );
 
     HANDLER_RESULT<kicadd::board::BoardOutlineResponse>
     handleBoardOutline( const HANDLER_CONTEXT<kicadd::board::BoardOutline>& aCtx );
@@ -122,6 +123,9 @@ private:
     HANDLER_RESULT<kicadd::board::ExportFabResponse>
     handleExportFab( const HANDLER_CONTEXT<kicadd::board::ExportFab>& aCtx );
 
+    HANDLER_RESULT<kicadd::board::RenderBoardResponse>
+    handleRenderBoard( const HANDLER_CONTEXT<kicadd::board::RenderBoard>& aCtx );
+
     HANDLER_RESULT<kicadd::board::MoveResponse>
     handleDeleteTracks( const HANDLER_CONTEXT<kicadd::board::DeleteTracks>& aCtx );
 
@@ -133,6 +137,12 @@ private:
 
     HANDLER_RESULT<kicadd::board::FanoutResponse>
     handleFanout( const HANDLER_CONTEXT<kicadd::board::Fanout>& aCtx );
+
+    HANDLER_RESULT<kicadd::board::StitchViasResponse>
+    handleStitchVias( const HANDLER_CONTEXT<kicadd::board::StitchVias>& aCtx );
+
+    HANDLER_RESULT<kicadd::board::TeardropsResponse>
+    handleTeardrops( const HANDLER_CONTEXT<kicadd::board::Teardrops>& aCtx );
 
     /// The new tracks of a routing session (or a dry run's report): one commit, one undo entry
     void commitRoutes( std::vector<std::unique_ptr<PCB_TRACK>>&& aAdded, const std::vector<PCB_TRACK*>& aReplaced,
@@ -331,6 +341,16 @@ private:
 
         /// board_setup: layers and stackup before / after (nothing else in such an entry)
         std::shared_ptr<kicadd::setup::STATE> setupBefore, setupAfter;
+
+        /// teardrops: the pads and vias switched on / off (the board's commit makes and takes
+        /// away the teardrop zones by itself; nothing else in such an entry)
+        struct TEARDROP_FLAG
+        {
+            KIID id;
+            bool before = false, after = false;
+        };
+
+        std::vector<TEARDROP_FLAG> teardropFlags;
     };
 
     /// A copy of a board item off the board (same KIID), its net kept by name.
@@ -364,6 +384,10 @@ private:
 
     /// Undo (aUndo) or redo aEntry; fills aOut. Returns false if nothing of it is left to apply.
     bool applyHistory( const HISTORY_ENTRY& aEntry, bool aUndo, kicadd::board::MoveResponse& aOut );
+
+    /// After undoing / redoing an edit of zones, the outline or the layers: a note that the
+    /// zone fills are of the other state.
+    void noteStaleFills( const HISTORY_ENTRY& aEntry, kicadd::board::MoveResponse& aOut ) const;
 
     void fillHistory( kicadd::board::HistoryResponse& aOut ) const;
 

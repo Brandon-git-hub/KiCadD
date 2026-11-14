@@ -1558,7 +1558,7 @@ SOIC-8 pad 1 against KiCad's within 0.1 mm, and a design using `kicadd:R_0603` t
    測試：`sch_edit_e2e`（重複編號、undo / redo、改值 undo）、`route_e2e`（焊盤內出線、太擠的提示、
    JP1 的終點備案、層的順序、fanout 警告）。未處理：`delete_footprints` 留下的空網路（存檔時無影響）。
 
-12. **（(a) 已完成 2026-11-13，見下方說明；其餘待做）從空白專案一路做到下單（alpha.8 試用後的建議，2026-11-13）。** 依試用者的順序（第 1 項
+12. **（(a) 已完成 2026-11-13；(b)(c)(i)、(d) 的縫合過孔與淚滴、(h) 的 export_fab DRC 檢查已完成 2026-11-14，見第 14 項；其餘待做）從空白專案一路做到下單（alpha.8 試用後的建議，2026-11-13）。** 依試用者的順序（第 1 項
    「sync 可 undo、重複編號、出貨前檢查」已在第 11 項完成），附評估：
    * (a) **板子設定（最大缺口）。** 現在只能改既有的東西。
      - 板框：矩形 / 圓角矩形（Edge.Cuts 的 `PCB_SHAPE`），挖槽、固定孔（`MountingHole` 由
@@ -1585,6 +1585,8 @@ SOIC-8 pad 1 against KiCad's within 0.1 mm, and a design using `kicadd:R_0603` t
    * (h) **製造輸出。** 絲印整理（編號移到不重疊、不壓焊盤的位置）；電路圖 PDF、組裝圖；STEP 需要
      OpenCascade，精簡版目前沒有編進去（`KICADD_NO_OCC`），要另外評估大小；`export_fab` 在 DRC
      未清乾淨時警告（或 `strict=true` 時拒絕）。
+   * (i) **符合板廠的實際疊層。** `board_setup stackup="jlc04161h-7628"` 之類：各層厚度、介電常數
+     依 JLCPCB 的疊層頁自己整理成表（註明日期），之後才能算控制阻抗的線寬。小。
    建議順序：(a) 板框與新建銅箔區 → 製程預設與疊層 → (b) 批次配對料號 → (c) 出圖 → (d) 縫合過孔、
    淚滴 → 其餘。(a) 前兩項完成後，Agent 就能從空白專案做到下單。
    完成的部分 (a)：`board_outline`（Edge.Cuts 的 `PCB_SHAPE` 矩形 / 圓角矩形 / 圓，取代原本板層級的
@@ -1598,6 +1600,51 @@ SOIC-8 pad 1 against KiCad's within 0.1 mm, and a design using `kicadd:R_0603` t
    `kicadd::rules::STATE`）。Undo：`HISTORY_ENTRY` 加 `itemsAdded` / `itemsRemoved`（板上圖形與
    銅箔區，依 KIID，網路存名稱）與 `setupBefore` / `setupAfter`。測試：`client/setup_e2e.py`（空白
    專案到 4 層板與製造檔）、`desktop_e2e` [5e]（編輯器裡改層數、建內層、Ctrl+Z、undo）。
+
+13. **（已完成 2026-11-14）alpha.9 試用（4 個新功能 + 7 項修正都可用；4 個要修的問題）。**
+   * `zones` 的工具說明沒有提到 create：說明改成先講新建（兩個例子），`create` 的 schema 列出每個
+     屬性。
+   * `sync_pcb` 的重複編號警告建議用 `pcb_set_fields` 改編號，但它拒絕改 Reference：
+     `handleSetFields` 接受 `Reference`（不能和其他零件重複，同一次呼叫裡互換可以；兩顆同編號時
+     選沒有電路圖路徑的那顆；來自電路圖的零件附註「下次 sync 會改回來」）。`FP_STATE` 的欄位含
+     Reference，undo 會還原。`MoveResponse.notes = 17`。
+   * `board_outline` 不檢查衝突：位置上已有孔（任何零件的鑽孔焊盤）的新固定孔不放；孔壓到零件
+     （courtyard / 焊盤）、孔或挖槽穿過走線、新板框外的走線，寫進
+     `BoardOutlineResponse.problems = 8`。鍍銅孔不算同網路的走線。
+   * `zones create` 不提醒重疊：沒給 priority 時，落在其他網路較大的銅箔區裡就排到它上面一級；
+     和其他網路的銅箔區重疊且優先順序相同時警告（KiCad 這時用 UUID 決定誰贏），附
+     `zones ids=[...] priority=N`。`ZonesResponse.notes = 4`，`ZoneCreate.priority` 改 optional。
+   * undo / redo 動到銅箔區、板框、層數後，回應註明銅箔是舊的（`noteStaleFills`）。
+   * 測試時發現：`netFor` 新建的網路沒有套用依名稱指定的網路類別（要重新載入才有），`route` 用
+     Default 的線寬與間距、DRC 用指定的類別。新建時就 `SetNetClass( GetEffectiveNetClass )`。
+   * 待做（記在第 12 項 (i)）：`board_setup` 用的是 KiCad 預設疊層；控制阻抗需要符合 JLCPCB 實際
+     疊層（例如 JLC04161H-7628）的選項，各層厚度與介電常數要依官方疊層頁整理。
+   測試：`setup_e2e`、`fab_e2e`、`sch_edit_e2e` 各加一段。
+
+14. **（已完成 2026-11-14）第 12 項的建議順序 1–5。**
+   * `export_fab`（第 12 項 (h) 的一部分）：鋪銅後跑完整 DRC（`RunFullDrc`），錯誤數依類別列在最前；
+     `strict=true` 時有 DRC 錯誤、重複編號、板框外零件就不寫檔（`ExportFab.check_only` 只算
+     `FabProblems`）；`drc=false` 跳過。
+   * `lcsc_match`（(b)，MCP 端組合 `GetSchSummary` / `LcscSearch` / `SchSetFields`）：依值 + 封裝分組，
+     R / C / L / FB / LED 的貼片封裝（封裝名稱裡的 0402… 尺寸）；值裡的電壓、容差、介質當條件；
+     LED 依顏色（排除描述有 White 的「黃色透鏡白光」）；磁珠用 `600Ω@100MHz` 關鍵字。選中的那顆
+     即時查一次（不好再查後兩顆）。順手修正 `lcsc_search`：同時給 category 和 keyword 時 SQL 欄位
+     名稱不明確（`ambiguous column name: category`），條件改用 `p.` 前綴。
+   * `render_board`（(c)，`src/pcb/kicadd_picture.cpp`）：上游的 `PNG_PLOTTER`（cairo）+
+     `PlotBoardLayers`，自訂半透明配色、孔用背景色挖空；再疊上網路高亮、飛線、零件框、編號、
+     mm 尺規。MCP 的 `TOOL_RESULT.image` 以 image 內容回傳（base64 PNG）。Jetson 板全圖 2.1 秒。
+   * `stitch_vias` / `teardrops`（(d)）：縫合過孔用 `route::SESSION::PlaceVia`（和佈線同一套間距、
+     孔距、板邊檢查），2 mm 格的空間索引擋焊盤 / 走線 / courtyard / 禁止區；沒有過孔的銅島各補一個。
+     淚滴只切換焊盤 / 過孔的 teardrop 開關，淚滴區域由 `BOARD_COMMIT` 自己建立和更新；undo 記在
+     `HISTORY_ENTRY::teardropFlags`。
+   * `board_setup stackup=`（(i)）：`kicadd::setup` 的 JLCPCB 疊層表（jlcpcb.com/impedance，
+     2026-11-14：4 層 18 種、6 層 8 種，1.6 mm），多張 prepreg 用介電層的 sublayer，
+     `m_HasDielectricConstrains` 打開。下單頁（cart.jlcpcb.com）的 Dk 不同，寫進回應的 note。
+     未收：用 2313 prepreg（Dk 未列）和三片 core 的 6 層疊層。
+   測試：`fab_e2e`（DRC、strict、render_board）、`match_e2e`（新）、`copper_e2e`（新）、`setup_e2e`、
+   `desktop_e2e` [1]（編輯器裡出圖）。
+   剩下：(d) IPC-2152 線寬、差分對 / 等長；(e) audit 擴充；(f) 設計比對；(g) 重新編號、排版；
+   (h) 絲印整理、PDF、STEP；第 10 項 (f) 忙碌時排隊；電路圖出圖。
 
 保留不動：專案管理器的 Version Control（Git）面板。
 

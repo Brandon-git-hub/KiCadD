@@ -5,8 +5,11 @@ usage: python3 -I setup_e2e.py --build BUILD --kicad KICAD_SRC --work DIR
 Blank project (m5_e2e's: a 60 x 40 mm outline, nothing else), two resistors placed by hand:
   board_outline  a rounded 50 x 30 mm rect replaces the old outline, 4 M3 holes at the corners
                  (H1..H4, out of the BOM / CPL); a round cut-out added; one outside is refused;
-                 undo / redo
-  zones create   GND on F.Cu + B.Cu over the board outline, filled; undo takes it away
+                 undo / redo; a hole where one is already is left out; warnings for a cut-out or
+                 a hole through a track, a hole on a part, a track outside the new outline
+  zones create   GND on F.Cu + B.Cu over the board outline, filled; undo takes it away; a zone of
+                 another net over it at the same priority is warned about, an island in it goes
+                 one priority above
   set_rules      preset jlcpcb_2layer: the board minimums and the Default class; undo
   board_setup    4 layers 1.6 mm (stackup with In1/In2), a GND pour on In1.Cu; back to 2 layers is
                  refused while In1.Cu has it; undo; export_fab has the inner layers' Gerbers;
@@ -52,6 +55,10 @@ def main():
                                                 "nets": {"1": "GND", "2": "VCC"}})
             check(not err and t.startswith(ref), f"{ref} placed: " + t.splitlines()[0][:60])
 
+        err, t = mcp.tool("get_rules")
+        check(re.search(r"POWER: .*\[2 net\(s\)\]", t) is not None,
+              "the new nets GND and VCC are in their net class (POWER, by pattern) at once")
+
         print("[board_outline]")
         err, t = mcp.tool("board_setup")
         check(not err and t.startswith("2 copper layers"), "board_setup reads: " + t.splitlines()[0])
@@ -76,6 +83,35 @@ def main():
         check(not err and t.startswith("redid: board outline"), "redo")
         err, q = mcp.tool("query_area", {"x": 3.5, "y": 3.5, "radius": 0.5, "kinds": ["footprint"]})
         check("H1" in q, "the holes are back with it")
+
+        # what the holes and cut-outs run into is said right away
+        err, t = mcp.tool("board_outline", {"keep_old": True, "hole_inset": 3.5})
+        check(not err and t.count("has a hole there already") == 4 and "no hole at 3.5,3.5: H1 has a hole" in t
+              and "nothing changed" in t, "holes where there are holes are left out: " + t.splitlines()[1][:80])
+        err, q = mcp.tool("query_area", {"x": 3.5, "y": 3.5, "radius": 0.5, "kinds": ["footprint"]})
+        check("H5" not in q, "no second hole at the corner")
+        err, t = mcp.tool("route", {"from": "R1.1", "to": "R2.1"})
+        check(not err and "routed" in t, "a GND track R1.1 - R2.1: " + t.splitlines()[0][:80])
+        err, t = mcp.tool("board_outline", {"keep_old": True, "cutouts": [{"rect": [24, 8, 26, 22]}]})
+        check(not err and re.search(r"warning: cut-out 1 cuts through \d track\(s\) \(GND\)", t) is not None,
+              "a cut-out across the track: " + next((ln for ln in t.splitlines() if "cut-out" in ln), t)[:110])
+        mcp.tool("undo")
+        err, t = mcp.tool("board_outline", {"keep_old": True, "holes": [[20, 15, 2]]})
+        check(not err and re.search(r"warning: H5 @20,15 is on R1", t) is not None,
+              "a hole on a part: " + next((ln for ln in t.splitlines() if "is on" in ln), t)[:110])
+        mcp.tool("undo")
+        err, t = mcp.tool("board_outline", {"keep_old": True, "holes": [{"x": 25, "y": 15, "diameter": 2, "plated": True, "net": "GND"}]})
+        check(not err and "goes through" not in t, "a plated GND hole on the GND track is fine")
+        mcp.tool("undo")
+        err, t = mcp.tool("board_outline", {"keep_old": True, "holes": [{"x": 25, "y": 15, "diameter": 2}]})
+        check(not err and re.search(r"warning: H5 @25,15 goes through \d track\(s\) \(GND\)", t) is not None,
+              "an unplated hole through it is not: " + next((ln for ln in t.splitlines() if "goes through" in ln), t)[:110])
+        mcp.tool("undo")
+        err, t = mcp.tool("board_outline", {"rect": [0, 0, 24, 30]})
+        check(not err and re.search(r"warning: \d track\(s\) \(GND\) are outside the new outline, or cross it", t) is not None
+              and re.search(r"part\(s\) not \(wholly\) inside the outline:.*R2", t) is not None,
+              "an outline that leaves a track and R2 outside: " + next((ln for ln in t.splitlines() if "outside the new" in ln), t)[:110])
+        mcp.tool("undo")
         err, t = mcp.tool("board_outline", {"keep_old": True, "cutouts": [{"circle": [40, 15, 5]}]})
         m2 = re.search(r"([\d.]+) mm\^2", t)
         check(not err and m2 and abs(float(m.group(1)) - float(m2.group(1)) - 19.6) < 0.5,
@@ -93,12 +129,35 @@ def main():
         err, t = mcp.tool("run_drc")
         kinds = re.search(r"errors: (.*)", t).group(1)
         check("clearance" not in kinds and "copper_edge" not in kinds, "DRC: no clearance / edge errors: " + kinds)
+        if "clearance" in kinds:
+            print(t)
         err, t = mcp.tool("undo")
         err, z = mcp.tool("zones")
         check(not err and z.startswith("0 copper zone"), "undo takes the zone away")
         mcp.tool("redo")
         err, t = mcp.tool("zones", {"create": {"net": "NOPE"}})
         check(err and "no net NOPE" in t, "an unknown net is refused")
+
+        # zones of other nets on the same copper
+        err, z = mcp.tool("zones")
+        gnd = re.search(r"^  (\S+) GND ", z, re.M).group(1)
+        err, t = mcp.tool("zones", {"create": {"net": "VCC", "layers": ["B.Cu"]}})
+        check(not err and "warning: it overlaps the zone GND on B.Cu at the same priority 0" in t
+              and f'zones ids=["{gnd}"] priority=1' in t,
+              "the same area and priority as the GND pour is warned about: " + t.splitlines()[1][:100])
+        err, t = mcp.tool("undo")
+        check(not err and "note: the zone fills are out of date after this: refill_zones" in t,
+              "undo says the fills are out of date")
+        err, t = mcp.tool("zones", {"create": {"net": "VCC", "layers": ["F.Cu"], "outline": [[8, 6], [18, 6], [18, 11], [8, 11]]}})
+        check(not err and "priority 1: above the bigger zone(s) it lies in (GND on F.Cu)" in t and "warning" not in t
+              and re.search(r"VCC F\.Cu priority 1", t) is not None,
+              "an island in the pour goes above it: " + t.splitlines()[1][:100])
+        err, t = mcp.tool("zones", {"create": {"net": "VCC", "layers": ["F.Cu"], "priority": 0,
+                                                "outline": [[30, 20], [40, 20], [40, 26], [30, 26]]}})
+        check(not err and "at the same priority 0" in t, "a priority given is kept, and warned about")
+        mcp.tool("undo")
+        mcp.tool("undo")
+        mcp.tool("refill_zones")
 
         print("[set_rules preset]")
         err, t = mcp.tool("set_rules", {"preset": "jlcpcb_2layer"})
@@ -119,6 +178,21 @@ def main():
               and "F.Cu copper 0.035 mm (1 oz)" in t, "4 layers, the stackup made anew")
         err, s = mcp.tool("board_summary")
         check("cu_layers=4" in s, "board_summary: 4 layers")
+        err, t = mcp.tool("board_setup", {"stackup": "list"})
+        check(not err and "JLC04161H-7628 " in t and "JLC06161H-3313" in t and "jlcpcb.com/impedance" in t, "stackup list")
+        err, t = mcp.tool("board_setup", {"stackup": "jlc04161h-7628b"})
+        print("      ", " | ".join(t.splitlines()[:8])[:400])
+        check(not err and "4 copper layers, 1.61 mm thick" in t
+              and "prepreg 7628 0.218 mm (er 4.4) + 7628 0.218 mm (er 4.4) + 2116 0.1164 mm (er 4.16)" in t
+              and "core FR4 0.4 mm (er 4.6)" in t and "In1.Cu copper 0.0152 mm" in t and "note: JLCPCB's" in t,
+              "JLC04161H-7628B: its sheets, thicknesses and Dk")
+        err, t = mcp.tool("board_setup", {"stackup": "JLC04161H-7628", "thickness": 1.2})
+        check(err and "give it alone" in t, "a fab stackup with a thickness: refused")
+        err, t = mcp.tool("board_setup", {"stackup": "JLC99"})
+        check(err and "no stackup JLC99" in t, "an unknown stackup: refused")
+        err, t = mcp.tool("undo")
+        err, t = mcp.tool("board_setup")
+        check("1.6 mm thick" in t and "7628" not in t, "undo: the default 4-layer stackup again")
         err, t = mcp.tool("zones", {"create": {"net": "GND", "layers": ["In1.Cu"], "name": "GND plane"}})
         check(not err and t.startswith("new zone GND on In1.Cu"), "a GND plane on In1.Cu")
         err, t = mcp.tool("board_setup", {"copper_layers": 2})

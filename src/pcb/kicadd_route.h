@@ -81,6 +81,11 @@ public:
     /// them); on failure nothing is kept.
     RESULT Route( const REQUEST& aRequest );
 
+    /// A through via of aNetCode at aPos, checked as a route's tracks are (clearance to other-net
+    /// copper, hole to hole, the board edge and cut-outs, earlier vias of the session). Kept in
+    /// the session when it breaks none of them.
+    RESULT PlaceVia( const VECTOR2I& aPos, int aNetCode, int aDiameter, int aDrill );
+
     /// The new tracks / arcs / vias (not on the board; the caller owns them after this).
     std::vector<std::unique_ptr<PCB_TRACK>> TakeAdded();
 

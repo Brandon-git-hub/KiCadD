@@ -146,6 +146,8 @@ message MoveResponse
   int32                 tracks_removed = 14;   // DeleteTracks: tracks / arcs / vias removed
   int32                 tracks_locked  = 15;   // DeleteTracks: matched but locked, kept
   int32                 changed = 16;          // Undo/Redo of sync_pcb: footprints put back as they were
+  repeated string       notes = 17;            // things to know (a reference the next sync puts back,
+                                               // zone fills out of date after an undo ...)
   int32                 already_there = 13;    // Undo/Redo: footprints already in the target state
                                                // (undone / redone in the editor), left alone
 }
@@ -551,8 +553,9 @@ message DescribeItemsResponse
 // they are filled (refill them first). Returns ExportFabResponse
 message ExportFab
 {
-  string dir    = 1;     // default <project dir>/fab (created)
-  bool   no_zip = 2;
+  string dir        = 1;     // default <project dir>/fab (created)
+  bool   no_zip     = 2;
+  bool   check_only = 3;     // write nothing: only problems is filled
 }
 
 message ExportFabResponse
@@ -569,6 +572,42 @@ message ExportFabResponse
   repeated string notes   = 10;
   int32  layers     = 11;       // Gerber files
   repeated string problems = 12;   // what would go wrong at the assembler: a reference twice, parts off the board
+}
+
+// ---------------------------------------------------------------------------------------------
+// A picture of the board in memory for the agent to look at: KiCad's own plot of the layers
+// (copper with pads and filled zones, silkscreen, fab, ...) in colour, at a chosen size, of the
+// whole board or a part of it, with what to look at marked: parts framed and labelled, nets
+// drawn bright, the unrouted connections, a millimetre ruler on the edges. Returns RenderBoardResponse
+message RenderBoard
+{
+  repeated string layers   = 1;   // layer names ("F.Cu", "F.SilkS") or sets: front (default), back,
+                                  // copper, silk, fab, assembly
+  repeated string refs     = 2;   // framed and labelled
+  repeated string nets     = 3;   // drawn bright
+  Point  area_min          = 4;   // nm; both or neither (default: the board, or around refs / nets
+  Point  area_max          = 5;   // when zoom)
+  bool   zoom              = 6;   // to the refs / nets (with a margin)
+  int32  size              = 7;   // pixels on the long side (default 1200, 200..4000)
+  bool   no_ratsnest       = 8;
+  bool   labels            = 9;   // every part's reference in the middle of it
+  string path              = 10;  // also write the PNG there
+  bool   back              = 11;  // seen from below (mirrored), back layers on top
+  double margin            = 12;  // mm around a zoom (default 3)
+}
+
+message RenderBoardResponse
+{
+  bytes  png       = 1;
+  int32  width     = 2;
+  int32  height    = 3;
+  double mm_per_px = 4;
+  Point  origin    = 5;    // nm: the top-left corner (top-right when back)
+  Point  extent    = 6;    // nm: the bottom-right corner
+  repeated string layers  = 7;    // what was plotted, bottom first
+  repeated string missing = 8;    // refs / nets / layers not found
+  int32  unrouted  = 9;    // ratsnest lines drawn
+  string path      = 10;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -649,9 +688,10 @@ message FpCreateResponse
 
 // Change footprints' fields and attributes on the board as one undoable edit (undo / redo).
 // fields: name -> text; "Value" is the value, other names user fields (added hidden when
-// missing); remove: user fields to delete. The reference and the footprint are not changed
-// here. A board made from a schematic gets its fields from it (sync_pcb): change them there.
-// Returns MoveResponse (history_label; missing: refs not found)
+// missing); "Reference" renumbers the part (to one no other part has); remove: user fields to
+// delete. The footprint is not changed here. A board made from a schematic gets its fields from
+// it (sync_pcb): change them there. Returns MoveResponse (history_label; missing: refs not
+// found; notes)
 message FpFieldEdit
 {
   string              ref    = 1;
@@ -769,7 +809,7 @@ message ZoneCreate
   string          net        = 1;   // "" : no net (an island of copper is rarely wanted)
   repeated string layers     = 2;   // default F.Cu and B.Cu (all copper layers: "all")
   repeated Point  outline    = 3;   // nm; empty: the board outline
-  int32           priority   = 4;
+  optional int32  priority   = 4;   // not given: 0, or above the bigger zones of other nets it lies in
   optional double clearance  = 5;   // mm; default the board's zone defaults
   optional double min_width  = 6;
   string          connection = 7;   // solid, thermal (default), none, thermal_tht
@@ -781,6 +821,8 @@ message ZonesResponse
   repeated ZoneInfo zones  = 1;   // the zones chosen (all when none was named), as they are now
   string history_label     = 2;
   int32  changed           = 3;
+  repeated string notes    = 4;   // create: the priority chosen; zones of other nets it overlaps at
+                                  // the same priority
 }
 
 // ---------------------------------------------------------------------------
@@ -819,8 +861,10 @@ message BoardOutlineResponse
   double area   = 3;     // mm^2, inside the outline less the cut-outs
   int32  removed_shapes = 4;
   repeated string holes = 5;          // "H1 @x,y d3.2"
-  repeated string outside = 6;        // parts now (partly) outside the outline
+  repeated string outside = 6;        // parts now (partly) outside the outline, or on a cut-out
   string history_label = 7;
+  repeated string problems = 8;       // holes left out (one is there already), holes on parts / tracks,
+                                      // tracks a cut-out cuts or the outline leaves outside
 }
 
 // The board's layers and stackup: no change asked: just what it is. Changing the copper layer
@@ -832,6 +876,7 @@ message BoardSetup
   optional double thickness     = 2;   // mm
   optional double outer_copper_oz = 3;
   optional double inner_copper_oz = 4;
+  optional string stackup       = 5;   // a fab's stackup by name ("JLC04161H-7628"); "list": the names
 }
 
 message BoardSetupResponse
@@ -840,6 +885,7 @@ message BoardSetupResponse
   double thickness     = 2;   // mm
   repeated string stackup = 3;   // top to bottom
   string history_label = 4;
+  string note          = 5;   // where a fab stackup's numbers come from; or the names there are
 }
 
 // ---------------------------------------------------------------------------
@@ -932,4 +978,64 @@ message FanoutResponse
   int32           skipped_tht  = 2;
   int32           skipped_done = 3;   // pads already reaching the zone's layer through a via / track
   repeated string no_zone      = 4;   // "VCC: R22.1, JP1.1": a net with no zone on another layer, its pads left alone; "X (no such net)"
+}
+
+// Stitching vias: through vias of one net (GND) on a grid, each inside the net's filled copper
+// on two or more layers, clear of other-net copper, holes, pads, the edge and (unless
+// under_parts) the parts' courtyards; then one via in each island of the net's copper left
+// without any (dead copper joined to the rest). The net class's via size. One undoable edit;
+// the zones are refilled. Returns StitchViasResponse
+message StitchVias
+{
+  string net         = 1;    // default GND
+  int64  spacing     = 2;    // nm between grid points (default 5 mm)
+  Point  area_min    = 3;    // nm; both or neither (default the board)
+  Point  area_max    = 4;
+  bool   under_parts = 5;    // also inside courtyards
+  bool   no_islands  = 6;    // the grid only
+  bool   dry_run     = 7;
+  int32  max         = 8;    // at most this many vias (default 500)
+}
+
+message StitchViasResponse
+{
+  int32  vias_added      = 1;
+  int32  grid_points     = 2;   // grid points inside the area
+  int32  in_copper       = 3;   // of them inside the net's copper on 2+ layers
+  int32  near_existing   = 4;   // left out: a via or hole of the net already near
+  int32  blocked         = 5;   // left out: a pad, track, part or rule in the way
+  int32  islands_joined  = 6;
+  repeated string islands_left = 7;   // "B.Cu @120.5,40.2 (3.1 mm²)"
+  repeated string layers = 8;   // the layers with the net's copper
+  int32  via_diameter    = 9;   // nm
+  int32  via_drill       = 10;
+  string history_label   = 11;
+  int32  unconnected     = 12;
+  bool   dry_run         = 13;
+  repeated string notes  = 14;
+}
+
+// Teardrops (KiCad's own: copper zones that widen a track into its pad or via) on vias and
+// round through-hole pads (and SMD pads with smd), or remove them. They follow the parts and
+// tracks from then on, as in the editor. One undoable edit. Returns TeardropsResponse
+message Teardrops
+{
+  bool            remove  = 1;
+  bool            no_vias = 2;
+  bool            no_pth  = 3;
+  bool            smd     = 4;
+  repeated string nets    = 5;   // only these nets
+  repeated string refs    = 6;   // only these parts' pads (and no vias unless nets too)
+  bool            dry_run = 7;
+}
+
+message TeardropsResponse
+{
+  int32  changed       = 1;   // pads / vias switched on (off)
+  int32  already       = 2;   // already so
+  int32  before        = 3;   // teardrops on the board before / after
+  int32  after         = 4;
+  string history_label = 5;
+  repeated string missing = 6;
+  bool   dry_run       = 7;
 }

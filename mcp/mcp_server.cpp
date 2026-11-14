@@ -7,6 +7,7 @@
 #include "mcp_server.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <exception>
 
 using json = nlohmann::json;
@@ -94,6 +95,47 @@ json MCP_SERVER::handleToolsList() const
 }
 
 
+namespace
+{
+
+std::string Base64( const std::string& aBytes )
+{
+    static const char* abc = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string        out;
+    out.reserve( ( aBytes.size() + 2 ) / 3 * 4 );
+    size_t i = 0;
+
+    for( ; i + 2 < aBytes.size(); i += 3 )
+    {
+        uint32_t n = ( (uint8_t) aBytes[i] << 16 ) | ( (uint8_t) aBytes[i + 1] << 8 ) | (uint8_t) aBytes[i + 2];
+        out += abc[( n >> 18 ) & 63];
+        out += abc[( n >> 12 ) & 63];
+        out += abc[( n >> 6 ) & 63];
+        out += abc[n & 63];
+    }
+
+    if( i + 1 == aBytes.size() )
+    {
+        uint32_t n = (uint8_t) aBytes[i] << 16;
+        out += abc[( n >> 18 ) & 63];
+        out += abc[( n >> 12 ) & 63];
+        out += "==";
+    }
+    else if( i + 2 == aBytes.size() )
+    {
+        uint32_t n = ( (uint8_t) aBytes[i] << 16 ) | ( (uint8_t) aBytes[i + 1] << 8 );
+        out += abc[( n >> 18 ) & 63];
+        out += abc[( n >> 12 ) & 63];
+        out += abc[( n >> 6 ) & 63];
+        out += '=';
+    }
+
+    return out;
+}
+
+} // namespace
+
+
 json MCP_SERVER::handleToolsCall( const json& aParams )
 {
     std::string name = aParams.value( "name", "" );
@@ -122,8 +164,12 @@ json MCP_SERVER::handleToolsCall( const json& aParams )
         }
     }
 
-    return { { "content", json::array( { { { "type", "text" }, { "text", r.text } } } ) },
-             { "isError", r.isError } };
+    json content = json::array( { { { "type", "text" }, { "text", r.text } } } );
+
+    if( !r.image.empty() )
+        content.push_back( { { "type", "image" }, { "data", Base64( r.image ) }, { "mimeType", "image/png" } } );
+
+    return { { "content", content }, { "isError", r.isError } };
 }
 
 

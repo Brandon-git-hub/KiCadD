@@ -14,6 +14,8 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
+#include <cctype>
 #include <map>
 #include <set>
 #include <thread>
@@ -24,6 +26,7 @@
 
 using json = nlohmann::json;
 namespace ks = kicadd::schematic;
+namespace kb = kicadd::board;
 
 namespace kicadd::mcp
 {
@@ -158,6 +161,497 @@ bool splitPin( const std::string& aText, ks::SchPinNet& aOut )
     aOut.set_ref( aText.substr( 0, dot ) );
     aOut.set_pin( aText.substr( dot + 1 ) );
     return true;
+}
+
+std::string lowerOf( std::string s )
+{
+    for( char& c : s )
+        c = (char) std::tolower( static_cast<unsigned char>( c ) );
+
+    return s;
+}
+
+/// The chip size in a footprint name: "Resistor_SMD:R_0603_1608Metric" -> "0603"
+std::string chipSize( const std::string& aFootprint )
+{
+    std::string name = aFootprint.substr( aFootprint.find( ':' ) + 1 );
+
+    for( const char* size : { "01005", "0201", "0402", "0603", "0805", "1206", "1210", "1812", "2010", "2512" } )
+    {
+        size_t at = 0;
+
+        while( ( at = name.find( size, at ) ) != std::string::npos )
+        {
+            size_t end = at + std::strlen( size );
+            bool   before = at == 0 || !std::isalnum( static_cast<unsigned char>( name[at - 1] ) );
+            bool   after = end == name.size() || !std::isalnum( static_cast<unsigned char>( name[end] ) );
+
+            // "R_0603_1608Metric", "LED_0805", "C_0402"; not "1608Metric"
+            if( before && after )
+                return size;
+
+            at = end;
+        }
+    }
+
+    return {};
+}
+
+
+/// lcsc_match: parts without an LCSC number, grouped by value + footprint, matched in the parts
+/// index (resistors, capacitors, inductors, ferrite beads, LEDs in chip packages)
+TOOL_RESULT lcscMatch( IPC_CLIENT& aIpc, const json& aArgs )
+{
+    ks::GetSchSummary sreq;
+    sreq.set_with_pins( true );     // the attributes come with the pins
+    ks::SchSummary    sum;
+    std::string       err;
+
+    if( !aIpc.Call( sreq, sum, err ) )
+        return fail( err );
+
+    const bool apply = aArgs.value( "apply", false );
+    const bool replace = aArgs.value( "replace", false );
+    const bool live = aArgs.value( "live", true );
+    const bool basicOnly = aArgs.value( "basic_only", false );
+
+    std::set<std::string> only;
+
+    for( const json& r : aArgs.value( "refs", json::array() ) )
+    {
+        if( r.is_string() )
+            only.insert( r.get<std::string>() );
+    }
+
+    std::map<std::string, std::string> pick;   // ref -> LCSC number for its group
+
+    if( aArgs.contains( "pick" ) && aArgs["pick"].is_object() )
+    {
+        for( const auto& [ref, v] : aArgs["pick"].items() )
+        {
+            if( v.is_string() )
+                pick[ref] = v.get<std::string>();
+        }
+    }
+
+    struct GROUP
+    {
+        std::string              value, footprint;
+        std::vector<std::string> refs;
+        std::string              lcsc, line, why;   // the match, its description, or why none
+        bool                     picked = false;
+    };
+
+    std::map<std::pair<std::string, std::string>, GROUP> groups;
+    std::set<std::string>                                seen;
+    int                                                  have = 0, skipped = 0;
+
+    for( const ks::SchSymbol& sym : sum.symbols() )
+    {
+        const std::string& ref = sym.ref();
+
+        if( ref.empty() || ref[0] == '#' || ref.back() == '?' || !seen.insert( ref ).second )
+            continue;
+
+        if( !only.empty() && !only.count( ref ) )
+            continue;
+
+        bool out = false;
+
+        for( const std::string& attr : sym.attributes() )
+            out |= attr == "dnp" || attr == "exclude_from_bom" || attr == "exclude_from_board";
+
+        if( out )
+        {
+            skipped++;
+            continue;
+        }
+
+        if( !sym.lcsc().empty() && !replace && !pick.count( ref ) )
+        {
+            have++;
+            continue;
+        }
+
+        GROUP& g = groups[{ sym.value(), sym.footprint() }];
+        g.value = sym.value();
+        g.footprint = sym.footprint();
+        g.refs.push_back( ref );
+    }
+
+    for( const std::string& r : std::vector<std::string>( only.begin(), only.end() ) )
+    {
+        if( !seen.count( r ) )
+            return fail( "not in the schematic: " + r );
+    }
+
+    int matched = 0;
+
+    for( auto& [key, g] : groups )
+    {
+        std::sort( g.refs.begin(), g.refs.end(),
+                   []( const std::string& a, const std::string& b )
+                   {
+                       size_t da = a.find_first_of( "0123456789" ), db = b.find_first_of( "0123456789" );
+                       std::string pa = a.substr( 0, da ), pb = b.substr( 0, db );
+
+                       if( pa != pb )
+                           return pa < pb;
+
+                       return std::atol( a.c_str() + std::min( da, a.size() ) )
+                              < std::atol( b.c_str() + std::min( db, b.size() ) );
+                   } );
+
+        for( const std::string& r : g.refs )
+        {
+            auto it = pick.find( r );
+
+            if( it != pick.end() )
+            {
+                g.lcsc = it->second;
+                g.picked = true;
+            }
+        }
+
+        if( g.picked )
+        {
+            g.line = "your pick";
+            matched++;
+            continue;
+        }
+
+        // what kind of part: the reference's letters, the footprint for LEDs
+        std::string prefix;
+
+        for( char c : g.refs[0] )
+        {
+            if( !std::isalpha( static_cast<unsigned char>( c ) ) )
+                break;
+
+            prefix += (char) std::toupper( static_cast<unsigned char>( c ) );
+        }
+
+        const std::string fpLow = lowerOf( g.footprint );
+        const std::string valLow = lowerOf( g.value );
+        std::string       category;
+
+        if( prefix == "R" )
+            category = "resistor";
+        else if( prefix == "C" )
+            category = "capacitor";
+        else if( prefix == "L" )
+            category = "inductor";
+        else if( prefix == "FB" )
+            category = "ferrite";
+        else if( prefix == "LED" || ( prefix == "D" && ( fpLow.find( "led" ) != std::string::npos
+                                                          || valLow.find( "led" ) != std::string::npos ) ) )
+            category = "led";
+
+        if( category.empty() )
+        {
+            g.why = "only resistors, capacitors, inductors, ferrite beads and LEDs are matched: lcsc_search, then "
+                    "pick";
+            continue;
+        }
+
+        if( g.footprint.empty() )
+        {
+            g.why = "no footprint: the package is not known (sch_set_fields Footprint first)";
+            continue;
+        }
+
+        const std::string size = chipSize( g.footprint );
+
+        if( size.empty() )
+        {
+            g.why = "not a chip package (0402, 0603, ...): lcsc_search package=..., then pick";
+            continue;
+        }
+
+        kb::LcscSearch q;
+        q.set_package( size );
+        q.set_basic_only( basicOnly );
+        q.set_limit( 10 );
+        q.set_live( -1 );
+
+        std::string colour;
+
+        if( category == "led" )
+        {
+            for( const char* c : { "red", "green", "blue", "yellow", "white", "orange", "amber", "pink", "purple" } )
+            {
+                if( valLow.find( c ) != std::string::npos )
+                    colour = c;
+            }
+
+            if( colour.empty() )
+            {
+                g.why = "the colour is not in the value (\"LED red\", \"green\"): set the value, or pick";
+                continue;
+            }
+
+            q.set_category( "LED Indication" );
+            q.set_keyword( colour );
+        }
+        else if( category == "ferrite" )
+        {
+            // "600R", "600R@100MHz", "600 ohm": the description says "600Ω@100MHz"
+            std::string z;
+
+            for( char c : g.value )
+            {
+                if( !std::isdigit( static_cast<unsigned char>( c ) ) && c != '.' )
+                    break;
+
+                z += c;
+            }
+
+            if( z.empty() )
+            {
+                g.why = "the impedance at 100 MHz is not in the value (\"600R\"): set the value, or pick";
+                continue;
+            }
+
+            q.set_category( "Ferrite Beads" );
+            q.set_keyword( z + "Ω@100MHz" );
+        }
+        else
+        {
+            // "100nF 50V X7R", "10k 1%", "4.7uF/25V"
+            std::string v = g.value;
+
+            for( char& c : v )
+            {
+                if( c == '/' || c == ',' )
+                    c = ' ';
+            }
+
+            std::string tok, first;
+            v += " ";
+
+            for( char c : v )
+            {
+                if( c != ' ' )
+                {
+                    tok += c;
+                    continue;
+                }
+
+                if( tok.empty() )
+                    continue;
+
+                std::string up = tok;
+                std::transform( up.begin(), up.end(), up.begin(), ::toupper );
+
+                if( first.empty() )
+                    first = tok;
+                else if( up.back() == 'V' && std::isdigit( static_cast<unsigned char>( up[0] ) ) )
+                    q.set_voltage_min( std::atof( up.c_str() ) );
+                else if( up.back() == '%' )
+                    q.set_tolerance( std::atof( up.c_str() ) );
+                else if( up == "X7R" || up == "X5R" || up == "C0G" || up == "NP0" || up == "X7S" || up == "Y5V" )
+                    q.set_dielectric( up );
+
+                tok.clear();
+            }
+
+            q.set_category( category );
+            q.set_value( first );
+        }
+
+        kb::LcscSearchResponse r;
+        std::string            serr;
+
+        if( !aIpc.Call( q, r, serr ) )
+        {
+            g.why = serr;
+            continue;
+        }
+
+        const kb::LcscHit* best = nullptr;
+
+        for( const kb::LcscHit& h : r.hits() )
+        {
+            std::string d = lowerOf( h.description() );
+
+            // a white LED with a yellow lens is not a yellow LED
+            if( !colour.empty() && colour != "white" && d.find( "white" ) != std::string::npos )
+                continue;
+
+            best = &h;
+            break;
+        }
+
+        if( !best )
+        {
+            g.why = "nothing in stock at JLCPCB for " + g.value + " " + size
+                    + ( basicOnly ? " (basic only)" : "" ) + ": lcsc_search with fewer conditions, then pick";
+            continue;
+        }
+
+        kb::LcscHit chosen = *best;
+
+        // today's stock and assembly for the chosen one (one fetch); an empty shelf: the next two
+        if( live )
+        {
+            const int at = (int) ( best - &r.hits( 0 ) );
+            bool      ok = false;
+
+            for( int width : { at + 1, at + 3 } )
+            {
+                kb::LcscSearch one = q;
+                one.set_limit( width );
+                one.set_live( width );
+                kb::LcscSearchResponse lr;
+
+                if( !aIpc.Call( one, lr, serr ) )
+                    break;
+
+                for( int k = width == at + 1 ? at : at + 1; k < lr.hits_size(); ++k )
+                {
+                    const kb::LcscHit& h = lr.hits( k );
+                    std::string        d = lowerOf( h.description() );
+
+                    if( !colour.empty() && colour != "white" && d.find( "white" ) != std::string::npos )
+                        continue;
+
+                    if( h.lcsc() == chosen.lcsc() )
+                        chosen = h;      // with its live numbers, good or not
+
+                    if( h.live_stock() > 0 && h.live_smt() )
+                    {
+                        chosen = h;
+                        ok = true;
+                        break;
+                    }
+                }
+
+                if( ok || lr.hits_size() <= at + 1 )
+                    break;
+            }
+        }
+
+        g.lcsc = chosen.lcsc();
+        g.line = std::string( chosen.basic() ? "BASIC" : chosen.preferred() ? "preferred" : "extended" ) + " "
+                 + chosen.mfr() + ", JLC stock " + std::to_string( chosen.stock() );
+
+        if( chosen.live_stock() >= 0 )
+            g.line += ", LCSC now " + std::to_string( chosen.live_stock() )
+                      + ( chosen.live_smt() ? "" : ", NOT assembled by JLCPCB now" );
+
+        g.line += "; " + ( chosen.description().size() > 110 ? chosen.description().substr( 0, 107 ) + "..."
+                                                              : chosen.description() );
+
+        if( r.total() > 1 )
+            g.line += " (" + std::to_string( r.total() ) + " in stock)";
+
+        matched++;
+    }
+
+    for( const auto& [ref, num] : pick )
+    {
+        if( !seen.count( ref ) )
+            return fail( "pick: not in the schematic: " + ref );
+    }
+
+    std::string t;
+
+    if( groups.empty() )
+    {
+        t = "nothing to match: " + std::to_string( have ) + " part(s) have an LCSC number already";
+
+        if( skipped )
+            t += ", " + std::to_string( skipped ) + " not assembled (DNP / not in the BOM)";
+
+        return TOOL_RESULT{ t + " (replace=true matches them again)", false };
+    }
+
+    t = std::to_string( groups.size() ) + " group(s) of parts without an LCSC number (same value and footprint): "
+        + std::to_string( matched ) + " matched, " + std::to_string( groups.size() - matched ) + " not";
+
+    if( have )
+        t += "; " + std::to_string( have ) + " part(s) have one already";
+
+    if( skipped )
+        t += "; " + std::to_string( skipped ) + " not assembled (DNP / not in the BOM)";
+
+    t += "\nfirst basic, then preferred, then the most in stock (jlcparts index; check the voltage and "
+         "dielectric of the capacitors)";
+
+    // in reference order: C1 C2 ... R1 R2 ... R10
+    auto refKey = []( const std::string& aRef )
+    {
+        size_t d = aRef.find_first_of( "0123456789" );
+        return std::make_pair( aRef.substr( 0, d ), d == std::string::npos ? 0L : std::atol( aRef.c_str() + d ) );
+    };
+
+    std::vector<const GROUP*> order;
+
+    for( auto& [key, g] : groups )
+        order.push_back( &g );
+
+    std::sort( order.begin(), order.end(),
+               [&]( const GROUP* a, const GROUP* b ) { return refKey( a->refs[0] ) < refKey( b->refs[0] ); } );
+
+    ks::SchSetFields set;
+
+    for( const GROUP* gp : order )
+    {
+        const GROUP& g = *gp;
+        std::string  refs;
+
+        for( size_t i = 0; i < g.refs.size(); ++i )
+        {
+            if( i == 8 )
+            {
+                refs += " +" + std::to_string( g.refs.size() - 8 );
+                break;
+            }
+
+            refs += ( i ? " " : "" ) + g.refs[i];
+        }
+
+        std::string fp = g.footprint.substr( g.footprint.find( ':' ) + 1 );
+        t += "\n" + refs + " (" + g.value + ", " + ( fp.empty() ? "no footprint" : fp ) + ")";
+
+        if( g.lcsc.empty() )
+        {
+            t += ": not matched: " + g.why;
+            continue;
+        }
+
+        t += " -> " + g.lcsc + " " + g.line;
+
+        for( const std::string& r : g.refs )
+        {
+            ks::SchFieldEdit* e = set.add_parts();
+            e->set_ref( r );
+            ( *e->mutable_fields() )["LCSC"] = g.lcsc;
+        }
+    }
+
+    if( !apply )
+    {
+        t += "\ndry run: apply=true writes these LCSC numbers (one sch_undo); pick {\"R1\": \"C25804\"} uses "
+             "another part for R1's group (or one for a group not matched)";
+        return TOOL_RESULT{ t, false };
+    }
+
+    if( set.parts().empty() )
+        return TOOL_RESULT{ t + "\nnothing written", false };
+
+    ks::SchConnectResponse r;
+
+    if( !aIpc.Call( set, r, err ) )
+        return fail( t + "\nwriting them failed: " + err );
+
+    t += "\nLCSC number set on " + std::to_string( r.done() ) + " part(s) (sch_undo takes it back; sync_pcb "
+         "carries it to the board)";
+
+    for( const std::string& e : r.errors() )
+        t += "\n  error: " + e;
+
+    return TOOL_RESULT{ t, false };
 }
 
 } // namespace
@@ -1460,6 +1954,24 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
 
                 return connectResult( r, "part(s) changed" );
             } } );
+
+    aTools.push_back( { "lcsc_match",
+            "Find LCSC / JLCPCB numbers for the schematic's parts that have none, many at once: parts of "
+            "the same value and footprint are one group; resistors, capacitors, inductors, ferrite beads "
+            "(FB) and LEDs (colour in the value) in chip packages (0402, 0603, ...) are matched in the "
+            "parts index (basic first, then preferred, then stock; the chosen one checked live), the "
+            "others are listed. Dry run first: apply=true writes the LCSC fields as one sch_undo. pick "
+            "{\"R1\": \"C25804\"} sets the part for R1's group instead (also for a group not matched). "
+            "The value may carry the rating: \"100nF 50V X7R\", \"10k 1%\". refs limits it to some "
+            "parts; replace=true matches parts that have a number already. Then sync_pcb.",
+            obj( { { "apply", { { "type", "boolean" }, { "description", "write them (default: dry run)" } } },
+                   { "pick", { { "type", "object" }, { "additionalProperties", { { "type", "string" } } },
+                               { "description", "ref -> LCSC number for that ref's group" } } },
+                   { "refs", { { "type", "array" }, { "items", { { "type", "string" } } } } },
+                   { "basic_only", { { "type", "boolean" } } },
+                   { "replace", { { "type", "boolean" } } },
+                   { "live", { { "type", "boolean" }, { "description", "check today's stock (default true)" } } } } ),
+            [&aIpc]( const json& a ) { return lcscMatch( aIpc, a ); } } );
 
     for( bool redo : { false, true } )
     {

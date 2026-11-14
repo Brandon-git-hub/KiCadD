@@ -351,7 +351,7 @@ bool SearchParts( const kicadd::board::LcscSearch& aReq, kicadd::board::LcscSear
         // (one bind per statement: the operands of + are evaluated in no fixed order)
         std::string a = bindText( "%" + cat + "%" );
         std::string b = bindText( "%" + cat + "%" );
-        where.push_back( "(lower(category) LIKE " + a + " OR lower(subcategory) LIKE " + b + ")" );
+        where.push_back( "(lower(p.category) LIKE " + a + " OR lower(p.subcategory) LIKE " + b + ")" );
     }
 
     if( !aReq.value().empty() )
@@ -370,14 +370,14 @@ bool SearchParts( const kicadd::board::LcscSearch& aReq, kicadd::board::LcscSear
             return false;
         }
 
-        where.push_back( "unit = " + bindText( unit ) );
+        where.push_back( "p.unit = " + bindText( unit ) );
         std::string lo = bindNum( v * 0.999 );
         std::string hi = bindNum( v * 1.001 );
-        where.push_back( "value BETWEEN " + lo + " AND " + hi );
+        where.push_back( "p.value BETWEEN " + lo + " AND " + hi );
     }
     else if( !unit.empty() )
     {
-        where.push_back( "unit = " + bindText( unit ) );
+        where.push_back( "p.unit = " + bindText( unit ) );
     }
 
     if( !aReq.package().empty() )
@@ -385,14 +385,14 @@ bool SearchParts( const kicadd::board::LcscSearch& aReq, kicadd::board::LcscSear
         std::string a = bindText( aReq.package() );
         std::string b = bindText( aReq.package() + "-%" );
         std::string c = bindText( aReq.package() + "\\_%" );
-        where.push_back( "(package = " + a + " OR package LIKE " + b + " OR package LIKE " + c + " ESCAPE '\\')" );
+        where.push_back( "(p.package = " + a + " OR p.package LIKE " + b + " OR p.package LIKE " + c + " ESCAPE '\\')" );
     }
 
     if( aReq.tolerance() > 0 )
-        where.push_back( "tolerance <= " + bindNum( aReq.tolerance() + 1e-9 ) );
+        where.push_back( "p.tolerance <= " + bindNum( aReq.tolerance() + 1e-9 ) );
 
     if( aReq.voltage_min() > 0 )
-        where.push_back( "voltage >= " + bindNum( aReq.voltage_min() - 1e-9 ) );
+        where.push_back( "p.voltage >= " + bindNum( aReq.voltage_min() - 1e-9 ) );
 
     if( !aReq.dielectric().empty() )
     {
@@ -402,13 +402,13 @@ bool SearchParts( const kicadd::board::LcscSearch& aReq, kicadd::board::LcscSear
         if( d == "NP0" || d == "COG" )
             d = "C0G";
 
-        where.push_back( "dielectric = " + bindText( d ) );
+        where.push_back( "p.dielectric = " + bindText( d ) );
     }
 
     if( aReq.basic_only() )
-        where.push_back( "basic = 1" );
+        where.push_back( "p.basic = 1" );
 
-    where.push_back( "stock >= " + bindNum( (double) std::max<int64_t>( 1, aReq.min_stock() ) ) );
+    where.push_back( "p.stock >= " + bindNum( (double) std::max<int64_t>( 1, aReq.min_stock() ) ) );
 
     std::string from = "parts p";
 

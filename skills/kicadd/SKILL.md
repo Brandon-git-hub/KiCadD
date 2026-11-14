@@ -66,7 +66,13 @@ what each tool does; this skill says how to use them together.
 2. Use one: `sch_add_part lcsc="C25804"` (symbol + footprint saved to the project's LCSC
    library), or `lcsc_fetch` first to inspect pins and pads, or put the number on an existing
    part with `sch_set_fields {"LCSC": "C25804"}`.
-3. No suitable LCSC part: `lib_create_footprint` (chip, sot23, soic, so, qfn, qfp, header) and
+3. Many parts at once: `lcsc_match` (dry run) groups the parts without an LCSC number by value
+   and footprint and picks one for each group of resistors, capacitors, inductors, ferrite
+   beads (FB) and LEDs (colour in the value) in chip packages. Check the choices (capacitor
+   voltage and dielectric: write them in the value, "100nF 50V X7R"), then `apply=true`
+   (one `sch_undo`); `pick {"R1": "C..."}` for another part or a group it could not match.
+   Then `sync_pcb`.
+4. No suitable LCSC part: `lib_create_footprint` (chip, sot23, soic, so, qfn, qfp, header) and
    `lib_create_symbol` (a box symbol from a pin list, `footprint` set to the new one); libraries
    already on disk: `lib_register`.
 
@@ -76,7 +82,10 @@ From a blank project, before placing parts:
 
 1. `board_setup` shows the layers and stackup. `copper_layers=4` (and `thickness`,
    `outer_copper_oz`, `inner_copper_oz`) makes a new stackup like Board Setup's default.
-   Fewer layers only once the inner ones are empty.
+   For controlled impedance use the fab's own: `stackup="JLC04161H-7628"` (`stackup="list"`
+   names JLCPCB's 4- and 6-layer 1.6 mm ones) sets its prepreg / core thicknesses and Dk; the
+   Dk values differ between JLCPCB's pages, so have the user check widths with JLCPCB's
+   impedance calculator. Fewer layers only once the inner ones are empty.
 2. `set_rules preset="jlcpcb_2layer"` (or `jlcpcb_4layer`) sets the board minimums to the
    fab's standard process and raises the Default class to them. Add net classes in the same
    call. The numbers are the fab's published ones as of a date; tell the user to check them
@@ -85,17 +94,27 @@ From a blank project, before placing parts:
    and puts M3 holes (H1..H4, out of the BOM and the CPL) at the corners. `cutouts` adds
    slots or round holes in the board; `holes` adds holes at chosen points (plated to GND
    with `{"x", "y", "plated": true, "net": "GND"}`). `keep_old=true` adds to the outline
-   there is.
+   there is. Read the warnings: a hole where a part already has one is left out; a hole on a
+   part or through a track, a cut-out through tracks, and tracks outside a new outline are
+   listed at once (DRC would show them later).
 4. `zones create={"net": "GND"}` pours GND over the board outline on F.Cu and B.Cu (or
-   `layers: ["In1.Cu"]` for a plane). Pour after sync_pcb, once the net exists.
+   `layers: ["In1.Cu"]` for a plane). Pour after sync_pcb, once the net exists. Two zones of
+   different nets on the same layer need different priorities: the higher one is filled, the
+   other keeps clear. A new zone inside a bigger one gets the higher priority by itself; an
+   overlap at the same priority comes with a warning and the `zones ids=[...] priority=1`
+   call that settles it.
 5. All of them are one `undo` each.
+6. After routing: `stitch_vias` (GND by default, 5 mm grid, also one via in each island of
+   the pour that has none) and `teardrops` (vias and through-hole pads; `smd=true` for SMD
+   pads). Both are one `undo`, and both refill the zones.
 
 ## Schematic to board, placement
 
 1. `sync_pcb dry_run=true`, read it, then `sync_pcb` (one `undo` takes it all back). New
    footprints land outside the outline. A warning that a reference "is already on the board"
    means a part placed by hand (`add_footprint`) has the same ref as a symbol: the sync adds a
-   second one. Delete or renumber the board's one first. `run_drc` and `export_fab` also warn
+   second one. Delete the board's one, or renumber it:
+   `pcb_set_fields parts={"R22": {"Reference": "R23"}}`. `run_drc` and `export_fab` also warn
    about a reference used twice, and `export_fab` about parts outside the outline.
 2. `auto_place` (default: the parts outside the board). Useful options: `groups` or the Block
    field to keep functional blocks together, `rules` (edge, region, rotation, near), `fixed`
@@ -140,10 +159,23 @@ length matching, dense escapes).
 - `zones` lists copper zones; with `nets` / `layers` / `ids` / `all` and new values it changes
   clearance, minimum width, priority or pad connection and refills. `create` makes a new one
   (see "A new board").
+- After `undo` / `redo` of a zone, outline or layer edit, the fills are of the other state:
+  the response says so. `refill_zones` before reading `unconnected` or running DRC.
+
+## Look at it
+
+`render_board` returns a PNG of the board as it is (KiCad's own plot: copper, pads, pours,
+silkscreen, outline) with mm rulers on the top and left and the unrouted connections as thin
+white lines. `refs` frames parts (and zooms to them), `nets` draws nets in cyan, `area`
+crops, `layers: ["silk"]` / `["fab"]` / names, `back=true` from below (mirrored). Use it for
+what coordinates do not show: silkscreen over pads, part orientation, crowding, how a route
+runs. Keep `size` modest (default 1200 px) unless the detail needs more.
 
 ## Manufacturing (JLCPCB)
 
 1. `refill_zones` and a clean `run_drc` (or the user's agreement on what remains).
+   `export_fab` runs the DRC itself and puts the error count first; `strict=true` writes
+   nothing while there are DRC errors, a reference twice or parts off the board.
 2. Parts not to be assembled: `sch_set_fields` / `pcb_set_fields` with `dnp` or
    `exclude_from_bom` (they leave both BOM and CPL).
 3. `export_fab`: Gerbers, drill, the upload zip, BOM and CPL in JLCPCB's columns, from the
@@ -160,5 +192,6 @@ answer: when the next call depends on a result, make separate calls.
 ## Not available (say so instead of improvising)
 
 Autorouting a whole board, differential pairs, length tuning, pushing (shoving) existing tracks;
+a picture of the schematic;
 PCB or assembly price quotes; 3D models of LCSC parts; STEP export. For those, the user works in
 the editor or on the manufacturer's site.

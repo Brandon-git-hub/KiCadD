@@ -37,6 +37,7 @@
 #include <view/view.h>
 #include <pad.h>
 #include <pcb_track.h>
+#include <geometry/shape_circle.h>
 #include <geometry/shape_arc.h>
 #include <zone.h>
 #include <geometry/seg.h>
@@ -49,6 +50,7 @@
 #include <netlist_reader/board_netlist_updater.h>
 #include "pcb/kicadd_autoplace.h"
 #include "pcb/kicadd_fab.h"
+#include "pcb/kicadd_picture.h"
 #include "lcsc/kicadd_parts.h"
 #include "pcb/kicadd_fpgen.h"
 #include "common/kicadd_libtable.h"
@@ -245,7 +247,10 @@ KICADD_HANDLER_PCB::KICADD_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext ) 
     registerHandler<RouteTrack, RouteResponse>( &KICADD_HANDLER_PCB::handleRoute );
     registerHandler<RouteShort, RouteResponse>( &KICADD_HANDLER_PCB::handleRouteShort );
     registerHandler<Fanout, FanoutResponse>( &KICADD_HANDLER_PCB::handleFanout );
+    registerHandler<StitchVias, StitchViasResponse>( &KICADD_HANDLER_PCB::handleStitchVias );
+    registerHandler<Teardrops, TeardropsResponse>( &KICADD_HANDLER_PCB::handleTeardrops );
     registerHandler<ExportFab, ExportFabResponse>( &KICADD_HANDLER_PCB::handleExportFab );
+    registerHandler<RenderBoard, RenderBoardResponse>( &KICADD_HANDLER_PCB::handleRenderBoard );
     registerHandler<LcscSearch, LcscSearchResponse>( &KICADD_HANDLER_PCB::handleLcscSearch );
     registerHandler<FpCreate, FpCreateResponse>( &KICADD_HANDLER_PCB::handleFpCreate );
     registerHandler<AddFootprint, MoveResponse>( &KICADD_HANDLER_PCB::handleAddFootprint );
@@ -725,7 +730,7 @@ KICADD_HANDLER_PCB::FP_STATE KICADD_HANDLER_PCB::stateOf( const FOOTPRINT* aFp, 
 
         for( const PCB_FIELD* field : aFp->GetFields() )
         {
-            if( field && !field->IsReference() && field->GetId() != FIELD_T::FOOTPRINT )
+            if( field && field->GetId() != FIELD_T::FOOTPRINT )
                 st.fields.emplace_back( field->GetName(), field->GetText() );
         }
 
@@ -761,7 +766,7 @@ void KICADD_HANDLER_PCB::setState( FOOTPRINT* aFp, const FP_STATE& aState, KIGFX
 
     for( PCB_FIELD* field : fields )
     {
-        if( !field || field->IsReference() || field->GetId() == FIELD_T::FOOTPRINT )
+        if( !field || field->GetId() == FIELD_T::FOOTPRINT )
             continue;
 
         auto it = want.find( field->GetName() );
@@ -878,6 +883,12 @@ NETINFO_ITEM* KICADD_HANDLER_PCB::netFor( const wxString& aName, BOARD_COMMIT& a
     }
 
     NETINFO_ITEM* net = new NETINFO_ITEM( b, aName );
+
+    // its net class by the name patterns (a new net is Default otherwise, until the board is
+    // loaded again: the router would take Default's width and clearance, DRC the pattern's)
+    if( b->GetDesignSettings().m_NetSettings )
+        net->SetNetClass( b->GetDesignSettings().m_NetSettings->GetEffectiveNetClass( aName ) );
+
     aCommit.Add( net );
     m_pendingNets.push_back( net );
     aOut.add_created_nets( aName.ToStdString() );
@@ -1146,23 +1157,92 @@ KICADD_HANDLER_PCB::handleSetFields( const HANDLER_CONTEXT<FpSetFields>& aCtx )
 
     MoveResponse                                         out;
     std::vector<std::pair<FOOTPRINT*, const FpFieldEdit*>> edits;
+    std::map<const FOOTPRINT*, wxString>                 newRefs;   // the parts renumbered
+    auto bad = [&]( const std::string& aMsg ) { return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, aMsg ) ); };
+    auto at = []( const FOOTPRINT* aFp )
+    {
+        char buf[64];
+        std::snprintf( buf, sizeof( buf ), "%.4g,%.4g", aFp->GetPosition().x / 1e6, aFp->GetPosition().y / 1e6 );
+        return std::string( buf );
+    };
 
     for( const FpFieldEdit& e : aCtx.Request.parts() )
     {
+        std::optional<wxString> newRef;
+
         for( const auto& [name, text] : e.fields() )
         {
             std::string n = name;
             std::transform( n.begin(), n.end(), n.begin(), ::toupper );
 
-            if( n == "REFERENCE" || n == "FOOTPRINT" )
-                return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
-                                                  e.ref() + ": " + name + " is not changed here" ) );
+            if( n == "FOOTPRINT" )
+                return bad( e.ref() + ": " + name + " is not changed here" );
+
+            if( n == "REFERENCE" )
+            {
+                newRef = wxString::FromUTF8( text ).Trim().Trim( false );
+
+                if( newRef->IsEmpty() || newRef->Contains( wxS( " " ) ) )
+                    return bad( e.ref() + ": Reference is a designator like R12" );
+            }
         }
 
-        if( FOOTPRINT* fp = b->FindFootprintByReference( wxString::FromUTF8( e.ref() ) ) )
-            edits.emplace_back( fp, &e );
-        else
+        std::vector<FOOTPRINT*> same;
+
+        for( FOOTPRINT* fp : b->Footprints() )
+        {
+            if( fp->GetReference() == wxString::FromUTF8( e.ref() ) )
+                same.push_back( fp );
+        }
+
+        if( same.empty() )
+        {
             out.add_missing( e.ref() );
+            continue;
+        }
+
+        FOOTPRINT* fp = same.front();
+
+        // Renumbering one of two parts of the same reference (a sync that added a second one):
+        // the one that is not from the schematic, which keeps its symbol's reference
+        if( newRef && same.size() > 1 )
+        {
+            auto byHand = std::find_if( same.begin(), same.end(), []( const FOOTPRINT* aFp ) { return aFp->GetPath().empty(); } );
+
+            if( byHand != same.end() )
+                fp = *byHand;
+
+            out.add_notes( std::to_string( same.size() ) + " parts are " + e.ref() + ": renumbered the one at " + at( fp )
+                           + ( fp->GetPath().empty() ? " (placed by hand, not from the schematic)" : "" ) );
+        }
+
+        if( newRef && *newRef != fp->GetReference() )
+            newRefs[fp] = *newRef;
+
+        edits.emplace_back( fp, &e );
+    }
+
+    // A new reference is one no other part has (or gives up in this same edit)
+    for( const auto& [fp, ref] : newRefs )
+    {
+        for( const FOOTPRINT* other : b->Footprints() )
+        {
+            auto     moved = newRefs.find( other );
+            wxString theirs = moved != newRefs.end() ? moved->second : other->GetReference();
+
+            if( other != fp && theirs.CmpNoCase( ref ) == 0 )
+            {
+                return bad( fp->GetReference().ToStdString() + ": another part is " + ref.ToStdString() + " already (at "
+                            + at( other ) + "); give a reference that is free" );
+            }
+        }
+
+        if( !fp->GetPath().empty() )
+        {
+            out.add_notes( fp->GetReference().ToStdString() + " -> " + ref.ToStdString() + ": this part comes from the "
+                           "schematic, where it is still " + fp->GetReference().ToStdString() + ": the next sync_pcb puts "
+                           "that back. To keep the new reference, renumber the symbol (sch_set_fields), then sync_pcb" );
+        }
     }
 
     if( edits.empty() )
@@ -1178,6 +1258,12 @@ KICADD_HANDLER_PCB::handleSetFields( const HANDLER_CONTEXT<FpSetFields>& aCtx )
     }
 
     entry.label = "set fields of " + std::to_string( targets.size() ) + " footprint(s)";
+
+    if( newRefs.size() == 1 )
+        entry.label += " (" + newRefs.begin()->first->GetReference().ToStdString() + " is now " + newRefs.begin()->second.ToStdString() + ")";
+    else if( !newRefs.empty() )
+        entry.label += " (" + std::to_string( newRefs.size() ) + " renumbered)";
+
     std::map<const FOOTPRINT*, const FpFieldEdit*> byFp( edits.begin(), edits.end() );
 
     applyFootprintEdit( targets,
@@ -1195,6 +1281,8 @@ KICADD_HANDLER_PCB::handleSetFields( const HANDLER_CONTEXT<FpSetFields>& aCtx )
 
                                 if( n.CmpNoCase( wxS( "Value" ) ) == 0 )
                                     fp->SetValue( wxString::FromUTF8( text ) );
+                                else if( n.CmpNoCase( wxS( "Reference" ) ) == 0 )
+                                    fp->SetReference( wxString::FromUTF8( text ).Trim().Trim( false ) );
                                 else if( PCB_FIELD* f = fp->GetField( n ) )
                                     f->SetText( wxString::FromUTF8( text ) );
                                 else
@@ -1485,6 +1573,16 @@ KICADD_HANDLER_PCB::handleExportFab( const HANDLER_CONTEXT<ExportFab>& aCtx )
     if( !b )
         return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
 
+    if( aCtx.Request.check_only() )
+    {
+        ExportFabResponse out;
+
+        for( const std::string& p : kicadd::FabProblems( b ) )
+            out.add_problems( p );
+
+        return out;
+    }
+
     wxString dir = wxString::FromUTF8( aCtx.Request.dir() );
     wxFileName boardFile( b->GetFileName() );
 
@@ -1503,6 +1601,33 @@ KICADD_HANDLER_PCB::handleExportFab( const HANDLER_CONTEXT<ExportFab>& aCtx )
     std::string       err;
 
     if( !kicadd::ExportFab( b, dir, !aCtx.Request.no_zip(), out, err ) )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, err ) );
+
+    return out;
+}
+
+
+HANDLER_RESULT<RenderBoardResponse>
+KICADD_HANDLER_PCB::handleRenderBoard( const HANDLER_CONTEXT<RenderBoard>& aCtx )
+{
+    BOARD* b = board();
+
+    if( !b )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
+
+    RenderBoardResponse out;
+    std::string         err;
+    RenderBoard         req = aCtx.Request;
+
+    // a relative path is in the project's folder
+    if( !req.path().empty() && !wxFileName( wxString::FromUTF8( req.path() ) ).IsAbsolute() )
+    {
+        wxFileName f( wxString::FromUTF8( req.path() ) );
+        f.MakeAbsolute( wxFileName( b->GetFileName() ).GetPath() );
+        req.set_path( f.GetFullPath().ToStdString( wxConvUTF8 ) );
+    }
+
+    if( !kicadd::RenderBoardPng( b, req, out, err ) )
         return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, err ) );
 
     return out;
@@ -2515,6 +2640,511 @@ HANDLER_RESULT<FanoutResponse> KICADD_HANDLER_PCB::handleFanout( const HANDLER_C
 }
 
 
+HANDLER_RESULT<StitchViasResponse> KICADD_HANDLER_PCB::handleStitchVias( const HANDLER_CONTEXT<StitchVias>& aCtx )
+{
+    if( std::optional<ApiResponseStatus> wait = busy() )
+        return tl::unexpected( *wait );
+
+    BOARD* b = board();
+
+    if( !b )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
+
+    const StitchVias& req = aCtx.Request;
+    const wxString    netName = req.net().empty() ? wxString( wxS( "GND" ) ) : wxString::FromUTF8( req.net() );
+    NETINFO_ITEM*     net = b->FindNet( netName );
+
+    if( !net || net->GetNetCode() <= 0 )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no net " + netName.ToStdString() ) );
+
+    const int              code = net->GetNetCode();
+    BOARD_DESIGN_SETTINGS& bds = b->GetDesignSettings();
+    const NETCLASS*        nc = net->GetNetClass();
+    const int dia = nc && nc->HasViaDiameter() ? nc->GetViaDiameter() : bds.GetCurrentViaSize();
+    const int drill = nc && nc->HasViaDrill() ? nc->GetViaDrill() : bds.GetCurrentViaDrill();
+    const int clr = std::max( nc && nc->HasClearance() ? nc->GetClearance() : 0, bds.m_MinClearance );
+    const int r = dia / 2;
+
+    StitchViasResponse out;
+    out.set_via_diameter( dia );
+    out.set_via_drill( drill );
+    out.set_dry_run( req.dry_run() );
+
+    // --- the net's copper, layer by layer: its zones' fills; `inner` keeps a via's radius from their edge
+    std::map<PCB_LAYER_ID, SHAPE_POLY_SET> copper, inner;
+    int                                    unfilled = 0;
+
+    for( ZONE* z : b->Zones() )
+    {
+        if( z->GetIsRuleArea() || z->IsTeardropArea() || z->GetNetCode() != code )
+            continue;
+
+        for( PCB_LAYER_ID l : LSET( z->GetLayerSet() & LSET::AllCuMask() ).Seq() )
+        {
+            if( z->IsFilled() && z->HasFilledPolysForLayer( l ) && z->GetFilledPolysList( l )->OutlineCount() )
+                copper[l].Append( *z->GetFilledPolysList( l ) );
+            else
+                unfilled++;
+        }
+    }
+
+    for( auto& [l, poly] : copper )
+    {
+        poly.Simplify();
+        poly.BuildBBoxCaches();
+        inner[l] = poly.CloneDropTriangulation();
+        inner[l].Deflate( r, CORNER_STRATEGY::ROUND_ALL_CORNERS, bds.m_MaxError );
+        inner[l].BuildBBoxCaches();
+        out.add_layers( LSET::Name( l ).ToStdString() );
+    }
+
+    if( copper.size() < 2 )
+    {
+        std::string have;
+
+        for( auto& [l, poly] : copper )
+            have += LSET::Name( l ).ToStdString();
+
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
+                "stitching vias join " + netName.ToStdString() + "'s copper on two layers or more; it has filled copper "
+                + ( have.empty() ? std::string( "on no layer" ) : "only on " + have )
+                + ( unfilled ? " (refill_zones first)" : " (zones create {\"net\": \"" + netName.ToStdString()
+                                                                + "\"} pours F.Cu and B.Cu)" ) ) );
+    }
+
+    if( unfilled )
+        out.add_notes( std::to_string( unfilled ) + " zone layer(s) of " + netName.ToStdString()
+                       + " not filled: refill_zones first, or they are left out" );
+
+    auto layersAt = [&]( const VECTOR2I& aP )
+    {
+        int n = 0;
+
+        for( auto& [l, poly] : inner )
+            n += poly.Contains( aP ) ? 1 : 0;
+
+        return n;
+    };
+
+    // --- what a via may not sit on: pads (any net), tracks (any net), courtyards, rule areas
+    //     with no vias. Bucketed by a 2 mm grid, each item in the cells its box touches.
+    const int                                              CELL = pcbIUScale.mmToIU( 2 );
+    std::unordered_map<int64_t, std::vector<BOARD_ITEM*>>  cells;
+    auto key = []( int64_t cx, int64_t cy ) { return ( cx << 32 ) ^ ( cy & 0xffffffff ); };
+    auto bucket = [&]( BOARD_ITEM* aItem, BOX2I aBox )
+    {
+        aBox.Inflate( r + clr );
+
+        for( int64_t cx = aBox.GetX() / CELL - 1; cx <= aBox.GetRight() / CELL; ++cx )
+        {
+            for( int64_t cy = aBox.GetY() / CELL - 1; cy <= aBox.GetBottom() / CELL; ++cy )
+                cells[key( cx, cy )].push_back( aItem );
+        }
+    };
+
+    std::vector<VECTOR2I> netHoles;   // vias and through-holes of the net: a stitching via near one is not needed
+
+    for( FOOTPRINT* fp : b->Footprints() )
+    {
+        if( !req.under_parts() )
+            bucket( fp, fp->GetBoundingBox( false ) );
+
+        for( PAD* pad : fp->Pads() )
+        {
+            bucket( pad, pad->GetBoundingBox() );
+
+            if( pad->GetNetCode() == code && pad->HasHole() )
+                netHoles.push_back( pad->GetPosition() );
+        }
+    }
+
+    for( PCB_TRACK* t : b->Tracks() )
+    {
+        bucket( t, t->GetBoundingBox() );
+
+        if( t->Type() == PCB_VIA_T && t->GetNetCode() == code )
+            netHoles.push_back( t->GetPosition() );
+    }
+
+    for( ZONE* z : b->Zones() )
+    {
+        if( z->GetIsRuleArea() && z->GetDoNotAllowVias() )
+            bucket( z, z->GetBoundingBox() );
+    }
+
+    auto blockedAt = [&]( const VECTOR2I& aP ) -> bool
+    {
+        auto it = cells.find( key( aP.x / CELL - ( aP.x < 0 ? 1 : 0 ), aP.y / CELL - ( aP.y < 0 ? 1 : 0 ) ) );
+
+        if( it == cells.end() )
+            return false;
+
+        const SHAPE_CIRCLE via( aP, r );
+
+        for( BOARD_ITEM* item : it->second )
+        {
+            switch( item->Type() )
+            {
+            case PCB_FOOTPRINT_T:
+            {
+                FOOTPRINT* fp = static_cast<FOOTPRINT*>( item );
+                const SHAPE_POLY_SET& crt = fp->GetCourtyard( fp->IsFlipped() ? B_CrtYd : F_CrtYd );
+
+                if( crt.OutlineCount() ? crt.Contains( aP ) : fp->GetBoundingBox( false ).Contains( aP ) )
+                    return true;
+
+                break;
+            }
+
+            case PCB_PAD_T:
+            {
+                PAD* pad = static_cast<PAD*>( item );
+
+                for( PCB_LAYER_ID l : LSET( pad->GetLayerSet() & LSET::AllCuMask() ).Seq() )
+                {
+                    std::shared_ptr<SHAPE> shape = pad->GetEffectiveShape( l );
+
+                    if( shape && shape->Collide( &via, clr ) )
+                        return true;
+                }
+
+                if( std::shared_ptr<SHAPE_SEGMENT> hole = pad->GetEffectiveHoleShape() )
+                {
+                    if( hole->Collide( &via, std::max( clr, bds.m_HoleToHoleMin ) ) )
+                        return true;
+                }
+
+                break;
+            }
+
+            case PCB_TRACE_T:
+            case PCB_ARC_T:
+            case PCB_VIA_T:
+            {
+                PCB_TRACK* t = static_cast<PCB_TRACK*>( item );
+                std::shared_ptr<SHAPE> shape = t->GetEffectiveShape( t->Type() == PCB_VIA_T ? F_Cu : t->GetLayer() );
+
+                if( shape && shape->Collide( &via, clr ) )
+                    return true;
+
+                break;
+            }
+
+            case PCB_ZONE_T:
+                if( static_cast<ZONE*>( item )->Outline()->Collide( aP, r ) )
+                    return true;
+
+                break;
+
+            default:
+                break;
+            }
+        }
+
+        return false;
+    };
+
+    const int64_t spacing = req.spacing() > 0 ? std::max<int64_t>( req.spacing(), dia + clr ) : pcbIUScale.mmToIU( 5 );
+    const int     maxVias = req.max() > 0 ? req.max() : 500;
+    const int64_t nearest = spacing / 2;
+
+    auto nearHole = [&]( const VECTOR2I& aP, int64_t aDist )
+    {
+        for( const VECTOR2I& h : netHoles )
+        {
+            if( ( h - aP ).SquaredEuclideanNorm() < aDist * aDist )
+                return true;
+        }
+
+        return false;
+    };
+
+    BOX2I area;
+
+    if( req.has_area_min() && req.has_area_max() )
+    {
+        VECTOR2I a( req.area_min().x(), req.area_min().y() ), c( req.area_max().x(), req.area_max().y() );
+        area = BOX2I( a, c - a );
+        area.Normalize();
+    }
+    else
+    {
+        bool first = true;
+
+        for( auto& [l, poly] : copper )
+        {
+            if( first )
+                area = poly.BBox();
+            else
+                area.Merge( poly.BBox() );
+
+            first = false;
+        }
+    }
+
+    kicadd::route::SESSION session( b );
+    int                    placed = 0;
+
+    auto tryAt = [&]( const VECTOR2I& aP ) -> bool
+    {
+        if( blockedAt( aP ) )
+            return false;
+
+        kicadd::route::RESULT res = session.PlaceVia( aP, code, dia, drill );
+
+        if( !res.ok )
+            return false;
+
+        netHoles.push_back( aP );
+        placed++;
+        return true;
+    };
+
+    // --- the grid (absolute: multiples of the spacing)
+    for( int64_t y = ( area.GetY() + spacing - 1 ) / spacing * spacing; y <= area.GetBottom() && placed < maxVias; y += spacing )
+    {
+        for( int64_t x = ( area.GetX() + spacing - 1 ) / spacing * spacing; x <= area.GetRight() && placed < maxVias; x += spacing )
+        {
+            VECTOR2I p( (int) x, (int) y );
+            out.set_grid_points( out.grid_points() + 1 );
+
+            if( layersAt( p ) < 2 )
+                continue;
+
+            out.set_in_copper( out.in_copper() + 1 );
+
+            if( nearHole( p, nearest ) )
+                out.set_near_existing( out.near_existing() + 1 );
+            else if( !tryAt( p ) )
+                out.set_blocked( out.blocked() + 1 );
+        }
+    }
+
+    // --- islands: copper of the net with no via or through-hole of it in it
+    if( !req.no_islands() )
+    {
+        const double minArea = std::pow( pcbIUScale.mmToIU( 2 ), 2 );   // 4 mm²: room for a via
+        std::vector<std::string> left;
+
+        for( auto& [l, poly] : copper )
+        {
+            for( int i = 0; i < poly.OutlineCount() && placed < maxVias; ++i )
+            {
+                if( area.GetWidth() > 0 && !area.Intersects( poly.COutline( i ).BBox() ) )
+                    continue;
+
+                bool has = false;
+
+                for( const VECTOR2I& h : netHoles )
+                {
+                    if( poly.Contains( h, i ) )
+                    {
+                        has = true;
+                        break;
+                    }
+                }
+
+                if( has )
+                    continue;
+
+                SHAPE_POLY_SET island;
+                island.AddPolygon( poly.CPolygon( i ) );
+                const double a = island.Area();
+
+                if( a < minArea )
+                    continue;
+
+                // the free points of the island, nearest its middle first
+                const BOX2I    box = island.BBox();
+                const int      step = std::max( dia, (int) pcbIUScale.mmToIU( 0.5 ) );
+                const VECTOR2I mid = box.Centre();
+                std::vector<VECTOR2I> pts;
+
+                for( int y = box.GetY() + step / 2; y < box.GetBottom(); y += step )
+                {
+                    for( int x = box.GetX() + step / 2; x < box.GetRight(); x += step )
+                    {
+                        VECTOR2I p( x, y );
+
+                        if( inner[l].Contains( p ) && poly.Contains( p, i ) )
+                            pts.push_back( p );
+                    }
+                }
+
+                std::sort( pts.begin(), pts.end(), [&]( const VECTOR2I& p, const VECTOR2I& q )
+                           { return ( p - mid ).SquaredEuclideanNorm() < ( q - mid ).SquaredEuclideanNorm(); } );
+
+                bool joined = false;
+
+                for( size_t k = 0; k < pts.size() && k < 400 && !joined; ++k )
+                {
+                    if( layersAt( pts[k] ) >= 2 && tryAt( pts[k] ) )
+                        joined = true;
+                }
+
+                if( joined )
+                {
+                    out.set_islands_joined( out.islands_joined() + 1 );
+                }
+                else
+                {
+                    char buf[160];
+                    std::snprintf( buf, sizeof( buf ), "%s @%.2f,%.2f (%.1f mm²)", LSET::Name( l ).ToStdString().c_str(),
+                                   pcbIUScale.IUTomm( mid.x ), pcbIUScale.IUTomm( mid.y ), a / 1e12 );
+                    left.push_back( buf );
+                }
+            }
+        }
+
+        for( size_t k = 0; k < left.size() && k < 10; ++k )
+            out.add_islands_left( left[k] );
+
+        if( left.size() > 10 )
+            out.add_islands_left( "+" + std::to_string( left.size() - 10 ) + " more" );
+    }
+
+    if( placed >= maxVias )
+        out.add_notes( "stopped at max=" + std::to_string( maxVias ) + " vias" );
+
+    out.set_vias_added( placed );
+    std::shared_ptr<CONNECTIVITY_DATA> conn = b->GetConnectivity();
+
+    if( req.dry_run() || placed == 0 )
+    {
+        out.set_unconnected( (int) conn->GetUnconnectedCountNoFlush( false ) );
+        return out;
+    }
+
+    RouteResponse routes;
+    commitRoutes( session.TakeAdded(), {}, "stitch " + std::to_string( placed ) + " " + netName.ToStdString() + " via(s)",
+                  routes );
+    out.set_history_label( routes.history_label() );
+    out.set_unconnected( routes.unconnected() );
+    return out;
+}
+
+
+HANDLER_RESULT<TeardropsResponse> KICADD_HANDLER_PCB::handleTeardrops( const HANDLER_CONTEXT<Teardrops>& aCtx )
+{
+    if( std::optional<ApiResponseStatus> wait = busy() )
+        return tl::unexpected( *wait );
+
+    BOARD* b = board();
+
+    if( !b )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
+
+    const Teardrops&  req = aCtx.Request;
+    const bool        on = !req.remove();
+    TeardropsResponse out;
+    std::set<int>     nets;
+    std::set<const FOOTPRINT*> parts;
+
+    for( const std::string& n : req.nets() )
+    {
+        NETINFO_ITEM* net = b->FindNet( wxString::FromUTF8( n ) );
+
+        if( net && net->GetNetCode() > 0 )
+            nets.insert( net->GetNetCode() );
+        else
+            out.add_missing( "net " + n );
+    }
+
+    for( const std::string& ref : req.refs() )
+    {
+        if( FOOTPRINT* fp = b->FindFootprintByReference( wxString::FromUTF8( ref ) ) )
+            parts.insert( fp );
+        else
+            out.add_missing( ref );
+    }
+
+    if( ( !req.nets().empty() && nets.empty() ) || ( !req.refs().empty() && parts.empty() ) )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "not found: none of the nets / parts given" ) );
+
+    std::vector<BOARD_CONNECTED_ITEM*> todo;
+    int                                already = 0;
+
+    auto consider = [&]( BOARD_CONNECTED_ITEM* aItem )
+    {
+        if( aItem->GetNetCode() <= 0 || ( !nets.empty() && !nets.count( aItem->GetNetCode() ) ) )
+            return;
+
+        if( aItem->GetTeardropParams().m_Enabled == on )
+            already++;
+        else
+            todo.push_back( aItem );
+    };
+
+    for( FOOTPRINT* fp : b->Footprints() )
+    {
+        if( !parts.empty() && !parts.count( fp ) )
+            continue;
+
+        for( PAD* pad : fp->Pads() )
+        {
+            const bool pth = pad->GetAttribute() == PAD_ATTRIB::PTH;
+            const bool smd = pad->GetAttribute() == PAD_ATTRIB::SMD;
+
+            if( ( pth && !req.no_pth() ) || ( smd && req.smd() ) )
+                consider( pad );
+        }
+    }
+
+    if( !req.no_vias() && ( parts.empty() || !nets.empty() ) )
+    {
+        for( PCB_TRACK* t : b->Tracks() )
+        {
+            if( t->Type() == PCB_VIA_T )
+                consider( t );
+        }
+    }
+
+    auto count = [&]()
+    {
+        int n = 0;
+
+        for( ZONE* z : b->Zones() )
+            n += z->IsTeardropArea() ? 1 : 0;
+
+        return n;
+    };
+
+    out.set_before( count() );
+    out.set_already( already );
+    out.set_changed( (int) todo.size() );
+    out.set_dry_run( req.dry_run() );
+
+    if( req.dry_run() || todo.empty() )
+    {
+        out.set_after( out.before() );
+        return out;
+    }
+
+    HISTORY_ENTRY entry;
+    entry.label = std::string( on ? "teardrops on " : "teardrops off " ) + std::to_string( todo.size() ) + " pad(s) / via(s)";
+    MoveResponse moved;
+
+    runCommit(
+            [&]( BOARD_COMMIT& aCommit )
+            {
+                for( BOARD_CONNECTED_ITEM* item : todo )
+                {
+                    aCommit.Modify( item );
+                    item->SetTeardropsEnabled( on );
+                    entry.teardropFlags.push_back( { item->m_Uuid, !on, on } );
+                }
+
+                return std::vector<KIID>();
+            },
+            wxString::FromUTF8( "Agent: " + entry.label ), moved );
+
+    out.set_after( count() );
+    out.set_history_label( entry.label );
+    record( std::move( entry ) );
+    return out;
+}
+
+
 void KICADD_HANDLER_PCB::commitRoutes( std::vector<std::unique_ptr<PCB_TRACK>>&& aAdded,
                                        const std::vector<PCB_TRACK*>& aReplaced, const std::string& aLabel,
                                        RouteResponse& aOut )
@@ -2901,6 +3531,33 @@ KICADD_HANDLER_PCB::handleFetchLcsc( const HANDLER_CONTEXT<FetchLcsc>& aCtx )
 }
 
 
+void KICADD_HANDLER_PCB::noteStaleFills( const HISTORY_ENTRY& aEntry, MoveResponse& aOut ) const
+{
+    // An edit of zones, the outline or the layers: the fills there are were made for the other state
+    bool touches = aEntry.setupBefore || !aEntry.zonesBefore.empty() || !aEntry.teardropFlags.empty()
+                   || aEntry.label.rfind( "stitch", 0 ) == 0;
+
+    for( const std::vector<HISTORY_ENTRY::ITEM_SNAPSHOT>* list : { &aEntry.itemsRemoved, &aEntry.itemsAdded } )
+    {
+        for( const HISTORY_ENTRY::ITEM_SNAPSHOT& snap : *list )
+            touches = touches || snap.item->Type() == PCB_ZONE_T || snap.item->GetLayer() == Edge_Cuts;
+    }
+
+    if( !touches )
+        return;
+
+    for( const ZONE* zone : board()->Zones() )
+    {
+        if( !zone->GetIsRuleArea() && zone->IsFilled() )
+        {
+            aOut.add_notes( "the zone fills are out of date after this: refill_zones (until then unconnected counts "
+                            "what the old fills leave open)" );
+            return;
+        }
+    }
+}
+
+
 bool KICADD_HANDLER_PCB::applyHistory( const HISTORY_ENTRY& aEntry, bool aUndo, MoveResponse& aOut )
 {
     BOARD* b = board();
@@ -2957,6 +3614,47 @@ bool KICADD_HANDLER_PCB::applyHistory( const HISTORY_ENTRY& aEntry, bool aUndo, 
         kicadd::setup::Apply( *b, target );
         setupChanged();
         return true;
+    }
+
+    if( !aEntry.teardropFlags.empty() )
+    {
+        std::vector<std::pair<BOARD_CONNECTED_ITEM*, bool>> todo;
+        int already = 0, changed = 0;
+
+        for( const HISTORY_ENTRY::TEARDROP_FLAG& f : aEntry.teardropFlags )
+        {
+            BOARD_ITEM* item = b->ResolveItem( f.id, true );
+            auto*       ci = item && ( item->Type() == PCB_PAD_T || item->Type() == PCB_VIA_T )
+                                     ? static_cast<BOARD_CONNECTED_ITEM*>( item ) : nullptr;
+            const bool  target = aUndo ? f.before : f.after;
+
+            if( !ci )
+                continue;    // the part or via is gone: nothing to switch
+            else if( ci->GetTeardropParams().m_Enabled == target )
+                already++;
+            else
+                todo.emplace_back( ci, target );
+        }
+
+        aOut.set_already_there( already );
+
+        if( todo.empty() )
+            return false;
+
+        runCommit(
+                [&]( BOARD_COMMIT& aCommit )
+                {
+                    for( auto& [ci, on] : todo )
+                    {
+                        aCommit.Modify( ci );
+                        ci->SetTeardropsEnabled( on );
+                        changed++;
+                    }
+
+                    return std::vector<KIID>();
+                },
+                wxString::FromUTF8( std::string( "Agent: " ) + ( aUndo ? "undo " : "redo " ) + aEntry.label ), aOut );
+        return changed > 0;
     }
 
     if( !aEntry.zonesBefore.empty() )
@@ -3361,6 +4059,9 @@ KICADD_HANDLER_PCB::handleUndo( const HANDLER_CONTEXT<Undo>& aCtx )
         out.set_ok( applyHistory( entry, true, *out.mutable_result() ) );
         out.set_label( entry.label );
 
+        if( out.ok() )
+            noteStaleFills( entry, *out.mutable_result() );
+
         // Nothing applied because it had all been done already (the editor's Ctrl+Z / Ctrl+Y on
         // the agent's commit): the entry still moves across, so the history matches the board.
         bool alreadyDone = !out.ok() && out.result().missing().empty()
@@ -3393,6 +4094,9 @@ KICADD_HANDLER_PCB::handleRedo( const HANDLER_CONTEXT<Redo>& aCtx )
 
         out.set_ok( applyHistory( entry, false, *out.mutable_result() ) );
         out.set_label( entry.label );
+
+        if( out.ok() )
+            noteStaleFills( entry, *out.mutable_result() );
 
         // Nothing applied because it had all been done already (the editor's Ctrl+Z / Ctrl+Y on
         // the agent's commit): the entry still moves across, so the history matches the board.
@@ -4061,11 +4765,13 @@ KICADD_HANDLER_PCB::handleSyncFromSchematic( const HANDLER_CONTEXT<SyncFromSchem
             wxString         msg = wxString::Format(
                     wxS( "%s is already on the board, %s: the sync %s a second %s (the BOM and the "
                          "placement file would list it twice). Delete or renumber the board's one "
-                         "first (delete_footprints / pcb_set_fields), or delete_extra if it should go" ),
+                         "first (delete_footprints, or pcb_set_fields {\"%s\": {\"Reference\": \"...\"}}), "
+                         "or delete_extra if it should go" ),
                     comp->GetReference(),
                     other->GetPath().empty() ? wxS( "placed by hand (not from the schematic)" )
                                              : wxS( "from another symbol" ),
-                    aCtx.Request.dry_run() ? wxS( "would add" ) : wxS( "adds" ), comp->GetReference() );
+                    aCtx.Request.dry_run() ? wxS( "would add" ) : wxS( "adds" ), comp->GetReference(),
+                    comp->GetReference() );
             reporter.Report( msg, RPT_SEVERITY_WARNING );
             ownWarnings++;
         }
@@ -5296,10 +6002,14 @@ HANDLER_RESULT<ZonesResponse> KICADD_HANDLER_PCB::handleZones( const HANDLER_CON
             return tl::unexpected( *wait );
 
         std::string err, label;
-        ZONE*       zone = createZone( req.create(), err, label );
+        std::vector<std::string> notes;
+        ZONE*                    zone = createZone( req.create(), err, label, notes );
 
         if( !zone )
             return bad( err );
+
+        for( const std::string& n : notes )
+            out.add_notes( n );
 
         zones = { zone };
         out.set_history_label( label );
@@ -5412,7 +6122,8 @@ std::string mm4( double aMm )
 } // namespace
 
 
-ZONE* KICADD_HANDLER_PCB::createZone( const ZoneCreate& aReq, std::string& aError, std::string& aLabel )
+ZONE* KICADD_HANDLER_PCB::createZone( const ZoneCreate& aReq, std::string& aError, std::string& aLabel,
+                                      std::vector<std::string>& aNotes )
 {
     BOARD* b = board();
     auto   nm = []( double aMm ) { return (int) std::llround( aMm * 1e6 ); };
@@ -5512,13 +6223,90 @@ ZONE* KICADD_HANDLER_PCB::createZone( const ZoneCreate& aReq, std::string& aErro
 
     chain.SetClosed( true );
 
+    // The zones of other nets it shares copper with. Where two overlap, the one of the higher
+    // priority is filled and the other keeps clear of it; at the same priority KiCad breaks the
+    // tie by the zones' ids, which is no one's intent.
+    struct OVERLAP { const ZONE* zone; double area; std::string layers; };
+    std::vector<OVERLAP> overlaps;
+    SHAPE_POLY_SET       mine;
+    mine.AddOutline( chain );
+    mine.Simplify();
+
+    for( const ZONE* other : b->Zones() )
+    {
+        LSET shared = other->GetLayerSet() & layers;
+
+        if( other->GetIsRuleArea() || other->IsTeardropArea() || other->GetNetCode() == net->GetNetCode()
+            || shared.none() || !other->GetBoundingBox().Intersects( mine.BBox() ) )
+        {
+            continue;
+        }
+
+        SHAPE_POLY_SET theirs = *other->Outline();
+        theirs.ClearArcs();
+        SHAPE_POLY_SET both = theirs;
+        both.BooleanIntersection( mine );
+
+        if( both.Area() < 1e10 )   // 0.01 mm^2
+            continue;
+
+        std::string names;
+
+        for( PCB_LAYER_ID l : shared.Seq() )
+            names += ( names.empty() ? "" : "+" ) + LSET::Name( l ).ToStdString();
+
+        overlaps.push_back( { other, theirs.Area(), names } );
+    }
+
+    auto zoneName = []( const OVERLAP& aOverlap )
+    {
+        return ( aOverlap.zone->GetNetCode() > 0 ? aOverlap.zone->GetNetname().ToStdString() : std::string( "(no net)" ) )
+               + " on " + aOverlap.layers;
+    };
+
+    unsigned priority = (unsigned) std::max( 0, aReq.priority() );
+
+    // No priority given: a zone inside bigger ones goes above them (an island of +3V3 in the GND pour)
+    if( !aReq.has_priority() )
+    {
+        std::string under;
+
+        for( const OVERLAP& o : overlaps )
+        {
+            if( o.area > mine.Area() * 1.05 )
+            {
+                priority = std::max( priority, o.zone->GetAssignedPriority() + 1 );
+                under += ( under.empty() ? "" : ", " ) + zoneName( o );
+            }
+        }
+
+        if( priority > 0 )
+        {
+            aNotes.push_back( "priority " + std::to_string( priority ) + ": above the bigger zone(s) it lies in (" + under
+                              + "), which keep clear of it" );
+        }
+    }
+
+    for( const OVERLAP& o : overlaps )
+    {
+        if( o.zone->GetAssignedPriority() == priority )
+        {
+            aNotes.push_back( "warning: it overlaps the zone " + zoneName( o ) + " at the same priority "
+                              + std::to_string( priority ) + ": which of the two is filled where they overlap is "
+                              "arbitrary. Give one the higher priority (it is filled, the other keeps clear of it): "
+                              "zones ids=[\"" + o.zone->m_Uuid.AsStdString() + "\"] priority="
+                              + std::to_string( priority + 1 ) + " for that one, or undo and create with priority / "
+                              "an outline that does not overlap" );
+        }
+    }
+
     ZONE* zone = new ZONE( b );
     b->GetDesignSettings().GetDefaultZoneSettings().ExportSetting( *zone );
     zone->SetLayerSet( layers );
     zone->SetNet( net );
     zone->Outline()->RemoveAllContours();
     zone->Outline()->AddOutline( chain );
-    zone->SetAssignedPriority( (unsigned) std::max( 0, aReq.priority() ) );
+    zone->SetAssignedPriority( priority );
     zone->SetHatchStyle( ZONE_BORDER_DISPLAY_STYLE::DIAGONAL_EDGE );
     zone->SetIsFilled( false );
 
@@ -5653,12 +6441,13 @@ HANDLER_RESULT<BoardOutlineResponse> KICADD_HANDLER_PCB::handleBoardOutline( con
             old.push_back( static_cast<PCB_SHAPE*>( item ) );
     }
 
-    SHAPE_POLY_SET outline;
-    BOX2I          box;
+    SHAPE_POLY_SET              outline, outer;
+    std::vector<SHAPE_POLY_SET> cuts;   // the new cut-outs, one each
+    BOX2I                       box;
 
     {
         // the outer shape and the cut-outs as holes in it
-        SHAPE_POLY_SET outer, holes;
+        SHAPE_POLY_SET holes;
 
         // the area a shape closes (an outline is drawn as a line: filled for this)
         auto polyOf = [&]( const PCB_SHAPE* aShape, SHAPE_POLY_SET& aInto )
@@ -5675,7 +6464,7 @@ HANDLER_RESULT<BoardOutlineResponse> KICADD_HANDLER_PCB::handleBoardOutline( con
             polyOf( shapes.front().get(), outer );
 
             for( size_t i = 1; i < shapes.size(); ++i )
-                polyOf( shapes[i].get(), holes );
+                polyOf( shapes[i].get(), cuts.emplace_back() );
         }
         else
         {
@@ -5683,8 +6472,11 @@ HANDLER_RESULT<BoardOutlineResponse> KICADD_HANDLER_PCB::handleBoardOutline( con
                 return bad( "the board has no closed outline to add to: give outline" );
 
             for( const auto& s : shapes )
-                polyOf( s.get(), holes );
+                polyOf( s.get(), cuts.emplace_back() );
         }
+
+        for( const SHAPE_POLY_SET& cut : cuts )
+            holes.BooleanAdd( cut );
 
         outline = outer;
 
@@ -5703,7 +6495,7 @@ HANDLER_RESULT<BoardOutlineResponse> KICADD_HANDLER_PCB::handleBoardOutline( con
     }
 
     // Mounting holes: given, and / or at the corners
-    struct HOLE { VECTOR2I pos; int drill; bool plated; wxString net; };
+    struct HOLE { VECTOR2I pos; int drill; bool plated; wxString net; wxString ref; };
     std::vector<HOLE> holes;
 
     for( const MountingHole& h : req.holes() )
@@ -5754,6 +6546,174 @@ HANDLER_RESULT<BoardOutlineResponse> KICADD_HANDLER_PCB::handleBoardOutline( con
     HISTORY_ENTRY        entry;
     std::vector<KIID>    holeIds;
     MoveResponse         ignored;
+    auto xy = []( const VECTOR2I& aPos ) { return mm4( aPos.x / 1e6 ) + "," + mm4( aPos.y / 1e6 ); };
+
+    // A hole where a part already has one (a board that has its mounting holes): left out
+    holes.erase( std::remove_if( holes.begin(), holes.end(),
+                                 [&]( const HOLE& h )
+                                 {
+                                     for( const FOOTPRINT* fp : b->Footprints() )
+                                     {
+                                         for( const PAD* pad : fp->Pads() )
+                                         {
+                                             int theirs = std::max( pad->GetDrillSize().x, pad->GetDrillSize().y );
+
+                                             if( pad->HasHole() && ( pad->GetPosition() - h.pos ).EuclideanNorm() < ( theirs + h.drill ) / 2 )
+                                             {
+                                                 out.add_problems( "no hole at " + xy( h.pos ) + ": " + fp->GetReference().ToStdString()
+                                                                   + " has a hole there already (" + mm4( theirs / 1e6 ) + " mm)" );
+                                                 return true;
+                                             }
+                                         }
+                                     }
+
+                                     return false;
+                                 } ),
+                 holes.end() );
+
+    for( HOLE& h : holes )
+        h.ref = wxString::Format( wxS( "H%d" ), next++ );
+
+    // What the new holes and cut-outs run into (DRC says the same, later and in more words)
+    auto netsOf = []( const std::set<std::string>& aNets )
+    {
+        std::string list;
+        int         n = 0;
+
+        for( const std::string& net : aNets )
+        {
+            if( n++ < 6 )
+                list += ( list.empty() ? "" : ", " ) + net;
+        }
+
+        return list.empty() ? std::string() : " (" + list + ( n > 6 ? ", ..." : "" ) + ")";
+    };
+
+    auto count = []( int aTracks, int aVias )
+    {
+        std::string t = aTracks ? std::to_string( aTracks ) + " track(s)" : std::string();
+
+        if( aVias )
+            t += ( t.empty() ? "" : " and " ) + std::to_string( aVias ) + " via(s)";
+
+        return t;
+    };
+
+    // the tracks and vias on an area
+    auto on = [&]( const std::function<bool( const PCB_TRACK*, const SHAPE* )>& aHit, int& aTracks, int& aVias,
+                   std::set<std::string>& aNets )
+    {
+        for( const PCB_TRACK* track : b->Tracks() )
+        {
+            std::shared_ptr<SHAPE> shape = track->GetEffectiveShape();
+
+            if( !aHit( track, shape.get() ) )
+                continue;
+
+            ( track->Type() == PCB_VIA_T ? aVias : aTracks )++;
+
+            if( track->GetNetCode() > 0 )
+                aNets.insert( track->GetNetname().ToStdString() );
+        }
+    };
+
+    for( const HOLE& h : holes )
+    {
+        const int    size = h.plated ? KiROUND( h.drill * 1.8 ) : h.drill;
+        const int    keep = KiROUND( h.drill * 1.8 ) / 2 + 250000;   // its courtyard
+        SHAPE_CIRCLE body( h.pos, size / 2 );
+        std::string  parts;
+        int          nParts = 0;
+
+        for( FOOTPRINT* fp : b->Footprints() )
+        {
+            bool hit = false;
+
+            for( PCB_LAYER_ID side : { F_CrtYd, B_CrtYd } )
+            {
+                const SHAPE_POLY_SET& courtyard = fp->GetCourtyard( side );
+                hit = hit || ( courtyard.OutlineCount() && courtyard.Collide( h.pos, keep ) );
+            }
+
+            for( const PAD* pad : fp->Pads() )
+            {
+                for( PCB_LAYER_ID side : { F_Cu, B_Cu } )
+                    hit = hit || ( pad->IsOnLayer( side ) && pad->GetEffectiveShape( side )->Collide( &body, 0 ) );
+            }
+
+            if( hit && nParts++ < 6 )
+                parts += ( parts.empty() ? "" : ", " ) + fp->GetReference().ToStdString();
+        }
+
+        if( nParts )
+        {
+            out.add_problems( h.ref.ToStdString() + " @" + xy( h.pos ) + " is on " + parts + ( nParts > 6 ? ", ..." : "" )
+                              + ": move the hole or the part" );
+        }
+
+        int                   tracks = 0, vias = 0;
+        std::set<std::string> nets;
+
+        on( [&]( const PCB_TRACK* aTrack, const SHAPE* aShape )
+            {
+                // a plated hole takes the copper of its own net
+                return !( h.plated && !h.net.IsEmpty() && aTrack->GetNetname() == h.net ) && aShape->Collide( &body, 0 );
+            },
+            tracks, vias, nets );
+
+        if( tracks + vias )
+        {
+            out.add_problems( h.ref.ToStdString() + " @" + xy( h.pos ) + " goes through " + count( tracks, vias ) + netsOf( nets )
+                              + ": move the hole, or reroute them" );
+        }
+    }
+
+    for( size_t i = 0; i < cuts.size(); ++i )
+    {
+        int                   tracks = 0, vias = 0;
+        std::set<std::string> nets;
+
+        on( [&]( const PCB_TRACK*, const SHAPE* aShape ) { return cuts[i].Collide( aShape, 0 ); }, tracks, vias, nets );
+
+        if( tracks + vias )
+        {
+            out.add_problems( "cut-out " + std::to_string( i + 1 ) + " cuts through " + count( tracks, vias ) + netsOf( nets )
+                              + ": reroute them clear of it, or move the cut-out" );
+        }
+    }
+
+    if( req.has_outline() )
+    {
+        // what the new outline leaves outside, or cuts at the edge
+        BOX2I around = box;
+        around.Merge( b->ComputeBoundingBox( false ) );
+        around.Inflate( 1000000 );
+
+        SHAPE_POLY_SET off;
+        off.NewOutline();
+        off.Append( around.GetLeft(), around.GetTop() );
+        off.Append( around.GetRight(), around.GetTop() );
+        off.Append( around.GetRight(), around.GetBottom() );
+        off.Append( around.GetLeft(), around.GetBottom() );
+        off.BooleanSubtract( outer );
+
+        int                   tracks = 0, vias = 0;
+        std::set<std::string> nets;
+
+        on( [&]( const PCB_TRACK*, const SHAPE* aShape ) { return off.Collide( aShape, 0 ); }, tracks, vias, nets );
+
+        if( tracks + vias )
+            out.add_problems( count( tracks, vias ) + netsOf( nets ) + " are outside the new outline, or cross it" );
+    }
+
+    // Only holes asked, and they are all there already: nothing to do
+    if( shapes.empty() && holes.empty() )
+    {
+        out.set_width( box.GetWidth() / 1e6 );
+        out.set_height( box.GetHeight() / 1e6 );
+        out.set_area( outline.Area() / 1e12 );
+        return out;
+    }
 
     if( !req.keep_old() )
     {
@@ -5782,7 +6742,7 @@ HANDLER_RESULT<BoardOutlineResponse> KICADD_HANDLER_PCB::handleBoardOutline( con
                     char       name[64];
                     std::snprintf( name, sizeof( name ), "MountingHole_%gmm%s", h.drill / 1e6, h.plated ? "_Pad" : "" );
                     fp->SetFPID( LIB_ID( wxEmptyString, wxString::FromUTF8( name ) ) );
-                    fp->SetReference( wxString::Format( wxS( "H%d" ), next++ ) );
+                    fp->SetReference( h.ref );
                     fp->SetValue( wxS( "MountingHole" ) );
                     fp->Reference().SetVisible( false );
                     fp->Value().SetVisible( false );
@@ -5860,6 +6820,22 @@ HANDLER_RESULT<BoardOutlineResponse> KICADD_HANDLER_PCB::handleBoardOutline( con
                   && outline.Contains( VECTOR2I( fb.GetRight(), fb.GetTop() ) )
                   && outline.Contains( VECTOR2I( fb.GetLeft(), fb.GetBottom() ) );
 
+        // ... or on a cut-out
+        for( size_t i = 0; in && i < cuts.size(); ++i )
+        {
+            if( !cuts[i].BBox().Intersects( fb ) )
+                continue;
+
+            SHAPE_POLY_SET part;
+            part.NewOutline();
+            part.Append( fb.GetLeft(), fb.GetTop() );
+            part.Append( fb.GetRight(), fb.GetTop() );
+            part.Append( fb.GetRight(), fb.GetBottom() );
+            part.Append( fb.GetLeft(), fb.GetBottom() );
+            part.BooleanIntersection( cuts[i] );
+            in = part.OutlineCount() == 0;
+        }
+
         if( !in )
             out.add_outside( fp->GetReference().ToStdString() );
     }
@@ -5894,9 +6870,21 @@ HANDLER_RESULT<BoardSetupResponse> KICADD_HANDLER_PCB::handleBoardSetup( const H
         return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
 
     const BoardSetup& req = aCtx.Request;
-    const bool        change = req.has_copper_layers() || req.has_thickness() || req.has_outer_copper_oz()
-                        || req.has_inner_copper_oz();
     BoardSetupResponse out;
+
+    if( req.has_stackup() && ( req.stackup() == "list" || req.stackup().empty() ) )
+    {
+        std::string names;
+
+        for( const std::string& n : kicadd::setup::FabStackups() )
+            names += ( names.empty() ? "" : " " ) + n;
+
+        out.set_note( "fab stackups: " + names + "\n" + kicadd::setup::FabStackupSource() );
+    }
+
+    const bool fab = req.has_stackup() && !out.note().size();
+    const bool change = req.has_copper_layers() || req.has_thickness() || req.has_outer_copper_oz()
+                        || req.has_inner_copper_oz() || fab;
 
     if( change )
     {
@@ -5909,6 +6897,7 @@ HANDLER_RESULT<BoardSetupResponse> KICADD_HANDLER_PCB::handleBoardSetup( const H
         if( req.has_thickness() )       c.thickness = (int) std::llround( req.thickness() * 1e6 );
         if( req.has_outer_copper_oz() ) c.outerOz = req.outer_copper_oz();
         if( req.has_inner_copper_oz() ) c.innerOz = req.inner_copper_oz();
+        if( fab )                       c.fab = req.stackup();
 
         kicadd::setup::STATE before = kicadd::setup::Capture( *b );
         std::string          err;
@@ -5922,8 +6911,10 @@ HANDLER_RESULT<BoardSetupResponse> KICADD_HANDLER_PCB::handleBoardSetup( const H
             kicadd::setup::Apply( *b, *after );
             setupChanged();
 
-            char buf[96];
-            std::snprintf( buf, sizeof( buf ), "board setup: %d layers, %.3g mm", after->copperLayers,
+            char buf[128];
+            std::snprintf( buf, sizeof( buf ), "board setup: %s%d layers, %.3g mm",
+                           fab ? ( wxString::FromUTF8( req.stackup() ).Upper().ToStdString() + " stackup, " ).c_str() : "",
+                           after->copperLayers,
                            after->thickness / 1e6 );
 
             HISTORY_ENTRY entry;
@@ -5934,6 +6925,9 @@ HANDLER_RESULT<BoardSetupResponse> KICADD_HANDLER_PCB::handleBoardSetup( const H
             record( std::move( entry ) );
         }
     }
+
+    if( fab )
+        out.set_note( kicadd::setup::FabStackupSource() );
 
     kicadd::setup::STATE now = kicadd::setup::Capture( *b );
     out.set_copper_layers( now.copperLayers );
