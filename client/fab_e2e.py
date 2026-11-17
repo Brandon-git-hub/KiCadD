@@ -213,6 +213,21 @@ try:
     check("J1 (DB9-FEMAL): 4 net(s) without a TVS / ESD part" in t, "the DB9's nets have no ESD part")
     check(re.search(r"not checked .*P2", t) is not None and "P2 (SUPP28)" not in t, "the ZIF sockets are not treated as cable connectors")
     check(re.search(r"\b4 connectors?\b", t) is not None and "P101" not in t, "the mounting holes P101-P106 are not connectors")
+    check("35 um outer copper" in t and "no test points on the board" in t and "voltage:" not in t,
+          "board half: copper, no test points, no voltage section without voltages")
+    err, t = m.tool("audit", {"currents": {"VCC": 5, "VPP": 0.05, "NOPE": 1}, "voltages": {"/VPP_ON": 400}})
+    check(not err and re.search(r"VCC \(5 A\): \d+ B\.Cu track segment\(s\) narrower than 2\.77 mm .*good for about 2\.03 A", t)
+          and "VPP (0.05 A)" not in t and "no net NOPE on the board" in t, "currents: VCC 5 A too much for its 0.8 mm tracks, VPP fine")
+    check("its net class POWER routes 0.8 mm tracks; 5 A wants 2.77 mm" in t, "currents: the class and the set_rules call")
+    check(re.search(r"/VPP_ON \(400 V\) to /PC-DATA-OUT \(0 V, taken as 0\) on [FB]\.Cu: 1\.17 mm \(pad J1\.3 to pad J1\.4\).* wants 2\.5 mm for 400 V", t)
+          and t.count("to /PC-DATA-OUT") == 1, "voltages: 400 V on the DB9, one line per pair of nets")
+    err, t = m.tool("move_footprints", {"refs": ["R1"], "dx": -2.98, "dy": -3.226})
+    err, t = m.tool("audit")
+    check("silk:" in t and "R1 reference over pad R2.1" in t, "silk: a reference moved onto a pad")
+    m.tool("undo")
+    err, t = m.tool("set_rules", {"classes": {"Pow": {"current": 1.5}}, "drc": False})
+    check(not err and "Pow: 1.5 A -> 0.53 mm tracks" in t and "inner" not in t, "set_rules current on 2 layers")
+    m.tool("undo")
 
     print("[pcb_set_fields]")
     def bom_of():

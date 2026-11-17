@@ -1596,20 +1596,55 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             } } );
 
     aTools.push_back( { "audit",
-            "Design review by rules, for you to judge (not a sign-off): decoupling (each IC power pin "
-            "with a capacitor from its net to ground; on the board, how far the nearest one is, "
+            "Design review by rules, for you to judge (not a sign-off). Schematic: decoupling (each IC "
+            "power pin with a capacitor from its net to ground; on the board, how far the nearest one is, "
             "flagged beyond max_decap_mm, default 5), power (every supply net has a source: power "
             "output, regulator or connector, else a PWR_FLAG), ESD (connector nets without a TVS / ESD "
-            "part) and nets with one pin only. Run run_erc too.",
-            obj( { { "max_decap_mm", { { "type", "number" } } } } ),
+            "part), nets with one pin only. Board: currents {\"VCC\": 1.5} (A) checks each net's "
+            "narrowest track per layer against IPC-2221 (temp_rise, default 10 C; the stackup's copper); "
+            "voltages {\"VPP\": 13} (V; nets named like +12V or 3V3 are read from the name, others "
+            "count as 0 V) checks the closest copper of other nets per layer against IPC-2221B table 6-1; "
+            "silkscreen text over pads and overlapping references; nets without a test point. Refill "
+            "zones first for the voltage check. Run run_erc and run_drc too.",
+            obj( { { "max_decap_mm", { { "type", "number" } } },
+                   { "currents", { { "type", "object" }, { "description", "net -> A" } } },
+                   { "voltages", { { "type", "object" }, { "description", "net -> V" } } },
+                   { "temp_rise", { { "type", "number" }, { "description", "C over ambient (10)" } } } } ),
             [&aIpc]( const json& a )
             {
+                kicadd::board::BoardAudit boardReq;
+
+                for( const char* key : { "currents", "voltages" } )
+                {
+                    if( !a.contains( key ) )
+                        continue;
+
+                    if( !a[key].is_object() )
+                        return fail( std::string( key ) + " is {\"NET\": number}" );
+
+                    for( const auto& [net, v] : a[key].items() )
+                    {
+                        if( !v.is_number() )
+                            return fail( std::string( key ) + "." + net + ": a number" );
+
+                        ( std::string( key ) == "currents" ? *boardReq.mutable_currents()
+                                                           : *boardReq.mutable_voltages() )[net] = v.get<double>();
+                    }
+                }
+
+                if( a.contains( "temp_rise" ) && a["temp_rise"].is_number() )
+                    boardReq.set_temp_rise( a["temp_rise"].get<double>() );
+
                 ks::SchAudit           req;
                 ks::SchAuditResponse   r;
-                std::string            err;
+                std::string            err, schErr, boardErr;
+                const bool             haveSch = aIpc.Call( req, r, schErr );
 
-                if( !aIpc.Call( req, r, err ) )
-                    return fail( err );
+                kicadd::board::BoardAuditResponse br;
+                const bool                        haveBoard = aIpc.Call( boardReq, br, boardErr );
+
+                if( !haveSch && !haveBoard )
+                    return fail( schErr );
 
                 const double limit = a.contains( "max_decap_mm" ) && a["max_decap_mm"].is_number()
                                              ? a["max_decap_mm"].get<double>()
@@ -1618,7 +1653,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                 // On the board: the nearest decoupling cap of each IC power pin
                 std::map<std::string, std::pair<double, double>> pads;
                 std::set<std::string>                            asked;
-                bool                                             board = true;
+                bool                                             board = haveBoard;
 
                 for( const ks::SchDecapPair& d : r.decaps() )
                 {
@@ -1669,6 +1704,12 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                     byCat[f.category()] += "\n  " + f.severity() + ": " + f.message();
                 }
 
+                for( const kicadd::board::BoardAuditFinding& f : br.findings() )
+                {
+                    ( f.severity() == "warning" ? warnings : infos )++;
+                    byCat[f.category()] += "\n  " + f.severity() + ": " + f.message();
+                }
+
                 std::string far;
                 int         farCount = 0;
 
@@ -1684,11 +1725,23 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
 
                 warnings += farCount;
 
-                std::string t = "audit: " + std::to_string( warnings ) + " warning(s), " + std::to_string( infos )
-                                + " note(s); " + std::to_string( r.ics() ) + " IC(s), " + std::to_string( r.power_nets() )
-                                + " supply net(s), " + std::to_string( r.connectors() ) + " connector(s)";
+                std::string t = "audit: " + std::to_string( warnings ) + " warning(s), " + std::to_string( infos ) + " note(s)";
 
-                for( const char* cat : { "decoupling", "power", "esd", "net" } )
+                if( haveSch )
+                    t += "; " + std::to_string( r.ics() ) + " IC(s), " + std::to_string( r.power_nets() ) + " supply net(s), "
+                         + std::to_string( r.connectors() ) + " connector(s)";
+                else
+                    t += "; no schematic (" + schErr + "): board checks only";
+
+                if( haveBoard )
+                    t += "; board: " + num( br.outer_copper_um() ) + " um outer copper"
+                         + ( br.inner_copper_um() > 0 ? ", " + num( br.inner_copper_um() ) + " um inner" : std::string() )
+                         + ", " + std::to_string( br.silk_checked() ) + " silkscreen items, "
+                         + std::to_string( br.test_points() ) + " test point(s)";
+                else
+                    t += "; no board (" + boardErr + "): schematic checks only";
+
+                for( const char* cat : { "decoupling", "power", "esd", "net", "current", "voltage", "silk", "testpoint" } )
                 {
                     std::string extra = std::string( cat ) == "decoupling" ? far : "";
 

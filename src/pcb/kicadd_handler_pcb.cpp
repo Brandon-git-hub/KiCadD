@@ -51,6 +51,8 @@
 #include "pcb/kicadd_autoplace.h"
 #include "pcb/kicadd_fab.h"
 #include "pcb/kicadd_picture.h"
+#include "pcb/kicadd_audit.h"
+#include "common/kicadd_ipc2221.h"
 #include "lcsc/kicadd_parts.h"
 #include "pcb/kicadd_fpgen.h"
 #include "common/kicadd_libtable.h"
@@ -251,6 +253,7 @@ KICADD_HANDLER_PCB::KICADD_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext ) 
     registerHandler<Teardrops, TeardropsResponse>( &KICADD_HANDLER_PCB::handleTeardrops );
     registerHandler<ExportFab, ExportFabResponse>( &KICADD_HANDLER_PCB::handleExportFab );
     registerHandler<RenderBoard, RenderBoardResponse>( &KICADD_HANDLER_PCB::handleRenderBoard );
+    registerHandler<BoardAudit, BoardAuditResponse>( &KICADD_HANDLER_PCB::handleBoardAudit );
     registerHandler<LcscSearch, LcscSearchResponse>( &KICADD_HANDLER_PCB::handleLcscSearch );
     registerHandler<FpCreate, FpCreateResponse>( &KICADD_HANDLER_PCB::handleFpCreate );
     registerHandler<AddFootprint, MoveResponse>( &KICADD_HANDLER_PCB::handleAddFootprint );
@@ -1609,6 +1612,20 @@ KICADD_HANDLER_PCB::handleExportFab( const HANDLER_CONTEXT<ExportFab>& aCtx )
     if( !kicadd::ExportFab( b, dir, !aCtx.Request.no_zip(), out, err ) )
         return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, err ) );
 
+    return out;
+}
+
+
+HANDLER_RESULT<BoardAuditResponse>
+KICADD_HANDLER_PCB::handleBoardAudit( const HANDLER_CONTEXT<BoardAudit>& aCtx )
+{
+    BOARD* b = board();
+
+    if( !b )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
+
+    BoardAuditResponse out;
+    kicadd::AuditBoard( *b, aCtx.Request, out );
     return out;
 }
 
@@ -5793,6 +5810,7 @@ HANDLER_RESULT<RulesResponse> KICADD_HANDLER_PCB::handleSetRules( const HANDLER_
         st = *p;
     }
     auto nm = []( double aMm ) { return (int) std::llround( aMm * 1e6 ); };
+    std::string currentNotes;
 
     for( const NetclassRule& c : req.classes() )
     {
@@ -5801,6 +5819,36 @@ HANDLER_RESULT<RulesResponse> KICADD_HANDLER_PCB::handleSetRules( const HANDLER_
 
         const wxString          name = wxString::FromUTF8( c.name() );
         kicadd::rules::CLASS&   k = st.classes[name];
+
+        // a current instead of a width: IPC-2221 on the board's outer copper
+        if( c.has_current() && !c.has_track_width() )
+        {
+            if( c.current() <= 0 || c.current() > 35 )
+                return bad( c.name() + ": current is in A, 0 .. 35 (IPC-2221's range)" );
+
+            const double rise = c.has_temp_rise() && c.temp_rise() > 0 ? c.temp_rise() : 10.0;
+            double       outerUm, innerUm;
+            kicadd::BoardCopperUm( *b, outerUm, innerUm );
+
+            const double w = std::ceil( kicadd::ipc2221::TrackWidthMm( c.current(), rise, outerUm, true ) * 100 ) / 100;
+            k.trackWidth = nm( w );
+
+            char buf[320];
+            std::snprintf( buf, sizeof( buf ), "%s: %.3g A -> %.2f mm tracks (IPC-2221, %.0f C rise, %.0f um outer copper)",
+                           c.name().c_str(), c.current(), w, rise, outerUm );
+            currentNotes += ( currentNotes.empty() ? "" : "; " ) + std::string( buf );
+
+            if( innerUm > 0 )
+            {
+                std::snprintf( buf, sizeof( buf ), "; on the inner layers (%.1f um) it would take %.2f mm: keep it outside or widen it there",
+                               innerUm, kicadd::ipc2221::TrackWidthMm( c.current(), rise, innerUm, false ) );
+                currentNotes += buf;
+            }
+        }
+        else if( c.has_current() )
+        {
+            return bad( c.name() + ": give track_width or current, not both" );
+        }
 
         auto set = [&]( bool aHas, double aMm, std::optional<int>& aField, const char* aWhat ) -> std::string
         {
@@ -5884,7 +5932,7 @@ HANDLER_RESULT<RulesResponse> KICADD_HANDLER_PCB::handleSetRules( const HANDLER_
     if( k.has_min_silk_text_thickness() ) st.minSilkTextThickness = nm( k.min_silk_text_thickness() );
 
     RulesResponse out;
-    out.set_note( presetNote );
+    out.set_note( presetNote + ( !presetNote.empty() && !currentNotes.empty() ? "\n" : "" ) + currentNotes );
 
     if( !( st == before ) )
     {

@@ -1354,6 +1354,33 @@ dot. The `.kicad_mod` is loaded back before the answer (a file KiCad can't read 
 SOIC-8 pad 1 against KiCad's within 0.1 mm, and a design using `kicadd:R_0603` through
 `sync_pcb` with no DRC library warnings.
 
+## Audit on the board: current, voltage, silkscreen, test points (2026-11-17)
+
+TODO 12(d) (track width from a current) and 12(e). `audit` now also asks the board
+(`BoardAudit`, `src/pcb/kicadd_audit.cpp`); either half runs without the other (a board with no
+schematic, a schematic not on a board yet). Numbers in `src/common/kicadd_ipc2221.h`:
+
+- **current** (`currents {"VCC": 1.5}`, A; `temp_rise`, default 10 C): per net and copper layer,
+  the tracks narrower than IPC-2221's width for that current in that layer's copper (the stackup's
+  thickness; outer k = 0.048, inner 0.024), the narrowest with where it is and what it carries; and
+  the net class's width with the `set_rules` call that fixes it. IPC-2221's chart formula, not
+  IPC-2152 (no closed form; its charts are not ours to copy); inner layers come out conservative.
+- **voltage** (`voltages {"VPP": 13}`, V; names like `+12V`, `3V3`, `-5V` are read, the rest
+  count as 0 V): the closest copper (tracks, vias, flashed pads, zone fills) of every other net,
+  per layer, against IPC-2221B table 6-1 (B2 outer uncoated, B1 inner) for the voltage between
+  them. One line per pair of nets (the layer where it falls shortest), the 15 worst per net.
+  Pairs needing no more than the smallest net class clearance are left to DRC, which is what
+  makes it fast: 5 mm grid, pic_programmer 0.02 s, the Jetson baseboard with a 400 V net 7.8 s
+  (1.8 s with only the names' voltages).
+- **silk**: silkscreen text over exposed pads (pads on the mask layer; footprint fields, texts,
+  board texts), references of different parts overlapping; silkscreen lines over pads per
+  footprint, as one note.
+- **testpoint**: nets of two pads or more with no `TP*` / `TestPoint` footprint on them.
+
+`set_rules classes {"Power": {"current": 2}}` (and `temp_rise`) sets the class's track width from
+the outer copper, rounded up to 0.01 mm; the note gives the inner-layer width. Tests: `fab_e2e`
+[audit], `setup_e2e` (4 layers).
+
 ## 待做清單 (TODO)
 
 2026-11-10，`v0.1.0-alpha.2` 在 Windows 上試用後回報；以下已在 Linux 上用 `pic_programmer` 重現確認，**尚未實作**。
@@ -1573,10 +1600,10 @@ SOIC-8 pad 1 against KiCad's within 0.1 mm, and a design using `kicadd:R_0603` t
    * (c) **出圖給 Agent 看。** 整板或某區域輸出 PNG / SVG（沿用遠端檢視的 renderer 或 SVG plotter），
      MCP 以 image 內容回傳，可選圖層（銅、絲印、Fab）與高亮的零件。中等，價值高（絲印重疊、方向、
      美觀現在只能靠座標）。
-   * (d) **佈線補強。** 縫合過孔（GND，依格距、避開其他網路、落在兩層銅裡）；淚滴（用上游的
+   * (d) **佈線補強。**（依電流算線寬已完成 2026-11-17：`set_rules` 的 `current`，見「Audit on the board」）縫合過孔（GND，依格距、避開其他網路、落在兩層銅裡）；淚滴（用上游的
      teardrop 產生器）；依電流算線寬（IPC-2152 自己實作公式，結果寫進網路類別）；差分對、等長之後
      （PNS 有 diff pair / meander，但要另外包）。從焊盤內任一點出線已在第 11 項完成。
-   * (e) **審查擴充（`audit`）。** 電源網路線寬對電流；高壓網路間距（例如 VPP 13 V，依 IPC-2221
+   * (e) **（已完成 2026-11-17，見「Audit on the board」）審查擴充（`audit`）。** 電源網路線寬對電流；高壓網路間距（例如 VPP 13 V，依 IPC-2221
      表）；絲印壓焊盤；板外零件（`export_fab` 已有）；測試點。
    * (f) **設計比對（diff）。** 和上次存檔（或指定檔案）比：零件（增刪、位置、值、欄位）、網路、
      走線數與長度。另外載入一份 `BOARD` 依 KIID 比對。中等。

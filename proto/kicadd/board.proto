@@ -720,6 +720,10 @@ message NetclassRule
   optional double diff_pair_width = 6;
   optional double diff_pair_gap   = 7;
   int32 nets = 8;   // in RulesResponse: the nets in this class now
+  // SetRules: the track width from a current (A, IPC-2221, the board's outer copper) when
+  // track_width is not given; temp_rise in C (default 10)
+  optional double current         = 9;
+  optional double temp_rise       = 10;
 }
 
 message NetclassAssign
@@ -1039,4 +1043,34 @@ message TeardropsResponse
   string history_label = 5;
   repeated string missing = 6;
   bool   dry_run       = 7;
+}
+
+// ---------------------------------------------------------------------------
+// The board half of the design review (audit): tracks against the current their nets carry
+// (IPC-2221), spacing against the voltage between nets (IPC-2221B table 6-1), silkscreen over
+// pads, nets without a test point. Findings to look at, not a sign-off.
+// Returns BoardAuditResponse
+message BoardAudit
+{
+  map<string, double> currents  = 1;   // net -> A ("VCC" also matches "/VCC")
+  map<string, double> voltages  = 2;   // net -> V; nets not given are taken as 0 V
+  double              temp_rise = 3;   // C over ambient for the current check (default 10)
+}
+
+message BoardAuditFinding
+{
+  string          category = 1;   // current, voltage, silk, testpoint
+  string          severity = 2;   // warning, info
+  string          message  = 3;
+  repeated string refs     = 4;
+  Point           at       = 5;   // where (nm), when there is one place
+}
+
+message BoardAuditResponse
+{
+  repeated BoardAuditFinding findings = 1;
+  int32  silk_checked    = 2;   // silkscreen items looked at
+  int32  test_points     = 3;   // footprints taken as test points
+  double outer_copper_um = 4;
+  double inner_copper_um = 5;   // 0: no inner layers
 }

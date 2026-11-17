@@ -200,6 +200,13 @@ def main():
         check(err and "zone on In1.Cu" in t, "back to 2 layers refused while In1.Cu has a zone: " + t[:120])
         err, t = mcp.tool("set_rules", {"preset": "jlcpcb_4layer"})
         check(not err and "track 0.09" in t, "jlcpcb_4layer")
+        err, t = mcp.tool("set_rules", {"classes": {"Power": {"current": 2}}, "drc": False})
+        check(not err and "Power: 2 A -> 0.79 mm tracks (IPC-2221, 10 C rise, 35 um outer copper)" in t
+              and "on the inner layers" in t and "Power: track 0.79" in t, "a class from a current: " + t.splitlines()[1][:150])
+        err, t = mcp.tool("set_rules", {"classes": {"Power": {"current": 2, "track_width": 1}}})
+        check(err and "not both" in t, "current and track_width together: refused")
+        err, t = mcp.tool("undo")
+        check(not err and "Power" not in mcp.tool("get_rules")[1], "undo: the class is gone")
         err, t = mcp.tool("export_fab", {"dir": os.path.join(work, "fab4"), "zip": False})
         files = os.listdir(os.path.join(work, "fab4"))
         check(any("In1_Cu" in f for f in files) and any("In2_Cu" in f for f in files), "Gerbers of the inner layers")

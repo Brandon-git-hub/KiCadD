@@ -126,6 +126,9 @@ private:
     HANDLER_RESULT<kicadd::board::RenderBoardResponse>
     handleRenderBoard( const HANDLER_CONTEXT<kicadd::board::RenderBoard>& aCtx );
 
+    HANDLER_RESULT<kicadd::board::BoardAuditResponse>
+    handleBoardAudit( const HANDLER_CONTEXT<kicadd::board::BoardAudit>& aCtx );
+
     HANDLER_RESULT<kicadd::board::MoveResponse>
     handleDeleteTracks( const HANDLER_CONTEXT<kicadd::board::DeleteTracks>& aCtx );
 

@@ -39,8 +39,12 @@ what each tool does; this skill says how to use them together.
 
 1. `sch_summary` (parts, sheets, unconnected pins) and `board_summary`.
 2. `audit`: decoupling caps measured on the board, supply sources, ESD on external connectors,
-   one-pin nets. Judge the findings (a socket for a programmed chip needs less decoupling than a
-   switching regulator).
+   one-pin nets; on the board, silkscreen text over pads and overlapping references, nets
+   without a test point. Give what you know about the power: `currents {"VIN": 2}` (A) checks
+   each net's narrowest track per layer against IPC-2221; `voltages {"HV": 48}` (V; names like
+   `+12V` / `3V3` are read on their own, other nets count as 0 V) checks the spacing to every
+   other net against IPC-2221B table 6-1 (refill zones first). Judge the findings (a socket for
+   a programmed chip needs less decoupling than a switching regulator).
 3. `run_erc` (`warnings=true` for the full list) and, on a board, `refill_zones` then
    `run_drc`. Narrow with `types` / `refs`; the type counts are the whole board, the filter line
    says what matches.
@@ -157,7 +161,9 @@ length matching, dense escapes).
 
 - `get_rules` first. `set_rules` adds/changes net classes, assigns nets by pattern
   (`{"+5V": "Power", "/USB_D*": "USB"}`) and sets board minimums; it reports the DRC error
-  count before and after. Existing tracks keep their width.
+  count before and after. Existing tracks keep their width. A class for a current:
+  `{"classes": {"VIN_2A": {"current": 2}}, "assign": {"VIN": "VIN_2A"}}` sets the IPC-2221 width
+  for the board's outer copper (the note says what inner layers would need).
 - `zones` lists copper zones; with `nets` / `layers` / `ids` / `all` and new values it changes
   clearance, minimum width, priority or pad connection and refills. `create` makes a new one
   (see "A new board").

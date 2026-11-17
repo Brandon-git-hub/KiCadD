@@ -1382,6 +1382,8 @@ TOOL_RESULT setRules( IPC_CLIENT& aIpc, const json& aArgs )
                 else if( key == "via_drill" )       c->set_via_drill( d );
                 else if( key == "diff_pair_width" ) c->set_diff_pair_width( d );
                 else if( key == "diff_pair_gap" )   c->set_diff_pair_gap( d );
+                else if( key == "current" )         c->set_current( d );
+                else if( key == "temp_rise" )       c->set_temp_rise( d );
                 else
                     return error( "unknown net class value " + key );
             }
@@ -1455,7 +1457,7 @@ TOOL_RESULT setRules( IPC_CLIENT& aIpc, const json& aArgs )
                                               : r.history_label() + " (undo takes it back; save_board keeps it, in the project file)\n";
 
     if( !r.note().empty() )
-        t += "preset: " + r.note() + "\n";
+        t += ( req.preset().empty() ? "note: " : "preset: " ) + r.note() + "\n";
 
     if( drc && !r.history_label().empty() )
     {
@@ -2691,6 +2693,8 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        "Change the design rules as one undoable edit (undo / redo; save_board writes them "
                        "to the project file). classes: {\"Power\": {\"track_width\": 0.5, \"clearance\": 0.25}} "
                        "adds or changes a class (only the values given; null: take it from Default); "
+                       "{\"Power\": {\"current\": 2}} sets the track width a 2 A net needs (IPC-2221, the board's "
+                       "outer copper, temp_rise 10 C unless given); "
                        "remove_classes: [...]; assign: {\"+5V\": \"Power\", \"/USB_D*\": \"USB\", \"GND\": null} "
                        "sets or drops net name patterns; constraints: {\"min_clearance\", \"min_track_width\", "
                        "\"min_via_diameter\", \"min_through_drill\", \"min_annular_width\", \"hole_clearance\", "
