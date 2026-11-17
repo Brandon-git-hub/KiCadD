@@ -146,8 +146,8 @@ def main():
               and f'zones ids=["{gnd}"] priority=1' in t,
               "the same area and priority as the GND pour is warned about: " + t.splitlines()[1][:100])
         err, t = mcp.tool("undo")
-        check(not err and "note: the zone fills are out of date after this: refill_zones" in t,
-              "undo says the fills are out of date")
+        check(not err and "all zones refilled" in t and "fills are out of date" not in t,
+              "undo refills the zones (the fills made for the other state)")
         err, t = mcp.tool("zones", {"create": {"net": "VCC", "layers": ["F.Cu"], "outline": [[8, 6], [18, 6], [18, 11], [8, 11]]}})
         check(not err and "priority 1: above the bigger zone(s) it lies in (GND on F.Cu)" in t and "warning" not in t
               and re.search(r"VCC F\.Cu priority 1", t) is not None,

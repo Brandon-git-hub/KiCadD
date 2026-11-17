@@ -148,6 +148,8 @@ message MoveResponse
   int32                 changed = 16;          // Undo/Redo of sync_pcb: footprints put back as they were
   repeated string       notes = 17;            // things to know (a reference the next sync puts back,
                                                // zone fills out of date after an undo ...)
+  bool                  fills_stale = 18;      // Undo/Redo: tracks, zones or the outline changed while
+                                               // zones are filled: their fills are out of date
   int32                 already_there = 13;    // Undo/Redo: footprints already in the target state
                                                // (undone / redone in the editor), left alone
 }

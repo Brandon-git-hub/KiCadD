@@ -73,7 +73,8 @@ std::string at( const VECTOR2I& p )
 
 std::string signedMm( double aMm )
 {
-    return ( aMm >= 0 ? "+" : "" ) + mm( aMm );
+    const std::string s = mm( aMm );   // rounded first: -0.001 reads "+0", not "0"
+    return ( s[0] == '-' ? "" : "+" ) + s;
 }
 
 /// A section of the answer: a summary and at most aLimit lines
@@ -105,6 +106,48 @@ std::map<std::string, std::string> userFields( const FOOTPRINT* aFp )
     {
         if( f && !f->IsMandatory() )
             out[str( f->GetName() )] = str( f->GetText() );
+    }
+
+    return out;
+}
+
+/// A footprint's texts (its fields and its own text items) where they sit on the part: position
+/// and angle relative to the footprint (so moving or turning the part changes nothing here)
+struct FP_TEXT
+{
+    VECTOR2I     rel;
+    double       angle = 0;      // on the part
+    double       shown = 0;      // on the board (how it reads)
+    bool         visible = true;
+    PCB_LAYER_ID layer = UNDEFINED_LAYER;
+};
+
+std::map<std::string, FP_TEXT> footprintTexts( const FOOTPRINT* aFp )
+{
+    std::map<std::string, FP_TEXT> out;
+
+    auto add = [&]( const std::string& aKey, const PCB_TEXT* aText )
+    {
+        FP_TEXT t;
+        t.rel = aText->GetFPRelativePosition();
+        t.angle = ( aText->GetTextAngle() - aFp->GetOrientation() ).Normalized().AsDegrees();
+        t.shown = aText->GetTextAngle().Normalized().AsDegrees();
+        t.visible = aText->IsVisible();
+        t.layer = aText->GetLayer();
+        out[aKey] = t;
+    };
+
+    for( const PCB_FIELD* f : aFp->GetFields() )
+    {
+        if( f )
+            add( f->IsReference() ? "reference" : f->IsValue() ? "value" : str( f->GetName() ), f );
+    }
+
+    for( const BOARD_ITEM* item : aFp->GraphicalItems() )
+    {
+        if( item->Type() == PCB_TEXT_T )
+            add( "text '" + str( static_cast<const PCB_TEXT*>( item )->GetText() ) + "'",
+                 static_cast<const PCB_TEXT*>( item ) );
     }
 
     return out;
@@ -228,6 +271,39 @@ void diffFootprints( const BOARD& aOld, const BOARD& aNow, int aLimit, BoardDiff
         {
             if( !nf.count( k ) )
                 kind( "fields", k + " removed" );
+        }
+
+        // texts on the part (silk_tidy, a hand-placed reference): moved, turned, shown / hidden
+        {
+            std::map<std::string, FP_TEXT> ot = footprintTexts( o ), nt = footprintTexts( n );
+
+            for( const auto& [k, b] : nt )
+            {
+                auto it = ot.find( k );
+
+                if( it == ot.end() )
+                    continue;   // a new field: listed under fields
+
+                const FP_TEXT& a = it->second;
+                std::string    t;
+
+                if( a.rel != b.rel )
+                    t += " moved " + signedMm( ( b.rel.x - a.rel.x ) / 1e6 ) + ", " + signedMm( ( b.rel.y - a.rel.y ) / 1e6 )
+                         + " mm on the part";
+
+                if( std::fabs( a.angle - b.angle ) > 0.01 )
+                    t += std::string( t.empty() ? "" : "," ) + " turned " + mm( a.shown, 1 ) + " -> " + mm( b.shown, 1 ) + " deg";
+
+                if( a.visible != b.visible )
+                    t += std::string( t.empty() ? "" : "," ) + ( b.visible ? " shown" : " hidden" );
+
+                if( a.layer != b.layer )
+                    t += std::string( t.empty() ? "" : "," ) + " " + str( LSET::Name( a.layer ) ) + " -> "
+                         + str( LSET::Name( b.layer ) );
+
+                if( !t.empty() )
+                    kind( "texts", k + t );
+            }
         }
 
         if( o->IsDNP() != n->IsDNP() )

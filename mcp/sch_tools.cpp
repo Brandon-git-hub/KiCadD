@@ -1772,6 +1772,9 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
 
                     if( byCat.count( cat ) || !extra.empty() )
                         t += "\n" + std::string( cat ) + ":" + byCat[cat] + extra;
+                    else if( haveBoard && std::string( cat ) == "silk" && br.silk_checked() > 0 )
+                        t += "\nsilk: clean (no text over an exposed pad, on another text or past the board edge; "
+                             "the glyphs judged, not their boxes)";
                 }
 
                 if( !nearest.empty() )

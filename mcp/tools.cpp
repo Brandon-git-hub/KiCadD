@@ -366,7 +366,12 @@ std::string renderMoveResult( const kb::MoveResponse& r, bool aDetail = false )
     for( const std::string& n : r.notes() )
         s += "note: " + n + "\n";
 
-    s += renderDrc( r.drc(), aDetail );
+    // the local DRC looks around the parts that moved; with none it looked at nothing
+    if( r.moved().empty() && r.drc().empty() )
+        s += "drc: not checked here (no part moved; run_drc checks the board)\n";
+    else
+        s += renderDrc( r.drc(), aDetail );
+
     return s;
 }
 
@@ -1887,7 +1892,29 @@ TOOL_RESULT history( IPC_CLIENT& aIpc, bool aUndo, bool aDetail )
 
     kb::MoveResponse shown = res;   // the changed parts are listed above, not as "not found"
     shown.clear_missing();
-    return { t + renderMoveResult( shown, aDetail ) + renderHistory( r ) };
+
+    // tracks or zones back as they were: the fills made for the other state would leave clearance
+    // errors and islands (as route / fanout / delete_tracks do, the zones are refilled)
+    std::string refilled;
+
+    if( res.fills_stale() )
+    {
+        TOOL_RESULT f = refillZones( aIpc );
+
+        if( !f.isError )
+        {
+            refilled = f.text.substr( 0, f.text.find( '\n' ) ) + "\n";
+            shown.clear_notes();
+
+            for( const std::string& n : res.notes() )
+            {
+                if( n.find( "zone fills are out of date" ) == std::string::npos )
+                    shown.add_notes( n );
+            }
+        }
+    }
+
+    return { t + renderMoveResult( shown, aDetail ) + refilled + renderHistory( r ) };
 }
 
 
@@ -2807,7 +2834,8 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
     tools.push_back( { "undo",
                        "Undo the last KiCadD edit (move/rotate/flip/add/delete/auto_place/delete_tracks), restoring the exact previous "
                        "state. Parts the user changed since are left alone; an edit the user already undid "
-                       "in the editor (Ctrl+Z) is reported as such. Returns what was undone, new positions and local DRC.",
+                       "in the editor (Ctrl+Z) is reported as such. Tracks, zones or the outline put back: the zones are refilled. "
+                       "Returns what was undone, new positions and local DRC (around moved parts).",
                        schema( { { "detail", DETAIL_PROP } } ),
                        [&aIpc]( const json& a ) { return history( aIpc, true, detailOf( a ) ); } } );
 
@@ -2988,7 +3016,8 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
     tools.push_back( { "board_diff",
                        "What changed since the board was last saved (or against another .kicad_pcb, file; "
                        "relative: the project folder): footprints added / removed / moved / rotated / flipped / "
-                       "renumbered, value, footprint, fields, DNP / BOM, pads that changed net; nets added and "
+                       "renumbered, value, footprint, fields, texts on the part (moved / turned / hidden), DNP / BOM, "
+                       "pads that changed net; nets added and "
                        "removed; tracks per net (segments, length, vias); zones; outline, layers, graphics. "
                        "Footprints are paired by UUID, else by reference. Read only. limit: lines per "
                        "section (20). Zone fills and net classes are not compared.",

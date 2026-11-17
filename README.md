@@ -1406,8 +1406,9 @@ answer against a copy with every UUID new).
 
 TODO 12(h), first part. `silk_tidy` (`SilkTidy`, `src/pcb/kicadd_silk.cpp`, the plan; the handler
 applies it as one undo entry). A text has a problem when its **strokes** (`GetEffectiveShape`)
-touch an exposed pad (on the mask layer) or another silkscreen text's strokes, or its box leaves
-the board outline; `audit` uses the same test. Boxes are judged too generously for that: on the
+touch an exposed pad (on the mask layer) or another silkscreen text's strokes, or the strokes'
+box leaves the board outline; `audit` uses the same test (until 2026-11-18 the outline was
+checked on the text box, which flagged stickhub's C3 and U2, and `audit` did not check it). Boxes are judged too generously for that: on the
 Jetson baseboard 978 of 1108 references "overlapped" by box (line spacing, 0.15 mm pad margin)
 and a first version moved 900 of them, against 7 by strokes.
 
@@ -1421,7 +1422,8 @@ the second direction (+0.6) and each ring (+2). Texts waiting their turn stay ob
 they are (a first version moved them out of the way, and one that found no spot went back on top
 of a text that had taken its place), and one whose problem went away meanwhile stays.
 
-The undo entry stores reference and value positions and angles (`FP_STATE::withText`).
+The undo entry stores every field's and text item's position and angle (`FP_STATE::withText`).
+Each move says why (`(was off the board)`).
 pic_programmer: the three mounting holes' references off the board go below them, 0 s; Jetson:
 6 moved, 1 left (by the edge), 0.3 s. Tests: `fab_e2e` [silk_tidy].
 
@@ -1443,6 +1445,34 @@ current`; `silk_tidy`; `board_diff` back to no changes. It found:
 
 usage: `python3 -I client/smd_e2e.py --build ../build-lean --demos ../kicad/demos --work run/smd
 --index <parts.db>`. The trial steps are in `ci/release-notes.md`.
+
+## alpha.12 trial follow-ups (2026-11-18)
+
+The alpha.12 trial on stickhub found three things that did not match:
+
+- **undo left stale zone fills.** route / fanout / delete_tracks refill the zones; their undo did
+  not, so the tracks came back into fills made without them: after `fanout` and two undos the
+  full DRC had 3 GND to +1V8 / +5V clearance errors (`set_rules` said "DRC errors 3 -> 3"), and
+  `board_diff` (fills not compared) said no changes. An undo / redo entry that touches tracks,
+  zones, the outline or layers now sets `MoveResponse.fills_stale`, and the MCP `undo` / `redo`
+  refill the zones ("all zones refilled"). The edit response's "drc: clean" came from the local
+  DRC around moved parts; with none moved it checked nothing, and now says "drc: not checked here".
+- **board_diff did not see texts.** Per footprint it now compares each field's and text item's
+  position and angle on the part (`GetFPRelativePosition`, angle less the part's), visibility and
+  layer: "C3: reference moved -0.79, +0.94 mm on the part". That showed
+  the next one:
+- **rotate + undo turned texts.** Rotating a part keeps upright texts readable, so turning it back
+  does not restore their angle (pic_programmer's C1: 180 -> 0 deg after rotate 90 and undo).
+  Move / rotate / flip and auto_place entries now store every text's place (`stateOf(fp, false,
+  true)`), as silk_tidy's did.
+- **audit vs silk_tidy.** silk_tidy moved C3 and U2 "off the board" judged on the text box;
+  `audit` did not check the outline at all. Both judge the strokes' box now (C3 and U2 are
+  inside), `audit` lists texts past the edge and a part's own texts on each other, and says
+  "silk: clean" when nothing is found.
+
+Tests: `smd_e2e` (undo refills, full DRC clean after, silk clean in both), `fab_e2e` (P104's
+reference past the edge in `audit`, the move's reason, `board_diff` listing the moved references,
+the C1 rotate + undo back to no changes), `setup_e2e` (zone undo refills).
 
 ## 待做清單 (TODO)
 

@@ -736,8 +736,18 @@ KICADD_HANDLER_PCB::FP_STATE KICADD_HANDLER_PCB::stateOf( const FOOTPRINT* aFp, 
 
         for( const PCB_FIELD* field : aFp->GetFields() )
         {
-            if( field && ( field->IsReference() || field->IsValue() ) )
+            // every field: a rotation keeps upright texts readable (their angle is not just
+            // turned with the part), so turning back does not bring them back
+            if( field )
                 st.texts.push_back( { field->GetName(), field->GetPosition(), field->GetTextAngle() } );
+        }
+
+        // the footprint's own text items, by id ("#" + KIID: no field name starts with it)
+        for( const BOARD_ITEM* item : aFp->GraphicalItems() )
+        {
+            if( item->Type() == PCB_TEXT_T )
+                st.texts.push_back( { wxS( "#" ) + item->m_Uuid.AsString(), item->GetPosition(),
+                                      static_cast<const PCB_TEXT*>( item )->GetTextAngle() } );
         }
     }
 
@@ -775,10 +785,25 @@ void KICADD_HANDLER_PCB::setState( FOOTPRINT* aFp, const FP_STATE& aState, KIGFX
     {
         for( const FP_STATE::TEXT_PLACE& t : aState.texts )
         {
-            if( PCB_FIELD* field = aFp->GetField( t.name ) )
+            PCB_TEXT* text = nullptr;
+
+            if( t.name.StartsWith( wxS( "#" ) ) )
             {
-                field->SetTextAngle( t.angle );
-                field->SetPosition( t.pos );
+                for( BOARD_ITEM* item : aFp->GraphicalItems() )
+                {
+                    if( item->Type() == PCB_TEXT_T && wxS( "#" ) + item->m_Uuid.AsString() == t.name )
+                        text = static_cast<PCB_TEXT*>( item );
+                }
+            }
+            else
+            {
+                text = aFp->GetField( t.name );
+            }
+
+            if( text )
+            {
+                text->SetTextAngle( t.angle );
+                text->SetPosition( t.pos );
             }
         }
 
@@ -1396,7 +1421,7 @@ KICADD_HANDLER_PCB::handleMoveDelta( const HANDLER_CONTEXT<MoveDelta>& aCtx )
     HISTORY_ENTRY entry;
 
     for( const FOOTPRINT* fp : targets )
-        entry.before.push_back( stateOf( fp ) );
+        entry.before.push_back( stateOf( fp, false, true ) );
 
     // Group pivot: centre of the bodies after the move (the move applies first).
     const bool group = req.group_pivot() && targets.size() > 1;
@@ -1434,7 +1459,7 @@ KICADD_HANDLER_PCB::handleMoveDelta( const HANDLER_CONTEXT<MoveDelta>& aCtx )
     if( !targets.empty() && changes )
     {
         for( const FOOTPRINT* fp : targets )
-            entry.after.push_back( stateOf( fp ) );
+            entry.after.push_back( stateOf( fp, false, true ) );
 
         entry.label = label;
         out.set_history_label( entry.label );
@@ -3682,7 +3707,8 @@ void KICADD_HANDLER_PCB::noteStaleFills( const HISTORY_ENTRY& aEntry, MoveRespon
 {
     // An edit of zones, the outline or the layers: the fills there are were made for the other state
     bool touches = aEntry.setupBefore || !aEntry.zonesBefore.empty() || !aEntry.teardropFlags.empty()
-                   || aEntry.label.rfind( "stitch", 0 ) == 0;
+                   || aEntry.label.rfind( "stitch", 0 ) == 0 || !aEntry.tracksRemoved.empty()
+                   || !aEntry.tracksAdded.empty();
 
     for( const std::vector<HISTORY_ENTRY::ITEM_SNAPSHOT>* list : { &aEntry.itemsRemoved, &aEntry.itemsAdded } )
     {
@@ -3699,6 +3725,7 @@ void KICADD_HANDLER_PCB::noteStaleFills( const HISTORY_ENTRY& aEntry, MoveRespon
         {
             aOut.add_notes( "the zone fills are out of date after this: refill_zones (until then unconnected counts "
                             "what the old fills leave open)" );
+            aOut.set_fills_stale( true );
             return;
         }
     }
@@ -5742,7 +5769,7 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::finishAutoPlace( AUTOPLACE
     HISTORY_ENTRY entry;
 
     for( const FOOTPRINT* fp : targets )
-        entry.before.push_back( stateOf( fp ) );
+        entry.before.push_back( stateOf( fp, false, true ) );
 
     std::string label = "auto-place " + std::to_string( targets.size() ) + " part" + ( targets.size() == 1 ? "" : "s" );
 
@@ -5763,7 +5790,7 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::finishAutoPlace( AUTOPLACE
     if( !targets.empty() )
     {
         for( const FOOTPRINT* fp : targets )
-            entry.after.push_back( stateOf( fp ) );
+            entry.after.push_back( stateOf( fp, false, true ) );
 
         entry.label = label;
         out.mutable_edit()->set_history_label( label );

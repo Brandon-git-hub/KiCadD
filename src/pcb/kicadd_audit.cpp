@@ -753,7 +753,8 @@ void checkSilk( BOARD& aBoard, BoardAuditResponse& aOut )
 
         for( size_t j = i + 1; j < silk.size(); j++ )
         {
-            if( !silk[j].text || silk[j].layer != silk[i].layer || silk[j].owner == silk[i].owner )
+            // a part's own texts too (a reference on its value): silk_tidy judges them the same way
+            if( !silk[j].text || silk[j].layer != silk[i].layer || silk[j].item == silk[i].item )
                 continue;
 
             // the strokes, not the boxes (line spacing makes boxes of neighbouring rows touch)
@@ -780,6 +781,34 @@ void checkSilk( BOARD& aBoard, BoardAuditResponse& aOut )
 
     if( overlaps > 20 )
         finding( aOut, "silk", "warning", std::to_string( overlaps - 20 ) + " more overlapping silkscreen texts" );
+
+    // texts reaching past the board edge (the fab clips them; silk_tidy moves such references)
+    SHAPE_POLY_SET outline;
+
+    if( !aBoard.GetBoardPolygonOutlines( outline, false ) || outline.OutlineCount() == 0 )
+        return;
+
+    int off = 0;
+
+    for( const SILK& s : silk )
+    {
+        if( !s.text )
+            continue;
+
+        const BOX2I g = s.shape->BBox();   // the glyphs, not the text box
+        bool        out = false;
+
+        for( const VECTOR2I& c : { g.GetOrigin(), VECTOR2I( g.GetRight(), g.GetTop() ), g.GetEnd(),
+                                   VECTOR2I( g.GetLeft(), g.GetBottom() ) } )
+            out = out || !outline.Contains( c );
+
+        if( out && ++off <= 20 )
+            finding( aOut, "silk", "warning", s.what + " at " + at( g.Centre() ) + " reaches past the board edge (the fab clips it)",
+                     s.owner.empty() ? std::vector<std::string>{} : std::vector<std::string>{ s.owner }, g.Centre() );
+    }
+
+    if( off > 20 )
+        finding( aOut, "silk", "warning", std::to_string( off - 20 ) + " more silkscreen texts past the board edge" );
 }
 
 // ---------------------------------------------------------------------------- test points

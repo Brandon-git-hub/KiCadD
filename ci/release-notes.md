@@ -4,7 +4,15 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 
 > ⚠️ Pre-release，僅供試用。由 GitHub Actions 自動建置；功能在 Linux 上做過端到端測試，Windows 上只有 CI 的 smoke test 與早期版本的人工試用。
 
-## 這一版（alpha.12）
+## 這一版（alpha.13）
+**alpha.12 試用（stickhub）回報的修正**
+- **undo / redo 會重新灌銅：** 以前 fanout、delete_tracks、route 做完會重灌鋪銅，undo 卻不會，走線還原後碰到的是另一個狀態灌出來的鋪銅。stickhub 上 fanout 再 undo 之後，完整 DRC 有 3 個 GND 對 +1V8 / +5V 的間距錯誤（`set_rules` 回報的「DRC errors 3 -> 3」就是這個）。現在 undo / redo 只要動到走線、鋪銅或板框，就會自動重灌，回應寫「all zones refilled」。
+- **undo 不再對沒檢查的東西說「drc: clean」：** undo 後的 DRC 只檢查被移動的零件附近。沒有零件移動時（例如 `set_rules`、`delete_tracks` 的 undo），以前會顯示「drc: clean」，現在改寫「drc: not checked here (no part moved; run_drc checks the board)」。
+- **`board_diff` 會列出零件上文字的變化：** 編號、值和其他欄位在零件上的位置、角度、顯示或隱藏、所在層，例如「C3: reference moved -0.79, +0.94 mm on the part」。以前 `silk_tidy` 移動過的編號在 diff 裡看不到。
+- **旋轉零件再 undo，文字角度會回到原狀：** 文字有「保持正向」時，KiCad 旋轉零件會把文字轉正，反向轉回去並不會回到原本的角度。這個差異以前看不到，`board_diff` 會比較文字之後才發現。現在移動、旋轉和 auto_place 的 undo 會存下每個欄位和文字的位置與角度。
+- **`audit` 和 `silk_tidy` 的絲印判斷一致：** `silk_tidy` 判斷「超出板框」時用的是文字外框，外框比字大（含行距），所以把 stickhub 的 C3、U2 誤判成出界；`audit` 則根本不檢查板框。現在兩邊都用實際筆劃判斷出界，`audit` 也會列出超出板框的絲印文字，同一個零件自己的文字互相重疊也算。絲印沒有問題時，`audit` 會寫「silk: clean」，不再整段省略。`silk_tidy` 每一筆移動都會附上原因，例如「(was off the board)」。
+
+## alpha.12
 **`audit` 加上板子的檢查**
 - **電流：** `currents {"VCC": 1.5}`（安培）會逐層找出每個網路最細的走線，和 IPC-2221 對這個電流、這一層銅厚要求的線寬比較，並寫出最細那段在哪裡、大約能過多少電流。網路類別的線寬不夠時，附上修改的 `set_rules` 呼叫。溫升預設 10 °C，可用 `temp_rise` 調整。
 - **電壓間距：** `voltages {"VPP": 13}`（伏特）會逐層量出這個網路到其他網路最近的銅（走線、過孔、焊盤、鋪銅），依兩者的電壓差和 IPC-2221B 表 6-1 的要求比較（外層用 B2 無塗層，內層用 B1）。`+12V`、`3V3` 這類網路名稱會自動讀出電壓，其他網路當作 0 V。要求不超過最小網路類別間距的組合交給 DRC。每對網路只列一行，每個網路最多列 15 個最差的。請先 `refill_zones`。

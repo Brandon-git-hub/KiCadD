@@ -194,8 +194,10 @@ PROBLEMS problemsNow( const WORLD& aW, const std::vector<TEXT>& aTexts, size_t a
 
     if( aW.haveOutline )
     {
-        for( const VECTOR2I& c : { t.box.GetOrigin(), VECTOR2I( t.box.GetRight(), t.box.GetTop() ), t.box.GetEnd(),
-                                   VECTOR2I( t.box.GetLeft(), t.box.GetBottom() ) } )
+        const BOX2I g = t.strokes->BBox();   // the glyphs (as audit judges it)
+
+        for( const VECTOR2I& c : { g.GetOrigin(), VECTOR2I( g.GetRight(), g.GetTop() ), g.GetEnd(),
+                                   VECTOR2I( g.GetLeft(), g.GetBottom() ) } )
         {
             if( !aW.outline.Contains( c ) )
             {
@@ -373,7 +375,9 @@ SILK_PLAN PlanSilk( BOARD& aBoard, const SilkTidy& aReq )
         FOOTPRINT* fp = t.fp;
         const bool back = t.layer == B_SilkS;
 
-        if( !aReq.all() && problemsNow( w, texts, i ).count() == 0 )
+        const PROBLEMS was = problemsNow( w, texts, i );
+
+        if( !aReq.all() && was.count() == 0 )
             continue;
 
         BOX2I body;
@@ -502,7 +506,8 @@ SILK_PLAN PlanSilk( BOARD& aBoard, const SilkTidy& aReq )
                                 t.what + " " + at( t.field->GetPosition() ) + " -> " + at( best->pos ) + ", " + best->where
                                         + ( best->angle != t.field->GetTextAngle().Normalized()
                                                     ? std::string( best->angle == ANGLE_90 ? ", vertical" : ", horizontal" )
-                                                    : "" ) } );
+                                                    : "" )
+                                        + ( was.count() ? " (was " + describeProblems( was ) + ")" : "" ) } );
     }
 
     plan.problemsAfter = countProblems();

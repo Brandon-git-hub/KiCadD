@@ -119,5 +119,5 @@ target_link_libraries( kicadd-mcp PRIVATE
     )
 target_compile_features( kicadd-mcp PRIVATE cxx_std_20 )
 # the release this is (bumped with ci/release-notes.md); MCP serverInfo.version, with a hash of the tools
-set( KICADD_VERSION "0.1.0-alpha.12" )
+set( KICADD_VERSION "0.1.0-alpha.13" )
 target_compile_definitions( kicadd-mcp PRIVATE KICADD_VERSION="${KICADD_VERSION}" )

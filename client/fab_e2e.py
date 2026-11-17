@@ -292,10 +292,13 @@ try:
         m.tool("undo")
     err, t = m.tool("board_diff")
     check(not err and "footprints: 63 -> 63; 0 added, 0 removed, 0 changed" in t and "zones: 1 -> 1; 0 added" in t
-          and re.search(r"tracks: (\d+) -> \1 segments", t), "after undo: the same footprints, zones, tracks: " + t.splitlines()[0][:60])
+          and re.search(r"tracks: (\d+) -> \1 segments", t), "after undo: the same footprints, zones, tracks: " + " | ".join(t.splitlines()[:3])[:300])
     err, t = m.tool("board_diff", {"file": "nope.kicad_pcb"})
     check(err and "no file" in t, "a missing file is refused")
     print("[silk_tidy]")
+    err, t = m.tool("audit")
+    check(re.search(r"P104 reference at \([\d.]+, [\d.]+\) reaches past the board edge", t) is not None,
+          "audit: the mounting hole's reference past the board edge")
     err, t = m.tool("silk_tidy", {"dry_run": True})
     print("      ", t.splitlines()[0])
     plan = t
@@ -306,10 +309,15 @@ try:
     err, t = m.tool("silk_tidy")
     check(not err and t.startswith("moved ") and "(undo takes it back)" in t and t.splitlines()[1:] == plan.splitlines()[1:],
           "applied as planned")
+    check("(was off the board)" in plan, "the plan says why a text moves")
+    err, t = m.tool("board_diff")
+    check(not err and re.search(r"P104: reference moved [-+][\d.]+, [-+][\d.]+ mm on the part", t) is not None
+          and re.search(r"\(\d+ texts\)", t) is not None, "board_diff lists the moved references: " + " | ".join(t.splitlines()[:4])[:300])
     err, t = m.tool("silk_tidy", {"dry_run": True})
     check(t.startswith("would move 0 text(s)") and "texts with a problem 0 -> 0" in t, "nothing left to move")
     err, t = m.tool("audit")
-    check("reference over pad" not in t and "reference overlaps" not in t, "audit: no reference over a pad or another")
+    check("reference over pad" not in t and "reference overlaps" not in t and "P104 reference at" not in t,
+          "audit: no reference over a pad, on another or past the edge")
     err, t = m.tool("undo")
     check(not err and t.startswith("undid: silk tidy"), "undo: " + t.splitlines()[0])
     err, t = m.tool("silk_tidy", {"dry_run": True})

@@ -69,8 +69,13 @@ try:
     check(not err and "via" in t, "fanout: " + t.splitlines()[0][:120])
     err, t = m.tool("run_drc", {"types": ["clearance", "shorting_items", "hole_clearance"]})
     print("      ", " | ".join(t.splitlines()[:6])[:400])
-    m.tool("undo")
-    m.tool("undo")
+    err, t = m.tool("undo")
+    check(not err and "all zones refilled" in t and "drc: clean" not in t, "undo of fanout refills the zones: " + t.splitlines()[0])
+    err, t = m.tool("undo")
+    check(not err and "all zones refilled" in t, "undo of delete_tracks refills the zones")
+    err, t = m.tool("run_drc")
+    check(not err and "0 errors" in t.splitlines()[0], "after the undos the full DRC is clean (the fills match the tracks): "
+          + t.splitlines()[0])
 
     print("[audit, set_rules, silk_tidy]")
     err, t = m.tool("audit", {"currents": {"+5V": 2}, "voltages": {"+5V": 5}})
@@ -82,7 +87,9 @@ try:
     m.tool("undo")
     err, t = m.tool("silk_tidy", {"dry_run": True})
     print("      ", t.splitlines()[0][:150])
-    check(not err and t.startswith("would move "), "silk_tidy dry run")
+    check(not err and t.startswith("would move 0 text(s)"), "silk_tidy dry run: nothing to move (glyphs judged, not boxes)")
+    err, t = m.tool("audit")
+    check(not err and "\nsilk: clean" in t, "audit agrees: silk clean")
 
     print("[board_diff]")
     err, t = m.tool("board_diff")
