@@ -131,6 +131,7 @@ def make_project(kicad, work):
 class Server:
     def __init__(self, build, sock, board, env, log):
         self.cmd = [binaries(build)[0], "api-server", "--socket", sock, board]
+        self.mcp = binaries(build)[1]
         self.env, self.log, self.sock = env, log, sock
         self.p = None
 
@@ -138,6 +139,8 @@ class Server:
         if os.path.exists(self.sock):
             os.unlink(self.sock)
         self.p = subprocess.Popen(self.cmd, env=self.env, stdout=open(self.log, "a"), stderr=subprocess.STDOUT)
+        if os.name == "nt":      # NNG's ipc is a named pipe there, no file: ask until it answers
+            return self.answers()
         for _ in range(240):     # the log is block-buffered: wait for the socket
             if os.path.exists(self.sock):
                 time.sleep(0.5)
@@ -145,6 +148,30 @@ class Server:
             if self.p.poll() is not None:
                 return False
             time.sleep(0.5)
+        return False
+
+    def answers(self, timeout=180):
+        """True once kicadd-mcp gets a board_summary from the server (it dials once at start)."""
+        msgs = [{"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                 "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "wait", "version": "1"}}},
+                {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "board_summary", "arguments": {}}}]
+        stdin = "".join(json.dumps(m) + "\n" for m in msgs)
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            if self.p.poll() is not None:
+                return False
+            try:
+                r = subprocess.run([self.mcp, "--socket", self.sock, "--stdio"], input=stdin, env=self.env,
+                                   capture_output=True, text=True, encoding="utf-8", timeout=30)
+                for line in r.stdout.splitlines():
+                    reply = json.loads(line) if line.startswith("{") else {}
+                    res = reply.get("result", {}) if reply.get("id") == 2 else {}
+                    if res and not res.get("isError") and "footprints=" in "".join(c.get("text", "") for c in res.get("content", [])):
+                        return True
+            except (subprocess.TimeoutExpired, ValueError):
+                pass
+            time.sleep(1)
         return False
 
     def stop(self):
