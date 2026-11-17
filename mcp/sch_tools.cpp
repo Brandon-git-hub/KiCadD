@@ -194,6 +194,31 @@ std::string chipSize( const std::string& aFootprint )
         }
     }
 
+    // metric names ("R_1005_C", "1608_C", "C_2012Metric"): the codes no imperial size uses; a
+    // bare "0603" is imperial, metric 0603 (0201) only spelled "0603Metric"
+    static const std::pair<const char*, const char*> metric[] = {
+        { "1005", "0402" }, { "1608", "0603" }, { "2012", "0805" }, { "3216", "1206" }, { "3225", "1210" },
+        { "4532", "1812" }, { "5025", "2010" }, { "6332", "2512" }, { "0603Metric", "0201" }, { "0402Metric", "01005" }
+    };
+
+    for( const auto& [code, size] : metric )
+    {
+        size_t at = 0;
+
+        while( ( at = name.find( code, at ) ) != std::string::npos )
+        {
+            size_t end = at + std::strlen( code );
+            bool   before = at == 0 || !std::isalnum( static_cast<unsigned char>( name[at - 1] ) );
+            bool   after = end == name.size() || !std::isalnum( static_cast<unsigned char>( name[end] ) )
+                         || name.compare( end, 6, "Metric" ) == 0;
+
+            if( before && after )
+                return size;
+
+            at = end;
+        }
+    }
+
     return {};
 }
 

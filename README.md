@@ -1425,6 +1425,25 @@ The undo entry stores reference and value positions and angles (`FP_STATE::withT
 pic_programmer: the three mounting holes' references off the board go below them, 0 s; Jetson:
 6 moved, 1 left (by the edge), 0.3 s. Tests: `fab_e2e` [silk_tidy].
 
+## The SMD trial board: stickhub (2026-11-17)
+
+alpha.11's trial ran on pic_programmer, all through-hole, so `lcsc_match` and `fanout` had nothing
+real to work on. `client/smd_e2e.py` runs the alpha.12 trial path on KiCad's `stickhub` demo (94
+parts, all SMD but one, routed, GND / +5V / +1V8 zones), offline with a parts index: `lcsc_match`
+dry run / apply / `sch_undo`; GND tracks deleted and `fanout` back to the zones (67 of 87 pads,
+the rest with no room for a via) and undone; `audit` with currents and voltages; `set_rules
+current`; `silk_tidy`; `board_diff` back to no changes. It found:
+
+- `lcsc_match` matched none of stickhub's 31 groups: its passives use metric names (`R_1005_C`,
+  `1608_C`, `2012_C`) and `chipSize` knew only imperial ones. Metric codes no imperial size uses
+  (1005, 1608, 2012, 3216, 3225, 4532, 5025, 6332) now map to their imperial size; `0603` stays
+  imperial unless written `0603Metric` (0201). 10 groups match now.
+- `fanout`'s "no room for a via near the pad (no room for a via at x,y)" said it twice; it now
+  names the first spot tried and points at `set_rules` for a smaller via.
+
+usage: `python3 -I client/smd_e2e.py --build ../build-lean --demos ../kicad/demos --work run/smd
+--index <parts.db>`. The trial steps are in `ci/release-notes.md`.
+
 ## 待做清單 (TODO)
 
 2026-11-10，`v0.1.0-alpha.2` 在 Windows 上試用後回報；以下已在 Linux 上用 `pic_programmer` 重現確認，**尚未實作**。

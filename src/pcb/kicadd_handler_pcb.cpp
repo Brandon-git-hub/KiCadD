@@ -2748,7 +2748,10 @@ HANDLER_RESULT<FanoutResponse> KICADD_HANDLER_PCB::handleFanout( const HANDLER_C
                 rr->set_ok( false );
                 rr->set_error( first.error.empty() ? "no spot near the pad inside the copper of a " + pad->GetNetname().ToStdString()
                                                              + " zone on another layer"
-                                                   : "no room for a via near the pad (" + first.error + ")" );
+                                                   : first.error.rfind( "no room for a via", 0 ) == 0
+                                                             ? "no room for a via near the pad (the first spot tried: "
+                                                                       + first.error.substr( 21 ) + "; a smaller via: set_rules)"
+                                                             : "no room for a via near the pad (" + first.error + ")" );
             }
         }
     }

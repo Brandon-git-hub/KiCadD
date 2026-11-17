@@ -28,7 +28,20 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 - **`sch_render frame=true` 一定出整頁：** 以前同時給了 `refs` 或 `nets` 時會放大到零件那一帶，子圖紙上看起來就像沒有圖框和標題欄。現在 `frame=true` 優先，零件和網路照樣標示，但不放大。
 - **`sch_render` 指定的區域沒有內容時會說明：** `area` 裡沒有任何圖元時，回應會寫「nothing drawn in this area」，並附上頁面大小；區域整個在頁面外也會註明。
 - **`board_setup` 的板厚：** 套用 JLCPCB 疊層後，第一行直接寫「1.586 mm thick (the stackup's layers added up; nominal 1.6 mm)」，不再只寫 1.59 mm。
+- **`lcsc_match` 認得公制封裝名稱：** `1005`、`1608`、`2012`、`3216` 這類公制尺寸（例如 `R_1005_C`、`1608_C`）以前被當成「不是貼片封裝」，現在分別對到 0402、0603、0805、1206。單獨寫 `0603` 仍視為英制；公制的 0603（英制 0201）要寫成 `0603Metric`。
+- **`fanout` 放不下過孔時的說明：** 改成寫出第一個嘗試的位置，並提示可以用 `set_rules` 改小過孔。
 - **工具清單更新：** MCP 的 `serverInfo.version` 以前固定是 0.2.0，現在是發行版本加上工具清單的雜湊（例如 `0.1.0-alpha.12+t54.7d4c2e59`）。工具或參數有變，版本就不同，依版本快取工具清單的客戶端會重新抓。如果還是看到舊清單，請在客戶端重新連線這個 MCP server（Claude Code 是 `/mcp`，Claude Desktop 要重新啟動）。
+
+## 試用建議：貼片板（stickhub）
+alpha.11 的試用板 `pic_programmer` 全是插件零件，`lcsc_match` 和 `fanout` 只能用臨時加上去的零件驗證。這一版請用 `share\kicad\demos\stickhub`（USB hub，94 個零件，除了一顆以外都是貼片，已佈線，有 GND / +5V / +1V8 鋪銅）試以下流程，順序不拘。不需要存檔，最後 undo 回原狀即可。
+1. **`lcsc_match`**：先 dry run。預期 31 組裡有 10 組電阻電容配到料號（0402 / 0603 / 0805，封裝名稱是公制的 `1005_C`、`1608_C`、`2012_C`），其餘是 TVS、連接器、IC、晶振和 Logo，各附原因。`apply=true` 寫入，`sch_undo` 一次還原。22uF 10V 那組配到的料號在索引裡沒有寫耐壓，請在 JLCPCB 上確認。
+2. **`fanout`**：先 `delete_tracks nets=["GND"]` 拿掉 GND 的走線，再 `fanout nets=["GND"] dry_run=true`。預期 87 個焊盤中約 67 個可以打過孔接到另一面的 GND 鋪銅，其餘會寫「no room for a via」和位置。實際執行後跑 `run_drc`，再用 `undo` 退回兩步。
+3. **`audit`**：試試 `currents {"+5V": 2}` 和 `voltages`，看板子那一半的結果（線寬、間距、絲印、測試點）。`+5V`、`+1V8` 這類網路會從名稱讀出電壓。
+4. **`set_rules`** `classes {"Power": {"current": 2}}`，看算出的線寬；`undo`。
+5. **`silk_tidy dry_run=true`**，然後實際執行，用 `board_render layers=["silk"]` 看結果；`undo`。
+6. **`board_diff`**：每一步做完都可以叫一次，看它列出的變更是否和你做的一致；全部 undo 後應該是「no changes」。
+
+這個流程在 Linux 上用 `client/smd_e2e.py` 自動跑過（離線，不查即時庫存）。
 
 ## alpha.11
 **新功能：`sch_render` 電路圖出圖（共 54 個工具）**
@@ -166,7 +179,7 @@ Claude Code：`claude mcp add kicadd -- C:\KiCadD\bin\kicadd-mcp.exe --stdio`（
 - **Claude Desktop**：在設定的 Skills 頁面上傳另外附的 `kicadd-skill.zip`。
 - **其他 Agent（Cursor 等）**：把 `SKILL.md` 的內容放進它的規則檔或系統提示。
 
-## Agent 能做的事（54 個 MCP 工具）
+## Agent 能做的事（56 個 MCP 工具）
 - **電路圖**：`sch_add_part`（符號庫、立創編號或電源符號）、`sch_connect` / `sch_disconnect`（網路名稱連接）、`sch_move`、`sch_wire`、`sch_netlist`、`sch_delete`（零件、導線、懸空線）、`sch_set_fields`、`run_erc`、`sch_render`（PNG 圖）、`sch_save`、Agent 自己的 `sch_undo` / `sch_redo`；**階層圖紙** `sch_add_sheet`，`ports` 產生圖紙腳位，父圖紙上用 `圖紙名.腳位名` 連接。
 - **立創零件**：`lcsc_fetch` / `sch_add_part lcsc=` 依編號抓封裝與符號，存進專案的 LCSC 庫；回報庫存、價格、基礎件 / 擴展件。編輯器裡也有 Place → Add LCSC Part / Symbol。
 - **電路圖 → PCB**：`sync_pcb`（開著電路圖編輯器時直接讀編輯器內容，不會寫入你的電路圖檔）。
@@ -176,7 +189,7 @@ Claude Code：`claude mcp add kicadd -- C:\KiCadD\bin\kicadd-mcp.exe --stdio`（
 - **新板設定**：`board_outline`（板框、挖槽、固定孔）、`board_setup`（層數、板厚、銅厚、疊層，或 JLCPCB 的阻抗疊層）、`set_rules preset`（JLCPCB 製程預設）、`zones create`（新建銅箔區）。
 - **設計規則與銅箔區**：`get_rules` / `set_rules`（網路類別、指派、板子最小值）、`zones`（間距、優先順序、焊盤連接）。
 - **批次**：`batch` 一次跑多個工具。
-- **審查與製造**：`audit`、`board_render`（PNG 圖）、`export_fab`（先跑 DRC，再輸出 Gerber / 鑽孔 / BOM / CPL）；依規格找料 `lcsc_search`、批次配料號 `lcsc_match`；自建符號與封裝 `lib_create_symbol` / `lib_create_footprint`。
+- **審查與製造**：`audit`（電路圖與板子：去耦、電源、ESD、電流對線寬、電壓對間距、絲印、測試點）、`board_diff`（和上次存檔比較）、`silk_tidy`（整理絲印編號）、`board_render`（PNG 圖）、`export_fab`（先跑 DRC，再輸出 Gerber / 鑽孔 / BOM / CPL）；依規格找料 `lcsc_search`、批次配料號 `lcsc_match`；自建符號與封裝 `lib_create_symbol` / `lib_create_footprint`。
 - **與你協同**：Agent 的修改就是編輯器的提交，你按 Ctrl+Z 就能撤銷；你在互動工具中（走線、畫線、對話框）時，Agent 的修改會被擋下，不會干擾你。走線由你來做。
 - **怎麼分工最有效**（試用心得）：了解設計、審查、擺件、局部修改用 Agent；大量欄位修改可以用 `sch_set_fields` / `batch`，或在 KiCad 關閉時直接改檔再用 `kicad-cli` 驗證；DRC / ERC / 匯出等批次工作用 `kicad-cli` 或腳本。
 
