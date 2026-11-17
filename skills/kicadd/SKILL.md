@@ -192,9 +192,12 @@ symbols or text, labels away from their wires, a sheet that does not read well.
 1. `refill_zones` and a clean `run_drc` (or the user's agreement on what remains).
    `export_fab` runs the DRC itself and puts the error count first; `strict=true` writes
    nothing while there are DRC errors, a reference twice or parts off the board.
-2. Parts not to be assembled: `sch_set_fields` / `pcb_set_fields` with `dnp` or
+2. Silkscreen: `silk_tidy dry_run=true` lists references over pads, over each other or off the
+   board and where they would go; `silk_tidy` moves them (one undo), then `board_render
+   layers=["silk"]` to look. It only moves the ones with a problem (all=true: every one asked).
+3. Parts not to be assembled: `sch_set_fields` / `pcb_set_fields` with `dnp` or
    `exclude_from_bom` (they leave both BOM and CPL).
-3. `export_fab`: Gerbers, drill, the upload zip, BOM and CPL in JLCPCB's columns, from the
+4. `export_fab`: Gerbers, drill, the upload zip, BOM and CPL in JLCPCB's columns, from the
    design in memory. Read its notes: BOM lines without an LCSC number, through-hole parts in
    the CPL, rotations to check in JLCPCB's preview.
 

@@ -1102,3 +1102,27 @@ message BoardDiffResponse
   int32                     changes   = 3;   // 0: the same as the file (fills and rules not compared)
   repeated BoardDiffSection sections  = 4;
 }
+
+// ---------------------------------------------------------------------------
+// Silkscreen tidying: references (values too with values=true) that are over an exposed pad,
+// over another silkscreen text or off the board are moved next to their part, to the nearest
+// free spot (around the courtyard, ring by ring; inside a big part last). One undoable edit.
+// Returns SilkTidyResponse
+message SilkTidy
+{
+  repeated string refs    = 1;   // default: every part
+  bool            all     = 2;   // place them all, not just the ones with a problem
+  bool            values  = 3;   // visible values on the silkscreen too
+  double          gap     = 4;   // mm between texts and around the part (default 0.1)
+  bool            dry_run = 5;   // say what would move, change nothing
+}
+
+message SilkTidyResponse
+{
+  repeated string moved           = 1;   // "R5 reference (x, y) -> (x, y), above"
+  repeated string stuck           = 2;   // no free spot found
+  int32           checked         = 3;   // texts looked at
+  int32           problems_before = 4;   // texts over a pad (0.15 mm), another text, off the board
+  int32           problems_after  = 5;
+  string          history_label   = 6;
+}

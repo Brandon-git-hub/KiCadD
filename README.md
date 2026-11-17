@@ -1402,6 +1402,29 @@ Net classes and rules are in the project file and are not compared. 0.01 s on pi
 Tests: `fab_e2e` [board_diff] (six kinds of edit, `limit`, undo back to no changes, the same
 answer against a copy with every UUID new).
 
+## silk_tidy: references off pads and each other (2026-11-17)
+
+TODO 12(h), first part. `silk_tidy` (`SilkTidy`, `src/pcb/kicadd_silk.cpp`, the plan; the handler
+applies it as one undo entry). A text has a problem when its **strokes** (`GetEffectiveShape`)
+touch an exposed pad (on the mask layer) or another silkscreen text's strokes, or its box leaves
+the board outline; `audit` uses the same test. Boxes are judged too generously for that: on the
+Jetson baseboard 978 of 1108 references "overlapped" by box (line spacing, 0.15 mm pad margin)
+and a first version moved 900 of them, against 7 by strokes.
+
+Each text with a problem (or every one asked for, `all`) is placed in reference order: spots
+around its courtyard (four sides, aligned to the corners, the corners; four rings outward),
+horizontal or vertical (the part's reading direction first), and the courtyard's centre for a
+part big enough (+4). A spot must keep its box 0.15 mm from exposed pads, `gap` (0.1 mm) from
+other texts' boxes and inside the outline; the nearest to the part wins, with costs for another
+part's courtyard (+6, under that part once assembled), another part's silkscreen lines (+1.5),
+the second direction (+0.6) and each ring (+2). Texts waiting their turn stay obstacles where
+they are (a first version moved them out of the way, and one that found no spot went back on top
+of a text that had taken its place), and one whose problem went away meanwhile stays.
+
+The undo entry stores reference and value positions and angles (`FP_STATE::withText`).
+pic_programmer: the three mounting holes' references off the board go below them, 0 s; Jetson:
+6 moved, 1 left (by the edge), 0.3 s. Tests: `fab_e2e` [silk_tidy].
+
 ## 待做清單 (TODO)
 
 2026-11-10，`v0.1.0-alpha.2` 在 Windows 上試用後回報；以下已在 Linux 上用 `pic_programmer` 重現確認，**尚未實作**。
@@ -1630,7 +1653,7 @@ answer against a copy with every UUID new).
      走線數與長度。另外載入一份 `BOARD` 依 KIID 比對。中等。
    * (g) **電路圖。** 重新編號並同步到板子（KiCad 的 annotate；板子端 `sync_pcb` 依路徑對應，編號會
      跟著改）；整理排版：先做「相關零件排在一起」，全自動排版難度高、延後。
-   * (h) **製造輸出。** 絲印整理（編號移到不重疊、不壓焊盤的位置）；電路圖 PDF、組裝圖；STEP 需要
+   * (h) **製造輸出。**（絲印整理已完成 2026-11-17，見「silk_tidy」）絲印整理（編號移到不重疊、不壓焊盤的位置）；電路圖 PDF、組裝圖；STEP 需要
      OpenCascade，精簡版目前沒有編進去（`KICADD_NO_OCC`），要另外評估大小；`export_fab` 在 DRC
      未清乾淨時警告（或 `strict=true` 時拒絕）。
    * (i) **符合板廠的實際疊層。** `board_setup stackup="jlc04161h-7628"` 之類：各層厚度、介電常數

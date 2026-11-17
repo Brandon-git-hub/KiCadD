@@ -132,6 +132,9 @@ private:
     HANDLER_RESULT<kicadd::board::BoardDiffResponse>
     handleBoardDiff( const HANDLER_CONTEXT<kicadd::board::BoardDiff>& aCtx );
 
+    HANDLER_RESULT<kicadd::board::SilkTidyResponse>
+    handleSilkTidy( const HANDLER_CONTEXT<kicadd::board::SilkTidy>& aCtx );
+
     HANDLER_RESULT<kicadd::board::MoveResponse>
     handleDeleteTracks( const HANDLER_CONTEXT<kicadd::board::DeleteTracks>& aCtx );
 
@@ -269,10 +272,25 @@ private:
         std::vector<std::pair<wxString, wxString>>  fields;
         int                                         attrs = 0;
 
+        /// silk_tidy: where the reference and value sit (field name -> position, absolute angle);
+        /// compared and restored only then
+        struct TEXT_PLACE
+        {
+            wxString  name;
+            VECTOR2I  pos;
+            EDA_ANGLE angle;
+
+            bool operator==( const TEXT_PLACE& o ) const { return name == o.name && pos == o.pos && angle == o.angle; }
+        };
+
+        bool                    withText = false;
+        std::vector<TEXT_PLACE> texts;
+
         bool operator==( const FP_STATE& aOther ) const
         {
             return pos == aOther.pos && orient == aOther.orient && back == aOther.back
-                   && ( !withFields || ( fields == aOther.fields && attrs == aOther.attrs ) );
+                   && ( !withFields || ( fields == aOther.fields && attrs == aOther.attrs ) )
+                   && ( !withText || texts == aOther.texts );
         }
     };
 
@@ -368,7 +386,7 @@ private:
     /// aFp is as aSnap has it (shape, fields, attributes, place, pad nets).
     static bool matches( const FOOTPRINT* aFp, const FP_SNAPSHOT& aSnap );
 
-    static FP_STATE stateOf( const FOOTPRINT* aFp, bool aWithFields = false );
+    static FP_STATE stateOf( const FOOTPRINT* aFp, bool aWithFields = false, bool aWithText = false );
     /// aView: the editor's canvas, which keeps a footprint's fields as items of their own
     /// (re-added when fields come and go); null headless
     static void     setState( FOOTPRINT* aFp, const FP_STATE& aState, KIGFX::VIEW* aView = nullptr );

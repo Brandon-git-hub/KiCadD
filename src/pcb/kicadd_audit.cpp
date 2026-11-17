@@ -756,7 +756,8 @@ void checkSilk( BOARD& aBoard, BoardAuditResponse& aOut )
             if( !silk[j].text || silk[j].layer != silk[i].layer || silk[j].owner == silk[i].owner )
                 continue;
 
-            if( !silk[i].box.Intersects( silk[j].box ) )
+            // the strokes, not the boxes (line spacing makes boxes of neighbouring rows touch)
+            if( !silk[i].box.Intersects( silk[j].box ) || !silk[i].shape->Collide( silk[j].shape.get(), 0 ) )
                 continue;
 
             if( ++overlaps <= 20 )

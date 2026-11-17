@@ -12,7 +12,12 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 - **測試點：** 列出沒有測試點（`TP*` 或 TestPoint 封裝）的網路。
 - 沒有電路圖或還沒有板子時，`audit` 只跑有的那一半。
 
-**新工具 `board_diff`：和上次存檔比較（共 55 個工具）**
+**新工具 `silk_tidy`：整理絲印編號（共 56 個工具）**
+- 壓到焊盤、壓到其他絲印文字、或超出板框的零件編號，會移到零件旁最近的空位（上下左右、四角，再一圈圈往外；大零件最後可放在零件裡面）。文字方向跟著零件，橫的零件用橫字、直的零件用直字。
+- 只移動有問題的編號；`all=true` 會重新放全部指定的零件，`values=true` 連可見的值一起整理，`dry_run=true` 只列出會怎麼移。一次 undo 就能還原。
+- 判斷「壓到」用的是實際筆劃，不是文字外框，所以排得很密但沒有真的重疊的編號不會被動到。`audit` 的絲印檢查也改成同樣的判斷。
+
+**新工具 `board_diff`：和上次存檔比較**
 - 列出記憶體中的板子和上次存檔（或 `file` 指定的另一個 `.kicad_pcb`，例如舊版本）差在哪裡：零件的新增、刪除、移動、旋轉、換面、改編號、值、封裝、欄位、DNP / BOM，以及哪些焊盤換了網路；網路的增減；各網路的走線段數、長度和過孔數；銅箔區；板框、層數和圖形。
 - 零件依 UUID 配對；另一個檔案的 UUID 不同時，零件依編號、走線和圖形依位置配對。只讀不改。每一類預設列 20 行（`limit`）。鋪銅和網路類別不比較。
 
@@ -156,7 +161,7 @@ Claude Desktop（`%APPDATA%\Claude\claude_desktop_config.json`）或 Cursor（`m
 Claude Code：`claude mcp add kicadd -- C:\KiCadD\bin\kicadd-mcp.exe --stdio`（路徑換成你解壓的位置）。
 
 ### 建議的使用方式（skill）
-55 個工具怎麼搭配使用（先查再改、新板設定、審查 / 擺件 / 佈線 / 找料 / 出廠流程、undo、批次、常見陷阱）寫成一份 skill，讓 Agent 照著做：
+56 個工具怎麼搭配使用（先查再改、新板設定、審查 / 擺件 / 佈線 / 找料 / 出廠流程、undo、批次、常見陷阱）寫成一份 skill，讓 Agent 照著做：
 - **Claude Code**：把 `share\kicadd\skills\kicadd` 整個資料夾複製到 `%USERPROFILE%\.claude\skills\`（所有專案）或專案的 `.claude\skills\`。
 - **Claude Desktop**：在設定的 Skills 頁面上傳另外附的 `kicadd-skill.zip`。
 - **其他 Agent（Cursor 等）**：把 `SKILL.md` 的內容放進它的規則檔或系統提示。

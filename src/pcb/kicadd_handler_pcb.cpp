@@ -53,6 +53,7 @@
 #include "pcb/kicadd_picture.h"
 #include "pcb/kicadd_audit.h"
 #include "pcb/kicadd_diff.h"
+#include "pcb/kicadd_silk.h"
 #include "common/kicadd_ipc2221.h"
 #include "lcsc/kicadd_parts.h"
 #include "pcb/kicadd_fpgen.h"
@@ -256,6 +257,7 @@ KICADD_HANDLER_PCB::KICADD_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext ) 
     registerHandler<RenderBoard, RenderBoardResponse>( &KICADD_HANDLER_PCB::handleRenderBoard );
     registerHandler<BoardAudit, BoardAuditResponse>( &KICADD_HANDLER_PCB::handleBoardAudit );
     registerHandler<BoardDiff, BoardDiffResponse>( &KICADD_HANDLER_PCB::handleBoardDiff );
+    registerHandler<SilkTidy, SilkTidyResponse>( &KICADD_HANDLER_PCB::handleSilkTidy );
     registerHandler<LcscSearch, LcscSearchResponse>( &KICADD_HANDLER_PCB::handleLcscSearch );
     registerHandler<FpCreate, FpCreateResponse>( &KICADD_HANDLER_PCB::handleFpCreate );
     registerHandler<AddFootprint, MoveResponse>( &KICADD_HANDLER_PCB::handleAddFootprint );
@@ -724,9 +726,20 @@ void KICADD_HANDLER_PCB::applyFootprintEdit( const std::vector<FOOTPRINT*>& aTar
 }
 
 
-KICADD_HANDLER_PCB::FP_STATE KICADD_HANDLER_PCB::stateOf( const FOOTPRINT* aFp, bool aWithFields )
+KICADD_HANDLER_PCB::FP_STATE KICADD_HANDLER_PCB::stateOf( const FOOTPRINT* aFp, bool aWithFields, bool aWithText )
 {
     FP_STATE st{ aFp->m_Uuid, aFp->GetPosition(), aFp->GetOrientation(), aFp->IsFlipped() };
+
+    if( aWithText )
+    {
+        st.withText = true;
+
+        for( const PCB_FIELD* field : aFp->GetFields() )
+        {
+            if( field && ( field->IsReference() || field->IsValue() ) )
+                st.texts.push_back( { field->GetName(), field->GetPosition(), field->GetTextAngle() } );
+        }
+    }
 
     if( aWithFields )
     {
@@ -757,6 +770,21 @@ void KICADD_HANDLER_PCB::setState( FOOTPRINT* aFp, const FP_STATE& aState, KIGFX
 
     if( aFp->GetPosition() != aState.pos )
         aFp->SetPosition( aState.pos );
+
+    if( aState.withText )
+    {
+        for( const FP_STATE::TEXT_PLACE& t : aState.texts )
+        {
+            if( PCB_FIELD* field = aFp->GetField( t.name ) )
+            {
+                field->SetTextAngle( t.angle );
+                field->SetPosition( t.pos );
+            }
+        }
+
+        if( aView )
+            aView->Update( aFp );
+    }
 
     if( !aState.withFields )
         return;
@@ -1614,6 +1642,74 @@ KICADD_HANDLER_PCB::handleExportFab( const HANDLER_CONTEXT<ExportFab>& aCtx )
     if( !kicadd::ExportFab( b, dir, !aCtx.Request.no_zip(), out, err ) )
         return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, err ) );
 
+    return out;
+}
+
+
+HANDLER_RESULT<SilkTidyResponse>
+KICADD_HANDLER_PCB::handleSilkTidy( const HANDLER_CONTEXT<SilkTidy>& aCtx )
+{
+    if( std::optional<ApiResponseStatus> wait = busy() )
+        return tl::unexpected( *wait );
+
+    BOARD* b = board();
+
+    if( !b )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
+
+    kicadd::SILK_PLAN plan = kicadd::PlanSilk( *b, aCtx.Request );
+    SilkTidyResponse  out;
+
+    out.set_checked( plan.checked );
+    out.set_problems_before( plan.problemsBefore );
+    out.set_problems_after( plan.problemsAfter );
+
+    for( const kicadd::SILK_MOVE& m : plan.moves )
+        out.add_moved( m.text );
+
+    for( const std::string& s : plan.stuck )
+        out.add_stuck( s );
+
+    if( aCtx.Request.dry_run() || plan.moves.empty() )
+        return out;
+
+    // one footprint may have two texts moving
+    std::map<FOOTPRINT*, std::vector<const kicadd::SILK_MOVE*>> byFp;
+
+    for( const kicadd::SILK_MOVE& m : plan.moves )
+        byFp[m.fp].push_back( &m );
+
+    HISTORY_ENTRY           entry;
+    std::vector<FOOTPRINT*> targets;
+
+    for( const auto& [fp, moves] : byFp )
+    {
+        entry.before.push_back( stateOf( fp, false, true ) );
+        targets.push_back( fp );
+    }
+
+    entry.label = "silk tidy: " + std::to_string( plan.moves.size() ) + " text(s) moved";
+
+    MoveResponse ignored;
+    applyFootprintEdit( targets,
+                        [&]( FOOTPRINT* fp )
+                        {
+                            for( const kicadd::SILK_MOVE* m : byFp[fp] )
+                            {
+                                m->field->SetTextAngle( m->angle );
+                                m->field->SetPosition( m->pos );
+                            }
+
+                            if( KIGFX::VIEW* v = view() )
+                                v->Update( fp );
+                        },
+                        wxString::FromUTF8( "Agent: " + entry.label ), ignored );
+
+    for( FOOTPRINT* fp : targets )
+        entry.after.push_back( stateOf( fp, false, true ) );
+
+    out.set_history_label( entry.label );
+    record( std::move( entry ) );
     return out;
 }
 
@@ -3837,7 +3933,7 @@ bool KICADD_HANDLER_PCB::applyHistory( const HISTORY_ENTRY& aEntry, bool aUndo, 
         {
             if( e.id == aFp->m_Uuid )
             {
-                return stateOf( aFp, e.withFields ) == e;
+                return stateOf( aFp, e.withFields, e.withText ) == e;
             }
         }
 
@@ -3848,7 +3944,7 @@ bool KICADD_HANDLER_PCB::applyHistory( const HISTORY_ENTRY& aEntry, bool aUndo, 
     // Ctrl+Z on the agent's commit). Nothing to do for it, and not "changed by someone else".
     auto atTarget = [&]( const FOOTPRINT* aFp, const FP_STATE& aSt )
     {
-        return stateOf( aFp, aSt.withFields ) == aSt;
+        return stateOf( aFp, aSt.withFields, aSt.withText ) == aSt;
     };
 
     // sync_pcb: footprints it changed are swapped back / forth whole; tracks and zones it moved

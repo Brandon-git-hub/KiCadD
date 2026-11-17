@@ -2925,6 +2925,66 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        schema( json::object() ),
                        [&aIpc]( const json& ) { return saveBoard( aIpc ); } } );
 
+    tools.push_back( { "silk_tidy",
+                       "Move silkscreen references that are over an exposed pad (within 0.15 mm), over another "
+                       "silkscreen text, or off the board, to the nearest free spot next to their part (above, "
+                       "below, left, right, the corners, further out ring by ring; inside a big part last), "
+                       "horizontal or vertical as the part reads. refs: only these parts (default all); "
+                       "all=true places them all, not just the ones with a problem; values=true does visible "
+                       "values too; gap mm between texts (0.1); dry_run=true only says what would move. One "
+                       "undoable edit. Look at it with board_render layers=[\"silk\"].",
+                       schema( { { "refs", refs },
+                                 { "all", { { "type", "boolean" } } },
+                                 { "values", { { "type", "boolean" } } },
+                                 { "gap", { { "type", "number" } } },
+                                 { "dry_run", { { "type", "boolean" } } },
+                                 { "detail", { { "type", "boolean" }, { "description", "every move (default: 15)" } } } } ),
+                       [&aIpc]( const json& a ) -> TOOL_RESULT
+                       {
+                           kb::SilkTidy req;
+
+                           for( const std::string& r : getStrings( a, "refs" ) )
+                               req.add_refs( r );
+
+                           req.set_all( a.value( "all", false ) );
+                           req.set_values( a.value( "values", false ) );
+                           req.set_gap( a.value( "gap", 0.0 ) );
+                           req.set_dry_run( a.value( "dry_run", false ) );
+
+                           kb::SilkTidyResponse r;
+                           std::string          err;
+
+                           if( !aIpc.Call( req, r, err ) )
+                               return error( err );
+
+                           const bool detail = a.value( "detail", false );
+                           std::string t = std::string( req.dry_run() ? "would move " : "moved " )
+                                           + std::to_string( r.moved_size() ) + " text(s) of "
+                                           + std::to_string( r.checked() ) + " checked; texts with a problem "
+                                           + std::to_string( r.problems_before() ) + " -> "
+                                           + std::to_string( r.problems_after() )
+                                           + ( req.dry_run() ? " (as planned)" : "" );
+
+                           if( !r.history_label().empty() )
+                               t += " (undo takes it back)";
+
+                           for( int i = 0; i < r.moved_size(); i++ )
+                           {
+                               if( !detail && i == 15 )
+                               {
+                                   t += "\n  ... " + std::to_string( r.moved_size() - 15 ) + " more (detail=true)";
+                                   break;
+                               }
+
+                               t += "\n  " + r.moved( i );
+                           }
+
+                           for( const std::string& s : r.stuck() )
+                               t += "\nleft as is: " + s;
+
+                           return { t + "\n" };
+                       } } );
+
     tools.push_back( { "board_diff",
                        "What changed since the board was last saved (or against another .kicad_pcb, file; "
                        "relative: the project folder): footprints added / removed / moved / rotated / flipped / "
