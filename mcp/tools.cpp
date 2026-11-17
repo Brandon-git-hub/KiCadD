@@ -1793,8 +1793,13 @@ TOOL_RESULT boardSetup( IPC_CLIENT& aIpc, const json& aArgs )
     if( !aIpc.Call( req, r, err ) )
         return error( err );
 
-    char head[96];
-    std::snprintf( head, sizeof( head ), "%d copper layers, %.3g mm thick", r.copper_layers(), r.thickness() );
+    char head[128];
+
+    if( r.nominal_thickness() > 0 && std::fabs( r.nominal_thickness() - r.thickness() ) > 0.0005 )
+        std::snprintf( head, sizeof( head ), "%d copper layers, %.4g mm thick (the stackup's layers added up; nominal %.3g mm)",
+                       r.copper_layers(), r.thickness(), r.nominal_thickness() );
+    else
+        std::snprintf( head, sizeof( head ), "%d copper layers, %.3g mm thick", r.copper_layers(), r.thickness() );
     std::string t = ( r.history_label().empty() ? std::string() : r.history_label() + " (undo takes it back)\n" ) + head
                     + "\nstackup (top to bottom):";
 

@@ -170,6 +170,14 @@ try:
     check(not err and "elsewhere: U1 on /pic_sockets/" in t, "a ref on another sheet: said where")
     err, t, png = sshot({"frame": True, "area": [0, 0, 100, 50], "path": "sch.png"})
     check(not err and "x 0 .. 100, y 0 .. 50 mm" in t and os.path.exists(os.path.join(work, "p", "sch.png")), "area; saved")
+    err, t, png = sshot({"sheet": "pic_sockets", "frame": True, "path": "sub.png"})
+    print("      ", t.splitlines()[0])
+    check(not err and t.startswith("picture of /pic_sockets/") and "; x 0 .. " in t and ", y 0 .. " in t,
+          "frame=true on a sub-sheet: the whole page " + t.splitlines()[0][:90])
+    err, t, png = sshot({"sheet": "pic_sockets", "refs": ["U1"], "frame": True})
+    check(not err and "; x 0 .. " in t, "frame=true with refs: still the whole page")
+    err, t, png = sshot({"area": [2000, 2000, 2100, 2050]})
+    check(not err and "nothing drawn in this area" in t, "an area with nothing in it: said so")
     err, t, png = sshot({"sheet": "nope"})
     check(err and "no sheet nope" in t, "an unknown sheet is refused")
 

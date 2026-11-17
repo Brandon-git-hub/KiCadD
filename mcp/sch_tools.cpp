@@ -1963,7 +1963,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "sheet reads. KiCad's own plot. refs are framed and labelled, nets drawn bright (wires, "
             "labels, pins); with either it zooms to them (zoom=false keeps the sheet) and picks the "
             "sheet of the first ref. sheet: a name or path (default the root); area [x0, y0, x1, y1] "
-            "mm; frame=true the whole page with its title block. mm rulers on the top and left. size: "
+            "mm; frame=true the whole page with its title block (refs / nets still marked, no zoom). mm rulers on the top and left. size: "
             "pixels on the long side (default 1600). path also saves the PNG (relative: the project "
             "folder).",
             obj( { { "sheet", { { "type", "string" } } },
@@ -2003,8 +2003,8 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                         req.add_area( v.get<double>() );
                 }
 
-                req.set_zoom( a.value( "zoom", req.refs_size() + req.nets_size() > 0 ) );
                 req.set_frame( a.value( "frame", false ) );
+                req.set_zoom( a.value( "zoom", req.refs_size() + req.nets_size() > 0 && !req.frame() ) );
                 req.set_size( a.value( "size", 0 ) );
                 req.set_margin( a.value( "margin", 0.0 ) );
                 req.set_path( str( a, "path" ) );
@@ -2025,6 +2025,9 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
 
                 if( req.nets_size() )
                     t += "\nblue: the nets asked for (wires, labels, pins)";
+
+                if( !r.note().empty() )
+                    t += "\n" + r.note();
 
                 for( const std::string& e : r.elsewhere() )
                     t += "\nelsewhere: " + e;

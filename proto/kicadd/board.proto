@@ -886,6 +886,7 @@ message BoardSetupResponse
   repeated string stackup = 3;   // top to bottom
   string history_label = 4;
   string note          = 5;   // where a fab stackup's numbers come from; or the names there are
+  double nominal_thickness = 6; // mm, a fab stackup's nominal board (1.6) when its layers add up to another
 }
 
 // ---------------------------------------------------------------------------

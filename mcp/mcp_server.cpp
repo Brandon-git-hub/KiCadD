@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <string>
 #include <vector>
 #include <exception>
@@ -58,6 +59,25 @@ MCP_SERVER::MCP_SERVER( std::vector<TOOL> aTools ) :
 }
 
 
+#ifndef KICADD_VERSION
+#define KICADD_VERSION "0.0.0-dev"
+#endif
+
+/// The release, plus a hash of the tool list ("0.1.0-alpha.12+t54.1a2b3c4d"): a client that keeps
+/// the tool list of a server version sees a new version whenever a tool or its arguments change.
+std::string MCP_SERVER::serverVersion() const
+{
+    std::uint32_t h = 2166136261u; // FNV-1a
+
+    for( char c : handleToolsList().dump() )
+        h = ( h ^ static_cast<unsigned char>( c ) ) * 16777619u;
+
+    char hex[9];
+    std::snprintf( hex, sizeof( hex ), "%08x", h );
+    return std::string( KICADD_VERSION ) + "+t" + std::to_string( m_tools.size() ) + "." + hex;
+}
+
+
 json MCP_SERVER::handleInitialize( const json& aParams )
 {
     const auto& supported = SupportedProtocolVersions();
@@ -73,7 +93,7 @@ json MCP_SERVER::handleInitialize( const json& aParams )
 
     return { { "protocolVersion", version },
              { "capabilities", { { "tools", { { "listChanged", false } } } } },
-             { "serverInfo", { { "name", "kicadd" }, { "version", "0.2.0" } } },
+             { "serverInfo", { { "name", "kicadd" }, { "version", serverVersion() } } },
              { "instructions",
                "KiCadD: a KiCad PCB held in memory on the server. Coordinates in mm, Y axis down. "
                "Footprints are addressed by reference (U5), pads by REF.PAD (U5.3). Prefer "

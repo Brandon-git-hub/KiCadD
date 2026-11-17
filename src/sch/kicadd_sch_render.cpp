@@ -295,6 +295,10 @@ HANDLER_RESULT<SchRenderResponse> KICADD_HANDLER_SCH::handleRender( const HANDLE
     {
         return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "area is [x0, y0, x1, y1] in mm" ) );
     }
+    else if( req.frame() )
+    {
+        area = pageBox;
+    }
     else if( req.zoom() && ( !marked.empty() || !netWires.empty() || !netLabels.empty() || !netPins.empty() ) )
     {
         bool first = true;
@@ -313,10 +317,6 @@ HANDLER_RESULT<SchRenderResponse> KICADD_HANDLER_SCH::handleRender( const HANDLE
 
         area.Inflate( schIUScale.mmToIU( req.margin() > 0 ? req.margin() : 5.0 ) );
     }
-    else if( req.frame() )
-    {
-        area = pageBox;
-    }
     else
     {
         // what is drawn, with a margin (the page's frame left out)
@@ -333,6 +333,23 @@ HANDLER_RESULT<SchRenderResponse> KICADD_HANDLER_SCH::handleRender( const HANDLE
 
     if( area.GetWidth() <= 0 || area.GetHeight() <= 0 )
         return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "nothing to draw: the area is empty" ) );
+
+    if( req.area_size() == 4 )
+    {
+        bool any = false;
+
+        for( SCH_ITEM* item : screen->Items() )
+            any = any || item->GetBoundingBox().Intersects( area );
+
+        if( !any )
+        {
+            out.set_note( wxString::Format( "nothing drawn in this area (the sheet's page is 0 .. %g x 0 .. %g mm%s)",
+                                            std::round( schIUScale.IUTomm( pageBox.GetWidth() ) ),
+                                            std::round( schIUScale.IUTomm( pageBox.GetHeight() ) ),
+                                            pageBox.Intersects( area ) ? "" : "; the area is off the page" )
+                                  .ToStdString() );
+        }
+    }
 
     // --- the scale: an integer dpi, the long side about `size` pixels (the rulers included)
     const int    size = req.size() > 0 ? std::clamp( req.size(), 200, 4000 ) : 1600;

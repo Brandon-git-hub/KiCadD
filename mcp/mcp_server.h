@@ -39,6 +39,7 @@ public:
 private:
     nlohmann::json handleInitialize( const nlohmann::json& aParams );
     nlohmann::json handleToolsList() const;
+    std::string    serverVersion() const;
     nlohmann::json handleToolsCall( const nlohmann::json& aParams );
 
     std::vector<TOOL> m_tools;

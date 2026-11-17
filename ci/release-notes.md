@@ -4,7 +4,14 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 
 > ⚠️ Pre-release，僅供試用。由 GitHub Actions 自動建置；功能在 Linux 上做過端到端測試，Windows 上只有 CI 的 smoke test 與早期版本的人工試用。
 
-## 這一版（alpha.11）
+## 這一版（alpha.12）
+**alpha.11 試用回報的修正**
+- **`sch_render frame=true` 一定出整頁：** 以前同時給了 `refs` 或 `nets` 時會放大到零件那一帶，子圖紙上看起來就像沒有圖框和標題欄。現在 `frame=true` 優先，零件和網路照樣標示，但不放大。
+- **`sch_render` 指定的區域沒有內容時會說明：** `area` 裡沒有任何圖元時，回應會寫「nothing drawn in this area」，並附上頁面大小；區域整個在頁面外也會註明。
+- **`board_setup` 的板厚：** 套用 JLCPCB 疊層後，第一行直接寫「1.586 mm thick (the stackup's layers added up; nominal 1.6 mm)」，不再只寫 1.59 mm。
+- **工具清單更新：** MCP 的 `serverInfo.version` 以前固定是 0.2.0，現在是發行版本加上工具清單的雜湊（例如 `0.1.0-alpha.12+t54.7d4c2e59`）。工具或參數有變，版本就不同，依版本快取工具清單的客戶端會重新抓。如果還是看到舊清單，請在客戶端重新連線這個 MCP server（Claude Code 是 `/mcp`，Claude Desktop 要重新啟動）。
+
+## alpha.11
 **新功能：`sch_render` 電路圖出圖（共 54 個工具）**
 - **出一張圖紙的 PNG 給 Agent 看：** 用 KiCad 自己的 plot（符號、導線、標籤、欄位），可以看出零件或文字重疊、導線交叉、標籤離開導線、整張圖好不好讀。上方和左邊有 mm 尺規，座標和 `sch_summary` 一致。
 - **`refs`：** 框出並標示零件，圖會放大到它們那一帶，並自動切到第一顆零件所在的圖紙。

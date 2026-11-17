@@ -6946,6 +6946,7 @@ HANDLER_RESULT<BoardSetupResponse> KICADD_HANDLER_PCB::handleBoardSetup( const H
                        "to %.3f mm (the thickness above). ",
                        wxString::FromUTF8( req.stackup() ).Upper().ToStdString().c_str(), now.thickness / 1e6 );
         out.set_note( buf + kicadd::setup::FabStackupSource() );
+        out.set_nominal_thickness( 1.6 );
     }
 
     out.set_copper_layers( now.copperLayers );

@@ -422,7 +422,7 @@ message SchRender
   repeated double area   = 4;   // [x0, y0, x1, y1] mm
   bool            zoom   = 5;   // to the refs / nets (with a margin)
   int32           size   = 6;   // pixels on the long side (default 1600, 200..4000)
-  bool            frame  = 7;   // the whole page with its frame and title block
+  bool            frame  = 7;   // the whole page with its frame and title block (over zoom)
   string          path   = 8;   // also write the PNG there
   double          margin = 9;   // mm around a zoom (default 5)
 }
@@ -438,4 +438,5 @@ message SchRenderResponse
   repeated string missing   = 7; // refs / nets not found anywhere
   repeated string elsewhere = 8; // "U5 on /Power/", "net VBUS not on this sheet"
   string path      = 9;
+  string note      = 10;         // "nothing drawn in this area ..."
 }

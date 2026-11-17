@@ -1668,6 +1668,11 @@ SOIC-8 pad 1 against KiCad's within 0.1 mm, and a design using `kicadd:R_0603` t
    預設範圍是圖上有東西的地方加 5 mm，不是整頁。測試：`fab_e2e`、`desktop_sch_e2e`。
    同時把 `render_board` 改名為 `board_render`（PCB 工具 `board_`、電路圖工具 `sch_` 開頭，成對），
    不留別名；第 14、15 項記的是改名前的名稱。
+   alpha.11 試用回報後（2026-11-17）：`frame=true` 優先於 zoom（給了 `refs` / `nets` 仍出整頁，只標示不放大；
+   之前子圖紙上帶 `refs` 時會放大到零件，看起來像沒有圖框）；`area` 裡沒有任何圖元時回應註明
+   「nothing drawn in this area」並附頁面大小。MCP `serverInfo.version` 改成 `KICADD_VERSION`
+   （`cmake/kicadd.cmake`，隨發版調整）加工具清單的雜湊（`0.1.0-alpha.12+t54.xxxxxxxx`），工具或參數一改版本就不同，
+   讓依版本快取工具清單的客戶端重新抓。
 
 保留不動：專案管理器的 Version Control（Git）面板。
 

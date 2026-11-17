@@ -177,7 +177,7 @@ runs. Keep `size` modest (default 1200 px) unless the detail needs more.
 `sch_render` does the same for a schematic sheet: KiCad's plot with mm rulers in the
 coordinates `sch_summary` gives. `refs` frames parts (and goes to their sheet), `nets` draws a
 net's wires, labels and pins in blue, `sheet` / `area` / `frame=true` (the whole page with its
-title block). Look at it after a group of `sch_add_part` / `sch_connect` edits: overlapping
+title block; refs / nets are still marked but not zoomed to). Look at it after a group of `sch_add_part` / `sch_connect` edits: overlapping
 symbols or text, labels away from their wires, a sheet that does not read well.
 
 ## Manufacturing (JLCPCB)
