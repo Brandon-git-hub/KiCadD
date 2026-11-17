@@ -1074,3 +1074,31 @@ message BoardAuditResponse
   double outer_copper_um = 4;
   double inner_copper_um = 5;   // 0: no inner layers
 }
+
+// ---------------------------------------------------------------------------
+// What changed between the board in memory and a board file: the last save by default, or
+// another file (an earlier revision). Footprints (added, removed, moved, rotated, flipped,
+// renumbered, value / footprint / fields / attributes, pads changing net), nets, tracks per net
+// (segments, length, vias), zones, the outline, layers and graphics. Read only.
+// Returns BoardDiffResponse
+message BoardDiff
+{
+  string file  = 1;   // default: the board's own file; relative: the project folder
+  int32  limit = 2;   // lines per section (default 20)
+}
+
+message BoardDiffSection
+{
+  string          name    = 1;   // footprints, nets, tracks, zones, board
+  string          summary = 2;
+  repeated string lines   = 3;
+  int32           more    = 4;   // lines left out (limit)
+}
+
+message BoardDiffResponse
+{
+  string                    file      = 1;
+  string                    file_time = 2;
+  int32                     changes   = 3;   // 0: the same as the file (fills and rules not compared)
+  repeated BoardDiffSection sections  = 4;
+}

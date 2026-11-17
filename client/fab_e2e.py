@@ -262,6 +262,39 @@ try:
     check(r1 is not None and r1[3] == "" and any("R2" in r[1].split(",") for r in bom), "two undo: R1 without LCSC, R2 back in the BOM")
     err, t = m.tool("redo")
     check(not err and "set fields" in t, "redo: " + t.splitlines()[0])
+    print("[board_diff]")
+    err, t = m.tool("save_board")
+    err, t = m.tool("board_diff")
+    check(not err and t.startswith("no changes against ") and "pic_programmer.kicad_pcb" in t, "as loaded: " + t.splitlines()[0][:40])
+    edits = [("move_footprints", {"refs": ["R4"], "dx": 2}), ("move_footprints", {"refs": ["C1"], "rotate": 90}),
+             ("pcb_set_fields", {"parts": {"R5": {"LCSC": "C25804", "Value": "4k7"}}}),
+             ("delete_tracks", {"nets": ["VPP"]}), ("add_footprint", {"like": "R3", "ref": "R40", "x": 120, "y": 60}),
+             ("zones", {"create": {"net": "VCC", "rect": [120, 60, 150, 90]}})]
+    for tool, args in edits:
+        err, t = m.tool(tool, args); check(not err, f"edit: {tool}")
+    err, t = m.tool("board_diff")
+    print("      ", " | ".join(t.splitlines()[:3])[:200])
+    check("footprints: 63 -> 64; 1 added, 0 removed, 3 changed" in t and "added R40 10K" in t
+          and "C1: rotated 180 -> 270 deg" in t and re.search(r"R4: moved \+2, \+0 mm to \(", t)
+          and re.search(r"R5: value \S+ -> 4k7; LCSC added \(C25804\)", t), "footprints: added, rotated, moved, value and field")
+    check(re.search(r"VPP: 13 -> 0 segments, [\d.]+ -> 0 mm \(all tracks removed\)", t) and "13 removed" in t, "tracks: VPP's removed")
+    check("added zone VCC on F.Cu+B.Cu" in t, "zones: the new one")
+    err, t = m.tool("board_diff")
+    err, tl = m.tool("board_diff", {"limit": 1})
+    check("... 3 more (limit)" in tl, "limit")
+    import uuid   # another revision: the same board with new UUIDs, paired by reference and geometry
+    other = re.sub(r'\(uuid "[0-9a-f-]+"\)', lambda _: f'(uuid "{uuid.uuid4()}")', open(pcb, encoding="utf-8").read())
+    open(os.path.join(work, "p", "other.kicad_pcb"), "w", encoding="utf-8").write(other)
+    err, t2 = m.tool("board_diff", {"file": "other.kicad_pcb"})
+    strip = lambda x: x.splitlines()[1:]
+    check(not err and strip(t2) == strip(t), "another file with new UUIDs: the same answer (by reference and geometry)")
+    for _ in edits:
+        m.tool("undo")
+    err, t = m.tool("board_diff")
+    check(not err and "footprints: 63 -> 63; 0 added, 0 removed, 0 changed" in t and "zones: 1 -> 1; 0 added" in t
+          and re.search(r"tracks: (\d+) -> \1 segments", t), "after undo: the same footprints, zones, tracks: " + t.splitlines()[0][:60])
+    err, t = m.tool("board_diff", {"file": "nope.kicad_pcb"})
+    check(err and "no file" in t, "a missing file is refused")
     m.close()
 finally:
     srv.stop()

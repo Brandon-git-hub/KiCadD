@@ -52,6 +52,7 @@
 #include "pcb/kicadd_fab.h"
 #include "pcb/kicadd_picture.h"
 #include "pcb/kicadd_audit.h"
+#include "pcb/kicadd_diff.h"
 #include "common/kicadd_ipc2221.h"
 #include "lcsc/kicadd_parts.h"
 #include "pcb/kicadd_fpgen.h"
@@ -254,6 +255,7 @@ KICADD_HANDLER_PCB::KICADD_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext ) 
     registerHandler<ExportFab, ExportFabResponse>( &KICADD_HANDLER_PCB::handleExportFab );
     registerHandler<RenderBoard, RenderBoardResponse>( &KICADD_HANDLER_PCB::handleRenderBoard );
     registerHandler<BoardAudit, BoardAuditResponse>( &KICADD_HANDLER_PCB::handleBoardAudit );
+    registerHandler<BoardDiff, BoardDiffResponse>( &KICADD_HANDLER_PCB::handleBoardDiff );
     registerHandler<LcscSearch, LcscSearchResponse>( &KICADD_HANDLER_PCB::handleLcscSearch );
     registerHandler<FpCreate, FpCreateResponse>( &KICADD_HANDLER_PCB::handleFpCreate );
     registerHandler<AddFootprint, MoveResponse>( &KICADD_HANDLER_PCB::handleAddFootprint );
@@ -1610,6 +1612,24 @@ KICADD_HANDLER_PCB::handleExportFab( const HANDLER_CONTEXT<ExportFab>& aCtx )
     std::string       err;
 
     if( !kicadd::ExportFab( b, dir, !aCtx.Request.no_zip(), out, err ) )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, err ) );
+
+    return out;
+}
+
+
+HANDLER_RESULT<BoardDiffResponse>
+KICADD_HANDLER_PCB::handleBoardDiff( const HANDLER_CONTEXT<BoardDiff>& aCtx )
+{
+    BOARD* b = board();
+
+    if( !b )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
+
+    BoardDiffResponse out;
+    std::string       err;
+
+    if( !kicadd::DiffBoard( *b, aCtx.Request.file(), aCtx.Request.limit(), out, err ) )
         return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, err ) );
 
     return out;

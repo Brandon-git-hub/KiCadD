@@ -12,6 +12,10 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 - **測試點：** 列出沒有測試點（`TP*` 或 TestPoint 封裝）的網路。
 - 沒有電路圖或還沒有板子時，`audit` 只跑有的那一半。
 
+**新工具 `board_diff`：和上次存檔比較（共 55 個工具）**
+- 列出記憶體中的板子和上次存檔（或 `file` 指定的另一個 `.kicad_pcb`，例如舊版本）差在哪裡：零件的新增、刪除、移動、旋轉、換面、改編號、值、封裝、欄位、DNP / BOM，以及哪些焊盤換了網路；網路的增減；各網路的走線段數、長度和過孔數；銅箔區；板框、層數和圖形。
+- 零件依 UUID 配對；另一個檔案的 UUID 不同時，零件依編號、走線和圖形依位置配對。只讀不改。每一類預設列 20 行（`limit`）。鋪銅和網路類別不比較。
+
 **`set_rules` 依電流設定線寬**
 - `{"classes": {"Power": {"current": 2}}}` 會依板子外層銅厚和 IPC-2221 算出線寬，寫進這個網路類別；有內層時，備註會寫出內層需要多寬。
 
@@ -152,7 +156,7 @@ Claude Desktop（`%APPDATA%\Claude\claude_desktop_config.json`）或 Cursor（`m
 Claude Code：`claude mcp add kicadd -- C:\KiCadD\bin\kicadd-mcp.exe --stdio`（路徑換成你解壓的位置）。
 
 ### 建議的使用方式（skill）
-54 個工具怎麼搭配使用（先查再改、新板設定、審查 / 擺件 / 佈線 / 找料 / 出廠流程、undo、批次、常見陷阱）寫成一份 skill，讓 Agent 照著做：
+55 個工具怎麼搭配使用（先查再改、新板設定、審查 / 擺件 / 佈線 / 找料 / 出廠流程、undo、批次、常見陷阱）寫成一份 skill，讓 Agent 照著做：
 - **Claude Code**：把 `share\kicadd\skills\kicadd` 整個資料夾複製到 `%USERPROFILE%\.claude\skills\`（所有專案）或專案的 `.claude\skills\`。
 - **Claude Desktop**：在設定的 Skills 頁面上傳另外附的 `kicadd-skill.zip`。
 - **其他 Agent（Cursor 等）**：把 `SKILL.md` 的內容放進它的規則檔或系統提示。

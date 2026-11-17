@@ -25,7 +25,8 @@ what each tool does; this skill says how to use them together.
 4. **"The editor is busy"** means the user is in a tool, a dialog or a progress window; the
    message says which. Do not hammer it: tell the user, or wait and try once more. kicadd-mcp
    already retries for 10 s.
-5. **Save only when asked** (`save_board`, `sch_save`). Saving writes this build's file format
+5. **Save only when asked** (`save_board`, `sch_save`). Before saving, or to report what a
+   session did, `board_diff` lists what changed since the last save. Saving writes this build's file format
    (KiCad nightly 10.99); KiCad 9/10 may not open the files afterwards. Say so the first time.
 6. **Keep answers short.** Long lists are cut by default; pass `detail=true` only when you need
    every position or violation. For repeated or routine work use `batch` (one call, one line per

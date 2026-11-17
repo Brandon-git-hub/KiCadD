@@ -52,6 +52,7 @@ set( KICADD_PCB_SRCS
     ${KICADD_DIR}/src/pcb/kicadd_fab.cpp
     ${KICADD_DIR}/src/pcb/kicadd_picture.cpp
     ${KICADD_DIR}/src/pcb/kicadd_audit.cpp
+    ${KICADD_DIR}/src/pcb/kicadd_diff.cpp
     ${KICADD_DIR}/src/pcb/kicadd_fpgen.cpp
     ${KICADD_DIR}/src/pcb/kicadd_rules.cpp
     ${KICADD_DIR}/src/pcb/kicadd_setup.cpp

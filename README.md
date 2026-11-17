@@ -1381,6 +1381,27 @@ schematic, a schematic not on a board yet). Numbers in `src/common/kicadd_ipc222
 the outer copper, rounded up to 0.01 mm; the note gives the inner-layer width. Tests: `fab_e2e`
 [audit], `setup_e2e` (4 layers).
 
+## board_diff: what changed since the last save (2026-11-17)
+
+TODO 12(f). `board_diff` (`BoardDiff`, `src/pcb/kicadd_diff.cpp`) reads the board's own file (or
+`file`, relative to the project folder) into a board of its own with the s-expression reader and
+no project, so nothing open is touched, and compares it with the board in memory:
+
+- **footprints:** paired by UUID, the rest by reference (another revision of the design); added,
+  removed, and per part: renumbered, flipped, moved (delta and where to), rotated, value,
+  footprint, user fields, DNP / BOM / lock, pads whose net changed;
+- **nets:** added, removed;
+- **tracks:** per net segments, length, vias (the biggest change first), and in all how many are
+  new, removed, changed in place (paired by UUID, else the same segment in the same place);
+- **zones:** net, layers, outline, priority, clearance, minimum width, pad connection (by UUID,
+  else the same net and layers, nearest outline); fills are not compared;
+- **board:** outline box, copper layers, thickness, graphics per layer (by UUID, else kind, layer
+  and box).
+
+Net classes and rules are in the project file and are not compared. 0.01 s on pic_programmer.
+Tests: `fab_e2e` [board_diff] (six kinds of edit, `limit`, undo back to no changes, the same
+answer against a copy with every UUID new).
+
 ## 待做清單 (TODO)
 
 2026-11-10，`v0.1.0-alpha.2` 在 Windows 上試用後回報；以下已在 Linux 上用 `pic_programmer` 重現確認，**尚未實作**。
@@ -1605,7 +1626,7 @@ the outer copper, rounded up to 0.01 mm; the note gives the inner-layer width. T
      （PNS 有 diff pair / meander，但要另外包）。從焊盤內任一點出線已在第 11 項完成。
    * (e) **（已完成 2026-11-17，見「Audit on the board」）審查擴充（`audit`）。** 電源網路線寬對電流；高壓網路間距（例如 VPP 13 V，依 IPC-2221
      表）；絲印壓焊盤；板外零件（`export_fab` 已有）；測試點。
-   * (f) **設計比對（diff）。** 和上次存檔（或指定檔案）比：零件（增刪、位置、值、欄位）、網路、
+   * (f) **（已完成 2026-11-17，見「board_diff」）設計比對（diff）。** 和上次存檔（或指定檔案）比：零件（增刪、位置、值、欄位）、網路、
      走線數與長度。另外載入一份 `BOARD` 依 KIID 比對。中等。
    * (g) **電路圖。** 重新編號並同步到板子（KiCad 的 annotate；板子端 `sync_pcb` 依路徑對應，編號會
      跟著改）；整理排版：先做「相關零件排在一起」，全自動排版難度高、延後。

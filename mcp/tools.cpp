@@ -2925,6 +2925,47 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        schema( json::object() ),
                        [&aIpc]( const json& ) { return saveBoard( aIpc ); } } );
 
+    tools.push_back( { "board_diff",
+                       "What changed since the board was last saved (or against another .kicad_pcb, file; "
+                       "relative: the project folder): footprints added / removed / moved / rotated / flipped / "
+                       "renumbered, value, footprint, fields, DNP / BOM, pads that changed net; nets added and "
+                       "removed; tracks per net (segments, length, vias); zones; outline, layers, graphics. "
+                       "Footprints are paired by UUID, else by reference. Read only. limit: lines per "
+                       "section (20). Zone fills and net classes are not compared.",
+                       schema( { { "file", { { "type", "string" } } }, { "limit", { { "type", "integer" } } } } ),
+                       [&aIpc]( const json& a ) -> TOOL_RESULT
+                       {
+                           kb::BoardDiff req;
+                           req.set_file( a.value( "file", std::string() ) );
+                           req.set_limit( a.value( "limit", 0 ) );
+
+                           kb::BoardDiffResponse r;
+                           std::string           err;
+
+                           if( !aIpc.Call( req, r, err ) )
+                               return error( err );
+
+                           std::string t = r.changes() == 0
+                                                   ? "no changes against " + r.file()
+                                                   : std::to_string( r.changes() ) + " change(s) against " + r.file();
+
+                           if( !r.file_time().empty() )
+                               t += " (saved " + r.file_time() + ")";
+
+                           for( const kb::BoardDiffSection& sec : r.sections() )
+                           {
+                               t += "\n" + sec.name() + ": " + sec.summary();
+
+                               for( const std::string& line : sec.lines() )
+                                   t += "\n  " + line;
+
+                               if( sec.more() > 0 )
+                                   t += "\n  ... " + std::to_string( sec.more() ) + " more (limit)";
+                           }
+
+                           return { t + "\n" };
+                       } } );
+
     AddSchematicTools( tools, aIpc );     // M5a, sch_tools.cpp
 
     // batch: a list of the tools above in one call (a copy of the table: the list is handed
