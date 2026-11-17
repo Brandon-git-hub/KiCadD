@@ -12,6 +12,7 @@
 #include <set>
 
 #include <cmath>
+#include <filesystem>
 #include <cstdio>
 #include <map>
 #include <memory>
@@ -2467,29 +2468,99 @@ TOOL_RESULT exportFab( IPC_CLIENT& aIpc, const json& aArgs )
 
 TOOL_RESULT openBoard( IPC_CLIENT& aIpc, const json& aArgs )
 {
+    namespace kc = kiapi::common::commands;
+    namespace kt = kiapi::common::types;
+    namespace fs = std::filesystem;
+
     if( !aArgs.contains( "path" ) || !aArgs["path"].is_string() )
         return error( "path (absolute path to .kicad_pcb or .kicad_pro) is required" );
 
-    std::string path = aArgs["path"].get<std::string>();
+    const bool discard = aArgs.value( "discard", false );
+    fs::path   pcb = fs::path( aArgs["path"].get<std::string>() );
 
-    kiapi::common::commands::OpenDocument req;
-    req.set_type( path.ends_with( ".kicad_pro" ) ? kiapi::common::types::DOCTYPE_PROJECT
-                                                : kiapi::common::types::DOCTYPE_PCB );
-    req.set_path( path );
+    if( pcb.extension() == ".kicad_pro" )
+        pcb.replace_extension( ".kicad_pcb" );
 
-    kiapi::common::commands::OpenDocumentResponse r;
-    std::string                                   err;
+    if( pcb.extension() != ".kicad_pcb" )
+        return error( "path must be a .kicad_pcb or .kicad_pro" );
 
-    if( !aIpc.Call( req, r, err ) )
+    std::error_code ec;
+
+    if( !pcb.is_absolute() )
+        return error( "path must be absolute (on the server): " + pcb.string() );
+
+    if( !fs::is_regular_file( pcb, ec ) )
+        return error( "no such board: " + pcb.string() );
+
+    // The board open now: unsaved changes are not thrown away unless asked
+    std::string           err;
+    kb::BoardSummaryResponse before;
+    kb::HistoryResponse   history;
+
+    if( !aIpc.Call( kb::GetBoardSummary(), before, err ) )
+        before.Clear();
+    else if( aIpc.Call( kb::GetHistory(), history, err ) && history.modified() && !discard )
+        return error( "the open board (" + fs::path( before.file() ).filename().string()
+                      + ") has unsaved changes: save_board first, or discard=true to drop them" );
+
+    // The server holds one project: close it (board, schematic, project), then open the other.
+    // The desktop editor has no such command: the user opens files there.
+    google::protobuf::Empty empty;
+
+    if( !aIpc.Call( kc::CloseAllDocuments(), empty, err ) )
     {
-        if( err.starts_with( "AS_UNIMPLEMENTED" ) )
-            err += " (in the desktop editor, open the file in pcbnew; the agent works on the "
-                   "board that is open there)";
+        if( err.find( "not available" ) != std::string::npos || err.starts_with( "AS_UNIMPLEMENTED" ) )
+            err += " (in the desktop editor, open the file in pcbnew; the agent works on the board that is open there)";
 
         return error( err );
     }
 
-    return boardSummary( aIpc );
+    auto open = [&]( const fs::path& aPath, kt::DocumentType aType, std::string& aErr )
+    {
+        kc::OpenDocument             req;
+        kc::OpenDocumentResponse     r;
+        req.set_type( aType );
+        req.set_path( aPath.string() );
+        return aIpc.Call( req, r, aErr );
+    };
+
+    // the board, then its schematic when there is one (the sch_ tools work on it)
+    auto openProject = [&]( const fs::path& aPcb, std::string& aErr, std::string& aNote )
+    {
+        if( !open( aPcb, kt::DOCTYPE_PCB, aErr ) )
+            return false;
+
+        fs::path        sch = fs::path( aPcb ).replace_extension( ".kicad_sch" );
+        std::error_code ec2;
+        std::string     schErr;
+
+        if( fs::is_regular_file( sch, ec2 ) && !open( sch, kt::DOCTYPE_SCHEMATIC, schErr ) )
+            aNote = "note: the schematic did not open (" + schErr + "): sch_ tools have nothing to work on\n";
+
+        return true;
+    };
+
+    std::string note;
+
+    if( !openProject( pcb, err, note ) )
+    {
+        std::string back, backErr, backNote;
+
+        if( !before.file().empty() && openProject( fs::path( before.file() ), backErr, backNote ) )
+            back = "; " + fs::path( before.file() ).filename().string() + " is open again (as saved)";
+        else if( !before.file().empty() )
+            back = "; reopening " + before.file() + " failed too (" + backErr + "): open_board it";
+
+        return error( "could not open " + pcb.string() + ": " + err + back );
+    }
+
+    TOOL_RESULT r = boardSummary( aIpc );
+
+    if( !r.isError && history.modified() && discard )
+        note += "note: the unsaved changes of " + fs::path( before.file() ).filename().string() + " were dropped\n";
+
+    r.text = note + r.text;
+    return r;
 }
 
 
@@ -2940,9 +3011,14 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        [&aIpc]( const json& a ) { return exportFab( aIpc, a ); } } );
 
     tools.push_back( { "open_board",
-                       "Open a .kicad_pcb (or .kicad_pro) on the server (kicad-cli api-server), replacing the current board. "
-                       "Not available with the desktop editor: there the user opens the file in pcbnew.",
-                       schema( { { "path", { { "type", "string" }, { "description", "Absolute path on the server" } } } },
+                       "Open a .kicad_pcb (or .kicad_pro) on the server (kicad-cli api-server), replacing the current "
+                       "project: the board, its schematic when there is one, the project's rules. Reopening the same "
+                       "file reloads it from disk. The agent history starts over. Refused when the open board has "
+                       "unsaved changes, unless discard=true. Not available with the desktop editor: there the user "
+                       "opens the file in pcbnew.",
+                       schema( { { "path", { { "type", "string" }, { "description", "Absolute path on the server" } } },
+                                 { "discard", { { "type", "boolean" },
+                                                { "description", "Drop the open board's unsaved changes (default false)" } } } },
                                { "path" } ),
                        [&aIpc]( const json& a ) { return openBoard( aIpc, a ); } } );
 

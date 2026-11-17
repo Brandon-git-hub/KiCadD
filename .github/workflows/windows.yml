@@ -30,6 +30,9 @@ on:
       - 'patches/**'
       - 'ci/**'
       - 'client/smoke.py'
+      - 'client/m5_e2e.py'
+      - 'client/fab_e2e.py'
+      - 'client/smd_e2e.py'
       - '.github/workflows/windows.yml'
   pull_request:
     paths:
@@ -41,6 +44,9 @@ on:
       - 'patches/**'
       - 'ci/**'
       - 'client/smoke.py'
+      - 'client/m5_e2e.py'
+      - 'client/fab_e2e.py'
+      - 'client/smd_e2e.py'
       - '.github/workflows/windows.yml'
   workflow_dispatch:
 
@@ -273,6 +279,26 @@ jobs:
         run: |
           python -I kicadd/client/smoke.py --bin dist/bin --demos kicad/demos --work "$env:RUNNER_TEMP/smoke"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: End-to-end (fab + SMD trial paths through kicadd-mcp)
+        # the tools themselves on Windows, on the installed folder: export_fab against kicad-cli,
+        # board_render / sch_render, audit, set_rules, board_diff, silk_tidy (pic_programmer);
+        # lcsc_match, fanout, undo refill, audit (stickhub, offline with the published parts index)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PYTHONUTF8: '1'
+        run: |
+          $idx = "$env:RUNNER_TEMP/parts"
+          New-Item -ItemType Directory -Force $idx | Out-Null
+          gh release download parts-index -R "$env:GITHUB_REPOSITORY" -p parts.db.gz -D $idx --clobber
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -I -c "import gzip, shutil, sys; shutil.copyfileobj(gzip.open(sys.argv[1]), open(sys.argv[2], 'wb'))" "$idx/parts.db.gz" "$idx/parts.db"
+          $fail = 0
+          python -I kicadd/client/fab_e2e.py --build dist/bin --demos kicad/demos --work "$env:RUNNER_TEMP/fab"
+          if ($LASTEXITCODE -ne 0) { $fail = 1 }
+          python -I kicadd/client/smd_e2e.py --build dist/bin --demos kicad/demos --work "$env:RUNNER_TEMP/smd" --index "$idx/parts.db"
+          if ($LASTEXITCODE -ne 0) { $fail = 1 }
+          exit $fail
       - uses: actions/upload-artifact@v4
         with:
           name: kicadd-windows-x64

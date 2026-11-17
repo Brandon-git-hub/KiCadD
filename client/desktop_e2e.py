@@ -187,6 +187,14 @@ def main():
         check(not r.get("isError") and img and len(img[0].get("data", "")) > 1000,
               "board_render in the editor: a PNG of U3 (" + "".join(c.get("text", "") for c in r.get("content", [])).splitlines()[0][:60] + ")")
 
+        # open_board is the server's: in the editor the user opens files, and nothing is closed
+        err, text = mcp.tool("open_board", {"path": os.path.join(board_dir, "nope", "x.kicad_pcb")})
+        check(err, "open_board in the editor: a missing file refused before anything")
+        err, text = mcp.tool("open_board", {"path": os.path.join(board_dir, "pic_programmer.kicad_pcb"), "discard": True})
+        check(err and "open the file in pcbnew" in text, "open_board in the editor: refused (" + text.strip()[:70] + ")")
+        err, text = mcp.tool("board_summary")
+        check(not err and "footprints=63" in text, "the editor's board is still open")
+
         if a.upto < 2:
             raise SkipRest()
         print("[2] agent move, user Ctrl+Z")

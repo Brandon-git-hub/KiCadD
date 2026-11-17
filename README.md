@@ -184,7 +184,7 @@ Python or Node runtime is needed.
 | `move_footprints` | `refs`, `dx`, `dy` (mm), `rotate` (deg); returns positions, unconnected count, local DRC |
 | `check_drc` | local DRC for `refs` without moving |
 | `flush_ratsnest` | rebuild deferred large nets, full unconnected count |
-| `open_board` / `save_board` | load another board / write the in-memory board to disk |
+| `open_board` / `save_board` | switch to another project (board + schematic; `discard=true` drops unsaved changes) / write the in-memory board to disk |
 
 Output is compact text, e.g. a move that creates violations (~266 tokens for 14 violations):
 
@@ -1474,6 +1474,36 @@ Tests: `smd_e2e` (undo refills, full DRC clean after, silk clean in both), `fab_
 reference past the edge in `audit`, the move's reason, `board_diff` listing the moved references,
 the C1 rotate + undo back to no changes), `setup_e2e` (zone undo refills).
 
+## Before the beta: every test in one run, open_board, Windows e2e (2026-11-18)
+
+**`client/run_all.py`** runs every end-to-end test and prints one line each (PASS / FAIL with
+the first failing check / SKIP with what is missing), logs in `run/all/<name>.log`:
+
+    python3 -I client/run_all.py                 # all 24; --list, --only a,b, --skip, --no-desktop, --live
+
+Inputs default to this checkout's layout (`../build-lean`, `../kicad`, the parts index under
+`run/sr`, the LCSC cache in `run/lcsc-cache` or `$KICADD_LCSC_CACHE`, `.venv`). The four tests
+that need the Jetson baseboard served over HTTP (`mcp`, `web`, `layout`, `history`) each get a
+fresh copy, daemon and `kicadd-mcp --http`; `history_e2e`'s restart command is `run_all.py
+--restart-stack`. First full run: 24 passed, about 11 minutes (`desktop_sch` 4 of them).
+Found on the way: `layout_e2e` had not been run since check_drc's brief output (2026-11-12)
+and parsed nothing; it asks for `detail` now.
+
+**`client/tools_e2e.py`** covers `open_board` and `flush_ratsnest`, which no test called.
+It found `open_board` could not switch projects at all: upstream's api-server holds one
+project and refuses a document from another ("project … is already open"), and opening the
+same file again did not reload it. The MCP tool now checks the file (absolute, exists,
+`.kicad_pcb` / `.kicad_pro`), refuses when the open board has unsaved changes (`GetHistory
+.modified`) unless `discard=true`, sends `CloseAllDocuments`, opens the board and the
+schematic beside it (the server opens both at start too), and on failure reopens the old board
+from its file. The agent history starts over (`DetachBoard`). In the desktop editor
+`CloseAllDocuments` is not available, so nothing is closed there (`desktop_e2e` checks it).
+
+**Windows CI** runs `fab_e2e` and `smd_e2e` on the installed folder after the smoke test (the
+tools themselves, not only that the server answers), with the published parts index.
+`m5_e2e.binaries()` finds `kicad-cli` / `kicadd-mcp` in a build tree (with
+`KICAD_RUN_FROM_BUILD_DIR`) or an installed `bin/` (without).
+
 ## 待做清單 (TODO)
 
 2026-11-10，`v0.1.0-alpha.2` 在 Windows 上試用後回報；以下已在 Linux 上用 `pic_programmer` 重現確認，**尚未實作**。
@@ -1500,7 +1530,8 @@ the C1 rotate + undo back to no changes), `setup_e2e` (zone undo refills).
 
 5. **`auto_place` 在桌面版會讓編輯器「沒有回應」，期間所有 MCP 呼叫逾時。**
    **(a)(b)(d)(e) 已完成（2026-11-11，見「auto_place time limit」「auto_place in the background」
-   「auto_place on a routed board」）。(c) 在 Linux 無法重現（見同節），請在 Windows 上用 alpha.4 再確認。** 2026-11-11 在卡住當下
+   「auto_place on a routed board」）。~~(c) 在 Linux 無法重現（見同節），請在 Windows 上用 alpha.4 再確認。~~
+   (c) 劃掉（2026-11-18）：之後的試用都沒再遇到，原因可能也不是下面推測的那樣；再遇到時重新展開。** 2026-11-11 在卡住當下
    取得傾印檔（`kicad_16528_drc_hang.dmp`，用 `v0.1.0-alpha.2` 的 PDB 還原），**原因不是 DRC，
    也不是死結**：
    * 主執行緒停在 `KICADD_HANDLER_PCB::handleAutoPlace → kicadd::autoplace::Place`，等 8 條
@@ -1615,7 +1646,7 @@ the C1 rotate + undo back to no changes), `setup_e2e` (zone undo refills).
      訊息不再列 `/usr/share/kicad/footprints`；「編輯器忙碌中」會說明原因（對話框或進度視窗、
      哪個工具還在作用、拖曳中），試用時那兩次無對話框的拒絕原因未查明。
 
-10. **（(a)–(e) 已完成 2026-11-12；(f) 待做）使用感想（alpha.6，2026-11-12）：優化方向與新功能。** 試用的 Agent 認為查連線（`sch_netlist`、
+10. **（(a)–(e) 已完成 2026-11-12；(f) 劃掉 2026-11-18）使用感想（alpha.6，2026-11-12）：優化方向與新功能。** 試用的 Agent 認為查連線（`sch_netlist`、
    `query_net`、`sch_part` 直接給 KiCad 算好的結果）、每步回傳的局部 DRC、改編輯器記憶體（不和開著
    的檔案衝突、可 undo）、`auto_place` / `lcsc_fetch` / `audit` 是最大的價值；重複操作、缺的功能則
    不如寫腳本或關掉 KiCad 直接改檔。依試用者的優先順序：
@@ -1634,8 +1665,9 @@ the C1 rotate + undo back to no changes), `setup_e2e` (zone undo refills).
    * (e) **修改欄位與設計規則。** 電路圖零件的欄位（值、封裝、LCSC、DNP、不列入 BOM、自訂欄位，
      可一次多顆）；PCB 封裝的欄位；網路類別（線寬、間距、過孔）與網路指派；板子設定（最小線寬
      等）；銅箔區參數（間距、散熱焊盤、優先順序）。改完回傳受影響的 DRC。
-   * (f) 依賴 GUI 狀態：編輯器忙碌時的拒絕要少、要說明原因（第 9 項 (f) 已加原因）；
-     `kicadd-mcp` 對忙碌已重試 10 秒，可再考慮排隊等使用者結束互動工具後自動套用。
+   * ~~(f) 依賴 GUI 狀態：編輯器忙碌時的拒絕要少、要說明原因（第 9 項 (f) 已加原因）；
+     `kicadd-mcp` 對忙碌已重試 10 秒，可再考慮排隊等使用者結束互動工具後自動套用。~~
+     劃掉（2026-11-18）：之後的試用都沒再遇到；原因可能不是這裡推測的，再遇到時重新展開。
    完成的部分：(b) `detail` 參數，預設超過 8 顆零件只列 5 顆、局部 DRC 超過 10 筆附分類統計、
    `auto_place` 只列 15 個編號；(c) `batch`（steps、repeat、stop_on_error、show）；(d) `sch_undo` /
    `sch_redo`：`KICADD_SCH_COMMIT` 在 `Stage()` 記下每個增刪改的物件（含 KiCad 推送時清理動作改到的

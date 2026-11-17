@@ -2,10 +2,12 @@
 `kicad-cli pcb export gerbers / drill` writes, the zip holds them, BOM / CPL in JLCPCB's columns,
 and an unsaved move shows in the CPL (the board in memory, not the file).
 
-usage: python3 -I fab_e2e.py --build BUILD --demos DEMOS_DIR --work DIR """
+usage: python3 -I fab_e2e.py --build BUILD --demos DEMOS_DIR --work DIR
+
+BUILD: a build tree, or an installed folder (the Windows zip's bin/). """
 import argparse, csv, os, re, shutil, subprocess, sys, zipfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from m5_e2e import Mcp, Server
+from m5_e2e import Mcp, Server, binaries
 ap = argparse.ArgumentParser(); ap.add_argument("--build", required=True); ap.add_argument("--demos", required=True)
 ap.add_argument("--work", required=True)
 a = ap.parse_args()
@@ -13,7 +15,7 @@ build, work = os.path.abspath(a.build), os.path.abspath(a.work)
 shutil.rmtree(work, ignore_errors=True)
 shutil.copytree(os.path.join(a.demos, "pic_programmer"), os.path.join(work, "p"))
 pcb = os.path.join(work, "p", "pic_programmer.kicad_pcb")
-sock = os.path.join(work, "s.sock"); env = dict(os.environ, KICAD_RUN_FROM_BUILD_DIR="1")
+sock = os.path.join(work, "s.sock"); kicad_cli, kicadd_mcp, env = binaries(build)
 fails = []
 
 
@@ -55,7 +57,7 @@ def png_pixels(data):
 
 # the reference: kicad-cli on the file as it is
 cli = os.path.join(work, "cli"); os.makedirs(cli)
-cmd = os.path.join(build, "kicad", "kicad-cli")
+cmd = kicad_cli
 subprocess.run([cmd, "pcb", "export", "gerbers", "--layers", "F.Cu,B.Cu,F.Mask,F.Silkscreen,Edge.Cuts", "--subtract-soldermask", "-o", cli + "/", pcb],
                env=env, capture_output=True)
 subprocess.run([cmd, "pcb", "export", "drill", "--format", "excellon", "--excellon-units", "mm", "--excellon-separate-th",
@@ -63,7 +65,7 @@ subprocess.run([cmd, "pcb", "export", "drill", "--format", "excellon", "--excell
 
 srv = Server(build, sock, pcb, env, os.path.join(work, "server.log")); assert srv.start()
 try:
-    m = Mcp([os.path.join(build, "kicadd-mcp"), "--socket", sock, "--stdio"], env)
+    m = Mcp([kicadd_mcp, "--socket", sock, "--stdio"], env)
     print("[export_fab]")
     err, t = m.tool("export_fab", {"refill": False})     # the fills as saved, as kicad-cli plots them
     print("      ", " | ".join(t.splitlines()[1:6]))

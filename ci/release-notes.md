@@ -4,7 +4,18 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 
 > ⚠️ Pre-release，僅供試用。由 GitHub Actions 自動建置；功能在 Linux 上做過端到端測試，Windows 上只有 CI 的 smoke test 與早期版本的人工試用。
 
+## 使用前須知
+- **存檔格式：** KiCadD 以 KiCad nightly（10.99）為基礎。用 KiCadD 存過的 `.kicad_pcb`、`.kicad_sch` 會寫成新格式，**KiCad 9 / 10 正式版可能打不開**。請用專案副本試用；要知道這次改了什麼，存檔前先用 `board_diff`。
+- **平台：** 只提供 Windows x64。Linux 可以自行從原始碼編譯，沒有 macOS 版。
+- **不附 KiCad 官方元件庫：** 符號和封裝請用 `lcsc_fetch`、`lcsc_match` 從 LCSC 取得，或用 `lib_create_symbol`、`lib_create_footprint` 自建，也可以 `lib_register` 專案裡現有的庫。
+- **一次一個專案：** 一個服務同時只開一個專案（板子加電路圖），換專案請用 `open_board`。
+- **目前不支援：** 差分對與等長佈線、全板自動佈線（`route` 只代替重複的手動佈線）、電路圖重新編號與自動排版、電路圖 PDF 和組裝圖、STEP / 3D、ODB++ / IPC-2581 / DXF、控制阻抗線寬計算、MCP resources / prompts。
+
 ## 這一版（alpha.13）
+**`open_board` 換專案**
+- 以前開另一個專案的板子一定失敗（「project … is already open」），重新開同一塊板也不會從檔案重新載入。現在會先關掉目前的專案，再開新的板子；同一個資料夾有電路圖的話會一起打開，網路類別等規則也換成新專案的。Agent 的 undo 歷史從頭開始。
+- 目前的板子有未存檔的修改時會拒絕，要先 `save_board`，或加 `discard=true` 放棄修改。新檔案打不開時，會把原本的板子從檔案重新打開。桌面版裡一樣不能用，要由使用者在 pcbnew 開檔。
+
 **alpha.12 試用（stickhub）回報的修正**
 - **undo / redo 會重新灌銅：** 以前 fanout、delete_tracks、route 做完會重灌鋪銅，undo 卻不會，走線還原後碰到的是另一個狀態灌出來的鋪銅。stickhub 上 fanout 再 undo 之後，完整 DRC 有 3 個 GND 對 +1V8 / +5V 的間距錯誤（`set_rules` 回報的「DRC errors 3 -> 3」就是這個）。現在 undo / redo 只要動到走線、鋪銅或板框，就會自動重灌，回應寫「all zones refilled」。
 - **undo 不再對沒檢查的東西說「drc: clean」：** undo 後的 DRC 只檢查被移動的零件附近。沒有零件移動時（例如 `set_rules`、`delete_tracks` 的 undo），以前會顯示「drc: clean」，現在改寫「drc: not checked here (no part moved; run_drc checks the board)」。

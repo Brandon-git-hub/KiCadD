@@ -28,6 +28,23 @@ import time
 import uuid
 
 FAILS = []
+EXE = ".exe" if os.name == "nt" else ""
+
+
+def binaries(build):
+    """(kicad-cli, kicadd-mcp, env) for BUILD: a build tree (BUILD/kicad/kicad-cli, run with
+    KICAD_RUN_FROM_BUILD_DIR) or an installed / portable folder (BUILD or BUILD/bin, e.g. the
+    Windows zip's bin/, run as installed)."""
+    tree = os.path.join(build, "kicad", "kicad-cli" + EXE)
+    if os.path.isfile(tree):
+        return tree, os.path.join(build, "kicadd-mcp" + EXE), dict(os.environ, KICAD_RUN_FROM_BUILD_DIR="1")
+    for sub in ("", "bin"):
+        cli = os.path.join(build, sub, "kicad-cli" + EXE)
+        if os.path.isfile(cli):
+            env = dict(os.environ)
+            env.pop("KICAD_RUN_FROM_BUILD_DIR", None)
+            return cli, os.path.join(build, sub, "kicadd-mcp" + EXE), env
+    sys.exit("no kicad-cli" + EXE + " under " + build)
 
 
 def check(cond, label):
@@ -113,7 +130,7 @@ def make_project(kicad, work):
 
 class Server:
     def __init__(self, build, sock, board, env, log):
-        self.cmd = [os.path.join(build, "kicad", "kicad-cli"), "api-server", "--socket", sock, board]
+        self.cmd = [binaries(build)[0], "api-server", "--socket", sock, board]
         self.env, self.log, self.sock = env, log, sock
         self.p = None
 

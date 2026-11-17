@@ -253,7 +253,7 @@ def test_edge(c, mcp):
     t0 = time.perf_counter()
     loc = c.call(kd.CheckLocalDrc(refs=moved), kd.LocalDrcResponse)
     local_ms = (time.perf_counter() - t0) * 1000
-    text, err = mcp("check_drc", {"refs": moved})
+    text, err = mcp("check_drc", {"refs": moved, "detail": True})
     local = parse_drc(text, True)
 
     text, err = mcp("run_drc", {"types": ["edge_clearance", "copper_outside_board"], "limit": 100000})

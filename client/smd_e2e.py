@@ -1,4 +1,4 @@
-"""The alpha.12 trial path on an SMD board (headless): KiCad's stickhub demo (94 parts, all SMD
+"""The alpha.12 trial path (BUILD: a build tree, or an installed folder like the Windows zip's bin/) on an SMD board (headless): KiCad's stickhub demo (94 parts, all SMD
 but one, routed, GND / +5V / +1V8 zones, metric chip footprints 1005 / 1608 / 2012).
 
 usage: python3 -I smd_e2e.py --build BUILD --demos DEMOS_DIR --work DIR --index PARTS_DB
@@ -18,7 +18,7 @@ import shutil
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from m5_e2e import FAILS, Mcp, Server, check  # noqa: E402
+from m5_e2e import FAILS, Mcp, Server, binaries, check  # noqa: E402
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--build", required=True)
@@ -32,12 +32,13 @@ shutil.rmtree(work, ignore_errors=True)
 shutil.copytree(os.path.join(a.demos, "stickhub"), os.path.join(work, "p"))
 pcb = os.path.join(work, "p", "StickHub.kicad_pcb")
 sock = os.path.join(work, "s.sock")
-env = dict(os.environ, KICAD_RUN_FROM_BUILD_DIR="1", KICADD_LCSC_OFFLINE="1", KICADD_PARTS_DB=os.path.abspath(a.index))
+kicad_cli, kicadd_mcp, env = binaries(build)
+env.update(KICADD_LCSC_OFFLINE="1", KICADD_PARTS_DB=os.path.abspath(a.index))
 
 srv = Server(build, sock, pcb, env, os.path.join(work, "server.log"))
 assert srv.start(), "api-server did not start"
 try:
-    m = Mcp([os.path.join(build, "kicadd-mcp"), "--socket", sock, "--stdio"], env)
+    m = Mcp([kicadd_mcp, "--socket", sock, "--stdio"], env)
 
     print("[the board]")
     err, t = m.tool("board_summary")
