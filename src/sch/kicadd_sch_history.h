@@ -39,6 +39,11 @@ struct SCH_CHANGE
 };
 
 
+/// KiCad's == with the annotation too (it leaves the references out: a part renumbered by
+/// sch_annotate would compare equal).
+bool SameSchItem( const SCH_ITEM* a, const SCH_ITEM* b );
+
+
 struct SCH_EDIT
 {
     std::string                              label;

@@ -14,6 +14,8 @@ its one API server.
      changes (title marked modified, status bar names the edit)
   3. user Ctrl+Z takes the connection back, then the part (one undo list); the agent adds a
      sheet with a part on it, two Ctrl+Z take both away
+  3e. sch_annotate renumbers a part, the user's Ctrl+Z takes it back; sch_export_pdf writes the
+     editor's schematic (both pages) and the editor still answers
   4. user in an interactive tool (drawing a wire): agent edits refused as busy, applied after
   5. Ctrl+P, agent sync_pcb: the PCB Editor's board gets the new part from the open Schematic
      Editor (unsaved), and the schematic file on disk is untouched
@@ -217,6 +219,24 @@ def main():
         check(not err and "add" in t, "sch_redo afterwards answers: " + t.splitlines()[0][:70])
         canvas_keys(sch_win, "ctrl+z")
         time.sleep(1)
+
+        print("[3e] annotate and the PDF in the editor")
+        err, t = mcp.tool("sch_annotate", {"refs": ["R1"], "reset": True, "start": 90})
+        n = re.search(r"R1 -> (R\d+)", t)
+        new_ref = n.group(1) if n else None
+        check(not err and new_ref and int(new_ref[1:]) >= 90, "sch_annotate in the editor: R1 -> " + str(new_ref))
+        err, p = mcp.tool("sch_part", {"ref": new_ref or "R90"})
+        check(not err, f"{new_ref} answers")
+        canvas_keys(sch_win, "ctrl+z")
+        time.sleep(1)
+        err, p = mcp.tool("sch_part", {"ref": "R1"})
+        check(not err, "Ctrl+Z (the editor's undo) takes the numbering back: R1 again")
+        err, t = mcp.tool("sch_export_pdf", {"path": "review.pdf"})
+        pdf = os.path.join(proj, "review.pdf")
+        check(not err and os.path.isfile(pdf) and open(pdf, "rb").read(4) == b"%PDF" and "2 page(s)" in t,
+              "sch_export_pdf from the editor's schematic: " + t.splitlines()[0][-40:])
+        err, s = mcp.tool("sch_summary")
+        check(not err and " 69 parts" in s, "the editor still answers after the PDF (its sheet back)")
 
         print("[4] user drawing a wire: agent edits wait")
         canvas_keys(sch_win, "w")

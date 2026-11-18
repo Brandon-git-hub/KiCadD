@@ -8,6 +8,7 @@
 
 #include <sch_item.h>
 #include <sch_screen.h>
+#include <sch_symbol.h>
 
 namespace kicadd
 {
@@ -58,6 +59,32 @@ COMMIT& KICADD_SCH_COMMIT::Stage( EDA_ITEM* aItem, CHANGE_TYPE aChangeType, BASE
 }
 
 
+bool SameSchItem( const SCH_ITEM* a, const SCH_ITEM* b )
+{
+    if( !a || !b || !( *a == *b ) )
+        return false;
+
+    if( a->Type() == SCH_SYMBOL_T )
+    {
+        const SCH_SYMBOL* sa = static_cast<const SCH_SYMBOL*>( a );
+        const SCH_SYMBOL* sb = static_cast<const SCH_SYMBOL*>( b );
+        const auto&       ia = sa->GetInstances();
+        const auto&       ib = sb->GetInstances();
+
+        if( ia.size() != ib.size() || sa->GetUnit() != sb->GetUnit() )
+            return false;
+
+        for( size_t i = 0; i < ia.size(); ++i )
+        {
+            if( ia[i].m_Path != ib[i].m_Path || ia[i].m_Reference != ib[i].m_Reference || ia[i].m_Unit != ib[i].m_Unit )
+                return false;
+        }
+    }
+
+    return true;
+}
+
+
 SCH_EDIT KICADD_SCH_COMMIT::TakeEdit( const std::string& aLabel )
 {
     SCH_EDIT edit;
@@ -76,6 +103,10 @@ SCH_EDIT KICADD_SCH_COMMIT::TakeEdit( const std::string& aLabel )
 
         if( r.kind != SCH_CHANGE::REMOVED )
             change->after.reset( static_cast<SCH_ITEM*>( r.item->Clone() ) );
+
+        // staged but left as it was (sch_annotate stages every part in scope)
+        if( r.kind == SCH_CHANGE::MODIFIED && SameSchItem( change->before.get(), change->after.get() ) )
+            continue;
 
         edit.changes.push_back( std::move( change ) );
     }

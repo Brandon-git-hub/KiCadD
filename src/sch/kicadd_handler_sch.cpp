@@ -377,6 +377,8 @@ KICADD_HANDLER_SCH::KICADD_HANDLER_SCH( std::shared_ptr<SCH_CONTEXT> aContext ) 
     registerHandler<SchSetFields, SchConnectResponse>( &KICADD_HANDLER_SCH::handleSetFields );
     registerHandler<RegisterLibrary, RegisterLibraryResponse>( &KICADD_HANDLER_SCH::handleRegisterLibrary );
     registerHandler<SchRender, SchRenderResponse>( &KICADD_HANDLER_SCH::handleRender );
+    registerHandler<SchExportPdf, SchExportPdfResponse>( &KICADD_HANDLER_SCH::handleExportPdf );
+    registerHandler<SchAnnotate, SchAnnotateResponse>( &KICADD_HANDLER_SCH::handleAnnotate );
 }
 
 
@@ -3361,7 +3363,7 @@ void KICADD_HANDLER_SCH::applyEdit( const kicadd::SCH_EDIT& aEdit, bool aUndo, S
 
     auto same = []( const SCH_ITEM* a, const SCH_ITEM* b )
     {
-        return a && b && static_cast<const SCH_ITEM&>( *a ) == static_cast<const SCH_ITEM&>( *b );
+        return kicadd::SameSchItem( a, b );
     };
 
     SCH_COMMIT commit( m_context->GetToolManager() );

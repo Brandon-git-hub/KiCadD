@@ -1479,7 +1479,7 @@ the C1 rotate + undo back to no changes), `setup_e2e` (zone undo refills).
 **`client/run_all.py`** runs every end-to-end test and prints one line each (PASS / FAIL with
 the first failing check / SKIP with what is missing), logs in `run/all/<name>.log`:
 
-    python3 -I client/run_all.py                 # all 24; --list, --only a,b, --skip, --no-desktop, --live
+    python3 -I client/run_all.py                 # all 25; --list, --only a,b, --skip, --no-desktop, --live
 
 Inputs default to this checkout's layout (`../build-lean`, `../kicad`, the parts index under
 `run/sr`, the LCSC cache in `run/lcsc-cache` or `$KICADD_LCSC_CACHE`, `.venv`). The four tests
@@ -1502,7 +1502,40 @@ from its file. The agent history starts over (`DetachBoard`). In the desktop edi
 **Windows CI** runs `fab_e2e` and `smd_e2e` on the installed folder after the smoke test (the
 tools themselves, not only that the server answers), with the published parts index.
 `m5_e2e.binaries()` finds `kicad-cli` / `kicadd-mcp` in a build tree (with
-`KICAD_RUN_FROM_BUILD_DIR`) or an installed `bin/` (without).
+`KICAD_RUN_FROM_BUILD_DIR`) or an installed `bin/` (without). Its first runs found two
+Windows-only faults: the api-server's socket is a named pipe there (no file to wait for;
+`Server` asks `board_summary` instead), and kicadd-mcp cut the board's file name only at `/`,
+so on Windows every call that names the document (refill, DRC, export_fab, save, the web view)
+answered "not open". Fixed in alpha.13.
+
+## Beta, phase 0: schematic PDF and Annotate (2026-11-18)
+
+The plan from here is in [ROADMAP.md](ROADMAP.md). Two schematic tools, 58 in all:
+
+**`sch_export_pdf`** (`src/sch/kicadd_sch_pdf.cpp`): every sheet in page order in one PDF,
+with frame and title block, sheets linked, the fields as property pop-ups. kicad-cli's job (and
+the API's `RunSchematicJobExportPdf`) loads the file from disk headless, so this runs
+`SCH_PLOTTER` on the schematic in memory instead (unsaved edits included), with the render
+settings `sch_render` uses (`kicadd::InitSchRenderSettings`) and, headless, the project's
+drawing sheet. The editor's current sheet comes back after the plot walks the pages.
+
+**`sch_annotate`** (`src/sch/kicadd_sch_annotate.cpp`): the editor's Annotate without the
+frame: the parts in scope (all, a sheet and its sub-sheets, or refs) and their multi-unit
+groups go to upstream's `AnnotateReferences()`, one agent commit (one `sch_undo`, or the
+user's Ctrl+Z). Unnumbered parts get the first free number; `reset` renumbers in position
+order (`order` x / y), `start`, `per_sheet` 100 / 1000, `dry_run`. Afterwards the whole
+schematic is checked (`CheckAnnotation`). `sync_pcb` renames the board's parts in place: it
+matches by UUID. Two things found on the way:
+- KiCad's `start` is "the first free number *after*" (the dialog's 0): the tool's `start` is
+  the first number, so it passes start − 1.
+- KiCad's `SCH_SYMBOL::operator==` leaves the annotation out, so the schematic history saw a
+  renumbered part as unchanged and `sch_undo` said "already undone". `kicadd::SameSchItem`
+  compares the instances' references and units too; the history also drops staged items that
+  did not change (annotate stages every part in scope).
+
+`client/sch_doc_e2e.py` (in `run_all` and the Windows CI) covers both on pic_programmer (an
+"R?" made in the file, a sheet renumbered, sync_pcb, undo / redo, per_sheet, the unsaved value
+in the PDF, black and white); `desktop_sch_e2e` step 3e runs them in the Schematic Editor.
 
 ## 待做清單 (TODO)
 

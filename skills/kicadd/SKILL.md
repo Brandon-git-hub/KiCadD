@@ -123,6 +123,11 @@ From a blank project, before placing parts:
    second one. Delete the board's one, or renumber it:
    `pcb_set_fields parts={"R22": {"Reference": "R23"}}`. `run_drc` and `export_fab` also warn
    about a reference used twice, and `export_fab` about parts outside the outline.
+   Tidy numbering (R1, R2, ... in position order, or the "R?" of parts placed unnumbered):
+   `sch_annotate dry_run=true` to see it, then `sch_annotate` (`reset=true` renumbers every
+   part; `sheet` or `refs` limits it) and `sync_pcb`: the board's parts are renamed in place
+   (matched by UUID), nothing moves. Renumbering after the user has seen the board changes the
+   refs on its silkscreen and in the BOM: ask first.
 2. `auto_place` (default: the parts outside the board). Useful options: `groups` or the Block
    field to keep functional blocks together, `rules` (edge, region, rotation, near), `fixed`
    for parts that must not move (place connectors first, then fix them), `back_decaps`.
@@ -200,6 +205,8 @@ symbols or text, labels away from their wires, a sheet that does not read well.
 4. `export_fab`: Gerbers, drill, the upload zip, BOM and CPL in JLCPCB's columns, from the
    design in memory. Read its notes: BOM lines without an LCSC number, through-hole parts in
    the CPL, rotations to check in JLCPCB's preview.
+5. The schematic for the documents or a review: `sch_export_pdf` (every sheet in one PDF,
+   unsaved edits included; default `<project>/<schematic>.pdf`).
 
 ## Repeated work
 

@@ -82,6 +82,22 @@ struct SHEET_GUARD
 } // namespace
 
 
+void kicadd::InitSchRenderSettings( SCH_RENDER_SETTINGS& aRender, SCHEMATIC& aSch )
+{
+    aRender.LoadColors( ::GetColorSettings( DEFAULT_THEME ) );
+    aRender.m_ShowHiddenPins = false;
+    aRender.m_ShowHiddenFields = false;
+    aRender.m_ShowPinAltIcons = false;
+    aRender.SetDefaultPenWidth( aSch.Settings().m_DefaultLineWidth );
+    aRender.m_LabelSizeRatio = aSch.Settings().m_LabelSizeRatio;
+    aRender.m_TextOffsetRatio = aSch.Settings().m_TextOffsetRatio;
+    aRender.m_PinSymbolSize = aSch.Settings().m_PinSymbolSize;
+    aRender.m_ShowDNPMarkers = aSch.Settings().m_ShowDNPMarkers;
+    aRender.SetDashLengthRatio( aSch.Settings().m_DashedLineDashRatio );
+    aRender.SetGapLengthRatio( aSch.Settings().m_DashedLineGapRatio );
+}
+
+
 HANDLER_RESULT<SchRenderResponse> KICADD_HANDLER_SCH::handleRender( const HANDLER_CONTEXT<SchRender>& aCtx )
 {
     SCHEMATIC* sch = schematic();
@@ -377,17 +393,7 @@ HANDLER_RESULT<SchRenderResponse> KICADD_HANDLER_SCH::handleRender( const HANDLE
 
     // --- the plotter, set up as kicad-cli sch export does
     SCH_RENDER_SETTINGS render;
-    render.LoadColors( ::GetColorSettings( DEFAULT_THEME ) );
-    render.m_ShowHiddenPins = false;
-    render.m_ShowHiddenFields = false;
-    render.m_ShowPinAltIcons = false;
-    render.SetDefaultPenWidth( sch->Settings().m_DefaultLineWidth );
-    render.m_LabelSizeRatio = sch->Settings().m_LabelSizeRatio;
-    render.m_TextOffsetRatio = sch->Settings().m_TextOffsetRatio;
-    render.m_PinSymbolSize = sch->Settings().m_PinSymbolSize;
-    render.m_ShowDNPMarkers = sch->Settings().m_ShowDNPMarkers;
-    render.SetDashLengthRatio( sch->Settings().m_DashedLineDashRatio );
-    render.SetGapLengthRatio( sch->Settings().m_DashedLineGapRatio );
+    kicadd::InitSchRenderSettings( render, *sch );
 
     const COLOR4D background = render.GetLayerColor( LAYER_SCHEMATIC_BACKGROUND );
 

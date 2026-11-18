@@ -440,3 +440,43 @@ message SchRenderResponse
   string path      = 9;
   string note      = 10;         // "nothing drawn in this area ..."
 }
+
+// The whole schematic (every sheet, in page order) as one PDF, from the schematic in memory
+// (unsaved edits included), plotted as File > Plot does: each page with its frame and title
+// block, hierarchical links between sheets. Returns SchExportPdfResponse
+message SchExportPdf
+{
+  string path            = 1;   // default <project folder>/<schematic name>.pdf; relative: the project folder
+  bool   black_and_white = 2;
+}
+
+message SchExportPdfResponse
+{
+  string          path   = 1;
+  repeated string pages  = 2;   // "1 /", "2 /Power/"
+}
+
+// Number the parts (Annotate in the editor): the ones without a number ("R?") get the first
+// free one, or with reset every part in scope is numbered again, in position order (left to
+// right, or top to bottom), page by page. Power symbols are left alone. One sch_undo step.
+// Returns SchAnnotateResponse
+message SchAnnotate
+{
+  repeated string refs    = 1;   // only these parts (default: all in scope)
+  string          sheet   = 2;   // only this sheet and the sheets below it (name or path)
+  bool            reset   = 3;   // renumber numbered parts too (default: only the unnumbered)
+  string          order   = 4;   // "x" (default: left to right, then top to bottom) or "y"
+  int32           start   = 5;   // the first number (default 1)
+  string          per_sheet = 6; // "" (one series), "100" or "1000" (page 2: R201.. / R2001..)
+  bool            dry_run = 7;
+}
+
+message SchAnnotateResponse
+{
+  repeated string changes  = 1;   // "R? -> R4 (10k, /)", "R7 -> R2 (10k, /Power/)"
+  int32           checked  = 2;   // symbols in scope
+  repeated string errors   = 3;   // left after numbering (duplicates, units)
+  repeated string notes    = 4;
+  string          history_label = 5;
+  bool            dry_run  = 6;
+}

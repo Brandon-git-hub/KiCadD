@@ -2129,6 +2129,91 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                 return out;
             } } );
 
+    aTools.push_back( { "sch_export_pdf",
+            "The whole schematic as one PDF for review or the fab's documents: every sheet in page "
+            "order with its frame and title block, sheets linked (click a sheet symbol to go to it). "
+            "From the schematic as it is now, unsaved edits included. path: default the project folder, "
+            "<schematic name>.pdf (relative: the project folder); black_and_white for printing.",
+            obj( { { "path", { { "type", "string" } } },
+                   { "black_and_white", { { "type", "boolean" } } } } ),
+            [&aIpc]( const json& a )
+            {
+                ks::SchExportPdf req;
+                req.set_path( str( a, "path" ) );
+                req.set_black_and_white( a.value( "black_and_white", false ) );
+
+                ks::SchExportPdfResponse r;
+                std::string              err;
+
+                if( !aIpc.Call( req, r, err ) )
+                    return fail( err );
+
+                std::string t = "schematic PDF: " + r.path() + " (" + std::to_string( r.pages_size() ) + " page(s))";
+
+                for( const std::string& p : r.pages() )
+                    t += "\n  page " + p;
+
+                return TOOL_RESULT{ t + "\n", false };
+            } } );
+
+    aTools.push_back( { "sch_annotate",
+            "Number the parts (the editor's Annotate). Parts without a number (\"R?\") get the first "
+            "free one; reset=true numbers every part in scope again, in position order: order \"x\" "
+            "(default: left to right, then down) or \"y\" (top to bottom, then right), page by page. "
+            "Scope: all (default), sheet (a name or path, with the sheets below it) or refs. start: the "
+            "first number (1); per_sheet \"100\" / \"1000\": page 2 gets R201.. / R2001... Units of a "
+            "multi-unit part stay together; power symbols are not touched. dry_run lists the changes "
+            "only. One sch_undo step. The board keeps the old references until sync_pcb (parts are "
+            "matched by their UUID, so placement and routing stay).",
+            obj( { { "refs", { { "type", "array" }, { "items", { { "type", "string" } } } } },
+                   { "sheet", { { "type", "string" } } },
+                   { "reset", { { "type", "boolean" } } },
+                   { "order", { { "type", "string" }, { "enum", json::array( { "x", "y" } ) } } },
+                   { "start", { { "type", "integer" } } },
+                   { "per_sheet", { { "type", "string" }, { "enum", json::array( { "100", "1000" } ) } } },
+                   { "dry_run", { { "type", "boolean" } } } } ),
+            [&aIpc]( const json& a )
+            {
+                ks::SchAnnotate req;
+
+                for( const json& v : a.value( "refs", json::array() ) )
+                {
+                    if( v.is_string() )
+                        req.add_refs( v.get<std::string>() );
+                }
+
+                req.set_sheet( str( a, "sheet" ) );
+                req.set_reset( a.value( "reset", false ) );
+                req.set_order( str( a, "order" ) );
+                req.set_start( a.value( "start", 0 ) );
+                req.set_per_sheet( str( a, "per_sheet" ) );
+                req.set_dry_run( a.value( "dry_run", false ) );
+
+                ks::SchAnnotateResponse r;
+                std::string             err;
+
+                if( !aIpc.Call( req, r, err ) )
+                    return fail( err );
+
+                std::string t = std::string( r.dry_run() ? "dry run: " : "" ) + std::to_string( r.changes_size() )
+                                + " part(s) " + ( r.dry_run() ? "would be " : "" ) + "renumbered of "
+                                + std::to_string( r.checked() ) + " in scope";
+
+                for( const std::string& c : r.changes() )
+                    t += "\n  " + c;
+
+                for( const std::string& n : r.notes() )
+                    t += "\nnote: " + n;
+
+                for( const std::string& e : r.errors() )
+                    t += "\nproblem: " + e;
+
+                if( !r.dry_run() && r.changes_size() )
+                    t += "\nsch_undo takes it back; sync_pcb gives the board the new references";
+
+                return TOOL_RESULT{ t + "\n", false };
+            } } );
+
     aTools.push_back( { "lcsc_match",
             "Find LCSC / JLCPCB numbers for the schematic's parts that have none, many at once: parts of "
             "the same value and footprint are one group; resistors, capacitors, inductors, ferrite beads "

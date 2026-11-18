@@ -136,6 +136,7 @@ def tests(a):
         ("rules", "headless", [], lambda w: py + [c("rules_e2e.py")] + b + k + ["--work", w]),
         ("hier", "headless", [], lambda w: py + [c("hier_e2e.py")] + b + k + ["--work", w]),
         ("sch_edit", "headless", [], lambda w: py + [c("sch_edit_e2e.py")] + b + k + ["--work", w]),
+        ("sch_doc", "headless", [], lambda w: py + [c("sch_doc_e2e.py")] + b + d + ["--work", w]),
         ("lib", "headless", [], lambda w: py + [c("lib_e2e.py")] + b + k + ["--work", w]),
         ("match", "headless", ["index"], lambda w: py + [c("match_e2e.py")] + b + k + ["--work", w, "--index", a.index]),
         ("search", "headless", ["index_gz"],

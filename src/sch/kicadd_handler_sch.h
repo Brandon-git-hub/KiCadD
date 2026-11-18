@@ -39,6 +39,14 @@ class SCH_SHEET_PATH;
 class SCH_SYMBOL;
 class SCHEMATIC;
 class SCH_REFERENCE_LIST;
+class SCH_RENDER_SETTINGS;
+
+namespace kicadd
+{
+/// Render settings as kicad-cli sch export sets them up (the default theme, the schematic's
+/// line widths and text ratios): sch_render and sch_export_pdf.
+void InitSchRenderSettings( SCH_RENDER_SETTINGS& aRender, SCHEMATIC& aSch );
+}
 
 
 class KICADD_HANDLER_SCH : public API_HANDLER
@@ -106,6 +114,12 @@ private:
 
     HANDLER_RESULT<kicadd::schematic::SchRenderResponse>
     handleRender( const HANDLER_CONTEXT<kicadd::schematic::SchRender>& aCtx );
+
+    HANDLER_RESULT<kicadd::schematic::SchExportPdfResponse>
+    handleExportPdf( const HANDLER_CONTEXT<kicadd::schematic::SchExportPdf>& aCtx );
+
+    HANDLER_RESULT<kicadd::schematic::SchAnnotateResponse>
+    handleAnnotate( const HANDLER_CONTEXT<kicadd::schematic::SchAnnotate>& aCtx );
 
     /// A power symbol for net @a aNet ("GND", "+3V3"): the project's power library if it has
     /// one, else made here (KiCadD ships no libraries): a ground or a supply shape.
