@@ -62,6 +62,7 @@ try:
     check(err and "absolute" in t, "a relative path: refused")
     err, t = m.tool("open_board", {"path": pic})
     check(err and "unsaved changes" in t and "StickHub.kicad_pcb" in t, "unsaved changes (the flush / undo above): refused")
+    check("the same as the saved file" in t, "and board_diff finds nothing: said so (undone back to it)")
     junk = os.path.join(work, "junk.kicad_pcb")
     open(junk, "w").write("this is not a board\n")
     err, t = m.tool("open_board", {"path": junk, "discard": True})
@@ -74,6 +75,10 @@ try:
 
     err, t = m.tool("move_footprints", {"refs": ["U1"], "dx": 1})
     check(not err, "an unsaved edit on stickhub")
+    err, t = m.tool("open_board", {"path": pic})
+    print("      ", t.strip().replace("\n", " | ")[:200])
+    check(err and re.search(r"board_diff: \d+ change\(s\) since saved", t) and "U1" in t,
+          "a real change: refused, with what board_diff finds (U1)")
     err, t = m.tool("open_board", {"path": pic, "discard": True})
     print("      ", t.splitlines()[0][:150])
     check(not err and "footprints=63" in t and "unsaved changes of StickHub.kicad_pcb were dropped" in t,

@@ -2500,8 +2500,46 @@ TOOL_RESULT openBoard( IPC_CLIENT& aIpc, const json& aArgs )
     if( !aIpc.Call( kb::GetBoardSummary(), before, err ) )
         before.Clear();
     else if( aIpc.Call( kb::GetHistory(), history, err ) && history.modified() && !discard )
+    {
+        // what the unsaved changes are, so the choice is an informed one: undo back to the
+        // saved state still counts as modified, and then board_diff finds nothing
+        std::string        what;
+        kb::BoardDiff      diffReq;
+        kb::BoardDiffResponse diff;
+        std::string        diffErr;
+        diffReq.set_limit( 3 );
+
+        if( !aIpc.Call( diffReq, diff, diffErr ) )
+        {
+            what = " (board_diff: " + diffErr + ")";
+        }
+        else if( diff.changes() == 0 )
+        {
+            what = "; board_diff finds it the same as the saved file (zone fills and net classes are not "
+                   "compared), e.g. undone back to it: discard=true loses nothing else";
+        }
+        else
+        {
+            what = "; board_diff: " + std::to_string( diff.changes() ) + " change(s) since saved:";
+
+            for( const kb::BoardDiffSection& sec : diff.sections() )
+            {
+                if( sec.summary().empty() && sec.lines().empty() )
+                    continue;
+
+                what += "\n  " + sec.name() + ": " + sec.summary();
+
+                for( const std::string& line : sec.lines() )
+                    what += "\n    " + line;
+
+                if( sec.more() > 0 )
+                    what += "\n    (" + std::to_string( sec.more() ) + " more)";
+            }
+        }
+
         return error( "the open board (" + fs::path( before.file() ).filename().string()
-                      + ") has unsaved changes: save_board first, or discard=true to drop them" );
+                      + ") has unsaved changes: save_board first, or discard=true to drop them" + what );
+    }
 
     // The server holds one project: close it (board, schematic, project), then open the other.
     // The desktop editor has no such command: the user opens files there.
@@ -3014,7 +3052,7 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        "Open a .kicad_pcb (or .kicad_pro) on the server (kicad-cli api-server), replacing the current "
                        "project: the board, its schematic when there is one, the project's rules. Reopening the same "
                        "file reloads it from disk. The agent history starts over. Refused when the open board has "
-                       "unsaved changes, unless discard=true. Not available with the desktop editor: there the user "
+                       "unsaved changes, unless discard=true (the refusal lists what board_diff finds changed). Not available with the desktop editor: there the user "
                        "opens the file in pcbnew.",
                        schema( { { "path", { { "type", "string" }, { "description", "Absolute path on the server" } } },
                                  { "discard", { { "type", "boolean" },
