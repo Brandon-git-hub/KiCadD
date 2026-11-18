@@ -352,6 +352,16 @@ std::string renderMoveResult( const kb::MoveResponse& r, bool aDetail = false )
         s += "\n";
     }
 
+    if( !r.removed_nets().empty() )
+    {
+        s += "nets left with nothing on them, removed:";
+
+        for( const std::string& n : r.removed_nets() )
+            s += " " + n;
+
+        s += "\n";
+    }
+
     if( !r.missing().empty() )
     {
         s += "not found:";
@@ -2708,7 +2718,7 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
 
     tools.push_back( { "delete_footprints",
                        "Delete footprints as one undoable edit (undo restores them with their nets). "
-                       "Tracks and vias stay. Returns the new unrouted count.",
+                       "Tracks and vias stay; a net nothing else is on goes with them. Returns the new unrouted count.",
                        schema( { { "refs", refs }, { "detail", DETAIL_PROP } }, { "refs" } ),
                        [&aIpc]( const json& a ) { return deleteFootprints( aIpc, a ); } } );
 

@@ -206,6 +206,19 @@ try:
     err, s2 = m.tool("board_summary")
     check(not err and int(re.search(r"nets=(\d+)", s2).group(1)) == nets0 and "footprints=63" in s2,
           "undo takes the part and the nets it made away: " + t.splitlines()[0])
+    nets = lambda: int(re.search(r"nets=(\d+)", m.tool("board_summary")[1]).group(1))   # noqa: E731
+    m.tool("add_footprint", {"like": "R1", "ref": "R30", "x": 100, "y": 30, "nets": {"1": "TESTNET1", "2": "VCC"}})
+    err, t = m.tool("delete_footprints", {"refs": ["R30"]})
+    check(not err and "nets left with nothing on them, removed: TESTNET1" in t and "VCC" not in t.split("removed:")[-1]
+          and nets() == nets0, "delete: R30's own net goes with it, VCC stays: " + t.replace("\n", " | ")[:120])
+    err, t = m.tool("undo")
+    err, t2 = m.tool("query_net", {"net": "TESTNET1"})
+    check(not err and nets() == nets0 + 1 and "R30" in t2, "undo: R30 back on TESTNET1: " + t2.strip().replace("\n", " | ")[:100])
+    err, t = m.tool("redo")
+    check(not err and "removed: TESTNET1" in t and nets() == nets0, "redo: the net goes again")
+    m.tool("undo")
+    m.tool("undo")
+    check(nets() == nets0 and "footprints=63" in m.tool("board_summary")[1], "undo the add: as before")
 
     print("[audit]")
     err, t = m.tool("audit")

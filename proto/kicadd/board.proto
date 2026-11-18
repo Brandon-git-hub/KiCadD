@@ -152,6 +152,8 @@ message MoveResponse
                                                // zones are filled: their fills are out of date
   int32                 already_there = 13;    // Undo/Redo: footprints already in the target state
                                                // (undone / redone in the editor), left alone
+  repeated string       removed_nets = 19;     // nets the removed footprints were on that nothing is
+                                               // on any more: taken off the board (undo puts them back)
 }
 
 // Remove footprints (and their pads from connectivity). Tracks and vias are left in place,

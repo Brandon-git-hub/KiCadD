@@ -1503,6 +1503,43 @@ KICADD_HANDLER_PCB::handleDeleteFootprints( const HANDLER_CONTEXT<DeleteFootprin
     HISTORY_ENTRY entry;
     entry.label = "delete " + refList( targets );
 
+    // their nets that nothing else is on go too (undo makes them again, by name, with the pads)
+    std::vector<NETINFO_ITEM*> netsGone;
+    {
+        std::set<const FOOTPRINT*> leaving( targets.begin(), targets.end() );
+        std::set<wxString>         candidates, used;
+
+        for( const FOOTPRINT* fp : targets )
+        {
+            for( const PAD* pad : fp->Pads() )
+            {
+                if( pad->GetNetCode() > 0 )
+                    candidates.insert( pad->GetNetname() );
+            }
+        }
+
+        for( const FOOTPRINT* fp : b->Footprints() )
+        {
+            if( leaving.count( fp ) )
+                continue;
+
+            for( const PAD* pad : fp->Pads() )
+                used.insert( pad->GetNetname() );
+        }
+
+        for( const PCB_TRACK* t : b->Tracks() )
+            used.insert( t->GetNetname() );
+
+        for( const ZONE* z : b->Zones() )
+            used.insert( z->GetNetname() );
+
+        for( const wxString& name : candidates )
+        {
+            if( NETINFO_ITEM* net = b->FindNet( name ); net && !used.count( name ) )
+                netsGone.push_back( net );
+        }
+    }
+
     runCommit(
             [&]( BOARD_COMMIT& aCommit )
             {
@@ -1510,6 +1547,12 @@ KICADD_HANDLER_PCB::handleDeleteFootprints( const HANDLER_CONTEXT<DeleteFootprin
                 {
                     out.add_removed( fp->GetReference().ToStdString() );
                     aCommit.Remove( fp );
+                }
+
+                for( NETINFO_ITEM* net : netsGone )
+                {
+                    out.add_removed_nets( net->GetNetname().ToStdString() );
+                    aCommit.Remove( net );
                 }
 
                 return std::vector<KIID>();
@@ -4044,7 +4087,23 @@ bool KICADD_HANDLER_PCB::applyHistory( const HISTORY_ENTRY& aEntry, bool aUndo, 
     // Undoing a sync: the nets it made that nothing will be on any more
     std::vector<NETINFO_ITEM*> netsGone;
 
-    if( aUndo && !aEntry.netsCreated.empty() )
+    // ... and the nets of footprints leaving the board (undo of an add, redo of a delete) that
+    // nothing else is on: a deleted part's own nets do not stay behind empty
+    std::set<wxString> netCandidates;
+
+    if( aUndo )
+        netCandidates.insert( aEntry.netsCreated.begin(), aEntry.netsCreated.end() );
+
+    for( const FOOTPRINT* fp : removing )
+    {
+        for( const PAD* pad : fp->Pads() )
+        {
+            if( pad->GetNetCode() > 0 )
+                netCandidates.insert( pad->GetNetname() );
+        }
+    }
+
+    if( !netCandidates.empty() )
     {
         std::set<const BOARD_ITEM*> leaving( removing.begin(), removing.end() );
         std::set<wxString>          used;
@@ -4090,9 +4149,9 @@ bool KICADD_HANDLER_PCB::applyHistory( const HISTORY_ENTRY& aEntry, bool aUndo, 
         for( const TRACK_SNAPSHOT* snap : trackAdd )
             used.insert( snap->net );
 
-        for( const wxString& name : aEntry.netsCreated )
+        for( const wxString& name : netCandidates )
         {
-            if( NETINFO_ITEM* net = b->FindNet( name ); net && !used.count( name ) )
+            if( NETINFO_ITEM* net = b->FindNet( name ); net && net->GetNetCode() > 0 && !used.count( name ) )
                 netsGone.push_back( net );
         }
     }
@@ -4153,7 +4212,10 @@ bool KICADD_HANDLER_PCB::applyHistory( const HISTORY_ENTRY& aEntry, bool aUndo, 
                 }
 
                 for( NETINFO_ITEM* net : netsGone )
+                {
+                    aOut.add_removed_nets( net->GetNetname().ToStdString() );
                     aCommit.Remove( net );
+                }
 
                 for( const HISTORY_ENTRY::ITEM_SNAPSHOT* snap : itemAdd )
                 {
