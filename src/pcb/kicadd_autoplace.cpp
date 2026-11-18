@@ -32,6 +32,9 @@ VECTOR2I rotated( const VECTOR2I& aOffset, int aRot )
 }
 
 
+const VECTOR2I SIDE_DIR[4] = { { -1000, 0 }, { 1000, 0 }, { 0, -1000 }, { 0, 1000 } };   // EDGE_LEFT ..
+
+
 /// Bounding box of points turned by aRot quarter turns; aFallback when there are none.
 BOX2I boxOf( const std::vector<VECTOR2I>& aPoints, int aRot, const BOX2I& aFallback )
 {
@@ -219,6 +222,19 @@ public:
         {
             PART& p = m_parts[i];
 
+            // a connector over the edge: turned so its opening faces that edge, on its own side
+            if( p.overhang && p.mouth >= 0 && p.edgeSide >= 0 && p.edgeSide < EDGE_ANY && p.fixedRot < 0 )
+            {
+                for( int r = 0; r < 4; ++r )
+                {
+                    if( MouthAt( p.mouth, r ) == p.edgeSide )
+                        p.fixedRot = r;
+                }
+            }
+
+            if( p.overhang )
+                p.canFlip = false;
+
             if( p.movable && p.fixedRot >= 0 )
                 p.rot = p.fixedRot & 3;
 
@@ -273,7 +289,7 @@ public:
         res.hpwlBefore = hpwl();
 
         for( size_t i = 0; i < m_parts.size(); ++i )
-            m_newcomer[i] = m_parts[i].movable && !insideBoard( boxAt( (int) i, m_parts[i].pos, m_parts[i].rot ) );
+            m_newcomer[i] = m_parts[i].movable && !insideFor( (int) i, m_parts[i].pos, m_parts[i].rot );
 
         m_startPos.resize( m_parts.size() );
         m_startRot.resize( m_parts.size() );
@@ -799,10 +815,75 @@ private:
         m_soft = true;
     }
 
-    bool insideBoard( const BOX2I& aBox ) const
+    /// A connector over the edge in rotation aRot: the side its opening faces (-1: not one).
+    int overSide( int i, int aRot ) const
+    {
+        const PART& p = m_parts[i];
+        return p.overhang && p.mouth >= 0 ? MouthAt( p.mouth, aRot ) : -1;
+    }
+
+    /// Where its board edge line is, on the axis of aSide (x for left / right, else y).
+    int edgeLineAt( int i, const VECTOR2I& aPos, int aSide ) const
+    {
+        const int e = m_parts[i].edgeLine;
+
+        switch( aSide )
+        {
+        case EDGE_LEFT:  return aPos.x - e;
+        case EDGE_RIGHT: return aPos.x + e;
+        case EDGE_TOP:   return aPos.y - e;
+        default:         return aPos.y + e;
+        }
+    }
+
+    /// The board's edge on aSide (its outline's box).
+    int boardEdge( int aSide ) const
+    {
+        switch( aSide )
+        {
+        case EDGE_LEFT:  return m_area.GetLeft();
+        case EDGE_RIGHT: return m_area.GetRight();
+        case EDGE_TOP:   return m_area.GetTop();
+        default:         return m_area.GetBottom();
+        }
+    }
+
+    /// Part i at aPos / aRot inside the board, edge from the outline; a connector over the edge
+    /// only up to its edge line on the side it faces (beyond it, it hangs over).
+    bool insideFor( int i, const VECTOR2I& aPos, int aRot ) const
+    {
+        const int side = overSide( i, aRot );
+
+        if( side < 0 )
+            return insideBoard( boxAt( i, aPos, aRot ) );
+
+        BOX2I     b = boxAt( i, aPos, aRot );
+        b.Inflate( m_opt.edge );
+        const int line = edgeLineAt( i, aPos, side );
+        const int in = 10000;   // 10 um inside the edge: on it is not "inside" the outline
+        VECTOR2I  o = b.GetOrigin(), e = b.GetEnd();
+
+        switch( side )
+        {
+        case EDGE_LEFT:   o.x = line + in; break;
+        case EDGE_RIGHT:  e.x = line - in; break;
+        case EDGE_TOP:    o.y = line + in; break;
+        default:          e.y = line - in; break;
+        }
+
+        if( o.x >= e.x || o.y >= e.y )
+            return false;
+
+        BOX2I cut( o, e - o );
+        return insideBoard( cut, false );
+    }
+
+    bool insideBoard( const BOX2I& aBox, bool aInflate = true ) const
     {
         BOX2I b = aBox;
-        b.Inflate( m_opt.edge );
+
+        if( aInflate )
+            b.Inflate( m_opt.edge );
 
         const VECTOR2I corners[4] = { b.GetOrigin(), { b.GetRight(), b.GetTop() }, b.GetEnd(),
                                       { b.GetLeft(), b.GetBottom() } };
@@ -1079,6 +1160,15 @@ private:
         if( p.hasRegion && !( p.region.Contains( b.GetOrigin() ) && p.region.Contains( b.GetEnd() ) ) )
             return false;
 
+        if( const int side = overSide( i, aRot ); side >= 0 && p.edgeSide >= 0 )
+        {
+            // its opening on the edge asked for, its edge line on the board's edge
+            if( p.edgeSide != EDGE_ANY && side != p.edgeSide )
+                return false;
+
+            return std::abs( edgeLineAt( i, aPos, side ) - boardEdge( side ) ) <= 1000;
+        }
+
         if( p.edgeSide >= 0 )
         {
             const int tol = m_opt.edge + 2 * m_opt.grid;
@@ -1102,7 +1192,20 @@ private:
         VECTOR2I    t = aTarget;
         const BOX2I rel = m_work[i].box[at( p, aRot )];
 
-        if( p.edgeSide >= 0 )
+        if( const int side = overSide( i, aRot ); side >= 0 && p.edgeSide >= 0 )
+        {
+            // the anchor that puts its edge line on the board's edge
+            const int want = boardEdge( side );
+
+            switch( side )
+            {
+            case EDGE_LEFT:   t.x = want + p.edgeLine; break;
+            case EDGE_RIGHT:  t.x = want - p.edgeLine; break;
+            case EDGE_TOP:    t.y = want + p.edgeLine; break;
+            default:          t.y = want - p.edgeLine; break;
+            }
+        }
+        else if( p.edgeSide >= 0 )
         {
             const int x[2] = { m_area.GetLeft() + m_opt.edge - rel.GetLeft(), m_area.GetRight() - m_opt.edge - rel.GetRight() };
             const int y[2] = { m_area.GetTop() + m_opt.edge - rel.GetTop(), m_area.GetBottom() - m_opt.edge - rel.GetBottom() };
@@ -1137,7 +1240,7 @@ private:
         if( !ruled( i, aPos, aRot ) )
             return false;
 
-        return free( i, aPos, aRot ) && insideBoard( boxAt( i, aPos, aRot ) );
+        return free( i, aPos, aRot ) && insideFor( i, aPos, aRot );
     }
 
     /// Nearest legal anchor to aTarget for part i in rotation aRot (square rings on the grid).
@@ -1148,8 +1251,20 @@ private:
 
         // keep the search inside what could fit at all
         const BOX2I& rel = m_work[i].box[at( m_parts[i], aRot )];
-        const int    xmin = m_area.GetLeft() - rel.GetLeft(), xmax = m_area.GetRight() - rel.GetRight();
-        const int    ymin = m_area.GetTop() - rel.GetTop(), ymax = m_area.GetBottom() - rel.GetBottom();
+        int          xmin = m_area.GetLeft() - rel.GetLeft(), xmax = m_area.GetRight() - rel.GetRight();
+        int          ymin = m_area.GetTop() - rel.GetTop(), ymax = m_area.GetBottom() - rel.GetBottom();
+
+        // a connector over the edge: its edge line on the edge exactly (off the grid), along it
+        // on the grid
+        if( const int side = overSide( i, aRot ); side >= 0 && m_parts[i].edgeSide >= 0 )
+        {
+            const VECTOR2I on = ruleTarget( i, aTarget, aRot );
+
+            if( side == EDGE_LEFT || side == EDGE_RIGHT )
+                xmin = xmax = t.x = on.x;
+            else
+                ymin = ymax = t.y = on.y;
+        }
 
         if( xmin > xmax || ymin > ymax )
             return false;
@@ -1672,6 +1787,23 @@ private:
 };
 
 } // namespace
+
+
+int MouthAt( int aMouth, int aRot )
+{
+    if( aMouth < 0 || aMouth >= EDGE_ANY )
+        return -1;
+
+    const VECTOR2I d = rotated( SIDE_DIR[aMouth], aRot );
+
+    for( int s = 0; s < 4; ++s )
+    {
+        if( ( d - SIDE_DIR[s] ).EuclideanNorm() < 10 )
+            return s;
+    }
+
+    return -1;
+}
 
 
 RESULT Place( std::vector<PART>& aParts, int aNetCount, const SHAPE_POLY_SET& aOutline, const OPTIONS& aOptions )

@@ -283,6 +283,12 @@ message EdgeRule
 {
   string ref  = 1;
   string side = 2;     // left, right, top, bottom, any: its courtyard at that board edge
+  // A connector (USB, RJ45, a DC jack ...) opens over the edge: turned to face it, the
+  // footprint's own "PCB Edge" line on the board edge, else its courtyard's front flush with it.
+  // overhang (mm): the courtyard's front this far past the edge instead. A part with no opening
+  // found (the courtyard not well past its pads on one side) stays inside.
+  optional double overhang = 3;
+  bool inside = 4;     // stay inside the board like any part, opening or not
 }
 
 message RegionRule
@@ -339,6 +345,8 @@ message AutoPlaceResponse
   bool   kept_current   = 25;     // the current placement was better (shorter, or all parts fit):
                                   // nothing moved; hpwl_after_mm is what the new one would have had
   int32  zones          = 26;     // copper zones on the board: refill them before run_drc
+  repeated string edge_notes = 27; // edge rules: which connectors go over the edge and how far,
+                                   // which stay inside and why
 }
 
 message FetchLcsc

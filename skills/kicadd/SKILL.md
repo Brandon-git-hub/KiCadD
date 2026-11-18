@@ -135,6 +135,12 @@ From a blank project, before placing parts:
    field to keep functional blocks together, `rules` (edge, region, rotation, near), `fixed`
    for parts that must not move (place connectors first, then fix them), `back_decaps`.
    `measure_only=true` reports the numbers without moving anything.
+   Connectors (USB, RJ45, DC jack): an edge rule `{"J1": "left"}` turns one to open over that
+   edge, with the footprint's own "PCB Edge" line on the board edge (KiCad's library has it for
+   many connectors), else its courtyard front flush with the edge. `{"J1": {"side": "left",
+   "overhang": 1}}` puts the front 1 mm past the edge; `"inside": true` keeps it inside. The
+   reply's `edge:` lines say which way each went and why; check flush ones against the
+   connector's datasheet (the enclosure decides the real overhang).
 3. On a board that is already placed or routed, `auto_place` keeps the current placement when
    the new one is not better (`force=true` applies it anyway). Tracks are obstacles: rip up
    with `delete_tracks` first if the parts should really move.

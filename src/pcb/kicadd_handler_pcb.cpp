@@ -74,6 +74,7 @@
 #include <reporter.h>
 #include "pcb/kicadd_route.h"
 #include "pcb/kicadd_impedance.h"
+#include "pcb/kicadd_mouth.h"
 #include <pcb_edit_frame.h>
 #include <pcb_shape.h>
 #include <zone_settings.h>
@@ -5424,6 +5425,8 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
 
     auto bad = [&]( const std::string& aMsg ) { return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, aMsg ) ); };
 
+    std::map<std::string, std::string> overhangHow;
+
     for( const kicadd::board::EdgeRule& r : req.edge_rules() )
     {
         static const std::map<std::string, int> sides = { { "left", ap::EDGE_LEFT },   { "right", ap::EDGE_RIGHT },
@@ -5439,7 +5442,53 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
             return bad( "edge rule: no footprint " + r.ref() );
 
         for( int i : hit )
+        {
             parts[i].edgeSide = side->second;
+
+            if( r.inside() )
+                continue;
+
+            // a connector: its opening over the edge
+            std::optional<double> given;
+
+            if( r.has_overhang() )
+                given = r.overhang();
+
+            kicadd::mouth::MOUTH m = kicadd::mouth::Find( *fps[i], given );
+            const std::string&   ref = parts[i].ref;
+
+            if( m.side < 0 )
+            {
+                if( given )
+                    out.add_edge_notes( ref + ": no opening found (its courtyard is not well past its pads on one side): "
+                                        "kept inside the edge" );
+
+                continue;
+            }
+
+            if( !m.error.empty() )
+            {
+                out.add_edge_notes( ref + ": " + m.error + ": kept inside the edge (a smaller overhang, or inside=true)" );
+                continue;
+            }
+
+            parts[i].overhang = true;
+            parts[i].mouth = m.side;
+            parts[i].edgeLine = m.edgeLine;
+
+            char buf[200];
+            const double over = ( m.front - m.edgeLine ) / 1e6;
+
+            if( m.marked )
+                std::snprintf( buf, sizeof( buf ), "%.2f mm over it (the footprint's PCB Edge line)", over );
+            else if( given )
+                std::snprintf( buf, sizeof( buf ), "%.2f mm over it (overhang given)", over );
+            else
+                std::snprintf( buf, sizeof( buf ), "its courtyard flush with it (no edge line in the footprint; "
+                                                   "overhang=<mm> to go further)" );
+
+            overhangHow[ref] = buf;
+        }
     }
 
     for( const kicadd::board::RegionRule& r : req.region_rules() )
@@ -5471,7 +5520,16 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
             return bad( "rotation rule: no footprint " + r.ref() );
 
         for( int i : hit )
+        {
+            const ap::PART& p = parts[i];
+
+            if( p.overhang && p.edgeSide != ap::EDGE_ANY && ap::MouthAt( p.mouth, deg / 90 ) != p.edgeSide )
+                return bad( "rotation rule " + r.ref() + ": at " + std::to_string( deg ) + " degrees " + p.ref
+                            + " opens to the " + kicadd::mouth::SideName( ap::MouthAt( p.mouth, deg / 90 ) )
+                            + ", away from its edge (leave the rotation free, or inside=true in its edge rule)" );
+
             parts[i].fixedRot = deg / 90;
+        }
     }
 
     for( const kicadd::board::NearRule& r : req.near_rules() )
@@ -5678,6 +5736,7 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
     job->opt.progress = &job->progress;
     job->measureOnly = req.measure_only();
     job->groupSource = groupSource;
+    job->overhang = std::move( overhangHow );
     job->board = b;
     job->revision = feed() ? feed()->Revision() : 0;
     job->started = std::chrono::steady_clock::now();
@@ -5891,6 +5950,17 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::finishAutoPlace( AUTOPLACE
 
     for( const std::string& v : res.violations )
         out.add_rule_violations( v );
+
+    for( const ap::PART& p : parts )
+    {
+        auto how = aJob.overhang.find( p.ref );
+
+        if( how == aJob.overhang.end() || unplaced.count( p.ref ) )
+            continue;
+
+        out.add_edge_notes( p.ref + ": opens over the board's " + kicadd::mouth::SideName( ap::MouthAt( p.mouth, p.rot ) )
+                            + " edge, " + how->second );
+    }
 
     out.set_on_back( res.onBack );
     out.set_flipped( res.flipped );

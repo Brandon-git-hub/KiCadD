@@ -1220,7 +1220,12 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                    { "rules", { { "type", "object" },
                                 { "description",
                                   "placement rules; refs may be patterns (\"J*\"). edge: {\"J1\": \"left\"} "
-                                  "(left/right/top/bottom/any: the courtyard at that board edge); region: "
+                                  "(left/right/top/bottom/any: the courtyard at that board edge); a connector "
+                                  "(USB, RJ45, DC jack: its courtyard well past its pads on one side) is turned "
+                                  "to open over that edge, the footprint's own \"PCB Edge\" line on the edge "
+                                  "(else its front flush with it); {\"J1\": {\"side\": \"left\", "
+                                  "\"overhang\": 1}} puts its front 1 mm past the edge, \"inside\": true keeps "
+                                  "it inside like any part; region: "
                                   "{\"U1\": [x0, y0, x1, y1]} (mm, the courtyard inside); rotation: "
                                   "{\"J1\": 90}; near: [{\"refs\": [\"Y1\", \"U1\"], \"max\": 5}] (mm "
                                   "between the centres of their pads). edge/region/rotation are hard, near is reported when "
@@ -1293,7 +1298,25 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                     {
                         kicadd::board::EdgeRule* r = req.add_edge_rules();
                         r->set_ref( ref );
-                        r->set_side( side.is_string() ? side.get<std::string>() : "" );
+
+                        if( side.is_object() )
+                        {
+                            r->set_side( side.value( "side", std::string() ) );
+
+                            if( side.contains( "overhang" ) )
+                            {
+                                if( !side["overhang"].is_number() )
+                                    return fail( "edge rule " + ref + ": overhang is in mm" );
+
+                                r->set_overhang( side["overhang"].get<double>() );
+                            }
+
+                            r->set_inside( side.value( "inside", false ) );
+                        }
+                        else
+                        {
+                            r->set_side( side.is_string() ? side.get<std::string>() : "" );
+                        }
                     }
 
                     for( const auto& [ref, box] : region.items() )
@@ -1475,6 +1498,9 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                              + std::to_string( r.zones() ) + " copper zone(s) in their old shape: "
                              "refill_zones before run_drc";
                 }
+
+                for( const std::string& n : r.edge_notes() )
+                    t += "\n  edge: " + n;
 
                 if( r.rule_violations_size() )
                 {

@@ -26,7 +26,7 @@ Beta 已能走完整個設計流程（電路圖 → 選料 → 擺件 → 規則
 依成本由低到高：
 
 1. **控制阻抗線寬計算。** 重用 pcb_calculator 的 transline 計算與內建 26 種 JLCPCB 疊層，估算單端 / 差分線寬並寫入規則。 ✅ `impedance` 工具（各銅層的線寬 / 間距，或反算阻抗）與 `set_rules` 的 `impedance` / `diff_impedance`（寫入網路類別），用 KiCad 的 `common/transline_calculations`（2026-11-18）。
-2. **`auto_place` 連接器伸出板邊。** USB-C、RJ45、DC Jack 等依規則突出板框。
+2. **`auto_place` 連接器伸出板邊。** USB-C、RJ45、DC Jack 等依規則突出板框。 ✅ 板邊規則把連接器轉成開口朝外：封裝有「PCB Edge」線就照它（KiCad 庫約四分之一的 USB / RJ / DC 封裝有），沒有就依外形判斷開口、前緣齊板邊，或用 `overhang` 指定伸出量（2026-11-19）。
 3. **輕量 3D 外觀：EasyEDA OBJ → VRML（`.wrl`）。** 重點在模型原點與旋轉對齊；參考 easyeda2kicad 的偏移處理前先確認授權。
 
 ## 階段二：Layout-Aware 檢查（併入 `audit`）

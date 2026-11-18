@@ -59,6 +59,7 @@ set( KICADD_PCB_SRCS
     ${KICADD_DIR}/src/pcb/kicadd_setup.cpp
     ${KICADD_DIR}/src/pcb/kicadd_route.cpp
     ${KICADD_DIR}/src/pcb/kicadd_impedance.cpp
+    ${KICADD_DIR}/src/pcb/kicadd_mouth.cpp
     ${KICADD_DIR}/src/common/kicadd_zcalc.cpp
     ${KICADD_DIR}/src/common/kicadd_libtable.cpp
     )

@@ -67,6 +67,13 @@ struct PART
     bool  hasRegion = false;  ///< its courtyard inside region
     BOX2I region;
     int   fixedRot = -1;      ///< only this rotation (quarter turns), -1 free
+
+    /// A connector over the board edge (with edgeSide): its opening (EDGE_LEFT .. EDGE_BOTTOM at
+    /// rotation 0) faces that edge and the board edge runs edgeLine from the anchor that way;
+    /// what is beyond it hangs over. The rest keeps edge from the other sides as usual.
+    bool  overhang = false;
+    int   mouth = -1;
+    int   edgeLine = 0;       ///< nm
     std::vector<VECTOR2I> flipOutline, flipCopper, flipPadOffset;
     std::vector<BOX2I>    flipPadBox;
 };
@@ -164,6 +171,9 @@ struct RESULT
  * @param aOutline   the board outline (Edge.Cuts polygons)
  */
 RESULT Place( std::vector<PART>& aParts, int aNetCount, const SHAPE_POLY_SET& aOutline, const OPTIONS& aOptions );
+
+/// The side (EDGE_*) a part's opening faces in rotation aRot (quarter turns); -1: none.
+int MouthAt( int aMouth, int aRot );
 
 /// Total half-perimeter wire length, mm, over nets with at least two pads (all nets).
 double Hpwl( const std::vector<PART>& aParts, int aNetCount );

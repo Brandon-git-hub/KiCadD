@@ -156,6 +156,7 @@ def tests(a):
         ("setup", "headless", [], lambda w: py + [c("setup_e2e.py")] + b + k + ["--work", w]),
         ("rules", "headless", [], lambda w: py + [c("rules_e2e.py")] + b + k + ["--work", w]),
         ("impedance", "headless", [], lambda w: py + [c("impedance_e2e.py")] + b + k + ["--work", w]),
+        ("overhang", "headless", [], lambda w: py + [c("overhang_e2e.py")] + b + k + ["--work", w]),
         ("hier", "headless", [], lambda w: py + [c("hier_e2e.py")] + b + k + ["--work", w]),
         ("sch_edit", "headless", [], lambda w: py + [c("sch_edit_e2e.py")] + b + k + ["--work", w]),
         ("sch_doc", "headless", [], lambda w: py + [c("sch_doc_e2e.py")] + b + d + ["--work", w]),

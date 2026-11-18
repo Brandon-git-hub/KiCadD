@@ -184,6 +184,7 @@ private:
         bool                                 measureOnly = false;
         int                                  movable = 0;
         std::string                          groupSource;
+        std::map<std::string, std::string>   overhang;      ///< connector over the edge: how far, from what
         BOARD*                               board = nullptr;
         uint64_t                             revision = 0;  ///< the board's, at the start
         std::chrono::steady_clock::time_point started;
