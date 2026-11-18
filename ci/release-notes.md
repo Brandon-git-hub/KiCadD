@@ -2,7 +2,7 @@
      {{UPSTREAM}} is filled from patches/UPSTREAM_BASE; build info and SHA-256 are appended. -->
 KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修剪版 Windows x64 build，加上 Agent（MCP）協同設計。
 
-> ⚠️ Beta（pre-release）。功能凍結，這個階段只修可靠度。由 GitHub Actions 自動建置；25 個端到端測試在 Linux 上全部通過（含桌面版），Windows CI 跑 smoke test 與 headless 的出廠、貼片、電路圖文件、工具、設定、undo 歷史測試；桌面版在 Windows 上只有人工試用。
+> ⚠️ Beta（pre-release）。已能走完整個設計流程，功能仍會持續加入。由 GitHub Actions 自動建置；28 個端到端測試在 Linux 上全部通過（含桌面版），Windows CI 跑 smoke test 與 headless 的出廠、貼片、電路圖文件、工具、設定、undo 歷史測試；桌面版在 Windows 上只有人工試用。
 
 ## 使用前須知
 完整的使用說明（安裝、接上 Agent、skill、存檔格式、做得到 / 做不到）：[docs/GUIDE.md](https://github.com/Brandon-git-hub/KiCadD/blob/main/docs/GUIDE.md)。
@@ -11,10 +11,22 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 - **平台：** 只提供 Windows x64。Linux 可以自行從原始碼編譯，沒有 macOS 版。
 - **不附 KiCad 官方元件庫：** 符號和封裝請用 `lcsc_fetch`、`lcsc_match` 從 LCSC 取得，或用 `lib_create_symbol`、`lib_create_footprint` 自建，也可以 `lib_register` 專案裡現有的庫。
 - **一次一個專案：** 一個服務同時只開一個專案（板子加電路圖），換專案請用 `open_board`。
-- **目前不支援：** 差分對與等長佈線、全板自動佈線（`route` 只代替重複的手動佈線）、電路圖自動排版、組裝圖、STEP / 3D、ODB++ / IPC-2581 / DXF、控制阻抗線寬計算、MCP resources / prompts。
+- **目前不支援：** 差分對與等長佈線、全板自動佈線（`route` 只代替重複的手動佈線）、電路圖自動排版、組裝圖、STEP 匯出（3D 模型只有 VRML）、ODB++ / IPC-2581 / DXF、MCP resources / prompts。
 
-## 這一版（beta.1）
-第一個 beta：功能凍結，之後的 beta.x 只修問題（接下來的規劃見 [ROADMAP](https://github.com/Brandon-git-hub/KiCadD/blob/main/ROADMAP.md)）。
+## 這一版（beta.2）
+ROADMAP 階段一（交付閉環）的三項（規劃見 [ROADMAP](https://github.com/Brandon-git-hub/KiCadD/blob/main/ROADMAP.md)）。
+
+**新功能（工具共 59 個）**
+- **`impedance`：控制阻抗線寬。** 依板子的疊層算出每個銅層的單端線寬（`z=50`）、差分線寬或間距（`z_diff=90`，指定 `gap` 或 `width`），也可以反算某個線寬的阻抗。外層當成微帶線（參考往內的下一層銅，含防焊層），內層當成帶狀線（參考上下兩層）；用的是 KiCad 自己的傳輸線計算（和 pcb_calculator 相同）。參考層還沒鋪銅時會提醒。先用 `board_setup stackup="JLC04161H-7628"` 套 JLCPCB 的阻抗疊層，例如 50 Ω 在 F.Cu 是 0.376 mm、內層 0.297 mm；下單前請用 JLCPCB 的阻抗計算器核對。
+- **`set_rules` 依阻抗寫網路類別：** `{"RF": {"impedance": 50}}` 設線寬，`{"USB": {"diff_impedance": 90}}` 設差分寬度與間距（有給 `diff_pair_gap` 就算寬度，有給 `diff_pair_width` 就算間距，都沒給就用類別的 clearance 當間距）；`impedance_layer` 指定以哪一層計算（預設 F.Cu），回應會列出其他層需要的線寬。
+- **`auto_place` 連接器伸出板邊：** 板邊規則（`{"J1": "left"}`）會把 USB、RJ45、DC 插座等連接器轉成開口朝外。封裝有「PCB Edge」線（KiCad 庫約四分之一的 USB / RJ / DC 封裝有）就把那條線放在板邊，沒有就依外形判斷開口、前緣齊板邊；`{"side": "left", "overhang": 1}` 讓前緣再伸出 1 mm，`"inside": true` 保持在板內。焊盤會超出板邊的伸出量不會套用；旋轉規則把開口轉離板邊會被拒絕。回應的 `edge:` 行說明每個連接器怎麼放、伸出多少、依據什麼。
+- **立創零件的 3D 模型：** `lcsc_fetch`、`add_footprint lcsc=` 會一併取得 EasyEDA 的 3D 模型，轉成 VRML 存到 `<專案>/lcsc.3dshapes/<封裝>.wrl`，封裝直接引用，3D 檢視器和 `pcb render` 都看得到。位置、旋轉、高度照 EasyEDA 的擺法（以 USB-C、SOT-23、SOT-223 驗證引腳都落在焊盤上）。每個模型第一次多一個請求，之後讀快取；`model=false` 可以不取。
+
+**修正**
+- **`sync_pcb` 會說出丟掉的製造屬性：** DNP、不進 BOM / 座標檔這些屬性以電路圖為準，只設在板子上的會在同步時被蓋掉。回應現在會列出來，並附上保留它們的 `sch_set_fields` 呼叫；它的 undo 也不再回報有零件移動。
+
+## beta.1
+第一個 beta。
 
 **新工具（共 58 個）**
 - **`sch_export_pdf`：電路圖 PDF。** 所有圖紙依頁序合成一份 PDF，有圖框與標題欄，圖紙之間可以點擊跳頁，點零件會跳出欄位。用的是記憶體裡的電路圖，未存檔的修改也會出現在 PDF 裡。預設存成 `<專案>/<電路圖名>.pdf`，可選黑白。

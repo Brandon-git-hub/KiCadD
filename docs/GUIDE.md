@@ -53,7 +53,7 @@ Claude Code：`claude mcp add kicadd -- C:\KiCadD\bin\kicadd-mcp.exe --stdio`（
 |---|---|
 | 電路圖 | `sch_add_part`（符號庫、立創編號、電源符號）、`sch_connect` / `sch_disconnect`、`sch_move`、`sch_wire`、`sch_delete`、`sch_set_fields`、階層圖紙 `sch_add_sheet`、`run_erc`、`sch_netlist` |
 | 電路圖文件 | `sch_annotate`（重新編號，可以 dry run、限定圖紙或零件、設定起始號、每頁一段）、`sch_export_pdf`（所有圖紙合成一份 PDF，可點擊跳頁）、`sch_render`（PNG） |
-| 立創零件 | `lcsc_fetch`（封裝、符號、庫存、價格）、`lcsc_search`（依規格找料）、`lcsc_match`（批次配料號）；編輯器裡的 Place → Add LCSC Part / Symbol |
+| 立創零件 | `lcsc_fetch`（封裝、符號、3D 模型（VRML）、庫存、價格）、`lcsc_search`（依規格找料）、`lcsc_match`（批次配料號）；編輯器裡的 Place → Add LCSC Part / Symbol |
 | 自建元件 | `lib_create_symbol`、`lib_create_footprint`、`lib_register` |
 | 電路圖到 PCB | `sync_pcb`（照 UUID 對應，重新編號的零件原地改名）、`auto_place`（依連線擺放、去耦電容靠 IC，可設分群和擺件規則；USB、RJ45、DC 插座等連接器可依板邊規則朝外伸出板框） |
 | PCB 編輯 | 查詢、移動、翻面、新增 / 刪除封裝、`pcb_set_fields`、`delete_tracks`、`board_outline`、`board_setup`（疊層，或 JLCPCB 的阻抗疊層）、`set_rules`（網路類別、JLCPCB 製程預設、依電流算線寬、依阻抗算線寬 / 差分間距）、`impedance`（各銅層的控制阻抗線寬）、`zones` |
@@ -66,7 +66,6 @@ Claude Code：`claude mcp add kicadd -- C:\KiCadD\bin\kicadd-mcp.exe --stdio`（
 | 項目 | 狀態 |
 |---|---|
 | 全板自動佈線、差分對 / 等長的自動佈線（meander） | **不做。** `route` 只代替重複的手動佈線。差分對和等長之後會做成**檢查**（ROADMAP 階段二）。你可以照常用 KiCad 自己的差分對和等長工具手動佈線。 |
-| 立創零件的 3D 模型 | ROADMAP 階段一（EasyEDA OBJ → VRML） |
 | SPICE 模擬 | 沒有內建 ngspice（SPICE 欄位和 netlist 匯出仍保留）；局部模擬在 ROADMAP 階段三 |
 | STEP / GLB / STL 匯出 | 沒有 OpenCASCADE，3D 模型只讀 VRML（`.wrl`） |
 | ODB++ / IPC-2581 / DXF、組裝圖 | 未支援（組裝圖在階段五） |

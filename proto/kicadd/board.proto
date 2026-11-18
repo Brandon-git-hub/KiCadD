@@ -353,6 +353,7 @@ message FetchLcsc
 {
   string lcsc    = 1;      // "C8734"
   bool   refresh = 2;      // ask the network even when cached
+  bool   no_model = 3;     // leave out the 3D model (one more request the first time)
 }
 
 message LcscPad
@@ -380,6 +381,7 @@ message FetchLcscResponse
   string description = 13;
   LcscSymbol symbol  = 14; // M4b: the schematic symbol, when it could be saved
   LcscStock  stock   = 15; // M4c: catalogue data from the same answer
+  string model       = 16; // the 3D model: "3D model lcsc.3dshapes/<package>.wrl (...)", or why none
 }
 
 message LcscStock

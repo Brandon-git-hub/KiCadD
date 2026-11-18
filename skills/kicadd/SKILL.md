@@ -73,6 +73,9 @@ what each tool does; this skill says how to use them together.
 2. Use one: `sch_add_part lcsc="C25804"` (symbol + footprint saved to the project's LCSC
    library), or `lcsc_fetch` first to inspect pins and pads, or put the number on an existing
    part with `sch_set_fields {"LCSC": "C25804"}`.
+   The part's 3D model comes along (EasyEDA's, converted to `lcsc.3dshapes/<package>.wrl` and
+   placed as EasyEDA places it) for the 3D viewer; `lcsc_fetch model=false` leaves it out. A
+   reply line says whether there was one.
 3. Many parts at once: `lcsc_match` (dry run) groups the parts without an LCSC number by value
    and footprint and picks one for each group of resistors, capacitors, inductors, ferrite
    beads (FB) and LEDs (colour in the value) in chip packages. Check the choices (capacitor
@@ -235,5 +238,5 @@ answer: when the next call depends on a result, make separate calls.
 ## Not available (say so instead of improvising)
 
 Autorouting a whole board, differential pairs, length tuning, pushing (shoving) existing tracks;
-PCB or assembly price quotes; 3D models of LCSC parts; STEP export. For those, the user works in
+PCB or assembly price quotes; STEP export (3D models are VRML only). For those, the user works in
 the editor or on the manufacturer's site.

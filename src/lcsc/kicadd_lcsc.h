@@ -18,6 +18,8 @@
 #include <string>
 #include <vector>
 
+#include "lcsc/kicadd_obj2wrl.h"
+
 class BOARD;
 class FOOTPRINT;
 class KIWAY;
@@ -53,6 +55,12 @@ struct PART
     std::string                jlcClass;      ///< "Basic Part" / "Extended Part" / ""
     std::string                asOf;          ///< date of that data (fetch or cache date)
     std::unique_ptr<FOOTPRINT> footprint;     ///< no board, no nets, at the origin
+
+    // 3D: EasyEDA's model of the footprint (its OBJ), as VRML for <project>/lcsc.3dshapes
+    std::string                modelUuid;     ///< "": the footprint has none in EasyEDA
+    kicadd::obj2wrl::PLACE     modelPlace;    ///< where EasyEDA puts it, from the footprint's 3D node
+    std::string                wrl;           ///< converted (saved with the footprint); "" none
+    std::string                modelNote;     ///< what became of it, one line
 };
 
 /// "C8734", "c8734" and "8734" -> "C8734"; empty when it isn't an LCSC number.
@@ -64,8 +72,15 @@ std::string Normalize( const std::string& aLcsc );
  * Cache: KICADD_LCSC_CACHE or <KiCad user cache>/kicadd/lcsc/<C>.json, the raw API answer.
  * A cached part is used without asking the network unless @a aRefresh; when the network
  * fails a cached copy is used anyway (with a note). KICADD_LCSC_OFFLINE=1: cache only.
+ * @a aModel: also its 3D model (EasyEDA's OBJ, cached as 3d-<uuid>.obj, one more request the
+ * first time), converted to VRML (PART::wrl) and referenced by the footprint; a model that
+ * can't be had only leaves a note (PART::modelNote).
  */
-bool FetchPart( const std::string& aLcsc, bool aRefresh, PART& aPart, std::string& aError );
+bool FetchPart( const std::string& aLcsc, bool aRefresh, PART& aPart, std::string& aError, bool aModel = true );
+
+/// Where the converted 3D models go, next to lcsc.pretty; the footprints point at
+/// ${KIPRJMOD}/lcsc.3dshapes/<package>.wrl
+inline constexpr const char* MODEL_DIR = "lcsc.3dshapes";
 
 struct SAVED
 {

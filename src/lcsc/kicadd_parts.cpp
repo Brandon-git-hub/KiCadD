@@ -520,7 +520,7 @@ bool SearchParts( const kicadd::board::LcscSearch& aReq, kicadd::board::LcscSear
         PART                    part;
         std::string             err;
 
-        if( FetchPart( h->lcsc(), true, part, err ) )
+        if( FetchPart( h->lcsc(), true, part, err, false ) )
         {
             h->set_live_stock( part.stock );
             h->set_live_class( part.jlcClass );

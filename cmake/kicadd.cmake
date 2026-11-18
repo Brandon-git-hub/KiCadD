@@ -47,6 +47,7 @@ set( KICADD_PCB_SRCS
     ${KICADD_DIR}/src/pcb/kicadd_render.cpp
     ${KICADD_DIR}/src/lcsc/kicadd_lcsc.cpp
     ${KICADD_DIR}/src/lcsc/kicadd_parts.cpp
+    ${KICADD_DIR}/src/lcsc/kicadd_obj2wrl.cpp
     ${KICADD_DIR}/src/pcb/kicadd_lcsc_tool.cpp
     ${KICADD_DIR}/src/pcb/kicadd_autoplace.cpp
     ${KICADD_DIR}/src/pcb/kicadd_fab.cpp

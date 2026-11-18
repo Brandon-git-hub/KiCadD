@@ -3634,10 +3634,11 @@ KICADD_HANDLER_PCB::handleFetchLcsc( const HANDLER_CONTEXT<FetchLcsc>& aCtx )
     kicadd::lcsc::PART part;
     std::string        err;
 
-    if( !kicadd::lcsc::FetchPart( aCtx.Request.lcsc(), aCtx.Request.refresh(), part, err ) )
+    if( !kicadd::lcsc::FetchPart( aCtx.Request.lcsc(), aCtx.Request.refresh(), part, err, !aCtx.Request.no_model() ) )
         return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, err ) );
 
     FetchLcscResponse out;
+    out.set_model( part.modelNote );
     out.set_lcsc( part.lcsc );
     out.set_title( part.title );
     out.set_package( part.package );

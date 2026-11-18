@@ -166,6 +166,7 @@ def tests(a):
          lambda w: py + [c("search_e2e.py")] + b + d + ["--work", w, "--index", a.index_gz] + ([] if a.live else ["--no-live"])),
         ("m5", "headless", ["lcsc_cache"], lambda w: py + [c("m5_e2e.py")] + b + k + ["--work", w, "--cache", a.lcsc_cache]),
         ("lcsc", "headless", ["lcsc_cache"], "lcsc"),
+        ("model", "headless", ["lcsc_cache"], lambda w: py + [c("model_e2e.py")] + b + k + ["--work", w, "--cache", a.lcsc_cache]),
         ("autoplace_bg", "headless", ["venv"], lambda w: venv + [c("autoplace_bg_e2e.py")] + b + d + ["--work", w]),
         ("mcp", "stack", ["venv"], "mcp"),
         ("web", "stack", ["venv"], "web"),

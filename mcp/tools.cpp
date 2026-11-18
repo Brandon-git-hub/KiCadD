@@ -1133,6 +1133,7 @@ TOOL_RESULT lcscFetch( IPC_CLIENT& aIpc, const json& aArgs )
 
     req.set_lcsc( aArgs["lcsc"].get<std::string>() );
     req.set_refresh( aArgs.contains( "refresh" ) && aArgs["refresh"].is_boolean() && aArgs["refresh"].get<bool>() );
+    req.set_no_model( aArgs.contains( "model" ) && aArgs["model"].is_boolean() && !aArgs["model"].get<bool>() );
 
     kb::FetchLcscResponse r;
     std::string           err;
@@ -1216,6 +1217,9 @@ TOOL_RESULT lcscFetch( IPC_CLIENT& aIpc, const json& aArgs )
 
     if( !r.note().empty() )
         out += "\n  note: " + r.note();
+
+    if( !r.model().empty() )
+        out += "\n  " + r.model();
 
     out += "\n  " + r.attribution();
     return { out };
@@ -2754,9 +2758,12 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        "library LCSC (lcsc.pretty + lcsc.kicad_sym, added to fp-lib-table and "
                        "sym-lib-table; the symbol's Footprint field points at the footprint), cached for "
                        "offline use. Returns both lib_ids, size, pad numbers/positions and any pin/pad "
-                       "mismatch. add_footprint with lcsc does this by itself.",
+                       "mismatch. Its 3D model (EasyEDA's, converted to VRML in lcsc.3dshapes/, placed as "
+                       "EasyEDA places it) comes along for the 3D viewer unless model=false. add_footprint "
+                       "with lcsc does this by itself.",
                        schema( { { "lcsc", { { "type", "string" }, { "description", "LCSC part number, e.g. C8734" } } },
-                                 { "refresh", { { "type", "boolean" }, { "description", "Fetch again even if cached" } } } },
+                                 { "refresh", { { "type", "boolean" }, { "description", "Fetch again even if cached" } } },
+                                 { "model", { { "type", "boolean" }, { "description", "the 3D model too (default true)" } } } },
                                { "lcsc" } ),
                        [&aIpc]( const json& a ) { return lcscFetch( aIpc, a ); } } );
 

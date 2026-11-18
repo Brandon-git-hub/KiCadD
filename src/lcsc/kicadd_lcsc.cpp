@@ -46,6 +46,8 @@
 #include <cmath>
 #include <thread>
 #include <regex>
+#include <functional>
+#include <algorithm>
 
 using json = nlohmann::json;
 
@@ -289,6 +291,163 @@ void setField( FOOTPRINT& aFp, const wxString& aName, const wxString& aValue )
 }
 
 
+/// The footprint's 3D node (layer 19, an "outline3D" SVGNODE): the model's uuid and where
+/// EasyEDA puts it: on the centre of the node's outline (its c_origin is not always in the
+/// footprint's frame), turned by c_rotation z, its bottom at z. EasyEDA units are 10 mil.
+void modelNode( const json& aDataStr, PART& aPart )
+{
+    constexpr double UNIT = 0.254;   // mm
+    const json       head = aDataStr.value( "head", json::object() );
+    const json       shapes = aDataStr.value( "shape", json::array() );
+
+    auto number = []( const json& aV )
+    {
+        return aV.is_number() ? aV.get<double>() : aV.is_string() ? std::atof( aV.get<std::string>().c_str() ) : 0.0;
+    };
+
+    const double hx = number( head.value( "x", json( 0 ) ) ), hy = number( head.value( "y", json( 0 ) ) );
+
+    for( const json& shape : shapes )
+    {
+        if( !shape.is_string() )
+            continue;
+
+        const std::string& text = shape.get_ref<const std::string&>();
+
+        if( text.rfind( "SVGNODE~", 0 ) != 0 )
+            continue;
+
+        json node = json::parse( text.substr( 8 ), nullptr, false );
+
+        if( node.is_discarded() || !node.is_object() || node.value( "layerid", std::string() ) != "19" )
+            continue;
+
+        const json attrs = node.value( "attrs", json::object() );
+
+        if( attrs.value( "c_etype", std::string() ) != "outline3D" )
+            continue;
+
+        std::string uuid = attrs.value( "uuid", std::string() );
+
+        if( uuid.empty() || uuid.size() > 64
+            || !std::all_of( uuid.begin(), uuid.end(), []( char c ) { return std::isxdigit( (unsigned char) c ); } ) )
+            return;
+
+        // the outline's box: every number pair in its points / path
+        double lo[2] = { 1e18, 1e18 }, hi[2] = { -1e18, -1e18 };
+        int    n = 0;
+
+        std::function<void( const json& )> walk = [&]( const json& aNode )
+        {
+            const json a = aNode.value( "attrs", json::object() );
+
+            for( const char* key : { "points", "d" } )
+            {
+                static const std::regex num( R"(-?\d+(?:\.\d+)?)" );
+                const std::string       v = a.value( key, std::string() );
+                int                     k = 0;
+
+                for( auto it = std::sregex_iterator( v.begin(), v.end(), num ); it != std::sregex_iterator(); ++it, ++k )
+                {
+                    const double x = std::atof( it->str().c_str() );
+                    lo[k % 2] = std::min( lo[k % 2], x );
+                    hi[k % 2] = std::max( hi[k % 2], x );
+                    n++;
+                }
+            }
+
+            for( const json& child : aNode.value( "childNodes", json::array() ) )
+            {
+                if( child.is_object() )
+                    walk( child );
+            }
+        };
+
+        walk( node );
+
+        double cx, cy;
+
+        if( n >= 4 )
+        {
+            cx = ( lo[0] + hi[0] ) / 2;
+            cy = ( lo[1] + hi[1] ) / 2;
+        }
+        else if( std::string o = attrs.value( "c_origin", std::string() ); o.find( ',' ) != std::string::npos )
+        {
+            cx = std::atof( o.c_str() );
+            cy = std::atof( o.c_str() + o.find( ',' ) + 1 );
+        }
+        else
+        {
+            return;
+        }
+
+        aPart.modelUuid = uuid;
+        aPart.modelPlace.x = ( cx - hx ) * UNIT;
+        aPart.modelPlace.y = ( cy - hy ) * UNIT;
+        aPart.modelPlace.z = number( attrs.value( "z", json( 0 ) ) ) * UNIT;
+
+        if( std::string r = attrs.value( "c_rotation", std::string() ); std::count( r.begin(), r.end(), ',' ) == 2 )
+            aPart.modelPlace.rotation = std::atof( r.c_str() + r.rfind( ',' ) + 1 );
+
+        return;
+    }
+}
+
+
+/// The 3D model: the OBJ from the cache or EasyEDA, converted, referenced by the footprint.
+void attachModel( PART& aPart, bool aRefresh )
+{
+    if( aPart.modelUuid.empty() || !aPart.footprint )
+    {
+        aPart.modelNote = "no 3D model in the EasyEDA library";
+        return;
+    }
+
+    wxFileName  cached( cacheDir(), wxS( "3d-" ) + wxString::FromUTF8( aPart.modelUuid ), wxS( "obj" ) );
+    bool        offline = wxGetEnv( wxS( "KICADD_LCSC_OFFLINE" ), nullptr );
+    std::string obj, err;
+
+    if( cached.FileExists() && ( !aRefresh || offline ) && readFile( cached.GetFullPath(), obj ) )
+    {
+    }
+    else if( offline )
+    {
+        aPart.modelNote = "3D model not in the cache (KICADD_LCSC_OFFLINE)";
+        return;
+    }
+    else if( httpGet( "https://modules.easyeda.com/3dmodel/" + aPart.modelUuid, obj, err ) )
+    {
+        writeFile( cached.GetFullPath(), obj );
+    }
+    else if( !( cached.FileExists() && readFile( cached.GetFullPath(), obj ) ) )
+    {
+        aPart.modelNote = "3D model not fetched (" + err + "); fetch the part again later for it";
+        return;
+    }
+
+    kicadd::obj2wrl::INFO info;
+
+    if( !kicadd::obj2wrl::Convert( obj, aPart.modelPlace, aPart.wrl, info, err ) )
+    {
+        aPart.wrl.clear();
+        aPart.modelNote = "3D model not usable: " + err;
+        return;
+    }
+
+    FP_3DMODEL model;
+    model.m_Filename = wxS( "${KIPRJMOD}/" ) + wxString::FromUTF8( MODEL_DIR ) + wxS( "/" )
+                       + wxString::FromUTF8( aPart.package ) + wxS( ".wrl" );
+    aPart.footprint->Models().clear();
+    aPart.footprint->Models().push_back( model );
+
+    char buf[200];
+    std::snprintf( buf, sizeof( buf ), "3D model %s/%s.wrl (EasyEDA's, %.1f x %.1f x %.1f mm, %d triangles)", MODEL_DIR,
+                   aPart.package.c_str(), info.size[0], info.size[1], info.size[2], info.faces );
+    aPart.modelNote = buf;
+}
+
+
 bool convert( const json& aResult, const std::string& aLcsc, PART& aPart, std::string& aError )
 {
     auto pkg = aResult.find( "packageDetail" );
@@ -402,6 +561,7 @@ bool convert( const json& aResult, const std::string& aLcsc, PART& aPart, std::s
 
     FOOTPRINT& fp = *aPart.footprint;
     tidy( fp );
+    modelNode( dataStr, aPart );
 
     UTF8 name = LIB_ID::FixIllegalChars( UTF8( aPart.package ), false );
     aPart.package = name.c_str();
@@ -511,7 +671,7 @@ std::string Normalize( const std::string& aLcsc )
 }
 
 
-bool FetchPart( const std::string& aLcsc, bool aRefresh, PART& aPart, std::string& aError )
+bool FetchPart( const std::string& aLcsc, bool aRefresh, PART& aPart, std::string& aError, bool aModel )
 {
     aPart = PART();
     aPart.lcsc = Normalize( aLcsc );
@@ -587,7 +747,13 @@ bool FetchPart( const std::string& aLcsc, bool aRefresh, PART& aPart, std::strin
 
     try
     {
-        return convert( doc["result"], aPart.lcsc, aPart, aError );
+        if( !convert( doc["result"], aPart.lcsc, aPart, aError ) )
+            return false;
+
+        if( aModel )
+            attachModel( aPart, aRefresh );
+
+        return true;
     }
     catch( const json::exception& e )
     {
@@ -658,12 +824,31 @@ bool SaveToProjectLibrary( const wxString& dir, const PART& aPart, SAVED& aSaved
         return false;
     }
 
+    // its 3D model next to the library
+    std::string modelError;
+
+    if( !aPart.wrl.empty() )
+    {
+        wxFileName shapes( dir, wxString::FromUTF8( aPart.package ), wxS( "wrl" ) );
+        shapes.AppendDir( wxString::FromUTF8( MODEL_DIR ) );
+
+        if( !shapes.DirExists() )
+            wxFileName::Mkdir( shapes.GetPath(), wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL );
+
+        if( !writeFile( shapes.GetFullPath(), aPart.wrl ) )
+            modelError = "the 3D model could not be written to " + shapes.GetFullPath().ToStdString();
+    }
+
     aSaved.libId = std::string( LIB_NICKNAME ) + ":" + aPart.package;
     aSaved.file = wxFileName( lib.GetPath(), wxString::FromUTF8( aPart.package ), wxS( "kicad_mod" ) )
                           .GetFullPath()
                           .ToStdString();
 
     aSaved.registered = registerLibrary( dir, false, aSaved.note );
+
+    if( !modelError.empty() )
+        aSaved.note += ( aSaved.note.empty() ? "" : "; " ) + modelError;
+
     return true;
 }
 
