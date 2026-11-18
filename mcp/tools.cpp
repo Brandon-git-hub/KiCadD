@@ -401,7 +401,7 @@ TOOL_RESULT boardSummary( IPC_CLIENT& aIpc )
 
     std::string file = r.file();
 
-    if( size_t slash = file.find_last_of( '/' ); slash != std::string::npos )
+    if( size_t slash = file.find_last_of( "/\\" ); slash != std::string::npos )
         file = file.substr( slash + 1 );
 
     return { "file=" + file + " footprints=" + std::to_string( r.footprints() )
@@ -421,7 +421,7 @@ std::string boardFileName( IPC_CLIENT& aIpc, std::string& aErr )
 
     std::string file = r.file();
 
-    if( size_t slash = file.find_last_of( '/' ); slash != std::string::npos )
+    if( size_t slash = file.find_last_of( "/\\" ); slash != std::string::npos )
         file = file.substr( slash + 1 );
 
     return file;

@@ -733,7 +733,7 @@ void WEB_HUB::runJob( const JOB& aJob )
         {
             kiapi::board::commands::RefillZones req;
             req.mutable_board()->set_type( kiapi::common::types::DOCTYPE_PCB );
-            req.mutable_board()->set_board_filename( summary.file().substr( summary.file().find_last_of( '/' ) + 1 ) );
+            req.mutable_board()->set_board_filename( summary.file().substr( summary.file().find_last_of( "/\\" ) + 1 ) );
             google::protobuf::Empty empty;
 
             if( m_ipc.Call( req, empty, err ) )
@@ -757,7 +757,7 @@ void WEB_HUB::runJob( const JOB& aJob )
 
         if( m_ipc.Call( kb::GetBoardSummary(), summary, err ) )
         {
-            std::string file = summary.file().substr( summary.file().find_last_of( '/' ) + 1 );
+            std::string file = summary.file().substr( summary.file().find_last_of( "/\\" ) + 1 );
             kiapi::common::commands::SaveDocument req;
             req.mutable_document()->set_type( kiapi::common::types::DOCTYPE_PCB );
             req.mutable_document()->set_board_filename( file );

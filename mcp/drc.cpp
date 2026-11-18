@@ -68,7 +68,7 @@ bool RunFullDrc( IPC_CLIENT& aIpc, DRC_REPORT& aReport, std::string& aError )
 
     kiapi::board::tasks::StartDrcTask start;
     start.mutable_board()->set_type( kiapi::common::types::DOCTYPE_PCB );
-    start.mutable_board()->set_board_filename( summary.file().substr( summary.file().find_last_of( '/' ) + 1 ) );
+    start.mutable_board()->set_board_filename( summary.file().substr( summary.file().find_last_of( "/\\" ) + 1 ) );
 
     kiapi::common::tasks::StartTaskResponse started;
 
