@@ -173,6 +173,14 @@ length matching, dense escapes).
   count before and after. Existing tracks keep their width. A class for a current:
   `{"classes": {"VIN_2A": {"current": 2}}, "assign": {"VIN": "VIN_2A"}}` sets the IPC-2221 width
   for the board's outer copper (the note says what inner layers would need).
+- Controlled impedance: set the fab's stackup first (`board_setup stackup="JLC04161H-7628"`),
+  then `impedance z=50` (or `z_diff=90 gap=0.2`) shows each copper layer's width; `width` alone
+  gives a width's impedance. `set_rules {"classes": {"RF": {"impedance": 50}, "USB":
+  {"diff_impedance": 90, "diff_pair_gap": 0.15}}}` writes them into net classes, for F.Cu unless
+  `impedance_layer` names another (a class has one width: the note gives the other layers').
+  A pair with no gap given uses the class's clearance as the gap. The reference planes (the next
+  copper layers) must be poured (`zones create`); the response says which are not. Tell the user
+  to check the widths with the fab's calculator before ordering.
 - `zones` lists copper zones; with `nets` / `layers` / `ids` / `all` and new values it changes
   clearance, minimum width, priority or pad connection and refills. `create` makes a new one
   (see "A new board").

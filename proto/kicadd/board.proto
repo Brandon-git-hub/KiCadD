@@ -728,6 +728,14 @@ message NetclassRule
   // track_width is not given; temp_rise in C (default 10)
   optional double current         = 9;
   optional double temp_rise       = 10;
+  // SetRules: the track width for a single-ended impedance (ohm) when track_width is not given,
+  // from the board's stackup on impedance_layer (default F.Cu)
+  optional double impedance       = 11;
+  // SetRules: diff_pair_width and diff_pair_gap for a pair's differential impedance (ohm): the
+  // width at diff_pair_gap when given, the gap at diff_pair_width when that is given, else the
+  // width at the class's clearance
+  optional double diff_impedance  = 12;
+  string          impedance_layer = 13;
 }
 
 message NetclassAssign
@@ -831,6 +839,38 @@ message ZonesResponse
   int32  changed           = 3;
   repeated string notes    = 4;   // create: the priority chosen; zones of other nets it overlaps at
                                   // the same priority
+}
+
+// Controlled impedance from the board's stackup (nothing changes; set_rules impedance /
+// diff_impedance writes a class). Per copper layer: an outer layer is a microstrip over the
+// next layer in, an inner one a stripline between its neighbours. z: a track's width for this
+// Z0; z_diff: a pair's width at gap (default 0.2 mm), or its gap at width; neither: the
+// impedance of width (and gap: the pair's). Lengths in mm. Returns ImpedanceResponse
+message Impedance
+{
+  double z      = 1;
+  double z_diff = 2;
+  optional double width = 3;
+  optional double gap   = 4;
+  repeated string layers = 5;   // default every copper layer
+}
+
+message ImpedanceLayer
+{
+  string layer    = 1;
+  string geometry = 2;   // "F.Cu: microstrip over In1.Cu, 0.2104 mm Er 4.4, ..."
+  double width    = 3;   // mm
+  double gap      = 4;   // mm, a pair
+  double z        = 5;   // ohm: Z0, or a pair's differential impedance
+  double delay    = 6;   // ps/cm (a pair: odd mode)
+  string error    = 7;   // no answer on this layer: why
+  repeated string unpoured_planes = 8;   // reference layers with no copper zone on them yet
+}
+
+message ImpedanceResponse
+{
+  repeated ImpedanceLayer layers = 1;
+  string note = 2;   // where the dielectric numbers come from
 }
 
 // ---------------------------------------------------------------------------

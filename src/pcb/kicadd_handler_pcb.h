@@ -105,6 +105,9 @@ private:
     HANDLER_RESULT<kicadd::board::BoardSetupResponse>
     handleBoardSetup( const HANDLER_CONTEXT<kicadd::board::BoardSetup>& aCtx );
 
+    HANDLER_RESULT<kicadd::board::ImpedanceResponse>
+    handleImpedance( const HANDLER_CONTEXT<kicadd::board::Impedance>& aCtx );
+
     /// The layers / stackup changed (board_setup, its undo): the editor's layer lists redone.
     void setupChanged();
 

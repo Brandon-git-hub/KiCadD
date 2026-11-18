@@ -10,7 +10,9 @@
 4. **先做確定性的 Layout-Aware 檢查，再做模擬。** 前者只用已有的板子幾何、疊層與銅厚，不需新相依套件；模擬依賴模型品質，開工前先量參數覆蓋率。
 5. **新增的模擬後端以外部執行檔呼叫**（`ngspice`），不連結進精簡 build。
 
-## 階段零：Beta（功能凍結，補強可靠度）
+## 階段零：Beta ✅（2026-11-18，v0.1.0-beta.1）
+
+Beta 已能走完整個設計流程（電路圖 → 選料 → 擺件 → 規則 → 出廠檔）。之後仍會持續加入功能。
 
 1. **電路圖 PDF 匯出**（MCP 工具，沿用上游的 PDF plotter）。
 2. **自動重新編號 Annotate**（MCP 工具，沿用上游的 annotate；含桌面版共用 undo）。
@@ -23,7 +25,7 @@
 
 依成本由低到高：
 
-1. **控制阻抗線寬計算。** 重用 pcb_calculator 的 transline 計算與內建 26 種 JLCPCB 疊層，估算單端 / 差分線寬並寫入規則。
+1. **控制阻抗線寬計算。** 重用 pcb_calculator 的 transline 計算與內建 26 種 JLCPCB 疊層，估算單端 / 差分線寬並寫入規則。 ✅ `impedance` 工具（各銅層的線寬 / 間距，或反算阻抗）與 `set_rules` 的 `impedance` / `diff_impedance`（寫入網路類別），用 KiCad 的 `common/transline_calculations`（2026-11-18）。
 2. **`auto_place` 連接器伸出板邊。** USB-C、RJ45、DC Jack 等依規則突出板框。
 3. **輕量 3D 外觀：EasyEDA OBJ → VRML（`.wrl`）。** 重點在模型原點與旋轉對齊；參考 easyeda2kicad 的偏移處理前先確認授權。
 

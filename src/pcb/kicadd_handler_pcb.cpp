@@ -73,6 +73,7 @@
 #include <kiway.h>
 #include <reporter.h>
 #include "pcb/kicadd_route.h"
+#include "pcb/kicadd_impedance.h"
 #include <pcb_edit_frame.h>
 #include <pcb_shape.h>
 #include <zone_settings.h>
@@ -246,6 +247,7 @@ KICADD_HANDLER_PCB::KICADD_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext ) 
     registerHandler<Zones, ZonesResponse>( &KICADD_HANDLER_PCB::handleZones );
     registerHandler<BoardOutline, BoardOutlineResponse>( &KICADD_HANDLER_PCB::handleBoardOutline );
     registerHandler<BoardSetup, BoardSetupResponse>( &KICADD_HANDLER_PCB::handleBoardSetup );
+    registerHandler<Impedance, ImpedanceResponse>( &KICADD_HANDLER_PCB::handleImpedance );
     registerHandler<DeleteFootprints, MoveResponse>( &KICADD_HANDLER_PCB::handleDeleteFootprints );
     registerHandler<DeleteTracks, MoveResponse>( &KICADD_HANDLER_PCB::handleDeleteTracks );
     registerHandler<RouteTrack, RouteResponse>( &KICADD_HANDLER_PCB::handleRoute );
@@ -6065,6 +6067,16 @@ HANDLER_RESULT<RulesResponse> KICADD_HANDLER_PCB::handleSetRules( const HANDLER_
             return bad( c.name() + ": give track_width or current, not both" );
         }
 
+        if( c.has_impedance() && ( c.has_track_width() || c.has_current() ) )
+            return bad( c.name() + ": give track_width, current or impedance, not two of them" );
+
+        if( c.has_diff_impedance() && c.has_diff_pair_width() && c.has_diff_pair_gap() )
+            return bad( c.name() + ": diff_impedance works out the width (at diff_pair_gap) or the gap (at "
+                        "diff_pair_width): give one of them, not both" );
+
+        if( ( c.has_impedance() && !( c.impedance() > 0 ) ) || ( c.has_diff_impedance() && !( c.diff_impedance() > 0 ) ) )
+            return bad( c.name() + ": an impedance is in ohm, above 0" );
+
         auto set = [&]( bool aHas, double aMm, std::optional<int>& aField, const char* aWhat ) -> std::string
         {
             if( !aHas )
@@ -6146,8 +6158,152 @@ HANDLER_RESULT<RulesResponse> KICADD_HANDLER_PCB::handleSetRules( const HANDLER_
     if( k.has_min_silk_text_height() )  st.minSilkTextHeight = nm( k.min_silk_text_height() );
     if( k.has_min_silk_text_thickness() ) st.minSilkTextThickness = nm( k.min_silk_text_thickness() );
 
+    // controlled impedance: widths (and pair gaps) from the stackup, once the clearances are set
+    std::string zNotes;
+
+    for( const NetclassRule& c : req.classes() )
+    {
+        if( !c.has_impedance() && !c.has_diff_impedance() )
+            continue;
+
+        const wxString        name = wxString::FromUTF8( c.name() );
+        kicadd::rules::CLASS& k = st.classes[name];
+        PCB_LAYER_ID          layer = F_Cu;
+
+        if( !c.impedance_layer().empty() )
+        {
+            int id = b->GetLayerID( wxString::FromUTF8( c.impedance_layer() ) );
+
+            if( id < 0 || !IsCopperLayer( id ) || !b->GetEnabledLayers().Contains( (PCB_LAYER_ID) id ) )
+                return bad( c.name() + ": impedance_layer " + c.impedance_layer() + " is not a copper layer of this board" );
+
+            layer = (PCB_LAYER_ID) id;
+        }
+
+        std::string                                     err;
+        std::optional<kicadd::impedance::LAYER_LINE>    line = kicadd::impedance::Line( *b, layer, err );
+
+        if( !line )
+            return bad( c.name() + ": " + LSET::Name( layer ).ToStdString() + ": " + err );
+
+        auto mmStr = []( double aMm )
+        {
+            char buf[32];
+            std::snprintf( buf, sizeof( buf ), "%.3f", aMm );
+            return std::string( buf );
+        };
+        std::string note = c.name() + " on " + LSET::Name( layer ).ToStdString() + " ("
+                           + kicadd::impedance::Describe( *line ) + "):";
+        double      singleW = 0;
+
+        if( c.has_impedance() )
+        {
+            kicadd::zcalc::RESULT r = kicadd::zcalc::Width( line->line, c.impedance() );
+
+            if( !r.ok )
+                return bad( c.name() + ": " + std::to_string( (int) std::lround( c.impedance() ) ) + " ohm: " + r.error );
+
+            const double w = kicadd::impedance::Mm( r.width );
+            singleW = w;
+            k.trackWidth = nm( w );
+
+            char buf[96];
+            std::snprintf( buf, sizeof( buf ), " %s mm tracks for %.0f ohm", mmStr( w ).c_str(), c.impedance() );
+            note += buf;
+
+            if( nm( w ) < st.minTrackWidth )
+                note += " (below the board's minimum track width " + mmStr( st.minTrackWidth / 1e6 ) + " mm: a thinner "
+                        "dielectric to the plane, or a fab that goes thinner)";
+        }
+
+        if( c.has_diff_impedance() )
+        {
+            const int clearance = std::max( k.clearance.value_or( st.classes[dflt].clearance.value_or( 0 ) ), st.minClearance );
+            kicadd::zcalc::RESULT r;
+            std::string           how;
+
+            if( c.has_diff_pair_width() && c.diff_pair_width() > 0 )
+            {
+                r = kicadd::zcalc::PairGap( line->line, c.diff_impedance(), c.diff_pair_width() * 1e-3 );
+                how = "the gap at the width given";
+            }
+            else
+            {
+                const double gapMm = c.has_diff_pair_gap() && c.diff_pair_gap() > 0 ? c.diff_pair_gap()
+                                                                                     : clearance / 1e6;
+
+                if( !( gapMm > 0 ) )
+                    return bad( c.name() + ": diff_impedance needs a diff_pair_gap (the class has no clearance)" );
+
+                r = kicadd::zcalc::PairWidth( line->line, c.diff_impedance(), gapMm * 1e-3 );
+                how = c.has_diff_pair_gap() ? "the width at the gap given" : "the width at the class's clearance as the gap";
+            }
+
+            if( !r.ok )
+                return bad( c.name() + ": " + std::to_string( (int) std::lround( c.diff_impedance() ) ) + " ohm pair: " + r.error );
+
+            const double w = kicadd::impedance::Mm( r.width ), g = kicadd::impedance::Mm( r.gap );
+            k.diffPairWidth = nm( w );
+            k.diffPairGap = nm( g );
+
+            char buf[200];
+            std::snprintf( buf, sizeof( buf ), " pairs %s mm wide, %s mm apart for %.0f ohm differential (%s)",
+                           mmStr( w ).c_str(), mmStr( g ).c_str(), c.diff_impedance(), how.c_str() );
+            note += buf;
+
+            if( nm( g ) < clearance )
+                note += "; the gap is below the class's clearance " + mmStr( clearance / 1e6 ) + " mm: DRC will flag the pair";
+
+            if( nm( w ) < st.minTrackWidth )
+                note += "; the width is below the board's minimum track width " + mmStr( st.minTrackWidth / 1e6 ) + " mm";
+        }
+
+        std::vector<PCB_LAYER_ID> open = kicadd::impedance::WithoutZone( *b, line->planes );
+
+        for( PCB_LAYER_ID p : open )
+            note += "; " + LSET::Name( p ).ToStdString() + " has no copper zone yet: pour the plane (zones create) or "
+                    "the impedance does not hold";
+
+        // the same target on the other copper layers (the class has one width for all)
+        if( c.has_impedance() )
+        {
+            std::string others;
+
+            for( PCB_LAYER_ID l : LSET::AllCuMask( b->GetCopperLayerCount() ).CuStack() )
+            {
+                if( l == layer )
+                    continue;
+
+                std::string                                  e;
+                std::optional<kicadd::impedance::LAYER_LINE> o = kicadd::impedance::Line( *b, l, e );
+                kicadd::zcalc::RESULT                        r;
+
+                if( !o || !( r = kicadd::zcalc::Width( o->line, c.impedance() ) ).ok )
+                    continue;
+
+                if( const double w = kicadd::impedance::Mm( r.width ); std::fabs( w - singleW ) >= 0.0005 )
+                    others += ( others.empty() ? "" : ", " ) + LSET::Name( l ).ToStdString() + " " + mmStr( w );
+            }
+
+            if( !others.empty() )
+                note += "; the class has one width: on other layers it takes " + others + " mm (keep these nets on "
+                        + LSET::Name( layer ).ToStdString() + ", or set impedance_layer)";
+        }
+
+        zNotes += ( zNotes.empty() ? "" : "\n" ) + note;
+    }
+
+    if( !zNotes.empty() )
+        zNotes += "\n" + kicadd::impedance::Source( *b );
+
     RulesResponse out;
-    out.set_note( presetNote + ( !presetNote.empty() && !currentNotes.empty() ? "\n" : "" ) + currentNotes );
+    std::string   note = presetNote;
+
+    for( const std::string& n : { currentNotes, zNotes } )
+        if( !n.empty() )
+            note += ( note.empty() ? "" : "\n" ) + n;
+
+    out.set_note( note );
 
     if( !( st == before ) )
     {
@@ -7218,5 +7374,98 @@ HANDLER_RESULT<BoardSetupResponse> KICADD_HANDLER_PCB::handleBoardSetup( const H
     for( const std::string& line : kicadd::setup::Describe( now ) )
         out.add_stackup( line );
 
+    return out;
+}
+
+
+HANDLER_RESULT<ImpedanceResponse> KICADD_HANDLER_PCB::handleImpedance( const HANDLER_CONTEXT<Impedance>& aCtx )
+{
+    if( std::optional<ApiResponseStatus> wait = busy() )
+        return tl::unexpected( *wait );
+
+    BOARD* b = board();
+
+    if( !b )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
+
+    const Impedance& req = aCtx.Request;
+    auto bad = [&]( const std::string& aMsg ) { return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, aMsg ) ); };
+
+    if( req.z() < 0 || req.z_diff() < 0 || ( req.has_width() && req.width() <= 0 ) || ( req.has_gap() && req.gap() <= 0 ) )
+        return bad( "impedances (ohm) and lengths (mm) are above 0" );
+
+    if( req.z() > 0 && req.z_diff() > 0 )
+        return bad( "z (a track) or z_diff (a pair), one at a time" );
+
+    if( req.z_diff() > 0 && req.has_width() && req.has_gap() )
+        return bad( "z_diff works out the width at gap, or the gap at width: give one of them" );
+
+    if( req.z() <= 0 && req.z_diff() <= 0 && !req.has_width() )
+        return bad( "z (a track's width for this impedance), z_diff (a pair's), or width (and gap) to have its "
+                    "impedance worked out" );
+
+    std::vector<PCB_LAYER_ID> layers;
+
+    for( const std::string& name : req.layers() )
+    {
+        int id = b->GetLayerID( wxString::FromUTF8( name ) );
+
+        if( id < 0 || !IsCopperLayer( id ) || !b->GetEnabledLayers().Contains( (PCB_LAYER_ID) id ) )
+            return bad( name + " is not a copper layer of this board" );
+
+        layers.push_back( (PCB_LAYER_ID) id );
+    }
+
+    if( layers.empty() )
+    {
+        for( PCB_LAYER_ID l : LSET::AllCuMask( b->GetCopperLayerCount() ).CuStack() )
+            layers.push_back( l );
+    }
+
+    ImpedanceResponse out;
+
+    for( PCB_LAYER_ID l : layers )
+    {
+        ImpedanceLayer* o = out.add_layers();
+        o->set_layer( LSET::Name( l ).ToStdString() );
+
+        std::string                                  err;
+        std::optional<kicadd::impedance::LAYER_LINE> line = kicadd::impedance::Line( *b, l, err );
+
+        if( !line )
+        {
+            o->set_error( err );
+            continue;
+        }
+
+        o->set_geometry( kicadd::impedance::Describe( *line ) );
+
+        for( PCB_LAYER_ID p : kicadd::impedance::WithoutZone( *b, line->planes ) )
+            o->add_unpoured_planes( LSET::Name( p ).ToStdString() );
+
+        const double          width = req.width() * 1e-3, gap = ( req.has_gap() ? req.gap() : 0.2 ) * 1e-3;
+        kicadd::zcalc::RESULT r;
+
+        if( req.z() > 0 )
+            r = kicadd::zcalc::Width( line->line, req.z() );
+        else if( req.z_diff() > 0 )
+            r = req.has_width() ? kicadd::zcalc::PairGap( line->line, req.z_diff(), width )
+                                : kicadd::zcalc::PairWidth( line->line, req.z_diff(), gap );
+        else
+            r = req.has_gap() ? kicadd::zcalc::Pair( line->line, width, gap ) : kicadd::zcalc::Single( line->line, width );
+
+        if( !r.ok )
+        {
+            o->set_error( r.error );
+            continue;
+        }
+
+        o->set_width( kicadd::impedance::Mm( r.width ) );
+        o->set_gap( kicadd::impedance::Mm( r.gap ) );
+        o->set_z( r.z );
+        o->set_delay( r.delay );
+    }
+
+    out.set_note( kicadd::impedance::Source( *b ) );
     return out;
 }

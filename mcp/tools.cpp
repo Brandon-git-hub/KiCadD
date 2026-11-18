@@ -1389,6 +1389,15 @@ TOOL_RESULT setRules( IPC_CLIENT& aIpc, const json& aArgs )
 
             for( const auto& [key, val] : v.items() )
             {
+                if( key == "impedance_layer" )
+                {
+                    if( !val.is_string() )
+                        return error( name + ".impedance_layer: a copper layer name, e.g. \"F.Cu\"" );
+
+                    c->set_impedance_layer( val.get<std::string>() );
+                    continue;
+                }
+
                 if( !num( v, key.c_str(), d ) )
                     return error( name + "." + key + ": a length in mm (null: from Default)" );
 
@@ -1400,6 +1409,8 @@ TOOL_RESULT setRules( IPC_CLIENT& aIpc, const json& aArgs )
                 else if( key == "diff_pair_gap" )   c->set_diff_pair_gap( d );
                 else if( key == "current" )         c->set_current( d );
                 else if( key == "temp_rise" )       c->set_temp_rise( d );
+                else if( key == "impedance" )       c->set_impedance( d );
+                else if( key == "diff_impedance" )  c->set_diff_impedance( d );
                 else
                     return error( "unknown net class value " + key );
             }
@@ -1831,6 +1842,61 @@ TOOL_RESULT boardSetup( IPC_CLIENT& aIpc, const json& aArgs )
         t += "\nnote: " + r.note();
 
     return { t + "\n" };
+}
+
+
+TOOL_RESULT impedanceTool( IPC_CLIENT& aIpc, const json& aArgs )
+{
+    kb::Impedance req;
+    double        d = 0;
+
+    if( getNumber( aArgs, "z", d ) )      req.set_z( d );
+    if( getNumber( aArgs, "z_diff", d ) ) req.set_z_diff( d );
+    if( getNumber( aArgs, "width", d ) )  req.set_width( d );
+    if( getNumber( aArgs, "gap", d ) )    req.set_gap( d );
+
+    for( const std::string& l : getStrings( aArgs, "layers" ) )
+        req.add_layers( l );
+
+    kb::ImpedanceResponse r;
+    std::string           err;
+
+    if( !aIpc.Call( req, r, err ) )
+        return error( err );
+
+    const bool pair = req.z_diff() > 0 || ( req.z() <= 0 && req.has_gap() );
+    std::string t;
+
+    for( const kb::ImpedanceLayer& l : r.layers() )
+    {
+        char buf[200];
+
+        t += l.layer() + ": ";
+
+        if( !l.error().empty() )
+        {
+            t += l.error() + ( l.geometry().empty() ? "" : " (" + l.geometry() + ")" ) + "\n";
+            continue;
+        }
+
+        if( pair )
+            std::snprintf( buf, sizeof( buf ), "width %.3f mm, gap %.3f mm -> %.1f ohm differential, %.1f ps/cm",
+                           l.width(), l.gap(), l.z(), l.delay() );
+        else
+            std::snprintf( buf, sizeof( buf ), "width %.3f mm -> %.1f ohm, %.1f ps/cm", l.width(), l.z(), l.delay() );
+
+        t += std::string( buf ) + " (" + l.geometry() + ")";
+
+        for( const std::string& p : l.unpoured_planes() )
+            t += "; " + p + " has no copper zone yet";
+
+        t += "\n";
+    }
+
+    if( !r.note().empty() )
+        t += "note: " + r.note() + "\n";
+
+    return { t };
 }
 
 
@@ -2840,7 +2906,13 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        "to the project file). classes: {\"Power\": {\"track_width\": 0.5, \"clearance\": 0.25}} "
                        "adds or changes a class (only the values given; null: take it from Default); "
                        "{\"Power\": {\"current\": 2}} sets the track width a 2 A net needs (IPC-2221, the board's "
-                       "outer copper, temp_rise 10 C unless given); "
+                       "outer copper, temp_rise 10 C unless given); {\"RF\": {\"impedance\": 50}} sets the track "
+                       "width for 50 ohm and {\"USB\": {\"diff_impedance\": 90}} the diff pair width and gap for "
+                       "90 ohm, from the board's stackup on impedance_layer (default F.Cu; board_setup stackup=... "
+                       "first for a fab's numbers): the pair's width at diff_pair_gap if given, its gap at "
+                       "diff_pair_width if given, else its width with the class's clearance as the gap; the note "
+                       "gives the widths on the other layers and warns of reference layers not poured yet; "
+                       ""
                        "remove_classes: [...]; assign: {\"+5V\": \"Power\", \"/USB_D*\": \"USB\", \"GND\": null} "
                        "sets or drops net name patterns; constraints: {\"min_clearance\", \"min_track_width\", "
                        "\"min_via_diameter\", \"min_through_drill\", \"min_annular_width\", \"hole_clearance\", "
@@ -2934,6 +3006,23 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                                  { "outer_copper_oz", { { "type", "number" } } },
                                  { "inner_copper_oz", { { "type", "number" } } } } ),
                        [&aIpc]( const json& a ) { return boardSetup( aIpc, a ); } } );
+
+    tools.push_back( { "impedance",
+                       "Controlled impedance from the board's stackup, per copper layer; changes nothing (set_rules "
+                       "impedance / diff_impedance writes it into a net class). An outer layer is a microstrip over "
+                       "the next copper layer in (with the solder mask), an inner one a stripline between its two "
+                       "neighbours; those layers must be poured planes (zones create) for it to hold. z: a track's "
+                       "width for this Z0 (ohm); z_diff: a pair's width at gap (mm, default 0.2), or its gap at "
+                       "width; neither: the impedance of width (and gap: of the pair). layers: default all. Uses "
+                       "KiCad's transmission line calculations (as pcb_calculator); set board_setup stackup=... "
+                       "first for a fab's dielectrics, and check with the fab's calculator before ordering.",
+                       schema( { { "z", { { "type", "number" } } },
+                                 { "z_diff", { { "type", "number" } } },
+                                 { "width", { { "type", "number" } } },
+                                 { "gap", { { "type", "number" } } },
+                                 { "layers", { { "type", "array" }, { "items", { { "type", "string" } } },
+                                               { "description", "copper layers, e.g. [\"F.Cu\", \"In2.Cu\"]; default all" } } } } ),
+                       [&aIpc]( const json& a ) { return impedanceTool( aIpc, a ); } } );
 
     tools.push_back( { "pcb_set_fields",
                        "Change footprints' fields and attributes on the board as one undoable edit. parts: "
