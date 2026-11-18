@@ -128,6 +128,9 @@ From a blank project, before placing parts:
    part; `sheet` or `refs` limits it) and `sync_pcb`: the board's parts are renamed in place
    (matched by UUID), nothing moves. Renumbering after the user has seen the board changes the
    refs on its silkscreen and in the BOM: ask first.
+   Fabrication attributes (DNP, exclude from BOM / position files) come from the symbol: one
+   set on the board only (`pcb_set_fields`) is dropped by the sync. The answer lists it with
+   the `sch_set_fields` call that keeps it: set it on the symbol, then sync again.
 2. `auto_place` (default: the parts outside the board). Useful options: `groups` or the Block
    field to keep functional blocks together, `rules` (edge, region, rotation, near), `fixed`
    for parts that must not move (place connectors first, then fix them), `back_decaps`.

@@ -1075,8 +1075,15 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
 
                 // The updater's report without its routine lines: errors and warnings first,
                 // then the changes; "Update R1 fields." lines are only counted.
-                std::vector<std::string> problems, changes;
+                std::vector<std::string> problems, changes, attrs;
                 int                      fieldUpdates = 0;
+                // fabrication attributes come from the symbol: one set on the board only is
+                // dropped. Always shown, with the call that keeps it ({ref: {key: true}})
+                std::map<std::string, std::vector<std::string>> lost;   // sch_set_fields key -> refs
+                static const std::pair<const char*, const char*> attrKeys[] = {
+                        { "'exclude from position files'", "exclude_from_pos" },
+                        { "'exclude from BOM'", "exclude_from_bom" },
+                        { "'Do not place'", "dnp" } };
                 size_t                   from = 0;
 
                 while( from < r.report().size() )
@@ -1088,6 +1095,23 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                     // routine bookkeeping of new parts: the summary line above says it
                     static const char* routine[] = { "Processing symbol", "Updated ", "Changed REF**",
                                                      "Connected ", "Add net ", "Added ", "Total warnings" };
+
+                    if( line.find( "fabrication attribute." ) != std::string::npos )
+                    {
+                        attrs.push_back( line );
+                        size_t sp = line.find( ' ' ), sp2 = sp == std::string::npos ? sp : line.find( ' ', sp + 1 );
+
+                        if( line.rfind( "Remove", 0 ) == 0 && sp2 != std::string::npos )
+                        {
+                            for( const auto& [what, key] : attrKeys )
+                            {
+                                if( line.find( what ) != std::string::npos )
+                                    lost[key].push_back( line.substr( sp + 1, sp2 - sp - 1 ) );
+                            }
+                        }
+
+                        continue;
+                    }
 
                     if( line.empty() || std::any_of( std::begin( routine ), std::end( routine ),
                                                      [&]( const char* r ) { return line.rfind( r, 0 ) == 0; } ) )
@@ -1105,11 +1129,11 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                 const size_t limit = a.value( "detail", false ) ? SIZE_MAX : 25;
                 size_t       shown = 0, more = 0;
 
-                for( const std::vector<std::string>* list : { &problems, &changes } )
+                for( const std::vector<std::string>* list : { &problems, &attrs, &changes } )
                 {
                     for( const std::string& line : *list )
                     {
-                        if( shown < limit || list == &problems )
+                        if( shown < limit || list != &changes )
                         {
                             t += "\n  " + line;
                             shown++;
@@ -1127,6 +1151,22 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
 
                 if( more )
                     t += "\n  ... " + std::to_string( more ) + " more line(s) (detail=true lists all)";
+
+                if( !lost.empty() )
+                {
+                    json keep = json::object();
+
+                    for( const auto& [key, refs] : lost )
+                    {
+                        for( const std::string& ref : refs )
+                            keep[ref][key] = true;
+                    }
+
+                    t += "\nnote: fabrication attributes come from the schematic: the ones above were set on the "
+                         "board only and " + std::string( req.dry_run() ? "would be" : "were" )
+                         + " dropped. To keep them, set them on the symbols and sync again: sch_set_fields "
+                         + json( { { "parts", keep } } ).dump();
+                }
 
                 if( !r.history_label().empty() )
                     t += "\nundo takes all of it back: \"" + r.history_label() + "\"";

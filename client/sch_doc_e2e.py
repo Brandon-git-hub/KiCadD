@@ -94,14 +94,23 @@ try:
     err, t = m.tool("sch_part", {"ref": first_new})
     check(not err and first_value in t, f"{first_new} is the part that was {first_old} ({first_value})")
 
+    err, t = m.tool("pcb_set_fields", {"parts": {"P101": {"exclude_from_pos": True}}})
+    check(not err, "P101 excluded from position files on the board only")
     err, t = m.tool("sync_pcb")
     check(not err and f"Changed {first_old} reference designator to {first_new}" in t, "sync_pcb renames the board's part")
+    check("Removed P101 'exclude from position files' fabrication attribute." in t
+          and 'sch_set_fields {"parts":{"P101":{"exclude_from_pos":true}}}' in t,
+          "the board-only attribute dropped by the sync is shown, with the call that keeps it")
     err, t = m.tool("board_diff")
     print("      ", t.strip().replace("\n", " | ")[:400])
     check(not err and f"{len(sock_changes)} renumbered" in t and not re.search(r"\bmoved\b", t),
           "board_diff: the parts renumbered in place, none moved")
     err, t = m.tool("undo")
+    print("      ", t.strip().replace("\n", " | ")[:200])
     check(not err and t.startswith("undid: sync_pcb"), "undo sync_pcb")
+    check("put back as they were" in t and not re.search(r"part\(s\) moved|@\d", t) and "courtyard" not in t,
+          "undo sync_pcb: the parts put back, none reported as moved, no local DRC of parts that did not move")
+    m.tool("undo")   # the pcb_set_fields
 
     err, t = m.tool("sch_undo")
     check(not err and t.startswith("undid: annotate") and "already" not in t, "sch_undo: " + t.splitlines()[0])

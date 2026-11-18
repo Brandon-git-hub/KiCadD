@@ -4199,10 +4199,17 @@ bool KICADD_HANDLER_PCB::applyHistory( const HISTORY_ENTRY& aEntry, bool aUndo, 
 
                 for( auto& [fp, snap] : swapping )
                 {
+                    // put back whole (sync_pcb: value, fields, pads, nets); reported as moved
+                    // (and checked by the local DRC) only when it is somewhere else now
+                    const bool moves = fp->GetPosition() != snap->fp->GetPosition()
+                                       || fp->GetOrientation() != snap->fp->GetOrientation()
+                                       || fp->GetLayer() != snap->fp->GetLayer();
                     aCommit.Remove( fp );
                     FOOTPRINT* back = instantiate( *snap, aCommit, aOut );
                     aCommit.Add( back );
-                    ids.push_back( back->m_Uuid );
+
+                    if( moves )
+                        ids.push_back( back->m_Uuid );
                 }
 
                 for( auto& [item, net] : renetting )
