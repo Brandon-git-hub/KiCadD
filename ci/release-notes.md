@@ -5,11 +5,13 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 > ⚠️ Pre-release，僅供試用。由 GitHub Actions 自動建置；功能在 Linux 上做過端到端測試，Windows 上只有 CI 的 smoke test 與早期版本的人工試用。
 
 ## 使用前須知
+完整的使用說明（安裝、接上 Agent、skill、存檔格式、做得到 / 做不到）：[docs/GUIDE.md](https://github.com/Brandon-git-hub/KiCadD/blob/main/docs/GUIDE.md)。
+
 - **存檔格式：** KiCadD 以 KiCad nightly（10.99）為基礎。用 KiCadD 存過的 `.kicad_pcb`、`.kicad_sch` 會寫成新格式，**KiCad 9 / 10 正式版可能打不開**。請用專案副本試用；要知道這次改了什麼，存檔前先用 `board_diff`。
 - **平台：** 只提供 Windows x64。Linux 可以自行從原始碼編譯，沒有 macOS 版。
 - **不附 KiCad 官方元件庫：** 符號和封裝請用 `lcsc_fetch`、`lcsc_match` 從 LCSC 取得，或用 `lib_create_symbol`、`lib_create_footprint` 自建，也可以 `lib_register` 專案裡現有的庫。
 - **一次一個專案：** 一個服務同時只開一個專案（板子加電路圖），換專案請用 `open_board`。
-- **目前不支援：** 差分對與等長佈線、全板自動佈線（`route` 只代替重複的手動佈線）、電路圖重新編號與自動排版、電路圖 PDF 和組裝圖、STEP / 3D、ODB++ / IPC-2581 / DXF、控制阻抗線寬計算、MCP resources / prompts。
+- **目前不支援：** 差分對與等長佈線、全板自動佈線（`route` 只代替重複的手動佈線）、電路圖自動排版、組裝圖、STEP / 3D、ODB++ / IPC-2581 / DXF、控制阻抗線寬計算、MCP resources / prompts。
 
 ## 這一版（alpha.13）
 **`open_board` 換專案**
@@ -193,13 +195,13 @@ Claude Desktop（`%APPDATA%\Claude\claude_desktop_config.json`）或 Cursor（`m
 Claude Code：`claude mcp add kicadd -- C:\KiCadD\bin\kicadd-mcp.exe --stdio`（路徑換成你解壓的位置）。
 
 ### 建議的使用方式（skill）
-56 個工具怎麼搭配使用（先查再改、新板設定、審查 / 擺件 / 佈線 / 找料 / 出廠流程、undo、批次、常見陷阱）寫成一份 skill，讓 Agent 照著做：
+58 個工具怎麼搭配使用（先查再改、新板設定、審查 / 擺件 / 佈線 / 找料 / 出廠流程、undo、批次、常見陷阱）寫成一份 skill，讓 Agent 照著做：
 - **Claude Code**：把 `share\kicadd\skills\kicadd` 整個資料夾複製到 `%USERPROFILE%\.claude\skills\`（所有專案）或專案的 `.claude\skills\`。
 - **Claude Desktop**：在設定的 Skills 頁面上傳另外附的 `kicadd-skill.zip`。
 - **其他 Agent（Cursor 等）**：把 `SKILL.md` 的內容放進它的規則檔或系統提示。
 
-## Agent 能做的事（56 個 MCP 工具）
-- **電路圖**：`sch_add_part`（符號庫、立創編號或電源符號）、`sch_connect` / `sch_disconnect`（網路名稱連接）、`sch_move`、`sch_wire`、`sch_netlist`、`sch_delete`（零件、導線、懸空線）、`sch_set_fields`、`run_erc`、`sch_render`（PNG 圖）、`sch_save`、Agent 自己的 `sch_undo` / `sch_redo`；**階層圖紙** `sch_add_sheet`，`ports` 產生圖紙腳位，父圖紙上用 `圖紙名.腳位名` 連接。
+## Agent 能做的事（58 個 MCP 工具）
+- **電路圖**：`sch_add_part`（符號庫、立創編號或電源符號）、`sch_connect` / `sch_disconnect`（網路名稱連接）、`sch_move`、`sch_wire`、`sch_netlist`、`sch_delete`（零件、導線、懸空線）、`sch_set_fields`、`run_erc`、`sch_render`（PNG 圖）、`sch_export_pdf`（全部圖紙一份 PDF）、`sch_annotate`（重新編號）、`sch_save`、Agent 自己的 `sch_undo` / `sch_redo`；**階層圖紙** `sch_add_sheet`，`ports` 產生圖紙腳位，父圖紙上用 `圖紙名.腳位名` 連接。
 - **立創零件**：`lcsc_fetch` / `sch_add_part lcsc=` 依編號抓封裝與符號，存進專案的 LCSC 庫；回報庫存、價格、基礎件 / 擴展件。編輯器裡也有 Place → Add LCSC Part / Symbol。
 - **電路圖 → PCB**：`sync_pcb`（開著電路圖編輯器時直接讀編輯器內容，不會寫入你的電路圖檔）。
 - **自動擺件** `auto_place`：依連線擺放、去耦電容靠 IC 腳；選用功能：模組分群（`groups` 或 Block 欄位）、去耦電容放背面（`back_decaps`）、擺件規則（`rules`：板邊、區域、角度、距離上限）。

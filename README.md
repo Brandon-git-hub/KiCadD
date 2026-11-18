@@ -3,6 +3,9 @@
 Headless, in-memory KiCad daemon for LLM (MCP) and human co-editing.
 Built as a thin extension of upstream `kicad-cli api-server`, not a fork of the core.
 
+Using it (install, connecting an agent, the skill, the 10.99 file format, what it can and cannot
+do): [docs/GUIDE.md](docs/GUIDE.md). What comes next: [ROADMAP.md](ROADMAP.md).
+
 ## Requirements this project tracks
 
 1. Headless/CLI on a Linux server + MCP + remote 2D view/edit
