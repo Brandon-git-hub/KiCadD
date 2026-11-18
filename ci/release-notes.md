@@ -2,7 +2,7 @@
      {{UPSTREAM}} is filled from patches/UPSTREAM_BASE; build info and SHA-256 are appended. -->
 KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修剪版 Windows x64 build，加上 Agent（MCP）協同設計。
 
-> ⚠️ Pre-release，僅供試用。由 GitHub Actions 自動建置；功能在 Linux 上做過端到端測試，Windows 上只有 CI 的 smoke test 與早期版本的人工試用。
+> ⚠️ Beta（pre-release）。功能凍結，這個階段只修可靠度。由 GitHub Actions 自動建置；25 個端到端測試在 Linux 上全部通過（含桌面版），Windows CI 跑 smoke test 與 headless 的出廠、貼片、電路圖文件、工具、設定、undo 歷史測試；桌面版在 Windows 上只有人工試用。
 
 ## 使用前須知
 完整的使用說明（安裝、接上 Agent、skill、存檔格式、做得到 / 做不到）：[docs/GUIDE.md](https://github.com/Brandon-git-hub/KiCadD/blob/main/docs/GUIDE.md)。
@@ -13,7 +13,22 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 - **一次一個專案：** 一個服務同時只開一個專案（板子加電路圖），換專案請用 `open_board`。
 - **目前不支援：** 差分對與等長佈線、全板自動佈線（`route` 只代替重複的手動佈線）、電路圖自動排版、組裝圖、STEP / 3D、ODB++ / IPC-2581 / DXF、控制阻抗線寬計算、MCP resources / prompts。
 
-## 這一版（alpha.13）
+## 這一版（beta.1）
+第一個 beta：功能凍結，之後的 beta.x 只修問題（接下來的規劃見 [ROADMAP](https://github.com/Brandon-git-hub/KiCadD/blob/main/ROADMAP.md)）。
+
+**新工具（共 58 個）**
+- **`sch_export_pdf`：電路圖 PDF。** 所有圖紙依頁序合成一份 PDF，有圖框與標題欄，圖紙之間可以點擊跳頁，點零件會跳出欄位。用的是記憶體裡的電路圖，未存檔的修改也會出現在 PDF 裡。預設存成 `<專案>/<電路圖名>.pdf`，可選黑白。
+- **`sch_annotate`：重新編號。** 和編輯器的 Annotate 相同，用的是 KiCad 自己的編號程式。`R?` 會拿到第一個空號，`reset=true` 依位置全部重編。範圍可以是全部、一張圖紙（含子圖紙）或指定零件；可設排序方向、起始號、每頁 100 / 1000 一段，也可以先 `dry_run`。整個動作是一筆 `sch_undo`，桌面版也能按 Ctrl+Z。之後跑 `sync_pcb`，板子上的零件會依 UUID 原地改名，不會移動。
+
+**修正**
+- **`sch_undo` 撤銷編號：** KiCad 比較符號時不看編號，所以只改了編號的修改，`sch_undo` 會以為已經撤銷過。現在比較時也會看各圖紙上的編號。
+- **`open_board` 拒絕時說明原因：** 有未存檔的修改時，訊息會附上 `board_diff` 的結果。如果只是 undo 回存檔的狀態，訊息會寫「the same as the saved file」，表示 `discard=true` 不會丟掉任何東西。
+- **刪除零件不再留下空網路：** `delete_footprints`、undo 新增、redo 刪除時，如果某個網路上已經沒有其他東西，會一起移除，回應會列出這些網路；undo 會把它們放回。以前刪掉 sync 進來的 R22 之後，網路數會比原本多。
+- **Windows：** alpha.13 修好了 Windows 上路徑使用反斜線造成的「document … not open」。
+
+**說明文件：** 新增 [docs/GUIDE.md](https://github.com/Brandon-git-hub/KiCadD/blob/main/docs/GUIDE.md)，內容包括安裝、接上 Agent、skill、10.99 存檔格式，以及做得到 / 做不到的一覽表。
+
+## alpha.13
 **`open_board` 換專案**
 - 以前開另一個專案的板子一定失敗（「project … is already open」），重新開同一塊板也不會從檔案重新載入。現在會先關掉目前的專案，再開新的板子；同一個資料夾有電路圖的話會一起打開，網路類別等規則也換成新專案的。Agent 的 undo 歷史從頭開始。
 - 目前的板子有未存檔的修改時會拒絕，要先 `save_board`，或加 `discard=true` 放棄修改。新檔案打不開時，會把原本的板子從檔案重新打開。桌面版裡一樣不能用，要由使用者在 pcbnew 開檔。
