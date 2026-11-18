@@ -23,7 +23,7 @@ import shutil
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from m5_e2e import FAILS, Mcp, Server, check, make_project  # noqa: E402
+from m5_e2e import FAILS, Mcp, Server, binaries, check, make_project  # noqa: E402
 
 def main():
     ap = argparse.ArgumentParser()
@@ -39,10 +39,10 @@ def main():
     proj = make_project(a.kicad, work)
     pcb = os.path.join(proj, "blank.kicad_pcb")
     sock = os.path.join(work, "s.sock")
-    env = dict(os.environ, KICAD_RUN_FROM_BUILD_DIR="1")
+    kicad_cli, kicadd_mcp, env = binaries(a.build)
     server = Server(a.build, sock, pcb, env, os.path.join(work, "server.log"))
     check(server.start(), "api-server up with the blank board")
-    mcp = Mcp([os.path.join(a.build, "kicadd-mcp"), "--socket", sock, "--stdio"], env)
+    mcp = Mcp([kicadd_mcp, "--socket", sock, "--stdio"], env)
     try:
         print("[parts]")
         # two pads on GND / VCC without a library: lib_create_footprint makes one

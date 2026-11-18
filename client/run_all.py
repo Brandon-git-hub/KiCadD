@@ -1,10 +1,11 @@
-"""Run every end-to-end test of KiCadD (Linux build tree) and print one line each.
+"""Run every end-to-end test of KiCadD and print one line each.
 
 usage: python3 -I client/run_all.py [--build ../build-lean] [--only a,b] [--skip a,b]
                                      [--no-desktop] [--live] [--list] [--keep-going]
 
 Run from anywhere; paths default to this checkout's layout:
-  --build       the build tree (../build-lean)
+  --build       the build tree (../build-lean), or an installed / portable folder (Windows CI:
+                dist/bin; the headless and stack tests run there, the desktop ones need Xvfb)
   --kicad       KiCad's source tree (../kicad); demos are its demos/
   --work        scratch root (run/all; each test gets run/all/<name>, socket paths stay short)
   --index       an unpacked parts index (run/sr/cache/kicad/10.99/kicadd/parts.db)
@@ -38,6 +39,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)                       # KiCadD/
 TOP = os.path.dirname(ROOT)                        # the folder holding KiCadD/, kicad/, build-lean/
 JETSON = "jetson-agx-thor-baseboard"
+EXE = ".exe" if os.name == "nt" else ""
+# the stack outlives a test (history_e2e restarts it from another process): its own group / session
+DETACH = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
 
 
 # ---------------------------------------------------------------------------- the HTTP stack
@@ -50,23 +54,30 @@ def free_port():
 
 def stack_start(state):
     """Daemon on state['board'] + kicadd-mcp --http on state['port']; pids into state."""
-    env = dict(os.environ, KICAD_RUN_FROM_BUILD_DIR="1")
+    sys.path.insert(0, HERE)
+    from m5_e2e import Server, binaries
+    kicad_cli, kicadd_mcp, env = binaries(state["build"])
     sock = state["sock"]
     if os.path.exists(sock):
         os.unlink(sock)
     log = open(state["log"], "a")
-    d = subprocess.Popen([os.path.join(state["build"], "kicad", "kicad-cli"), "api-server", "--socket", sock,
-                          state["board"]], env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-    for _ in range(240):
-        if os.path.exists(sock) or d.poll() is not None:
-            break
+    d = subprocess.Popen([kicad_cli, "api-server", "--socket", sock, state["board"]], env=env, stdout=log,
+                         stderr=subprocess.STDOUT, **DETACH)
+    if os.name == "nt":      # a named pipe there, no file: ask until it answers
+        probe = Server(state["build"], sock, state["board"], env, state["log"])
+        probe.p = d
+        up = probe.answers()
+    else:
+        for _ in range(240):
+            if os.path.exists(sock) or d.poll() is not None:
+                break
+            time.sleep(0.5)
         time.sleep(0.5)
-    time.sleep(0.5)
-    if d.poll() is not None or not os.path.exists(sock):
+        up = d.poll() is None and os.path.exists(sock)
+    if not up:
         raise RuntimeError("the daemon did not start (see " + state["log"] + ")")
-    m = subprocess.Popen([os.path.join(state["build"], "kicadd-mcp"), "--socket", sock, "--http",
-                          "127.0.0.1:%d" % state["port"]], env=env, stdout=log, stderr=subprocess.STDOUT,
-                         start_new_session=True)
+    m = subprocess.Popen([kicadd_mcp, "--socket", sock, "--http", "127.0.0.1:%d" % state["port"]], env=env,
+                         stdout=log, stderr=subprocess.STDOUT, **DETACH)
     for _ in range(100):
         try:
             with socket.create_connection(("127.0.0.1", state["port"]), timeout=0.5):
@@ -79,22 +90,32 @@ def stack_start(state):
     json.dump(state, open(state["file"], "w"))
 
 
+def alive(pid):
+    if os.name == "nt":      # os.kill would end it there
+        out = subprocess.run(["tasklist", "/FI", "PID eq %d" % pid, "/NH"], capture_output=True, text=True).stdout
+        return str(pid) in out.split()
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    try:
+        return not os.waitpid(pid, os.WNOHANG)[0]
+    except ChildProcessError:
+        return True
+
+
 def stack_stop(state):
     for pid in reversed(state.get("pids", [])):
-        try:
-            os.killpg(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            continue
-        for _ in range(60):
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
+        else:
             try:
-                os.kill(pid, 0)
+                os.killpg(pid, signal.SIGTERM)
             except ProcessLookupError:
+                continue
+        for _ in range(60):
+            if not alive(pid):
                 break
-            try:
-                if os.waitpid(pid, os.WNOHANG)[0]:
-                    break
-            except ChildProcessError:
-                pass
             time.sleep(0.5)
     state["pids"] = []
     json.dump(state, open(state["file"], "w"))
@@ -199,7 +220,8 @@ def main():
     ap.add_argument("--index", default=os.path.join(ROOT, "run", "sr", "cache", "kicad", "10.99", "kicadd", "parts.db"))
     ap.add_argument("--index-gz", default=os.path.join(ROOT, "run", "sr", "www", "parts.db.gz"))
     ap.add_argument("--lcsc-cache", default=os.environ.get("KICADD_LCSC_CACHE") or os.path.join(ROOT, "run", "lcsc-cache"))
-    ap.add_argument("--venv", default=os.path.join(ROOT, ".venv", "bin", "python"))
+    ap.add_argument("--venv", default=os.path.join(ROOT, ".venv", "Scripts", "python.exe") if os.name == "nt"
+                    else os.path.join(ROOT, ".venv", "bin", "python"))
     ap.add_argument("--only", default="")
     ap.add_argument("--skip", default="")
     ap.add_argument("--no-desktop", action="store_true")
@@ -232,8 +254,8 @@ def main():
     chosen = [t for t in all_tests if (not only or t[0] in only) and t[0] not in skip
               and not (a.no_desktop and t[1] == "desktop")]
 
-    if not os.path.isfile(os.path.join(a.build, "kicadd-mcp")):
-        print("no kicadd-mcp in " + a.build + ": build first")
+    if not os.path.isfile(mcp_bin(a.build)):
+        print("no kicadd-mcp" + EXE + " in " + a.build + ": build first")
         return 2
     os.makedirs(a.work, exist_ok=True)
     results = []
@@ -262,7 +284,7 @@ def main():
                         continue
                 base = "http://127.0.0.1:%d" % stack["port"]
                 argv = {
-                    "mcp": venv_argv(a, "mcp_e2e.py", [os.path.join(a.build, "kicadd-mcp"), stack["sock"], str(free_port())]),
+                    "mcp": venv_argv(a, "mcp_e2e.py", [mcp_bin(a.build), stack["sock"], str(free_port())]),
                     "web": venv_argv(a, "web_e2e.py", [base]),
                     "layout": venv_argv(a, "layout_e2e.py", [base, stack["sock"]]),
                     "history": venv_argv(a, "history_e2e.py", [base, sys.executable, "-I", os.path.abspath(__file__),
@@ -298,6 +320,14 @@ def main():
     return 1 if n["FAIL"] else 0
 
 
+def mcp_bin(build):
+    """kicadd-mcp in a build tree or an installed / portable folder (BUILD or BUILD/bin)."""
+    for sub in ("", "bin"):
+        if os.path.isfile(os.path.join(build, sub, "kicadd-mcp" + EXE)):
+            return os.path.join(build, sub, "kicadd-mcp" + EXE)
+    return os.path.join(build, "kicadd-mcp" + EXE)
+
+
 def venv_argv(a, script, args):
     return [a.venv, "-I", os.path.join(HERE, script)] + args
 
@@ -313,7 +343,7 @@ def lcsc_setup(a, work):
     srv = Server(a.build, sock, os.path.join(work, "p", "pic_programmer.kicad_pcb"), env, os.path.join(work, "server.log"))
     if not srv.start():
         return None, None, None
-    argv = [sys.executable, "-I", os.path.join(HERE, "lcsc_e2e.py"), "--mcp", os.path.join(a.build, "kicadd-mcp"),
+    argv = [sys.executable, "-I", os.path.join(HERE, "lcsc_e2e.py"), "--mcp", mcp_bin(a.build),
             "--socket", sock, "--cache", a.lcsc_cache, "--project", os.path.join(work, "p")]
     return argv, env, srv
 

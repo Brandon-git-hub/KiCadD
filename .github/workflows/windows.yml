@@ -34,6 +34,10 @@ on:
       - 'client/fab_e2e.py'
       - 'client/smd_e2e.py'
       - 'client/sch_doc_e2e.py'
+      - 'client/run_all.py'
+      - 'client/tools_e2e.py'
+      - 'client/setup_e2e.py'
+      - 'client/history_e2e.py'
       - '.github/workflows/windows.yml'
   pull_request:
     paths:
@@ -49,6 +53,10 @@ on:
       - 'client/fab_e2e.py'
       - 'client/smd_e2e.py'
       - 'client/sch_doc_e2e.py'
+      - 'client/run_all.py'
+      - 'client/tools_e2e.py'
+      - 'client/setup_e2e.py'
+      - 'client/history_e2e.py'
       - '.github/workflows/windows.yml'
   workflow_dispatch:
 
@@ -304,6 +312,21 @@ jobs:
           python -I kicadd/client/sch_doc_e2e.py --build dist/bin --demos kicad/demos --work "$env:RUNNER_TEMP/schdoc"
           if ($LASTEXITCODE -ne 0) { $fail = 1 }
           exit $fail
+      - name: End-to-end (tools, setup, undo history through run_all)
+        # run_all on the installed folder: tools (flush_ratsnest, open_board), setup (stackup,
+        # net classes on a blank board), history (the Jetson baseboard over HTTP: browser and
+        # agent undo / redo, save, restart from the saved file)
+        shell: pwsh
+        env:
+          PYTHONUTF8: '1'
+        run: |
+          python -m pip install --quiet websockets
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $py = (Get-Command python).Source
+          python -I kicadd/client/run_all.py --build dist/bin --kicad kicad --work "$env:RUNNER_TEMP/all" --venv $py --no-desktop --only tools,setup,history
+          $code = $LASTEXITCODE
+          if ($code -ne 0) { Get-ChildItem "$env:RUNNER_TEMP/all/*.log" | ForEach-Object { "==== $($_.Name)"; Get-Content $_ -Tail 40 } }
+          exit $code
       - uses: actions/upload-artifact@v4
         with:
           name: kicadd-windows-x64

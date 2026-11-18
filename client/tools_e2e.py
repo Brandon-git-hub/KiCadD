@@ -17,7 +17,7 @@ import shutil
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from m5_e2e import FAILS, Mcp, Server, check  # noqa: E402
+from m5_e2e import FAILS, Mcp, Server, binaries, check  # noqa: E402
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--build", required=True)
@@ -33,12 +33,12 @@ stickhub = os.path.join(work, "sh", "StickHub.kicad_pcb")
 pic = os.path.join(work, "pic", "pic_programmer.kicad_pcb")
 pic_bytes = open(pic, "rb").read()
 sock = os.path.join(work, "s.sock")
-env = dict(os.environ, KICAD_RUN_FROM_BUILD_DIR="1")
+kicad_cli, kicadd_mcp, env = binaries(build)
 
 srv = Server(build, sock, stickhub, env, os.path.join(work, "server.log"))
 assert srv.start(), "api-server did not start"
 try:
-    m = Mcp([os.path.join(build, "kicadd-mcp"), "--socket", sock, "--stdio"], env)
+    m = Mcp([kicadd_mcp, "--socket", sock, "--stdio"], env)
 
     print("[flush_ratsnest]")
     err, t = m.tool("delete_tracks", {"nets": ["GND"]})
