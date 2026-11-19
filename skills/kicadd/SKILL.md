@@ -66,10 +66,31 @@ what each tool does; this skill says how to use them together.
      the GND vias and pads in the field), SPI, UART, GPIO and other slow control lines.
    Read the overview first, then call again with limits for the nets that matter; a split
    under a fast pair is worth fixing, a slow line over a gap seldom is.
-4. `run_erc` (`warnings=true` for the full list) and, on a board, `refill_zones` then
+4. **Diff pairs and lengths** (checks only: you never route or meander; the human tunes on
+   the desktop with KiCad's tools, so say which net needs how much). `audit` alone gives one
+   `diff_pair` line: routed pairs (`X+/-`, `X_P/N`), the worst skew and the most uncoupled
+   track. Lengths are KiCad's net inspector's (tracks, via spans, pad-to-die). Rows per pair
+   with `length_limit 20` or `length_nets ["*HDMI*"]` (which also lists those nets' lengths in
+   `length`): both lengths, skew, the gap where coupled (per layer; against the net class's diff
+   pair gap when a class of its own sets it, else each layer's median), the uncoupled track and
+   its longest stretch, vias. Set the class first if you know the target (`set_rules`
+   `diff_impedance` or `diff_pair_gap`). Limits by glob in mm, a count line per rule:
+   `skew {"*PCIE*": 0.13}` (the row names the short member and what it needs), `uncoupled
+   {"*": 5}`, `pair_gap {"*": 0.02}` (a tolerance; stretches where the pair runs into its pins
+   or vias don't count), `length_match {"*DDR_DQ*": 0.5}` (each glob is a group, a pair counts
+   as its mean; rows say what each short net needs against the longest), `max_length` /
+   `min_length`. Take the numbers from the parts' layout guides. Typical starting points:
+   - intra-pair skew about 0.13 mm (5 mil) for multi-gigabit pairs (PCIe, USB 3.x, HDMI, MIPI,
+     SATA); USB 2.0 and 100BASE-TX tolerate around 1 mm;
+   - a byte lane of DDR (DQ / DM against its DQS) within a few tenths of a mm, as the SoC's
+     guide says; lanes of one link (HDMI, MIPI) matched to each other more loosely than within
+     a pair;
+   - uncoupled: keep breakouts short; a few mm over a whole pair is usual.
+   Unrouted connections are flagged ("length so far"): judge lengths on a routed board.
+5. `run_erc` (`warnings=true` for the full list) and, on a board, `refill_zones` then
    `run_drc`. Narrow with `types` / `refs`; the type counts are the whole board, the filter line
    says what matches.
-5. Report what matters, grouped by severity, with the refs and nets involved.
+6. Report what matters, grouped by severity, with the refs and nets involved.
 
 ## Edit a schematic
 

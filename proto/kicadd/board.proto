@@ -1123,11 +1123,23 @@ message BoardAudit
   int32               plane_limit       = 9;   // overview rows (default: none, the header with the worst only; 10 with
                                                // plane_nets / pairs_only); with limits, rows per rule (10), 3x in all
   bool                pairs_only        = 10;  // only diff pair members (X+ / X-, X_P / X_N with the partner on the board)
+  // Diff pairs and lengths (lengths as KiCad's net inspector: tracks, via spans, pad-to-die).
+  // Without limits: an overview, no verdicts. Same globs as above.
+  repeated string     length_nets  = 11;  // globs: list these nets' (and pairs') lengths; default: the pairs
+  map<string, double> skew         = 12;  // glob -> mm: a pair's P / N length difference over it is a warning
+  map<string, double> uncoupled    = 13;  // glob -> mm: a pair's track not beside its partner, in all
+  map<string, double> pair_gap     = 14;  // glob -> mm: coupled gap off the target (net class gap, else the
+                                          // pair's median) by more is a warning
+  map<string, double> length_match = 15;  // glob -> mm: the nets (a pair: its mean) matching each glob are a
+                                          // group; longest minus shortest over it is a warning
+  map<string, double> max_length   = 16;  // glob -> mm
+  map<string, double> min_length   = 18;  // glob -> mm
+  int32               length_limit = 17;  // rows (default: header only; 10 with length_nets); per rule with limits
 }
 
 message BoardAuditFinding
 {
-  string          category = 1;   // current, voltage, silk, testpoint, plane, return_via
+  string          category = 1;   // current, voltage, silk, testpoint, plane, return_via, diff_pair, length
   string          severity = 2;   // warning, info
   string          message  = 3;
   repeated string refs     = 4;
@@ -1145,6 +1157,8 @@ message BoardAuditResponse
   double plane_track_mm     = 7;   // their track on layers next to a zone
   double plane_covered_mm   = 8;   // of it, over a plane
   int32  plane_vias         = 9;   // their vias that change the reference plane
+  int32  diff_pairs         = 10;  // routed diff pairs measured
+  int32  length_nets        = 11;  // nets measured for length
 }
 
 // ---------------------------------------------------------------------------

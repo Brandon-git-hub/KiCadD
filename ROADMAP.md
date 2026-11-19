@@ -32,7 +32,7 @@ Beta 已能走完整個設計流程（電路圖 → 選料 → 擺件 → 規則
 ## 階段二：Layout-Aware 檢查（併入 `audit`）
 
 1. **參考平面檢查：** 訊號跨平面分割、換層缺回流地孔（純幾何，最先做）。 ✅ `audit` 的 `plane` / `return_via`：沿每條訊號線找相鄰銅層鋪銅的網路，量跨分割、平面缺口、超出平面邊緣；換層過孔量連接兩平面的同網路回流過孔（最近、另一側、是否在 BGA 區及區內地孔數），不同平面網路則量兩網路間最近的電容。**給 agent 用：不帶門檻只回每網路總覽（最差在前、`plane_limit` 行），不下判定；門檻由 agent 以網路萬用字元對應 mm 指定**（`return_via`、`plane_gap`、`two_sided`、`bga_return_via_mm`），分級建議寫在 skill。預設每段只回一行標頭（含最差網路，約 200 token）；差分對合為一行、`pairs_only` 篩差分對；判定依規則分組（最嚴的在前，通過也有計數行）。以 cm5_minima、stickhub、pic_programmer、vme-wren、video 驗證（`client/plane_e2e.py`），另跑過 jetson、coldfire、openair、tiny_tapeout、royalblue（vme-wren 全板 1.6 s）（2026-11-19）。
-2. **差分對與等長檢查：** 成對、間距一致性、skew 與長度報告；寫入 net class 差分對規則。不佈線、不繞線。
+2. **差分對與等長檢查：** 成對、間距一致性、skew 與長度報告；寫入 net class 差分對規則。不佈線、不繞線。 ✅ `audit` 的 `diff_pair` / `length`：長度用 KiCad 的 `LENGTH_DELAY_CALCULATION`（與網路檢視器相同：走線、過孔跨距、pad-to-die）；沿差分對每 0.1 mm 量到同層對方的間距，**依層**取目標（有自己的 net class 差分間距就用它，不採 Default 繼承的值；否則各層中位數），報 90% 耦合長度的間距範圍、未耦合長度與最長一段、過孔數。**不帶門檻只回一行標頭**（最差 skew、最多未耦合）；`length_limit` / `length_nets` 列每對與網路長度；門檻由 agent 以萬用字元對應 mm：`skew`（指出短的那條需補多少）、`uncoupled`、`pair_gap`（容差，進入自己 pad / 過孔的 breakout 不算）、`length_match`（每個 glob 一組，差分對以平均計，列出每條需補的長度）、`max_length` / `min_length`；未佈完的連線會標「length so far」。差分對規則沿用 `set_rules` 的 `diff_pair_gap` / `diff_impedance`，設定後即成為檢查目標。以 cm5_minima、stickhub、vme-wren、jetson 驗證（`client/length_e2e.py`；jetson 144 對約 2 s）（2026-11-20）。
 3. **DC IR Drop：** 依銅厚、走線、過孔與鋪銅建電阻網格，找壓降熱點與過孔瓶頸；可用 `board_render` 標示。
 4. **平行走線串擾初篩：** 長距離、間距小於 3H 的耦合線對。
 5. **沿線阻抗剖面：** 依實際線寬與疊層計算，與目標阻抗比對。

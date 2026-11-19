@@ -1708,7 +1708,14 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "passing or not, the tightest first, then its worst), e.g. "
             "return_via {\"*PCIE*\": 1.0, \"*DDR*\": 2, \"*\": 3}, plane_gap {\"*USB*\": 0.5}, "
             "two_sided [\"*PCIE*\"] (G-S-S-G), bga_return_via_mm; plane_nets [globs] / pairs_only pick "
-            "the nets (default: tracks, no zone, no supply name). Run run_erc and run_drc too.",
+            "the nets (default: tracks, no zone, no supply name). Diff pairs (diff_pair; X+/X-, X_P/X_N): "
+            "both lengths as KiCad's net inspector and the skew, the gap to the partner where coupled "
+            "(target: the net class's diff pair gap, else the pair's median), uncoupled track, vias; "
+            "header only by default, rows with length_limit n or length_nets [globs] (which also lists "
+            "those nets' lengths). Limits by glob in mm: skew {\"*USB*\": 0.15}, uncoupled "
+            "{\"*\": 5}, pair_gap (tolerance) {\"*\": 0.02}; length_match {\"*DDR_DQ*\": 0.5} "
+            "(each glob a group, a pair as its mean; says what each short net needs), max_length / "
+            "min_length {glob: mm}. Checks only: the human tunes on the desktop. Run run_erc and run_drc too.",
             obj( { { "max_decap_mm", { { "type", "number" } } },
                    { "currents", { { "type", "object" }, { "description", "net -> A" } } },
                    { "voltages", { { "type", "object" }, { "description", "net -> V" } } },
@@ -1719,7 +1726,15 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                    { "two_sided", { { "type", "array" }, { "items", { { "type", "string" } } } } },
                    { "bga_return_via_mm", { { "type", "number" } } },
                    { "plane_limit", { { "type", "integer" } } },
-                   { "pairs_only", { { "type", "boolean" } } } } ),
+                   { "pairs_only", { { "type", "boolean" } } },
+                   { "length_nets", { { "type", "array" }, { "items", { { "type", "string" } } } } },
+                   { "skew", { { "type", "object" }, { "description", "net glob -> mm" } } },
+                   { "uncoupled", { { "type", "object" }, { "description", "net glob -> mm" } } },
+                   { "pair_gap", { { "type", "object" }, { "description", "net glob -> mm tolerance" } } },
+                   { "length_match", { { "type", "object" }, { "description", "net glob -> mm" } } },
+                   { "max_length", { { "type", "object" }, { "description", "net glob -> mm" } } },
+                   { "min_length", { { "type", "object" }, { "description", "net glob -> mm" } } },
+                   { "length_limit", { { "type", "integer" } } } } ),
             [&aIpc]( const json& a )
             {
                 kicadd::board::BoardAudit boardReq;
@@ -1744,6 +1759,46 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
 
                 if( a.contains( "temp_rise" ) && a["temp_rise"].is_number() )
                     boardReq.set_temp_rise( a["temp_rise"].get<double>() );
+
+                if( a.contains( "length_nets" ) )
+                {
+                    if( !a["length_nets"].is_array() )
+                        return fail( "length_nets is [\"glob\", ...]" );
+
+                    for( const json& n : a["length_nets"] )
+                    {
+                        if( n.is_string() )
+                            boardReq.add_length_nets( n.get<std::string>() );
+                    }
+                }
+
+                for( const char* key : { "skew", "uncoupled", "pair_gap", "length_match", "max_length", "min_length" } )
+                {
+                    if( !a.contains( key ) )
+                        continue;
+
+                    if( !a[key].is_object() )
+                        return fail( std::string( key ) + " is {\"glob\": mm}" );
+
+                    const std::string k = key;
+                    auto& m = k == "skew"           ? *boardReq.mutable_skew()
+                              : k == "uncoupled"    ? *boardReq.mutable_uncoupled()
+                              : k == "pair_gap"     ? *boardReq.mutable_pair_gap()
+                              : k == "length_match" ? *boardReq.mutable_length_match()
+                              : k == "max_length"   ? *boardReq.mutable_max_length()
+                                                    : *boardReq.mutable_min_length();
+
+                    for( const auto& [glob, v] : a[key].items() )
+                    {
+                        if( !v.is_number() || v.get<double>() < 0 )
+                            return fail( k + "." + glob + ": mm, a number" );
+
+                        m[glob] = v.get<double>();
+                    }
+                }
+
+                if( a.contains( "length_limit" ) && a["length_limit"].is_number_integer() )
+                    boardReq.set_length_limit( a["length_limit"].get<int>() );
 
                 for( const char* key : { "plane_nets", "two_sided" } )
                 {
@@ -1900,7 +1955,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                 else
                     t += "; no board (" + boardErr + "): schematic checks only";
 
-                for( const char* cat : { "decoupling", "power", "esd", "net", "current", "voltage", "silk", "testpoint", "plane", "return_via" } )
+                for( const char* cat : { "decoupling", "power", "esd", "net", "current", "voltage", "silk", "testpoint", "plane", "return_via", "diff_pair", "length" } )
                 {
                     std::string extra = std::string( cat ) == "decoupling" ? far : "";
 

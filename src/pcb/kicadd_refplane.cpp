@@ -11,6 +11,7 @@
  */
 
 #include "pcb/kicadd_refplane.h"
+#include "pcb/kicadd_netnames.h"
 
 #include <board.h>
 #include <footprint.h>
@@ -72,13 +73,9 @@ std::string at( const VECTOR2I& p )
     return "(" + mm( p.x / 1e6 ) + ", " + mm( p.y / 1e6 ) + ")";
 }
 
-/// Named like a supply or ground: +5V, 3V3, GND, AGND, VCC_IO, VDD, VBUS, VBAT ...
 bool supplyName( const std::string& aNet )
 {
-    static const std::regex re( R"(^([+-][A-Za-z].*|[+-]?\d+(\.\d+)?V\d*|[+-]?\d+(\.\d+)?V\d*_.*|[PN]\d+V\d*(_.*)?|.*GND.*|VCC.*|VDD.*|VSS.*|VEE.*|VBUS.*|VBAT.*|VIN|VSYS.*|.*PWR.*)$)",
-                                std::regex::icase );
-    const size_t      slash = aNet.rfind( '/' );
-    return std::regex_match( slash == std::string::npos ? aNet : aNet.substr( slash + 1 ), re );
+    return netnames::SupplyName( aNet );
 }
 
 using REF = std::pair<int, int>;   // (layer, net code)
@@ -431,59 +428,7 @@ REFS endRefs( const CHAIN& aChain, bool aFront, double aReach )
 
 // ---------------------------------------------------------------------------- the agent's limits
 
-/// Net name globs with a number each ({"*PCIE*TX*": 1.0, "*": 3}). For a net, an exact name wins,
-/// then the glob with the most literal characters. A glob matches the whole name or the part after
-/// a sheet path ("USB_D+" matches "/USB/USB_D+"), case blind.
-struct GLOBS
-{
-    struct GLOB
-    {
-        std::string pattern;
-        std::regex  re;
-        int         rank;
-        double      value;
-    };
-
-    std::vector<GLOB> list;
-
-    void add( const std::string& aPattern, double aValue )
-    {
-        std::string re;
-        int         literal = 0;
-
-        for( char ch : aPattern )
-        {
-            if( ch == '*' )
-                re += ".*";
-            else if( ch == '?' )
-                re += ".";
-            else
-            {
-                literal++;
-                re += std::strchr( "\\^$.|+()[]{}", ch ) ? std::string( "\\" ) + ch : std::string( 1, ch );
-            }
-        }
-
-        const bool exact = aPattern.find_first_of( "*?" ) == std::string::npos;
-        list.push_back( { aPattern, std::regex( "^(.*/)?" + re + "$", std::regex::icase ), literal + ( exact ? 100000 : 0 ),
-                          aValue } );
-    }
-
-    bool empty() const { return list.empty(); }
-
-    const GLOB* match( const std::string& aName ) const
-    {
-        const GLOB* best = nullptr;
-
-        for( const GLOB& g : list )
-        {
-            if( ( !best || g.rank > best->rank ) && std::regex_match( aName, g.re ) )
-                best = &g;
-        }
-
-        return best;
-    }
-};
+using netnames::GLOBS;
 
 // ---------------------------------------------------------------------------- output
 
@@ -551,21 +496,11 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
 
     auto partnerOf = [&]( int aCode ) -> int
     {
-        const std::string name = netName( aCode );
+        const std::string partner = netnames::PartnerName( netName( aCode ) );
 
-        if( name.size() < 2 )
+        if( partner.empty() )
             return 0;
 
-        // P / N only after a separator or a D (USB_DP / USB_DN), so SRP / SRN are not a pair
-        const bool pn = name.size() > 2 && std::strchr( "PpNn", name.back() )
-                        && ( !std::isalpha( (unsigned char) name[name.size() - 2] ) || name[name.size() - 2] == 'D' );
-
-        if( !pn && name.back() != '+' && name.back() != '-' )
-            return 0;
-
-        std::string partner = name;
-        char&       last = partner.back();
-        last = last == '+' ? '-' : last == '-' ? '+' : last == 'P' ? 'N' : last == 'N' ? 'P' : last == 'p' ? 'n' : 'p';
         auto it = codes.find( partner );
         return it == codes.end() ? 0 : it->second;
     };
