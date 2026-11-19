@@ -1309,7 +1309,7 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
                 }
             }
 
-            const VECTOR2I* near = nullptr;
+            const VECTOR2I* nearestPos = nullptr;
 
             for( const VECTOR2I& f : found )
             {
@@ -1318,13 +1318,13 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
                 if( m.nearest < 0 || d < m.nearest )
                 {
                     m.nearest = d;
-                    near = &f;
+                    nearestPos = &f;
                 }
             }
 
-            if( near )   // the other side: at least 120 degrees round the centre from the nearest
+            if( nearestPos )   // the other side: at least 120 degrees round the centre from the nearest
             {
-                const VECTOR2D a = VECTOR2D( *near - centre );
+                const VECTOR2D a = VECTOR2D( *nearestPos - centre );
 
                 for( const VECTOR2I& f : found )
                 {
@@ -1402,7 +1402,7 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
 
     aOut.set_plane_vias( (int) measured.size() );
 
-    auto far = []( double d ) { return d < 0 ? 1e15 : d; };
+    auto orInf = []( double d ) { return d < 0 ? 1e15 : d; };
     auto dist = [&]( double d ) { return d < 0 ? std::string( "none" ) : mm( d / 1e6 ) + " mm"; };
 
     // vias between planes of different nets, by the pair of plane nets (measured in both modes)
@@ -1429,7 +1429,7 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
     auto worstVia = [&]( const std::vector<const VIAM*>& aList )
     {
         return *std::max_element( aList.begin(), aList.end(),
-                                  [&]( const VIAM* a, const VIAM* b ) { return far( a->nearest ) < far( b->nearest ); } );
+                                  [&]( const VIAM* a, const VIAM* b ) { return orInf( a->nearest ) < orInf( b->nearest ); } );
     };
 
     if( measured.empty() )
@@ -1445,7 +1445,7 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
             list.push_back( { unit, worstVia( vs ) } );
 
         std::sort( list.begin(), list.end(),
-                   [&]( const auto& a, const auto& b ) { return far( a.second->nearest ) > far( b.second->nearest ); } );
+                   [&]( const auto& a, const auto& b ) { return orInf( a.second->nearest ) > orInf( b.second->nearest ); } );
 
         auto row = [&]( int aUnit, const VIAM* w )
         {
@@ -1457,7 +1457,7 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
             for( const VIAM* m : vs )
             {
                 oneSide += m->otherSide < 0;
-                worstOther = std::max( worstOther, far( m->otherSide ) );
+                worstOther = std::max( worstOther, orInf( m->otherSide ) );
                 inBga += !m->bga.empty();
                 bga = m->bga.empty() ? bga : m->bga;
             }
@@ -1533,11 +1533,11 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
             const std::string head = netName( net ) + " via at " + at( m.via->GetPosition() ) + ", " + m.what + ": ";
 
             if( m.nearest < 0 || m.nearest > max )
-                over[g][unitOf( net )].push_back( { &m, far( m.nearest ) - max,
+                over[g][unitOf( net )].push_back( { &m, orInf( m.nearest ) - max,
                                                     head + "nearest " + netName( m.planeNet ) + " return via " + dist( m.nearest )
                                                             + " (" + rule + ( m.bga.empty() ? "" : "; " + m.bga ) + ")" } );
             else if( twoSided.match( netName( net ) ) && ( m.otherSide < 0 || m.otherSide > max ) )
-                over[g][unitOf( net )].push_back( { &m, far( m.otherSide ) - max,
+                over[g][unitOf( net )].push_back( { &m, orInf( m.otherSide ) - max,
                                                     head + "one side only: nearest " + dist( m.nearest ) + ", other side "
                                                             + dist( m.otherSide ) + " (two_sided, " + rule + ")" } );
         }
@@ -1596,7 +1596,7 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
     for( const auto& [pair, list] : byPair )
     {
         const VIAM* w = *std::max_element( list.begin(), list.end(),
-                                           [&]( const VIAM* a, const VIAM* b ) { return far( a->capDist ) < far( b->capDist ); } );
+                                           [&]( const VIAM* a, const VIAM* b ) { return orInf( a->capDist ) < orInf( b->capDist ); } );
         line( aOut, "return_via", "info",
               std::to_string( list.size() ) + " via(s) go between planes of " + pair
                       + " (the return current crosses through a capacitor between them); the farthest from one: "
