@@ -347,6 +347,8 @@ message AutoPlaceResponse
   int32  zones          = 26;     // copper zones on the board: refill them before run_drc
   repeated string edge_notes = 27; // edge rules: which connectors go over the edge and how far,
                                    // which stay inside and why
+  string room_note = 28;           // parts left out: why there is no room (the board's area against the
+                                   // parts', parts bigger than the board)
 }
 
 message FetchLcsc

@@ -1477,6 +1477,9 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
 
                     t += r.kept_current() ? " (in the new one)" : " (left where they were; the others keep clear of them)";
 
+                    if( !r.room_note().empty() )
+                        t += "\n  why: " + r.room_note();
+
                     if( r.track_obstacles() > 0 )
                         t += "\n  the board's " + std::to_string( r.track_obstacles() )
                              + " tracks/vias are obstacles: delete_tracks all=true first, or place right "

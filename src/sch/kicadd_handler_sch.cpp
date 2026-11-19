@@ -885,9 +885,14 @@ HANDLER_RESULT<SchPartResponse> KICADD_HANDLER_SCH::handleAddPart( const HANDLER
 
     SCH_SCREEN* screen = sheet.LastScreen();
 
-    if( screen->GetRefCount() > 1 )
-        note += std::string( note.empty() ? "" : "; " ) + "the sheet's file is used more than once: "
-                "the part is on every copy";
+    // copies of this sheet: the sheet paths showing this file (the screen's own reference count
+    // also counts holders that are no instance, e.g. a sheet just added)
+    const auto copies = std::count_if( hierarchy.begin(), hierarchy.end(),
+                                       [&]( const SCH_SHEET_PATH& p ) { return p.LastScreen() == screen; } );
+
+    if( copies > 1 )
+        note += std::string( note.empty() ? "" : "; " ) + "the sheet's file is used " + std::to_string( copies )
+                + " times: the part is on every copy";
     int            unit = req.unit() > 0 ? req.unit() : 1;
 
     if( libSymbol->GetUnitCount() > 0 && unit > libSymbol->GetUnitCount() )

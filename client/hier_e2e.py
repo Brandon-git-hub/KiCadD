@@ -100,6 +100,8 @@ def main():
             where = f" on /{sheet}/" if sheet else ""
             check(not err and m and (where in t.splitlines()[0] if sheet else " on " not in t.splitlines()[0]),
                   t.splitlines()[0][:100])
+            check("used more than once" not in t and " times: the part is on every copy" not in t,
+                  f"{key}: no note of copies (the sheet has one)")
         r1, c1, d1, r2, c2 = (added[k] for k in ("R1", "C1", "D1", "R2", "C2"))
 
         err, t = mcp.tool("sch_connect", {"nets": {"VIN": [f"{r1}.1"], "VOUT": [f"{r1}.2", f"{c1}.1"],

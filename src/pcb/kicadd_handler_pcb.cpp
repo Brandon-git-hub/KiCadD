@@ -5941,6 +5941,66 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::finishAutoPlace( AUTOPLACE
     for( const std::string& r : res.unplaced )
         out.add_unplaced( r );
 
+    // why there was no room: the board's area against what the parts take, parts too big for it
+    if( !res.unplaced.empty() )
+    {
+        SHAPE_POLY_SET inner = aJob.outline;
+        inner.Inflate( -aJob.opt.edge, CORNER_STRATEGY::CHAMFER_ALL_CORNERS, ARC_HIGH_DEF );
+        const BOX2I area = inner.BBox();
+        double      need = 0;
+        std::vector<std::string> tooBig;
+
+        for( const ap::PART& p : parts )
+        {
+            if( p.outline.empty() )
+                continue;
+
+            BOX2I box( p.outline[0], VECTOR2I( 0, 0 ) );
+
+            for( const VECTOR2I& v : p.outline )
+                box.Merge( v );
+
+            // what it takes: the parts to be placed (left out or not), and the fixed ones on the board
+            if( p.movable || unplaced.count( p.ref ) || aJob.outline.Collide( box.Centre() + p.pos ) )
+                need += ( box.GetWidth() + aJob.opt.spacing ) / 1e6 * ( box.GetHeight() + aJob.opt.spacing ) / 1e6;
+
+            const bool fits = ( box.GetWidth() <= area.GetWidth() && box.GetHeight() <= area.GetHeight() )
+                              || ( box.GetHeight() <= area.GetWidth() && box.GetWidth() <= area.GetHeight() );
+
+            if( unplaced.count( p.ref ) && !fits )
+            {
+                char buf[160];
+                std::snprintf( buf, sizeof( buf ), "%s (%.1f x %.1f mm)", p.ref.c_str(), box.GetWidth() / 1e6,
+                               box.GetHeight() / 1e6 );
+                tooBig.push_back( buf );
+            }
+        }
+
+        const double have = inner.Area() / 1e12;
+        char         buf[400];
+        std::snprintf( buf, sizeof( buf ),
+                       "the parts' courtyards with their spacing take %.0f mm^2; inside the outline (%.1f mm from "
+                       "the edge) there are %.0f mm^2",
+                       need, aJob.opt.edge / 1e6, have );
+        std::string note = buf;
+
+        if( need > 0.7 * have )
+            note += need > have ? ": the board is too small for them (board_outline bigger, or parts on the back: back=[...])"
+                                : ": tight (a placer fills ~70% at most; a bigger outline, a smaller spacing, or parts on the back)";
+        else
+            note += ": the area would do; rules, holes, tracks or keep-outs block them (fewer rules, or delete_tracks)";
+
+        if( !tooBig.empty() )
+        {
+            note += "; bigger than the board in any rotation:";
+
+            for( const std::string& t : tooBig )
+                note += " " + t;
+        }
+
+        out.set_room_note( note );
+    }
+
     if( aJob.opt.groups > 0 )
     {
         out.set_groups( aJob.opt.groups );

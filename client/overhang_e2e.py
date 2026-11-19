@@ -12,6 +12,7 @@ Blank project (m5_e2e's), a 60 x 40 mm outline, KiCad's library footprints:
   R1 0805                         left    no opening: inside, edge 0.5 mm as before
   refusals / notes: a rotation rule turning J1 away from its edge; an overhang that would put
   J3's pads past the edge (kept inside, said); undo
+  no room: a 12 x 8 mm board says it is too small, and which parts can't fit it in any rotation
 """
 
 import argparse
@@ -113,6 +114,14 @@ def main():
               + next((ln for ln in t.splitlines() if "J3:" in ln), t)[:120])
         x, y, r = where(mcp).get("J3", (0, 0, 0))
         check(y + 12.5 <= 40, f"J3 inside: front at y {y + 12.5:.2f}")
+
+        print("[no room]")
+        err, t = mcp.tool("board_outline", {"rect": [0, 0, 12, 8]})
+        err, t = mcp.tool("auto_place", {"all": True})
+        why = next((ln.strip() for ln in t.splitlines() if ln.strip().startswith("why:")), "")
+        print("      ", why[:300])
+        check("no room for" in t and "the board is too small for them" in why, "a 12 x 8 mm board: too small, said")
+        check(re.search(r"bigger than the board in any rotation:.* J4 \(", why) is not None, "J4 (RJ12) can't fit it at all: said")
     finally:
         mcp.close()
         server.stop()
