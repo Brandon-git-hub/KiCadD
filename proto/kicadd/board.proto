@@ -1111,11 +1111,16 @@ message BoardAudit
   map<string, double> currents  = 1;   // net -> A ("VCC" also matches "/VCC")
   map<string, double> voltages  = 2;   // net -> V; nets not given are taken as 0 V
   double              temp_rise = 3;   // C over ambient for the current check (default 10)
+  // Reference planes: signal tracks against the filled zones on the copper layers next to them
+  // (splits, gaps, past the plane's edge); signal vias that change planes against return vias.
+  repeated string     plane_nets    = 4;   // default: every net with tracks and no zone, not named like a supply
+  double              plane_gap_mm  = 5;   // shorter stretches with no plane under them are not reported (default 1)
+  double              return_via_mm = 6;   // a return via this close to a signal via (default 2)
 }
 
 message BoardAuditFinding
 {
-  string          category = 1;   // current, voltage, silk, testpoint
+  string          category = 1;   // current, voltage, silk, testpoint, plane, return_via
   string          severity = 2;   // warning, info
   string          message  = 3;
   repeated string refs     = 4;
@@ -1129,6 +1134,10 @@ message BoardAuditResponse
   int32  test_points     = 3;   // footprints taken as test points
   double outer_copper_um = 4;
   double inner_copper_um = 5;   // 0: no inner layers
+  int32  plane_nets         = 6;   // nets checked against their reference planes
+  double plane_track_mm     = 7;   // their track on layers next to a zone
+  double plane_covered_mm   = 8;   // of it, over a plane
+  int32  plane_vias         = 9;   // their vias that change the reference plane
 }
 
 // ---------------------------------------------------------------------------

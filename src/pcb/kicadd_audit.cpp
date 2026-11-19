@@ -8,13 +8,15 @@
  *   are taken as 0 V);
  * - silk: silkscreen text over exposed pads (unreadable, and the fab clips it) and references
  *   overlapping each other; silkscreen lines over pads, per footprint;
- * - testpoint: nets with no test point (TP* footprints or TestPoint library parts).
+ * - testpoint: nets with no test point (TP* footprints or TestPoint library parts);
+ * - plane, return_via: reference planes under signal tracks and at their vias (kicadd_refplane).
  *
  * This file is part of KiCadD and is licensed GPL-3.0-or-later, like KiCad.
  */
 
 #include "pcb/kicadd_audit.h"
 #include "common/kicadd_ipc2221.h"
+#include "pcb/kicadd_refplane.h"
 
 #include <board.h>
 #include <board_design_settings.h>
@@ -915,6 +917,7 @@ void AuditBoard( BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& aOut
     checkVoltages( aBoard, aReq, aOut );
     checkSilk( aBoard, aOut );
     checkTestPoints( aBoard, aOut );
+    CheckReferencePlanes( aBoard, aReq, aOut );
 }
 
 } // namespace kicadd

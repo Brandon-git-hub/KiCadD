@@ -1698,12 +1698,20 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "narrowest track per layer against IPC-2221 (temp_rise, default 10 C; the stackup's copper); "
             "voltages {\"VPP\": 13} (V; nets named like +12V or 3V3 are read from the name, others "
             "count as 0 V) checks the closest copper of other nets per layer against IPC-2221B table 6-1; "
-            "silkscreen text over pads and overlapping references; nets without a test point. Refill "
-            "zones first for the voltage check. Run run_erc and run_drc too.",
+            "silkscreen text over pads and overlapping references; nets without a test point. Reference "
+            "planes: signal tracks against the filled zones on the copper layers next to them (plane "
+            "splits, gaps longer than plane_gap_mm (1), stretches past the plane's edge), and signal vias "
+            "that change planes without a return via of the plane net within return_via_mm (2) or, for "
+            "different plane nets, a capacitor between them; plane_nets [..] picks the nets (default: "
+            "every net with tracks, no zone and no supply name). Refill zones first for the voltage and "
+            "plane checks. Run run_erc and run_drc too.",
             obj( { { "max_decap_mm", { { "type", "number" } } },
                    { "currents", { { "type", "object" }, { "description", "net -> A" } } },
                    { "voltages", { { "type", "object" }, { "description", "net -> V" } } },
-                   { "temp_rise", { { "type", "number" }, { "description", "C over ambient (10)" } } } } ),
+                   { "temp_rise", { { "type", "number" }, { "description", "C over ambient (10)" } } },
+                   { "plane_nets", { { "type", "array" }, { "items", { { "type", "string" } } } } },
+                   { "plane_gap_mm", { { "type", "number" } } },
+                   { "return_via_mm", { { "type", "number" } } } } ),
             [&aIpc]( const json& a )
             {
                 kicadd::board::BoardAudit boardReq;
@@ -1728,6 +1736,24 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
 
                 if( a.contains( "temp_rise" ) && a["temp_rise"].is_number() )
                     boardReq.set_temp_rise( a["temp_rise"].get<double>() );
+
+                if( a.contains( "plane_nets" ) )
+                {
+                    if( !a["plane_nets"].is_array() )
+                        return fail( "plane_nets is [\"NET\", ...]" );
+
+                    for( const json& n : a["plane_nets"] )
+                    {
+                        if( n.is_string() )
+                            boardReq.add_plane_nets( n.get<std::string>() );
+                    }
+                }
+
+                if( a.contains( "plane_gap_mm" ) && a["plane_gap_mm"].is_number() )
+                    boardReq.set_plane_gap_mm( a["plane_gap_mm"].get<double>() );
+
+                if( a.contains( "return_via_mm" ) && a["return_via_mm"].is_number() )
+                    boardReq.set_return_via_mm( a["return_via_mm"].get<double>() );
 
                 ks::SchAudit           req;
                 ks::SchAuditResponse   r;
@@ -1831,11 +1857,17 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                     t += "; board: " + num( br.outer_copper_um() ) + " um outer copper"
                          + ( br.inner_copper_um() > 0 ? ", " + num( br.inner_copper_um() ) + " um inner" : std::string() )
                          + ", " + std::to_string( br.silk_checked() ) + " silkscreen items, "
-                         + std::to_string( br.test_points() ) + " test point(s)";
+                         + std::to_string( br.test_points() ) + " test point(s)"
+                         + ( br.plane_nets() > 0
+                                     ? ", " + std::to_string( br.plane_nets() ) + " signal net(s) checked against their planes ("
+                                               + num( br.plane_covered_mm() ) + " of " + num( br.plane_track_mm() )
+                                               + " mm of track over a plane, " + std::to_string( br.plane_vias() )
+                                               + " via(s) changing planes)"
+                                     : std::string() );
                 else
                     t += "; no board (" + boardErr + "): schematic checks only";
 
-                for( const char* cat : { "decoupling", "power", "esd", "net", "current", "voltage", "silk", "testpoint" } )
+                for( const char* cat : { "decoupling", "power", "esd", "net", "current", "voltage", "silk", "testpoint", "plane", "return_via" } )
                 {
                     std::string extra = std::string( cat ) == "decoupling" ? far : "";
 

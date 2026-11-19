@@ -44,8 +44,15 @@ what each tool does; this skill says how to use them together.
    without a test point. Give what you know about the power: `currents {"VIN": 2}` (A) checks
    each net's narrowest track per layer against IPC-2221; `voltages {"HV": 48}` (V; names like
    `+12V` / `3V3` are read on their own, other nets count as 0 V) checks the spacing to every
-   other net against IPC-2221B table 6-1 (refill zones first). Judge the findings (a socket for
-   a programmed chip needs less decoupling than a switching regulator).
+   other net against IPC-2221B table 6-1 (refill zones first). On a routed board with planes
+   it also checks reference planes (refill zones first): signal tracks crossing a split
+   between plane nets, running over a gap or past a plane's edge (`plane`), and signal vias
+   that change planes with no return via of the plane net within `return_via_mm` (2 mm), or
+   no capacitor near when the planes are different nets (`return_via`). Diff-pair members
+   and clocks are marked `[fast]` and are warnings; slower nets are notes. For the nets that
+   matter, pass `plane_nets ["USB_D+", ...]` (all warnings). Judge the findings (a socket for
+   a programmed chip needs less decoupling than a switching regulator; an I2C line over a gap
+   matters less than a USB pair).
 3. `run_erc` (`warnings=true` for the full list) and, on a board, `refill_zones` then
    `run_drc`. Narrow with `types` / `refs`; the type counts are the whole board, the filter line
    says what matches.
