@@ -2,7 +2,7 @@
      {{UPSTREAM}} is filled from patches/UPSTREAM_BASE; build info and SHA-256 are appended. -->
 KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修剪版 Windows x64 build，加上 Agent（MCP）協同設計。
 
-> ⚠️ Beta（pre-release）。已能走完整個設計流程，功能仍會持續加入。由 GitHub Actions 自動建置；28 個端到端測試在 Linux 上全部通過（含桌面版），Windows CI 跑 smoke test 與 headless 的出廠、貼片、電路圖文件、工具、設定、undo 歷史測試；桌面版在 Windows 上只有人工試用。
+> ⚠️ Beta（pre-release）。已能走完整個設計流程，功能仍會持續加入。由 GitHub Actions 自動建置；29 個端到端測試在 Linux 上全部通過（含桌面版），Windows CI 跑 smoke test 與 headless 的出廠、貼片、電路圖文件、工具、設定、undo 歷史測試；桌面版在 Windows 上只有人工試用。
 
 ## 使用前須知
 完整的使用說明（安裝、接上 Agent、skill、存檔格式、做得到 / 做不到）：[docs/GUIDE.md](https://github.com/Brandon-git-hub/KiCadD/blob/main/docs/GUIDE.md)。
@@ -13,7 +13,21 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 - **一次一個專案：** 一個服務同時只開一個專案（板子加電路圖），換專案請用 `open_board`。
 - **目前不支援：** 差分對與等長佈線、全板自動佈線（`route` 只代替重複的手動佈線）、電路圖自動排版、組裝圖、STEP 匯出（3D 模型只有 VRML）、ODB++ / IPC-2581 / DXF、MCP resources / prompts。
 
-## 這一版（beta.2）
+## 這一版（beta.3）
+ROADMAP 階段二（版圖感知檢查）第一項（規劃見 [ROADMAP](https://github.com/Brandon-git-hub/KiCadD/blob/main/ROADMAP.md)）。
+
+**新功能：`audit` 的參考平面檢查（工具數不變，59 個）**
+- **`plane`：跨分割、平面缺口。** 沿每條訊號線找上下相鄰銅層的鋪銅網路，量出走線從一個平面網路跨到另一個（分割）、經過灌銅的缺口，或超出平面邊緣的長度。
+- **`return_via`：換層的回流過孔。** 訊號過孔換到參考平面不同的層時，量出連接兩個平面的同網路過孔（或通孔焊盤）最近多遠、過孔另一側（差分對以兩個過孔的中點為準）最近多遠、是否在 BGA 區內以及區內有幾個地孔；兩邊平面是不同網路（例如 +5V 對 GND）時，量兩網路之間最近的電容。
+- **給 Agent 判斷：** 不帶門檻時只回總覽、不下判定；預設每段只有一行標頭，寫出最差的網路（約 200 token）。要逐行看用 `plane_limit`、`plane_nets`（網路萬用字元）、`pairs_only`（只看差分對，差分對合為一行）。門檻由 Agent 依網路萬用字元指定 mm：`return_via {"*PCIE*": 1.0, "*": 3}`、`plane_gap`、`two_sided`（要求兩側都有回流過孔）、`bga_return_via_mm`；完整名稱優先於萬用字元，越具體的萬用字元優先。判定依規則分組、最嚴的在前，通過的規則也有一行計數。skill 附上分級建議（嚴格 ≤1–1.5 mm、標準 ≤2 mm、寬鬆 ≤3 mm）。
+- 以 cm5_minima、stickhub、pic_programmer、vme-wren、video 驗證，另跑過 jetson、coldfire 等板；vme-wren（12 層）全板 1.6 秒。
+
+**修正**
+- **`sch_add_part` 加到剛新增的圖紙：** 以前會誤報「the sheet's file is used more than once」，現在只計算實際顯示這個檔案的圖紙路徑。
+- **`auto_place` 說明放不下的原因：** 以前只寫「no room for」，現在會比較零件面積和板框內可用面積（太小、太擠、或被規則 / 走線擋住），並列出任何旋轉都放不進板子的零件。
+- **電路圖 PDF：** 說明點零件的欄位選單需要 Adobe Acrobat / Reader。
+
+## beta.2
 ROADMAP 階段一（交付閉環）的三項（規劃見 [ROADMAP](https://github.com/Brandon-git-hub/KiCadD/blob/main/ROADMAP.md)）。
 
 **新功能（工具共 59 個）**
