@@ -1120,7 +1120,9 @@ message BoardAudit
   map<string, double> return_via        = 6;   // glob -> mm: farther return vias are warnings
   repeated string     two_sided         = 7;   // globs: a return via on the other side within the limit too (G-S-S-G)
   double              bga_return_via_mm = 8;   // the limit for vias in a BGA's field instead
-  int32               plane_limit       = 9;   // rows per list (default 10; warnings twice that)
+  int32               plane_limit       = 9;   // overview rows (default: none, the header with the worst only; 10 with
+                                               // plane_nets / pairs_only); with limits, rows per rule (10), 3x in all
+  bool                pairs_only        = 10;  // only diff pair members (X+ / X-, X_P / X_N with the partner on the board)
 }
 
 message BoardAuditFinding

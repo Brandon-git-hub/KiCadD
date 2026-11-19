@@ -46,12 +46,15 @@ what each tool does; this skill says how to use them together.
    `+12V` / `3V3` are read on their own, other nets count as 0 V) checks the spacing to every
    other net against IPC-2221B table 6-1 (refill zones first). Judge the findings (a socket for
    a programmed chip needs less decoupling than a switching regulator).
-3. **Reference planes** (a routed board with planes; refill zones first). `audit` alone gives an
-   overview, measured and not judged: per net, plane splits and the longest stretch with no
-   plane under the track (`plane`); per net, the farthest return via of its plane-changing
-   vias, the nearest on the other side, BGA fields, and vias between different plane nets with
-   the nearest capacitor (`return_via`). Worst first, `plane_limit` rows (10). You set the
-   limits, by net glob in mm (an exact name beats a glob, a more literal glob a looser one):
+3. **Reference planes** (a routed board with planes; refill zones first). `audit` alone gives
+   one line per section, measured and not judged, with the worst net: plane splits and the
+   longest stretch with no plane under a track (`plane`); the farthest return via of the vias
+   that change planes, the nearest on the other side, BGA fields, vias between different plane
+   nets with the nearest capacitor (`return_via`). For rows per net (a diff pair is one row,
+   `X_P/N`), worst first: `plane_limit 20`, `plane_nets ["*HDMI*"]` or `pairs_only true` (globs
+   like `*_N` also catch active-low signals). You set the limits, by net glob in mm (an exact
+   name beats a glob, a more literal glob a looser one); each rule then gets a count line,
+   passing or not, the tightest first, and its worst nets / pairs:
    `return_via {"*PCIE*": 1.0, "*DDR*": 2, "*": 3}`, `two_sided ["*PCIE*"]` (a return via on each
    side, G-S-S-G), `bga_return_via_mm`, `plane_gap {"*USB*": 0.5}` (splits are always reported
    for the nets it matches). Choose them from the parts and the schematic, not only the names:

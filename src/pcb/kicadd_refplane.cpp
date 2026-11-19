@@ -517,6 +517,9 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
 {
     const LSEQ   stack = aBoard.GetEnabledLayers().CuStack();
     const size_t limit = aReq.plane_limit() > 0 ? aReq.plane_limit() : 10;
+    // the overview's rows only when asked for (plane_limit, plane_nets, pairs_only): by default each
+    // section is its header line with the worst net, so an audit for other things stays short
+    const bool rows = aReq.plane_limit() > 0 || aReq.plane_nets_size() > 0 || aReq.pairs_only();
 
     if( stack.size() < 2 )
         return;
@@ -568,6 +571,40 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
     };
 
     auto tagged = [&]( int aCode ) { return netName( aCode ) + ( partnerOf( aCode ) ? " (pair)" : "" ); };
+
+    // a pair is one row: its unit is the lower net code of the two, named "X_P / X_N"
+    auto unitOf = [&]( int aCode )
+    {
+        const int partner = partnerOf( aCode );
+        return partner ? std::min( aCode, partner ) : aCode;
+    };
+
+    auto unitName = [&]( int aUnit )
+    {
+        // "/USB_C.D_P/N", "USB_D+/-": the P / + member, then the other's last character
+        const int partner = partnerOf( aUnit );
+
+        if( !partner )
+            return netName( aUnit );
+
+        std::string a = netName( aUnit ), b = netName( partner );
+
+        if( std::strchr( "Nn-", a.back() ) )
+            std::swap( a, b );
+
+        return a + "/" + b.back() + " (pair)";
+    };
+
+    // "GND In1.Cu, +5V In3.Cu"
+    auto planesShort = [&]( const REFS& aRefs )
+    {
+        std::string s;
+
+        for( const REF& r : aRefs )
+            s += ( s.empty() ? "" : ", " ) + netName( r.second ) + " " + layerName( r.first );
+
+        return s;
+    };
 
     GLOBS gapLimit, viaLimit, twoSided, picked;
 
@@ -648,6 +685,12 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
             if( code > 0 && !nets.count( code ) && !zoneNets.count( code ) && !supplyName( netName( code ) ) )
                 nets.insert( code );
         }
+    }
+
+    if( aReq.pairs_only() )
+    {
+        for( auto it = nets.begin(); it != nets.end(); )
+            it = partnerOf( *it ) ? std::next( it ) : nets.erase( it );
     }
 
     if( nets.empty() )
@@ -883,90 +926,176 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
         note( aOut, "plane", layerName( layer ) + ": no zone on " + nextTo[layer] + ", so its " + mm( len, 0 )
                                      + " mm of signal track have no reference plane to check" );
 
+    // per unit (a net, or a pair as one)
+    struct UNIT
+    {
+        double                len = 0, covered = 0;
+        std::set<std::string> layers;
+        int                   splits = 0;
+        const EVENT*          split = nullptr;
+        const EVENT*          gap = nullptr;
+        const EVENT*          off = nullptr;
+    };
+
+    std::map<int, UNIT> units;
+
+    for( const auto& [net, st] : stats )
+    {
+        UNIT& u = units[unitOf( net )];
+        u.len += st.len;
+        u.covered += st.covered;
+        u.layers.insert( st.layers.begin(), st.layers.end() );
+        u.splits += st.splits;
+        u.split = u.split ? u.split : st.split;
+
+        for( const EVENT* e : { st.gap, st.off } )
+        {
+            if( !e )
+                continue;
+
+            const EVENT*& worst = e->kind == 1 ? u.gap : u.off;
+            worst = !worst || e->len > worst->len ? e : worst;
+        }
+    }
+
+    auto worstLen = []( const UNIT& u ) { return std::max( u.gap ? u.gap->len : 0.0, u.off ? u.off->len : 0.0 ); };
+
     if( gapLimit.empty() )
     {
-        // the overview: per net, worst first (splits, then the longest stretch with no plane)
-        std::vector<std::pair<int, const NETSTAT*>> rows;
-        int                                         withSplit = 0, withGap = 0;
+        // the overview: per net or pair, worst first (splits, then the longest stretch with no plane)
+        std::vector<std::pair<int, const UNIT*>> list;
+        int                                      withSplit = 0, withGap = 0;
 
-        for( const auto& [net, st] : stats )
+        for( const auto& [unit, u] : units )
         {
-            const double worst = std::max( st.gap ? st.gap->len : 0.0, st.off ? st.off->len : 0.0 );
-            withSplit += st.splits > 0;
-            withGap += worst > 1e6;
+            withSplit += u.splits > 0;
+            withGap += worstLen( u ) > 1e6;
 
-            // stretches under 0.5 mm (antipads, mostly) are left out of the overview
-            if( st.splits || worst >= 0.5e6 )
-                rows.push_back( { net, &st } );
+            // stretches under 0.5 mm (antipads, mostly) are left out
+            if( u.splits || worstLen( u ) >= 0.5e6 )
+                list.push_back( { unit, &u } );
         }
 
-        auto worstLen = []( const NETSTAT* s ) { return std::max( s->gap ? s->gap->len : 0.0, s->off ? s->off->len : 0.0 ); };
-
-        std::sort( rows.begin(), rows.end(),
+        std::sort( list.begin(), list.end(),
                    [&]( const auto& a, const auto& b )
                    {
                        return a.second->splits != b.second->splits ? a.second->splits > b.second->splits
-                                                                   : worstLen( a.second ) > worstLen( b.second );
+                                                                   : worstLen( *a.second ) > worstLen( *b.second );
                    } );
 
-        note( aOut, "plane", std::to_string( stats.size() ) + " signal net(s) measured: " + std::to_string( withSplit )
-                                     + " cross a plane split, " + std::to_string( withGap )
-                                     + " have a stretch over 1 mm with no plane under them (nets under 0.5 mm not listed). Worst first; "
-                                       "no verdicts: "
-                                       "judge them, or pass plane_gap {glob: mm}" );
-
-        for( size_t i = 0; i < rows.size() && i < limit; i++ )
+        auto row = [&]( int aUnit, const UNIT& u )
         {
-            const auto& [net, st] = rows[i];
             std::string layers;
 
-            for( const std::string& l : st->layers )
+            for( const std::string& l : u.layers )
                 layers += ( layers.empty() ? "" : "/" ) + l;
 
-            std::string t = tagged( net ) + ": " + mm( st->len / 1e6, 1 ) + " mm on " + layers + ", "
-                            + mm( st->len > 0 ? 100 * st->covered / st->len : 0, 0 ) + "% over a plane";
+            std::string t = unitName( aUnit ) + ": " + mm( u.len / 1e6, 1 ) + " mm on " + layers + ", "
+                            + mm( u.len > 0 ? 100 * u.covered / u.len : 0, 0 ) + "% over a plane";
 
-            if( st->splits )
-                t += "; " + std::to_string( st->splits ) + " split crossing(s), the first: " + st->split->text;
+            if( u.splits )
+                t += "; " + std::to_string( u.splits ) + " split crossing(s), the first: " + u.split->text;
 
-            if( st->gap )
-                t += "; longest gap " + mm( st->gap->len / 1e6 ) + " mm at " + at( st->gap->at );
+            if( u.gap )
+                t += "; longest gap " + mm( u.gap->len / 1e6 ) + " mm at " + at( u.gap->at );
 
-            if( st->off )
-                t += "; longest off the plane " + mm( st->off->len / 1e6 ) + " mm at " + at( st->off->at );
+            if( u.off )
+                t += "; longest off the plane " + mm( u.off->len / 1e6 ) + " mm at " + at( u.off->at );
 
-            line( aOut, "plane", "info", t, st->split ? st->split->at : st->gap ? st->gap->at : st->off->at );
-        }
+            return t;
+        };
 
-        if( rows.size() > limit )
-            note( aOut, "plane", std::to_string( rows.size() - limit ) + " more net(s) (plane_limit)" );
+        std::string head = std::to_string( units.size() ) + " signal net(s) / pair(s) measured: " + std::to_string( withSplit )
+                           + " cross a plane split, " + std::to_string( withGap )
+                           + " have a stretch over 1 mm with no plane under them. No verdicts: judge them, or pass "
+                             "plane_gap {glob: mm}";
+
+        if( !rows && !list.empty() )
+            head += ". The worst: " + row( list[0].first, *list[0].second )
+                    + ". Per net: plane_limit / plane_nets / pairs_only";
+
+        note( aOut, "plane", head );
+
+        for( size_t i = 0; rows && i < list.size() && i < limit; i++ )
+            line( aOut, "plane", "info", row( list[i].first, *list[i].second ),
+                  list[i].second->split ? list[i].second->split->at
+                  : worstLen( *list[i].second ) == ( list[i].second->gap ? list[i].second->gap->len : -1 )
+                          ? list[i].second->gap->at
+                          : list[i].second->off->at );
+
+        if( rows && list.size() > limit )
+            note( aOut, "plane", std::to_string( list.size() - limit ) + " more (plane_limit)" );
     }
     else
     {
-        // the agent's limits: splits always, gaps and stretches off the plane longer than its mm
-        std::vector<std::pair<const EVENT*, const GLOBS::GLOB*>> bad;
+        // the agent's limits, rule by rule (the tightest first): a count line each, passing or not,
+        // then its worst nets or pairs (splits first); 3 x plane_limit rows in all
+        std::map<const GLOBS::GLOB*, std::set<int>>                     judged;   // rule -> units
+        std::map<const GLOBS::GLOB*, std::map<int, std::vector<const EVENT*>>> over;
+
+        for( const auto& [net, st] : stats )
+        {
+            if( const GLOBS::GLOB* g = gapLimit.match( netName( net ) ) )
+                judged[g].insert( unitOf( net ) );
+        }
 
         for( const EVENT& e : events )
         {
             const GLOBS::GLOB* g = gapLimit.match( netName( e.net ) );
 
             if( g && ( e.kind == 0 || e.len > g->value * 1e6 ) )
-                bad.push_back( { &e, g } );
+                over[g][unitOf( e.net )].push_back( &e );
         }
 
-        std::stable_sort( bad.begin(), bad.end(),
-                          []( const auto& a, const auto& b )
-                          { return ( a.first->kind == 0 ) != ( b.first->kind == 0 ) ? a.first->kind == 0 : a.first->len > b.first->len; } );
+        std::vector<const GLOBS::GLOB*> rules;
 
-        for( size_t i = 0; i < bad.size() && i < 2 * limit; i++ )
-            line( aOut, "plane", "warning",
-                  bad[i].first->text + ( bad[i].first->kind ? " (max " + mm( bad[i].second->value ) + " for "
-                                                                  + bad[i].second->pattern + ")"
-                                                            : std::string() ),
-                  bad[i].first->at );
+        for( const auto& [g, set] : judged )
+            rules.push_back( g );
 
-        if( bad.size() > 2 * limit )
-            line( aOut, "plane", "warning", std::to_string( bad.size() - 2 * limit ) + " more (plane_limit)" );
+        std::sort( rules.begin(), rules.end(),
+                   []( const GLOBS::GLOB* a, const GLOBS::GLOB* b ) { return a->value != b->value ? a->value < b->value : a->pattern < b->pattern; } );
+
+        size_t budget = 3 * limit;
+
+        for( const GLOBS::GLOB* g : rules )
+        {
+            auto&  bad = over[g];
+            int    splits = 0, stretches = 0;
+
+            for( const auto& [unit, list] : bad )
+                for( const EVENT* e : list )
+                    ( e->kind == 0 ? splits : stretches )++;
+
+            line( aOut, "plane", bad.empty() ? "info" : "warning",
+                  g->pattern + " (max " + mm( g->value ) + " mm with no plane): " + std::to_string( judged[g].size() )
+                          + " net(s) / pair(s) judged, " + ( bad.empty() ? std::string( "all within" )
+                                                                         : std::to_string( bad.size() ) + " over: "
+                                                                                   + std::to_string( splits ) + " split crossing(s), "
+                                                                                   + std::to_string( stretches ) + " stretch(es) over" ) );
+
+            std::vector<std::pair<int, const EVENT*>> worst;   // per unit its worst event
+
+            for( const auto& [unit, list] : bad )
+                worst.push_back( { unit, *std::min_element( list.begin(), list.end(), []( const EVENT* a, const EVENT* b )
+                                                            { return ( a->kind == 0 ) != ( b->kind == 0 ) ? a->kind == 0 : a->len > b->len; } ) } );
+
+            std::sort( worst.begin(), worst.end(),
+                       []( const auto& a, const auto& b )
+                       { return ( a.second->kind == 0 ) != ( b.second->kind == 0 ) ? a.second->kind == 0 : a.second->len > b.second->len; } );
+
+            size_t shown = 0;
+
+            for( ; shown < worst.size() && shown < limit && budget > 0; shown++, budget-- )
+            {
+                const size_t n = bad[worst[shown].first].size();
+                line( aOut, "plane", "warning",
+                      worst[shown].second->text + ( n > 1 ? " (" + std::to_string( n - 1 ) + " more on " + unitName( worst[shown].first ) + ")" : "" ),
+                      worst[shown].second->at );
+            }
+
+            if( shown < worst.size() )
+                line( aOut, "plane", "warning", std::to_string( worst.size() - shown ) + " more net(s) / pair(s) over for " + g->pattern + " (plane_limit)" );
+        }
     }
 
     // ---- vias that change the reference: the return path measured
@@ -1135,8 +1264,8 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
         const VECTOR2I pos = via->GetPosition();
         VIAM m;
         m.via = via;
-        m.what = layerName( sides[si].first ) + " (over " + describe( A ) + ") to " + layerName( sides[sj].first ) + " (over "
-                 + describe( B ) + ")";
+        m.what = layerName( sides[si].first ) + " (" + planesShort( A ) + ") to " + layerName( sides[sj].first ) + " ("
+                 + planesShort( B ) + ")";
 
         // the same plane net on both sides: its vias joining the two planes
         std::vector<VECTOR2I> found;
@@ -1288,46 +1417,44 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
             byPair[m.group].push_back( &m );
     }
 
+    // per unit (a net, or a pair as one): its vias between planes of the same net
+    std::map<int, std::vector<const VIAM*>> byUnit;
+
+    for( const VIAM& m : measured )
+    {
+        if( m.planeNet )
+            byUnit[unitOf( m.via->GetNetCode() )].push_back( &m );
+    }
+
+    auto worstVia = [&]( const std::vector<const VIAM*>& aList )
+    {
+        return *std::max_element( aList.begin(), aList.end(),
+                                  [&]( const VIAM* a, const VIAM* b ) { return far( a->nearest ) < far( b->nearest ); } );
+    };
+
     if( measured.empty() )
     {
         // nothing to say: no signal via changes planes
     }
     else if( viaLimit.empty() )
     {
-        // the overview: per signal net, the farthest return via first
-        std::map<int, std::vector<const VIAM*>> byNet;
+        // the overview: per net or pair, the farthest return via first
+        std::vector<std::pair<int, const VIAM*>> list;
 
-        for( const VIAM& m : measured )
-        {
-            if( m.planeNet )
-                byNet[m.via->GetNetCode()].push_back( &m );
-        }
+        for( const auto& [unit, vs] : byUnit )
+            list.push_back( { unit, worstVia( vs ) } );
 
-        std::vector<std::pair<int, const VIAM*>> rows;   // net, its worst via
-
-        for( const auto& [net, list] : byNet )
-            rows.push_back( { net, *std::max_element( list.begin(), list.end(), [&]( const VIAM* a, const VIAM* b )
-                                                      { return far( a->nearest ) < far( b->nearest ); } ) } );
-
-        std::sort( rows.begin(), rows.end(),
+        std::sort( list.begin(), list.end(),
                    [&]( const auto& a, const auto& b ) { return far( a.second->nearest ) > far( b.second->nearest ); } );
 
-        note( aOut, "return_via",
-              std::to_string( measured.size() ) + " signal via(s) change reference planes: " + std::to_string( sameNet )
-                      + " between planes of the same net (the return via measured, per net below, the farthest first), "
-                      + std::to_string( measured.size() - sameNet )
-                      + " between different plane nets (a capacitor measured). No verdicts: judge them, or pass "
-                        "return_via {glob: mm}" );
-
-        for( size_t i = 0; i < rows.size() && i < limit; i++ )
+        auto row = [&]( int aUnit, const VIAM* w )
         {
-            const auto& [net, w] = rows[i];
-            const auto& list = byNet[net];
+            const auto& vs = byUnit[aUnit];
             int         oneSide = 0, inBga = 0;
             double      worstOther = 0;
             std::string bga;
 
-            for( const VIAM* m : list )
+            for( const VIAM* m : vs )
             {
                 oneSide += m->otherSide < 0;
                 worstOther = std::max( worstOther, far( m->otherSide ) );
@@ -1335,10 +1462,9 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
                 bga = m->bga.empty() ? bga : m->bga;
             }
 
-            std::string t = tagged( net ) + ": " + std::to_string( list.size() ) + " via(s); farthest return via "
-                            + dist( w->nearest ) + " (" + netName( w->planeNet ) + ") at " + at( w->via->GetPosition() )
-                            + ", " + w->what + "; other side " + ( worstOther >= 1e15 ? std::string( "none" )
-                                                                                      : "up to " + mm( worstOther / 1e6 ) + " mm" );
+            std::string t = unitName( aUnit ) + ": " + std::to_string( vs.size() ) + " via(s); farthest return via "
+                            + dist( w->nearest ) + " at " + at( w->via->GetPosition() ) + ", " + w->what + "; other side "
+                            + ( worstOther >= 1e15 ? std::string( "none" ) : "up to " + mm( worstOther / 1e6 ) + " mm" );
 
             if( oneSide )
                 t += " (" + std::to_string( oneSide ) + " via(s) with return vias on one side only)";
@@ -1346,30 +1472,57 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
             if( inBga )
                 t += "; " + std::to_string( inBga ) + " " + bga;
 
-            line( aOut, "return_via", "info", t, w->via->GetPosition() );
-        }
+            return t;
+        };
 
-        if( rows.size() > limit )
-            note( aOut, "return_via", std::to_string( rows.size() - limit ) + " more net(s) (plane_limit)" );
+        std::string head = std::to_string( measured.size() ) + " signal via(s) change reference planes: "
+                           + std::to_string( sameNet ) + " between planes of the same net (the return via measured), "
+                           + std::to_string( measured.size() - sameNet )
+                           + " between different plane nets (a capacitor measured). No verdicts: judge them, or pass "
+                             "return_via {glob: mm}";
+
+        if( !rows && !list.empty() )
+            head += ". The farthest: " + row( list[0].first, list[0].second ) + ". Per net: plane_limit / plane_nets / pairs_only";
+
+        note( aOut, "return_via", head );
+
+        for( size_t i = 0; rows && i < list.size() && i < limit; i++ )
+            line( aOut, "return_via", "info", row( list[i].first, list[i].second ), list[i].second->via->GetPosition() );
+
+        if( rows && list.size() > limit )
+            note( aOut, "return_via", std::to_string( list.size() - limit ) + " more (plane_limit)" );
     }
     else
     {
-        // the agent's limits: the nearest return via, and with two_sided one on the other side too
-        std::vector<std::pair<double, std::string>> bad;   // how far over, text
-        std::vector<VECTOR2I>                       where;
+        // the agent's limits, rule by rule (the tightest first): a count line each, passing or not,
+        // then its worst nets or pairs; 3 x plane_limit rows in all
+        struct FAIL
+        {
+            const VIAM* m;
+            double      excess;
+            std::string text;
+        };
+
+        std::map<const GLOBS::GLOB*, int>                                  judged;   // vias
+        std::map<const GLOBS::GLOB*, std::set<int>>                        judgedUnits;
+        std::map<const GLOBS::GLOB*, std::map<int, std::vector<FAIL>>>     over;
 
         for( const VIAM& m : measured )
         {
             if( !m.planeNet )
                 continue;
 
-            const GLOBS::GLOB* g = viaLimit.match( netName( m.via->GetNetCode() ) );
+            const int          net = m.via->GetNetCode();
+            const GLOBS::GLOB* g = viaLimit.match( netName( net ) );
 
             if( !g )
                 continue;
 
+            judged[g]++;
+            judgedUnits[g].insert( unitOf( net ) );
+
             double      max = g->value * 1e6;
-            std::string rule = "max " + mm( g->value ) + " for " + g->pattern;
+            std::string rule = "max " + mm( g->value );
 
             if( !m.bga.empty() && aReq.bga_return_via_mm() > 0 )
             {
@@ -1377,35 +1530,67 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
                 rule = "max " + mm( aReq.bga_return_via_mm() ) + " in a BGA field";
             }
 
-            const std::string head = "via at " + at( m.via->GetPosition() ) + " takes " + tagged( m.via->GetNetCode() )
-                                     + " from " + m.what + ": ";
+            const std::string head = netName( net ) + " via at " + at( m.via->GetPosition() ) + ", " + m.what + ": ";
 
             if( m.nearest < 0 || m.nearest > max )
-                bad.push_back( { far( m.nearest ) - max,
-                                 head + "nearest " + netName( m.planeNet ) + " return via " + dist( m.nearest ) + " ("
-                                         + rule + ( m.bga.empty() ? "" : "; " + m.bga ) + ")" } );
-            else if( twoSided.match( netName( m.via->GetNetCode() ) ) && ( m.otherSide < 0 || m.otherSide > max ) )
-                bad.push_back( { far( m.otherSide ) - max,
-                                 head + "return via on one side only: nearest " + dist( m.nearest ) + ", on the other side "
-                                         + dist( m.otherSide ) + " (two_sided, " + rule + ")" } );
-            else
-                continue;
-
-            where.push_back( m.via->GetPosition() );
+                over[g][unitOf( net )].push_back( { &m, far( m.nearest ) - max,
+                                                    head + "nearest " + netName( m.planeNet ) + " return via " + dist( m.nearest )
+                                                            + " (" + rule + ( m.bga.empty() ? "" : "; " + m.bga ) + ")" } );
+            else if( twoSided.match( netName( net ) ) && ( m.otherSide < 0 || m.otherSide > max ) )
+                over[g][unitOf( net )].push_back( { &m, far( m.otherSide ) - max,
+                                                    head + "one side only: nearest " + dist( m.nearest ) + ", other side "
+                                                            + dist( m.otherSide ) + " (two_sided, " + rule + ")" } );
         }
 
-        std::vector<size_t> order( bad.size() );
+        std::vector<const GLOBS::GLOB*> rules;
 
-        for( size_t i = 0; i < order.size(); i++ )
-            order[i] = i;
+        for( const auto& [g, n] : judged )
+            rules.push_back( g );
 
-        std::sort( order.begin(), order.end(), [&]( size_t a, size_t b ) { return bad[a].first > bad[b].first; } );
+        std::sort( rules.begin(), rules.end(),
+                   []( const GLOBS::GLOB* a, const GLOBS::GLOB* b ) { return a->value != b->value ? a->value < b->value : a->pattern < b->pattern; } );
 
-        for( size_t i = 0; i < order.size() && i < 2 * limit; i++ )
-            line( aOut, "return_via", "warning", bad[order[i]].second, where[order[i]] );
+        size_t budget = 3 * limit;
 
-        if( bad.size() > 2 * limit )
-            line( aOut, "return_via", "warning", std::to_string( bad.size() - 2 * limit ) + " more (plane_limit)" );
+        for( const GLOBS::GLOB* g : rules )
+        {
+            auto& bad = over[g];
+            int   overVias = 0;
+
+            for( const auto& [unit, list] : bad )
+                overVias += (int) list.size();
+
+            line( aOut, "return_via", bad.empty() ? "info" : "warning",
+                  g->pattern + " (max " + mm( g->value ) + " mm" + "): "
+                          + std::to_string( judged[g] ) + " via(s) of " + std::to_string( judgedUnits[g].size() )
+                          + " net(s) / pair(s) judged, " + ( bad.empty() ? std::string( "all within" )
+                                                                         : std::to_string( overVias ) + " over, in "
+                                                                                   + std::to_string( bad.size() ) + " net(s) / pair(s)" ) );
+
+            std::vector<std::pair<int, const FAIL*>> worst;
+
+            for( const auto& [unit, list] : bad )
+                worst.push_back( { unit, &*std::max_element( list.begin(), list.end(),
+                                                              []( const FAIL& a, const FAIL& b ) { return a.excess < b.excess; } ) } );
+
+            std::sort( worst.begin(), worst.end(), []( const auto& a, const auto& b ) { return a.second->excess > b.second->excess; } );
+
+            size_t shown = 0;
+
+            for( ; shown < worst.size() && shown < limit && budget > 0; shown++, budget-- )
+            {
+                const size_t n = bad[worst[shown].first].size();
+                line( aOut, "return_via", "warning",
+                      worst[shown].second->text
+                              + ( n > 1 ? " (" + std::to_string( n - 1 ) + " more via(s) of " + unitName( worst[shown].first ) + " over)"
+                                        : std::string() ),
+                      worst[shown].second->m->via->GetPosition() );
+            }
+
+            if( shown < worst.size() )
+                line( aOut, "return_via", "warning",
+                      std::to_string( worst.size() - shown ) + " more net(s) / pair(s) over for " + g->pattern + " (plane_limit)" );
+        }
     }
 
     for( const auto& [pair, list] : byPair )
@@ -1414,7 +1599,7 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
                                            [&]( const VIAM* a, const VIAM* b ) { return far( a->capDist ) < far( b->capDist ); } );
         line( aOut, "return_via", "info",
               std::to_string( list.size() ) + " via(s) go between planes of " + pair
-                      + " (the return current crosses through a capacitor between them); farthest from one: "
+                      + " (the return current crosses through a capacitor between them); the farthest from one: "
                       + tagged( w->via->GetNetCode() ) + " at " + at( w->via->GetPosition() ) + ", "
                       + ( w->capDist < 0 ? std::string( "no such capacitor on the board" )
                                          : w->capRef + " " + mm( w->capDist / 1e6 ) + " mm away" ),

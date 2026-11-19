@@ -1702,11 +1702,13 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "planes (refill zones first): along each signal track, plane splits and stretches with no "
             "plane under it (plane); at each via that changes planes, the nearest return via of the "
             "plane net, the nearest on the other side, BGA fields, or the capacitor between different "
-            "plane nets (return_via). Without limits these are an overview per net, worst first "
-            "(plane_limit rows, default 10), no verdicts; you set the limits by net glob in mm, e.g. "
+            "plane nets (return_via). Without limits: an overview, no verdicts (by default one line "
+            "each with the worst net; plane_limit n, plane_nets [globs] or pairs_only true list nets "
+            "and pairs, worst first). You set the limits by net glob in mm (a count line per rule, "
+            "passing or not, the tightest first, then its worst), e.g. "
             "return_via {\"*PCIE*\": 1.0, \"*DDR*\": 2, \"*\": 3}, plane_gap {\"*USB*\": 0.5}, "
-            "two_sided [\"*PCIE*\"] (G-S-S-G), bga_return_via_mm; plane_nets [globs] picks the nets "
-            "(default: tracks, no zone, no supply name). Run run_erc and run_drc too.",
+            "two_sided [\"*PCIE*\"] (G-S-S-G), bga_return_via_mm; plane_nets [globs] / pairs_only pick "
+            "the nets (default: tracks, no zone, no supply name). Run run_erc and run_drc too.",
             obj( { { "max_decap_mm", { { "type", "number" } } },
                    { "currents", { { "type", "object" }, { "description", "net -> A" } } },
                    { "voltages", { { "type", "object" }, { "description", "net -> V" } } },
@@ -1716,7 +1718,8 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                    { "return_via", { { "type", "object" }, { "description", "net glob -> mm" } } },
                    { "two_sided", { { "type", "array" }, { "items", { { "type", "string" } } } } },
                    { "bga_return_via_mm", { { "type", "number" } } },
-                   { "plane_limit", { { "type", "integer" } } } } ),
+                   { "plane_limit", { { "type", "integer" } } },
+                   { "pairs_only", { { "type", "boolean" } } } } ),
             [&aIpc]( const json& a )
             {
                 kicadd::board::BoardAudit boardReq;
@@ -1778,6 +1781,9 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
 
                 if( a.contains( "bga_return_via_mm" ) && a["bga_return_via_mm"].is_number() )
                     boardReq.set_bga_return_via_mm( a["bga_return_via_mm"].get<double>() );
+
+                if( a.contains( "pairs_only" ) && a["pairs_only"].is_boolean() )
+                    boardReq.set_pairs_only( a["pairs_only"].get<bool>() );
 
                 if( a.contains( "plane_limit" ) && a["plane_limit"].is_number_integer() )
                     boardReq.set_plane_limit( a["plane_limit"].get<int>() );
