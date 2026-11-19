@@ -31,7 +31,7 @@ Beta 已能走完整個設計流程（電路圖 → 選料 → 擺件 → 規則
 
 ## 階段二：Layout-Aware 檢查（併入 `audit`）
 
-1. **參考平面檢查：** 訊號跨平面分割、換層缺回流地孔（純幾何，最先做）。 ✅ `audit` 的 `plane` / `return_via`：沿每條訊號線找相鄰銅層鋪銅的網路，報跨分割、平面缺口、超出平面邊緣；換層過孔兩側平面若不同，找連接兩平面的同網路過孔（`return_via_mm`，預設 2 mm），不同網路則找兩網路間的電容。差分對成員與時脈標 `[fast]` 列為警告，其餘為提示；`plane_nets` 指定網路。以 cm5_minima、stickhub、pic_programmer、video 驗證（`client/plane_e2e.py`），另跑過 jetson、vme-wren、coldfire、openair、tiny_tapeout、royalblue（vme-wren 全板 1.6 s）（2026-11-19）。
+1. **參考平面檢查：** 訊號跨平面分割、換層缺回流地孔（純幾何，最先做）。 ✅ `audit` 的 `plane` / `return_via`：沿每條訊號線找相鄰銅層鋪銅的網路，量跨分割、平面缺口、超出平面邊緣；換層過孔量連接兩平面的同網路回流過孔（最近、另一側、是否在 BGA 區及區內地孔數），不同平面網路則量兩網路間最近的電容。**給 agent 用：不帶門檻只回每網路總覽（最差在前、`plane_limit` 行），不下判定；門檻由 agent 以網路萬用字元對應 mm 指定**（`return_via`、`plane_gap`、`two_sided`、`bga_return_via_mm`），分級建議寫在 skill。以 cm5_minima、stickhub、pic_programmer、vme-wren、video 驗證（`client/plane_e2e.py`），另跑過 jetson、coldfire、openair、tiny_tapeout、royalblue（vme-wren 全板 1.6 s）（2026-11-19）。
 2. **差分對與等長檢查：** 成對、間距一致性、skew 與長度報告；寫入 net class 差分對規則。不佈線、不繞線。
 3. **DC IR Drop：** 依銅厚、走線、過孔與鋪銅建電阻網格，找壓降熱點與過孔瓶頸；可用 `board_render` 標示。
 4. **平行走線串擾初篩：** 長距離、間距小於 3H 的耦合線對。

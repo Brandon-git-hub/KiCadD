@@ -44,19 +44,29 @@ what each tool does; this skill says how to use them together.
    without a test point. Give what you know about the power: `currents {"VIN": 2}` (A) checks
    each net's narrowest track per layer against IPC-2221; `voltages {"HV": 48}` (V; names like
    `+12V` / `3V3` are read on their own, other nets count as 0 V) checks the spacing to every
-   other net against IPC-2221B table 6-1 (refill zones first). On a routed board with planes
-   it also checks reference planes (refill zones first): signal tracks crossing a split
-   between plane nets, running over a gap or past a plane's edge (`plane`), and signal vias
-   that change planes with no return via of the plane net within `return_via_mm` (2 mm), or
-   no capacitor near when the planes are different nets (`return_via`). Diff-pair members
-   and clocks are marked `[fast]` and are warnings; slower nets are notes. For the nets that
-   matter, pass `plane_nets ["USB_D+", ...]` (all warnings). Judge the findings (a socket for
-   a programmed chip needs less decoupling than a switching regulator; an I2C line over a gap
-   matters less than a USB pair).
-3. `run_erc` (`warnings=true` for the full list) and, on a board, `refill_zones` then
+   other net against IPC-2221B table 6-1 (refill zones first). Judge the findings (a socket for
+   a programmed chip needs less decoupling than a switching regulator).
+3. **Reference planes** (a routed board with planes; refill zones first). `audit` alone gives an
+   overview, measured and not judged: per net, plane splits and the longest stretch with no
+   plane under the track (`plane`); per net, the farthest return via of its plane-changing
+   vias, the nearest on the other side, BGA fields, and vias between different plane nets with
+   the nearest capacitor (`return_via`). Worst first, `plane_limit` rows (10). You set the
+   limits, by net glob in mm (an exact name beats a glob, a more literal glob a looser one):
+   `return_via {"*PCIE*": 1.0, "*DDR*": 2, "*": 3}`, `two_sided ["*PCIE*"]` (a return via on each
+   side, G-S-S-G), `bga_return_via_mm`, `plane_gap {"*USB*": 0.5}` (splits are always reported
+   for the nets it matches). Choose them from the parts and the schematic, not only the names:
+   - strict, 1.0 to 1.5 mm, a GND via on each side (G-S-S-G): PCIe Gen4 / Gen5, USB 3.2
+     (10G / 20G), HDMI 2.1, MIPI CSI / DSI lanes, fast clocks;
+   - standard, 2.0 mm: DDR4 / LPDDR4X address and control, PCIe Gen3, USB 3.0 (5G), gigabit
+     Ethernet (RGMII / SGMII);
+   - relaxed, 3.0 mm: a BGA's fanout when it has an even GND via array (the overview counts
+     the GND vias and pads in the field), SPI, UART, GPIO and other slow control lines.
+   Read the overview first, then call again with limits for the nets that matter; a split
+   under a fast pair is worth fixing, a slow line over a gap seldom is.
+4. `run_erc` (`warnings=true` for the full list) and, on a board, `refill_zones` then
    `run_drc`. Narrow with `types` / `refs`; the type counts are the whole board, the filter line
    says what matches.
-4. Report what matters, grouped by severity, with the refs and nets involved.
+5. Report what matters, grouped by severity, with the refs and nets involved.
 
 ## Edit a schematic
 

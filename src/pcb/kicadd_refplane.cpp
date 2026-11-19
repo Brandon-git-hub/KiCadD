@@ -72,19 +72,10 @@ std::string at( const VECTOR2I& p )
     return "(" + mm( p.x / 1e6 ) + ", " + mm( p.y / 1e6 ) + ")";
 }
 
-bool sameNet( const std::string& aNet, const std::string& aWanted )
-{
-    if( aNet == aWanted || aNet == "/" + aWanted )
-        return true;
-
-    return aNet.size() > aWanted.size()
-           && aNet.compare( aNet.size() - aWanted.size() - 1, aWanted.size() + 1, "/" + aWanted ) == 0;
-}
-
 /// Named like a supply or ground: +5V, 3V3, GND, AGND, VCC_IO, VDD, VBUS, VBAT ...
 bool supplyName( const std::string& aNet )
 {
-    static const std::regex re( R"(^([+-]?\d+(\.\d+)?V\d*|[+-]?\d+(\.\d+)?V\d*_.*|[PN]\d+V\d*(_.*)?|.*GND.*|VCC.*|VDD.*|VSS.*|VEE.*|VBUS.*|VBAT.*|VIN|VSYS.*|.*PWR.*)$)",
+    static const std::regex re( R"(^([+-][A-Za-z].*|[+-]?\d+(\.\d+)?V\d*|[+-]?\d+(\.\d+)?V\d*_.*|[PN]\d+V\d*(_.*)?|.*GND.*|VCC.*|VDD.*|VSS.*|VEE.*|VBUS.*|VBAT.*|VIN|VSYS.*|.*PWR.*)$)",
                                 std::regex::icase );
     const size_t      slash = aNet.rfind( '/' );
     return std::regex_match( slash == std::string::npos ? aNet : aNet.substr( slash + 1 ), re );
@@ -438,72 +429,85 @@ REFS endRefs( const CHAIN& aChain, bool aFront, double aReach )
     return out;
 }
 
-// ---------------------------------------------------------------------------- findings
+// ---------------------------------------------------------------------------- the agent's limits
 
-struct ISSUE
+/// Net name globs with a number each ({"*PCIE*TX*": 1.0, "*": 3}). For a net, an exact name wins,
+/// then the glob with the most literal characters. A glob matches the whole name or the part after
+/// a sheet path ("USB_D+" matches "/USB/USB_D+"), case blind.
+struct GLOBS
 {
-    ISSUE() = default;
-    ISSUE( std::string aText, double aSize, VECTOR2I aWhere, std::vector<std::string> aRefs = {} ) :
-            text( std::move( aText ) ), size( aSize ), where( aWhere ), refs( std::move( aRefs ) )
+    struct GLOB
     {
+        std::string pattern;
+        std::regex  re;
+        int         rank;
+        double      value;
+    };
+
+    std::vector<GLOB> list;
+
+    void add( const std::string& aPattern, double aValue )
+    {
+        std::string re;
+        int         literal = 0;
+
+        for( char ch : aPattern )
+        {
+            if( ch == '*' )
+                re += ".*";
+            else if( ch == '?' )
+                re += ".";
+            else
+            {
+                literal++;
+                re += std::strchr( "\\^$.|+()[]{}", ch ) ? std::string( "\\" ) + ch : std::string( 1, ch );
+            }
+        }
+
+        const bool exact = aPattern.find_first_of( "*?" ) == std::string::npos;
+        list.push_back( { aPattern, std::regex( "^(.*/)?" + re + "$", std::regex::icase ), literal + ( exact ? 100000 : 0 ),
+                          aValue } );
     }
 
-    std::string text;
-    double      size = 0;   // sorts within a kind: longer / farther first
-    VECTOR2I    where;
-    std::vector<std::string> refs;
-    std::string group;   // vias changing plane nets: the two plane nets
-    int         net = 0;
-    bool        fast = false;   // a diff pair member or named like a fast signal: listed first
+    bool empty() const { return list.empty(); }
+
+    const GLOB* match( const std::string& aName ) const
+    {
+        const GLOB* best = nullptr;
+
+        for( const GLOB& g : list )
+        {
+            if( ( !best || g.rank > best->rank ) && std::regex_match( aName, g.re ) )
+                best = &g;
+        }
+
+        return best;
+    }
 };
 
-void emitList( BoardAuditResponse& aOut, const char* aCat, const char* aSeverity, std::vector<ISSUE>& aList,
-               const std::string& aMore, size_t aLimit )
+// ---------------------------------------------------------------------------- output
+
+void line( BoardAuditResponse& aOut, const char* aCat, const char* aSeverity, const std::string& aMsg,
+           std::optional<VECTOR2I> aAt = std::nullopt, const std::vector<std::string>& aRefs = {} )
 {
-    std::stable_sort( aList.begin(), aList.end(),
-                      []( const ISSUE& a, const ISSUE& b ) { return a.fast != b.fast ? a.fast : a.size > b.size; } );
+    BoardAuditFinding* f = aOut.add_findings();
+    f->set_category( aCat );
+    f->set_severity( aSeverity );
+    f->set_message( aMsg );
 
-    for( size_t i = 0; i < aList.size() && i < aLimit; i++ )
+    if( aAt )
     {
-        BoardAuditFinding* f = aOut.add_findings();
-        f->set_category( aCat );
-        f->set_severity( aSeverity );
-        f->set_message( aList[i].text + ( aList[i].fast ? " [fast]" : "" ) );
-        f->mutable_at()->set_x( aList[i].where.x );
-        f->mutable_at()->set_y( aList[i].where.y );
-
-        for( const std::string& r : aList[i].refs )
-            f->add_refs( r );
+        f->mutable_at()->set_x( aAt->x );
+        f->mutable_at()->set_y( aAt->y );
     }
 
-    if( aList.size() > aLimit )
-    {
-        BoardAuditFinding* f = aOut.add_findings();
-        f->set_category( aCat );
-        f->set_severity( aSeverity );
-        f->set_message( std::to_string( aList.size() - aLimit ) + " more " + aMore );
-    }
-}
-
-/// Fast nets (and nets asked for by name) as warnings, up to 20; the rest as notes, up to 10.
-void emit( BoardAuditResponse& aOut, const char* aCat, std::vector<ISSUE>& aList, const std::string& aMore,
-           bool aAllWarnings )
-{
-    std::vector<ISSUE> warn, info;
-
-    for( ISSUE& i : aList )
-        ( aAllWarnings || i.fast ? warn : info ).push_back( std::move( i ) );
-
-    emitList( aOut, aCat, "warning", warn, aMore, 20 );
-    emitList( aOut, aCat, "info", info, aMore + ( warn.empty() ? "" : " on slower nets" ), 10 );
+    for( const std::string& r : aRefs )
+        f->add_refs( r );
 }
 
 void note( BoardAuditResponse& aOut, const char* aCat, const std::string& aMsg )
 {
-    BoardAuditFinding* f = aOut.add_findings();
-    f->set_category( aCat );
-    f->set_severity( "info" );
-    f->set_message( aMsg );
+    line( aOut, aCat, "info", aMsg );
 }
 
 } // namespace
@@ -511,9 +515,8 @@ void note( BoardAuditResponse& aOut, const char* aCat, const std::string& aMsg )
 
 void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& aOut )
 {
-    const double gap = ( aReq.plane_gap_mm() > 0 ? aReq.plane_gap_mm() : 1.0 ) * 1e6;
-    const double reach = ( aReq.return_via_mm() > 0 ? aReq.return_via_mm() : 2.0 ) * 1e6;
     const LSEQ   stack = aBoard.GetEnabledLayers().CuStack();
+    const size_t limit = aReq.plane_limit() > 0 ? aReq.plane_limit() : 10;
 
     if( stack.size() < 2 )
         return;
@@ -536,49 +539,49 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
         return s;
     };
 
-    // ---- fast nets: diff pair members (X+ / X-, X_P / X_N, XP / XN with the partner on the board)
-    // and names of fast interfaces and clocks
-    std::set<std::string> names;
+    // ---- diff pairs: X+ / X-, X_P / X_N, XDP / XDN with the partner on the board (a fact for the
+    // agent: "(pair)" in the overview)
+    std::map<std::string, int> codes;
 
     for( NETINFO_ITEM* n : aBoard.GetNetInfo() )
-        names.insert( str( n->GetNetname() ) );
+        codes[str( n->GetNetname() )] = n->GetNetCode();
 
-    std::map<int, bool> fastCache;
-
-    auto fastNet = [&]( int aCode )
+    auto partnerOf = [&]( int aCode ) -> int
     {
-        auto it = fastCache.find( aCode );
-
-        if( it != fastCache.end() )
-            return it->second;
-
-        static const std::regex fastName( R"((CLK(?!REQ)|XTAL|OSC|DQS?\d|_DQS?$))", std::regex::icase );
         const std::string name = netName( aCode );
-        bool              fast = std::regex_search( name.substr( name.rfind( '/' ) == std::string::npos ? 0 : name.rfind( '/' ) + 1 ),
-                                                    fastName );
+
+        if( name.size() < 2 )
+            return 0;
 
         // P / N only after a separator or a D (USB_DP / USB_DN), so SRP / SRN are not a pair
         const bool pn = name.size() > 2 && std::strchr( "PpNn", name.back() )
                         && ( !std::isalpha( (unsigned char) name[name.size() - 2] ) || name[name.size() - 2] == 'D' );
 
-        if( !fast && name.size() > 1 && ( pn || name.back() == '+' || name.back() == '-' ) )
-        {
-            std::string partner = name;
-            char&       last = partner.back();
-            last = last == '+' ? '-' : last == '-' ? '+' : last == 'P' ? 'N' : last == 'N' ? 'P' : last == 'p' ? 'n'
-                                                                           : last == 'n' ? 'p' : 0;
-            fast = last && names.count( partner );
-        }
+        if( !pn && name.back() != '+' && name.back() != '-' )
+            return 0;
 
-        return fastCache[aCode] = fast;
+        std::string partner = name;
+        char&       last = partner.back();
+        last = last == '+' ? '-' : last == '-' ? '+' : last == 'P' ? 'N' : last == 'N' ? 'P' : last == 'p' ? 'n' : 'p';
+        auto it = codes.find( partner );
+        return it == codes.end() ? 0 : it->second;
     };
 
-    auto push = [&]( std::vector<ISSUE>& aList, int aNet, ISSUE aIssue )
-    {
-        aIssue.net = aNet;
-        aIssue.fast = fastNet( aNet );
-        aList.push_back( std::move( aIssue ) );
-    };
+    auto tagged = [&]( int aCode ) { return netName( aCode ) + ( partnerOf( aCode ) ? " (pair)" : "" ); };
+
+    GLOBS gapLimit, viaLimit, twoSided, picked;
+
+    for( const auto& [g, mm] : aReq.plane_gap() )
+        gapLimit.add( g, mm );
+
+    for( const auto& [g, mm] : aReq.return_via() )
+        viaLimit.add( g, mm );
+
+    for( const std::string& g : aReq.two_sided() )
+        twoSided.add( g, 0 );
+
+    for( const std::string& g : aReq.plane_nets() )
+        picked.add( g, 0 );
 
     // ---- the fills, and nets that own a zone
     std::map<int, LAYER_FILLS>                   fills;
@@ -611,31 +614,29 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
         unfilled += !z->IsFilled();
     }
 
-    // ---- the nets to check
+    // ---- the nets: plane_nets globs, else every net with tracks, no zone and no supply name
     std::set<int> nets;
 
-    if( aReq.plane_nets_size() > 0 )
+    if( !picked.empty() )
     {
-        for( const std::string& wanted : aReq.plane_nets() )
+        std::set<std::string> used;
+
+        for( NETINFO_ITEM* n : aBoard.GetNetInfo() )
         {
-            bool found = false;
+            if( n->GetNetCode() <= 0 )
+                continue;
 
-            for( NETINFO_ITEM* n : aBoard.GetNetInfo() )
+            if( const GLOBS::GLOB* g = picked.match( str( n->GetNetname() ) ) )
             {
-                if( n->GetNetCode() > 0 && sameNet( str( n->GetNetname() ), wanted ) )
-                {
-                    nets.insert( n->GetNetCode() );
-                    found = true;
-                }
+                nets.insert( n->GetNetCode() );
+                used.insert( g->pattern );
             }
+        }
 
-            if( !found )
-            {
-                BoardAuditFinding* f = aOut.add_findings();
-                f->set_category( "plane" );
-                f->set_severity( "warning" );
-                f->set_message( "no net " + wanted + " on the board" );
-            }
+        for( const GLOBS::GLOB& g : picked.list )
+        {
+            if( !used.count( g.pattern ) )
+                line( aOut, "plane", "warning", "plane_nets: no net matches " + g.pattern );
         }
     }
     else
@@ -753,8 +754,27 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
             classify( chains[i], planes->second );
     }
 
-    // ---- along the tracks
-    std::vector<ISSUE> splits, voids, edges;
+    // ---- along the tracks: every split, gap and stretch off the plane, measured
+    struct EVENT
+    {
+        int         net;
+        int         kind;   // 0 split, 1 gap in a plane, 2 off the plane
+        double      len;    // nm with no plane under the track
+        VECTOR2I    at;
+        std::string text;
+    };
+
+    struct NETSTAT
+    {
+        double                len = 0, covered = 0;
+        std::set<std::string> layers;
+        const EVENT*          split = nullptr;
+        int                   splits = 0;
+        const EVENT*          gap = nullptr;
+        const EVENT*          off = nullptr;
+    };
+
+    std::vector<EVENT> events;
     double             total = 0, covered = 0;
 
     for( const CHAIN& c : chains )
@@ -764,9 +784,9 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
 
         for( size_t i = 0; i < c.runs.size(); i++ )
         {
-            const RUN& r = c.runs[i];
-            const RUN* prev = i > 0 ? &c.runs[i - 1] : nullptr;
-            const RUN* next = i + 1 < c.runs.size() ? &c.runs[i + 1] : nullptr;
+            const RUN&   r = c.runs[i];
+            const RUN*   prev = i > 0 ? &c.runs[i - 1] : nullptr;
+            const RUN*   next = i + 1 < c.runs.size() ? &c.runs[i + 1] : nullptr;
             const double len = r.to - r.from;
 
             if( !r.refs.empty() )
@@ -774,9 +794,9 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
                 covered += len;
 
                 if( prev && !prev->refs.empty() && noNetInCommon( prev->refs, r.refs ) )
-                    push( splits, c.net, { who + " crosses from " + describe( prev->refs ) + " to " + describe( r.refs )
-                                                + " at " + at( r.a ),
-                                        1e9, r.a } );
+                    events.push_back( { c.net, 0, 0, r.a,
+                                        who + " crosses from " + describe( prev->refs ) + " to " + describe( r.refs )
+                                                + " at " + at( r.a ) } );
 
                 continue;
             }
@@ -786,55 +806,76 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
             if( prev && next && !prev->refs.empty() && !next->refs.empty() )
             {
                 if( noNetInCommon( prev->refs, next->refs ) )
-                    push( splits, c.net, { who + " crosses a plane split at " + at( mid ) + ": " + describe( prev->refs )
-                                                + " to " + describe( next->refs ) + " (" + mm( len / 1e6 )
-                                                + " mm with no plane under it)",
-                                        1e9 + len, mid } );
-                else if( len >= gap )
                 {
-                    bool inside = false;   // a hole in the fill, not past its edge
-
-                    for( const REF& ref : prev->refs )
-                    {
-                        bool all = fills.count( ref.first ) > 0;
-
-                        for( double f : { 0.25, 0.5, 0.75 } )
-                            all = all && fills.at( ref.first ).inOuter( ref.second, pointAt( c, r.from + f * len ) );
-
-                        inside = inside || all;
-                    }
-
-                    if( inside )
-                        push( voids, c.net, { who + " runs " + mm( len / 1e6 ) + " mm over a gap in " + describe( prev->refs )
-                                                   + " at " + at( mid ),
-                                           len, mid } );
-                    else
-                        push( edges, c.net, { who + " runs " + mm( len / 1e6 ) + " mm past the edge of " + describe( prev->refs )
-                                                   + " at " + at( mid ),
-                                           len, mid } );
+                    events.push_back( { c.net, 0, len, mid,
+                                        who + " crosses a plane split at " + at( mid ) + ": " + describe( prev->refs )
+                                                + " to " + describe( next->refs ) + " (" + mm( len / 1e6 )
+                                                + " mm with no plane under it)" } );
+                    continue;
                 }
+
+                bool inside = false;   // a hole in the fill, not past its edge
+
+                for( const REF& ref : prev->refs )
+                {
+                    bool all = fills.count( ref.first ) > 0;
+
+                    for( double f : { 0.25, 0.5, 0.75 } )
+                        all = all && fills.at( ref.first ).inOuter( ref.second, pointAt( c, r.from + f * len ) );
+
+                    inside = inside || all;
+                }
+
+                events.push_back( { c.net, inside ? 1 : 2, len, mid,
+                                    who + " runs " + mm( len / 1e6 ) + " mm "
+                                            + ( inside ? "over a gap in " : "past the edge of " ) + describe( prev->refs )
+                                            + " at " + at( mid ) } );
             }
             else if( !prev && !next )
             {
-                if( len >= gap )
-                    push( edges, c.net, { who + ": " + mm( len / 1e6 ) + " mm with no plane under it on "
-                                               + nextTo[c.layer] + " (from " + at( c.pts.front() ) + ")",
-                                       len, mid } );
+                events.push_back( { c.net, 2, len, mid,
+                                    who + ": " + mm( len / 1e6 ) + " mm with no plane under it on " + nextTo[c.layer]
+                                            + " (from " + at( c.pts.front() ) + ")" } );
             }
-            else
+            else if( len > 1e6 )   // at an end, the antipad of its via or pad is not counted
             {
-                // an end: the antipad of the via or pad it ends at is not a gap, so allow a millimetre more
                 const RUN* side = prev ? prev : next;
-
-                if( len >= gap + 1e6 )
-                    push( edges, c.net, { who + " runs " + mm( len / 1e6 ) + " mm past the edge of "
-                                               + describe( side->refs ) + " at " + at( mid ),
-                                       len, mid } );
+                events.push_back( { c.net, 2, len, mid,
+                                    who + " runs " + mm( len / 1e6 ) + " mm past the edge of " + describe( side->refs )
+                                            + " at " + at( mid ) } );
             }
         }
     }
 
-    aOut.set_plane_nets( (int) checked.size() );
+    std::map<int, NETSTAT> stats;
+
+    for( const CHAIN& c : chains )
+    {
+        NETSTAT& st = stats[c.net];
+        st.len += c.length;
+        st.layers.insert( layerName( c.layer ) );
+
+        for( const RUN& r : c.runs )
+            st.covered += r.refs.empty() ? 0 : r.to - r.from;
+    }
+
+    for( const EVENT& e : events )
+    {
+        NETSTAT& st = stats[e.net];
+
+        if( e.kind == 0 )
+        {
+            st.splits++;
+            st.split = st.split ? st.split : &e;
+        }
+        else
+        {
+            const EVENT*& worst = e.kind == 1 ? st.gap : st.off;
+            worst = !worst || e.len > worst->len ? &e : worst;
+        }
+    }
+
+    aOut.set_plane_nets( (int) stats.size() );
     aOut.set_plane_track_mm( total / 1e6 );
     aOut.set_plane_covered_mm( covered / 1e6 );
 
@@ -842,12 +883,93 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
         note( aOut, "plane", layerName( layer ) + ": no zone on " + nextTo[layer] + ", so its " + mm( len, 0 )
                                      + " mm of signal track have no reference plane to check" );
 
-    const bool named = aReq.plane_nets_size() > 0;
-    emit( aOut, "plane", splits, "split crossing(s)", true );
-    emit( aOut, "plane", voids, "gap(s) in a plane under a track", named );
-    emit( aOut, "plane", edges, "stretch(es) off the plane", named );
+    if( gapLimit.empty() )
+    {
+        // the overview: per net, worst first (splits, then the longest stretch with no plane)
+        std::vector<std::pair<int, const NETSTAT*>> rows;
+        int                                         withSplit = 0, withGap = 0;
 
-    // ---- vias that change the reference
+        for( const auto& [net, st] : stats )
+        {
+            const double worst = std::max( st.gap ? st.gap->len : 0.0, st.off ? st.off->len : 0.0 );
+            withSplit += st.splits > 0;
+            withGap += worst > 1e6;
+
+            // stretches under 0.5 mm (antipads, mostly) are left out of the overview
+            if( st.splits || worst >= 0.5e6 )
+                rows.push_back( { net, &st } );
+        }
+
+        auto worstLen = []( const NETSTAT* s ) { return std::max( s->gap ? s->gap->len : 0.0, s->off ? s->off->len : 0.0 ); };
+
+        std::sort( rows.begin(), rows.end(),
+                   [&]( const auto& a, const auto& b )
+                   {
+                       return a.second->splits != b.second->splits ? a.second->splits > b.second->splits
+                                                                   : worstLen( a.second ) > worstLen( b.second );
+                   } );
+
+        note( aOut, "plane", std::to_string( stats.size() ) + " signal net(s) measured: " + std::to_string( withSplit )
+                                     + " cross a plane split, " + std::to_string( withGap )
+                                     + " have a stretch over 1 mm with no plane under them (nets under 0.5 mm not listed). Worst first; "
+                                       "no verdicts: "
+                                       "judge them, or pass plane_gap {glob: mm}" );
+
+        for( size_t i = 0; i < rows.size() && i < limit; i++ )
+        {
+            const auto& [net, st] = rows[i];
+            std::string layers;
+
+            for( const std::string& l : st->layers )
+                layers += ( layers.empty() ? "" : "/" ) + l;
+
+            std::string t = tagged( net ) + ": " + mm( st->len / 1e6, 1 ) + " mm on " + layers + ", "
+                            + mm( st->len > 0 ? 100 * st->covered / st->len : 0, 0 ) + "% over a plane";
+
+            if( st->splits )
+                t += "; " + std::to_string( st->splits ) + " split crossing(s), the first: " + st->split->text;
+
+            if( st->gap )
+                t += "; longest gap " + mm( st->gap->len / 1e6 ) + " mm at " + at( st->gap->at );
+
+            if( st->off )
+                t += "; longest off the plane " + mm( st->off->len / 1e6 ) + " mm at " + at( st->off->at );
+
+            line( aOut, "plane", "info", t, st->split ? st->split->at : st->gap ? st->gap->at : st->off->at );
+        }
+
+        if( rows.size() > limit )
+            note( aOut, "plane", std::to_string( rows.size() - limit ) + " more net(s) (plane_limit)" );
+    }
+    else
+    {
+        // the agent's limits: splits always, gaps and stretches off the plane longer than its mm
+        std::vector<std::pair<const EVENT*, const GLOBS::GLOB*>> bad;
+
+        for( const EVENT& e : events )
+        {
+            const GLOBS::GLOB* g = gapLimit.match( netName( e.net ) );
+
+            if( g && ( e.kind == 0 || e.len > g->value * 1e6 ) )
+                bad.push_back( { &e, g } );
+        }
+
+        std::stable_sort( bad.begin(), bad.end(),
+                          []( const auto& a, const auto& b )
+                          { return ( a.first->kind == 0 ) != ( b.first->kind == 0 ) ? a.first->kind == 0 : a.first->len > b.first->len; } );
+
+        for( size_t i = 0; i < bad.size() && i < 2 * limit; i++ )
+            line( aOut, "plane", "warning",
+                  bad[i].first->text + ( bad[i].first->kind ? " (max " + mm( bad[i].second->value ) + " for "
+                                                                  + bad[i].second->pattern + ")"
+                                                            : std::string() ),
+                  bad[i].first->at );
+
+        if( bad.size() > 2 * limit )
+            line( aOut, "plane", "warning", std::to_string( bad.size() - 2 * limit ) + " more (plane_limit)" );
+    }
+
+    // ---- vias that change the reference: the return path measured
     struct CONDUCTOR
     {
         VECTOR2I pos;
@@ -864,20 +986,37 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
 
     struct CAP
     {
-        VECTOR2I    pos;
-        std::string ref;
+        VECTOR2I      pos;
+        std::string   ref;
         std::set<int> nets;
     };
 
+    struct BGA
+    {
+        std::string ref;
+        BOX2I       box;
+        int         pads;
+    };
+
     std::vector<CAP> caps;
+    std::vector<BGA> bgas;
 
     for( const FOOTPRINT* fp : aBoard.Footprints() )
     {
         const std::string ref = str( fp->GetReference() );
         CAP               cap{ fp->GetPosition(), ref, {} };
+        BOX2I             padBox;
+        bool              first = true;
 
         for( const PAD* pad : fp->Pads() )
         {
+            if( first )
+                padBox = BOX2I( pad->GetPosition(), VECTOR2I( 0, 0 ) );
+            else
+                padBox.Merge( pad->GetPosition() );
+
+            first = false;
+
             if( pad->GetNetCode() <= 0 )
                 continue;
 
@@ -889,6 +1028,9 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
 
         if( ref.size() > 1 && ref[0] == 'C' && std::isdigit( (unsigned char) ref[1] ) && cap.nets.size() == 2 )
             caps.push_back( cap );
+
+        if( fp->GetFPID().GetLibItemName().wx_str().Upper().Contains( wxS( "BGA" ) ) )
+            bgas.push_back( { ref, padBox, (int) fp->Pads().size() } );
     }
 
     // chain ends at each via: (net, centre) -> layer -> planes there
@@ -911,8 +1053,24 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
         }
     }
 
-    std::vector<ISSUE> noReturn, netChange;
-    int                changing = 0;
+    std::map<int, std::vector<const PCB_VIA*>> viasOf;
+
+    for( const PCB_VIA* v : vias )
+        viasOf[v->GetNetCode()].push_back( v );
+
+    struct VIAM
+    {
+        const PCB_VIA* via = nullptr;
+        std::string    what;            // "F.Cu (over GND (In1.Cu)) to B.Cu (over GND (In4.Cu))"
+        int            planeNet = 0;    // the same plane net on both sides; 0: different plane nets
+        double         nearest = -1;    // the nearest return via (nm); -1: none joins the two planes
+        double         otherSide = -1;  // the nearest one on the other side of the via (or pair)
+        std::string    bga;             // "in U1's BGA field (40 GND vias, 600 pads)"
+        double         capDist = -1;
+        std::string    capRef, group;
+    };
+
+    std::vector<VIAM> measured;
 
     for( const PCB_VIA* via : vias )
     {
@@ -923,176 +1081,345 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
 
         std::vector<std::pair<int, REFS>> sides;
 
-        for( const auto& [layer, refs] : it->second )
+        for( const auto& [layer, chainRefs] : it->second )
         {
+            REFS refs = chainRefs;
+
+            // a short track (a BGA's dogbone) inside the antipads: the planes round the via, 0.75 to
+            // 1.5 mm out
+            if( refs.empty() && planesOf.count( layer ) )
+            {
+                for( double r : { 0.75e6, 1.0e6, 1.5e6 } )
+                {
+                    for( int k = 0; k < 8; k++ )
+                    {
+                        const VECTOR2I p = via->GetPosition()
+                                           + VECTOR2I( VECTOR2D( std::cos( k * M_PI / 4 ), std::sin( k * M_PI / 4 ) ) * r );
+
+                        for( const auto& [plane, f] : planesOf.at( layer ) )
+                            f->refsAt( plane, p, refs );
+                    }
+
+                    if( !refs.empty() )
+                        break;
+                }
+
+                std::sort( refs.begin(), refs.end() );
+                refs.erase( std::unique( refs.begin(), refs.end() ), refs.end() );
+            }
+
             if( !refs.empty() )
                 sides.push_back( { layer, refs } );
         }
 
-        bool   counted = false;
-        ISSUE  worst;
-        bool   worstNoReturn = false;
-        double worstDist = -1;
+        // the first pair of sides with no plane in common (a plane in common keeps the return current)
+        int si = -1, sj = -1;
 
-        for( size_t i = 0; i < sides.size(); i++ )
+        for( size_t i = 0; i < sides.size() && si < 0; i++ )
         {
-            for( size_t j = i + 1; j < sides.size(); j++ )
+            for( size_t j = i + 1; j < sides.size() && si < 0; j++ )
             {
-                const REFS& A = sides[i].second;
-                const REFS& B = sides[j].second;
-
-                if( !disjoint( A, B ) )
-                    continue;   // a plane in common: the return current stays on it
-
-                if( !counted )
-                    changing++;
-
-                counted = true;
-
-                const std::string what = "via at " + at( via->GetPosition() ) + " takes " + netName( via->GetNetCode() )
-                                         + " from " + layerName( sides[i].first ) + " (over " + describe( A ) + ") to "
-                                         + layerName( sides[j].first ) + " (over " + describe( B ) + ")";
-
-                // the same plane net on both sides: a via of it joining the two planes
-                double best = -1;
-                int    bestNet = 0;
-                bool   common = false;
-
-                for( const REF& a : A )
+                if( disjoint( sides[i].second, sides[j].second ) )
                 {
-                    for( const REF& b : B )
-                    {
-                        if( a.second != b.second )
-                            continue;
-
-                        common = true;
-
-                        for( const CONDUCTOR& c : joiners[a.second] )
-                        {
-                            if( !c.layers.Contains( PCB_LAYER_ID( a.first ) ) || !c.layers.Contains( PCB_LAYER_ID( b.first ) ) )
-                                continue;
-
-                            const double d = ( c.pos - via->GetPosition() ).EuclideanNorm();
-
-                            if( best < 0 || d < best )
-                            {
-                                best = d;
-                                bestNet = a.second;
-                            }
-                        }
-                    }
-                }
-
-                if( common )
-                {
-                    if( best >= 0 && best <= reach )
-                        continue;
-
-                    const double d = best < 0 ? 1e12 : best;
-
-                    if( d > worstDist )
-                    {
-                        worstDist = d;
-                        worstNoReturn = true;
-                        worst = { what + ": "
-                                          + ( best < 0 ? std::string( "no via of the plane net joins those layers" )
-                                                       : "the nearest " + netName( bestNet ) + " via joining them is "
-                                                                 + mm( best / 1e6 ) + " mm away (max "
-                                                                 + mm( reach / 1e6 ) + ")" ),
-                                  d, via->GetPosition() };
-                    }
-
-                    continue;
-                }
-
-                // different plane nets: the return current crosses through a capacitor between them
-                double      capDist = -1;
-                std::string capRef;
-
-                for( const CAP& c : caps )
-                {
-                    bool hasA = false, hasB = false;
-
-                    for( const REF& a : A )
-                        hasA = hasA || c.nets.count( a.second );
-
-                    for( const REF& b : B )
-                        hasB = hasB || c.nets.count( b.second );
-
-                    if( !hasA || !hasB )
-                        continue;
-
-                    const double d = ( c.pos - via->GetPosition() ).EuclideanNorm();
-
-                    if( capDist < 0 || d < capDist )
-                    {
-                        capDist = d;
-                        capRef = c.ref;
-                    }
-                }
-
-                if( capDist >= 0 && capDist <= 2 * reach )
-                    continue;
-
-                const double d = capDist < 0 ? 1e12 : capDist;
-
-                if( !worstNoReturn && d > worstDist )
-                {
-                    worstDist = d;
-                    worst = { what + ( capDist < 0 ? std::string( ": no capacitor between them on the board" )
-                                                   : ": the nearest capacitor between them, " + capRef + ", is "
-                                                             + mm( capDist / 1e6 ) + " mm away" ),
-                              d, via->GetPosition(), capRef.empty() ? std::vector<std::string>{}
-                                                                    : std::vector<std::string>{ capRef } };
-
-                    std::set<std::string> na, nb;
-
-                    for( const REF& r : A )
-                        na.insert( netName( r.second ) );
-
-                    for( const REF& r : B )
-                        nb.insert( netName( r.second ) );
-
-                    std::string ga, gb;
-
-                    for( const std::string& n : na )
-                        ga += ( ga.empty() ? "" : " + " ) + n;
-
-                    for( const std::string& n : nb )
-                        gb += ( gb.empty() ? "" : " + " ) + n;
-
-                    worst.group = std::min( ga, gb ) + " and " + std::max( ga, gb );
+                    si = (int) i;
+                    sj = (int) j;
                 }
             }
         }
 
-        if( worstDist >= 0 )
-            push( worstNoReturn ? noReturn : netChange, via->GetNetCode(), worst );
+        if( si < 0 )
+            continue;
+
+        const REFS& A = sides[si].second;
+        const REFS& B = sides[sj].second;
+        const VECTOR2I pos = via->GetPosition();
+        VIAM m;
+        m.via = via;
+        m.what = layerName( sides[si].first ) + " (over " + describe( A ) + ") to " + layerName( sides[sj].first ) + " (over "
+                 + describe( B ) + ")";
+
+        // the same plane net on both sides: its vias joining the two planes
+        std::vector<VECTOR2I> found;
+
+        for( const REF& a : A )
+        {
+            for( const REF& b : B )
+            {
+                if( a.second != b.second )
+                    continue;
+
+                m.planeNet = a.second;
+
+                for( const CONDUCTOR& c : joiners[a.second] )
+                {
+                    if( c.layers.Contains( PCB_LAYER_ID( a.first ) ) && c.layers.Contains( PCB_LAYER_ID( b.first ) ) )
+                        found.push_back( c.pos );
+                }
+            }
+        }
+
+        if( m.planeNet )
+        {
+            // the centre: between the pair's vias when the partner's is close by
+            VECTOR2I centre = pos, partnerPos = pos;
+
+            if( int partner = partnerOf( via->GetNetCode() ) )
+            {
+                double best = 2.5e6;
+
+                for( const PCB_VIA* p : viasOf[partner] )
+                {
+                    const double d = ( p->GetPosition() - pos ).EuclideanNorm();
+
+                    if( d < best )
+                    {
+                        best = d;
+                        centre = ( pos + p->GetPosition() ) / 2;
+                        partnerPos = p->GetPosition();
+                    }
+                }
+            }
+
+            const VECTOR2I* near = nullptr;
+
+            for( const VECTOR2I& f : found )
+            {
+                const double d = ( f - pos ).EuclideanNorm();
+
+                if( m.nearest < 0 || d < m.nearest )
+                {
+                    m.nearest = d;
+                    near = &f;
+                }
+            }
+
+            if( near )   // the other side: at least 120 degrees round the centre from the nearest
+            {
+                const VECTOR2D a = VECTOR2D( *near - centre );
+
+                for( const VECTOR2I& f : found )
+                {
+                    const VECTOR2D b = VECTOR2D( f - centre );
+                    const double   n = a.EuclideanNorm() * b.EuclideanNorm();
+
+                    if( n <= 0 || ( a.x * b.x + a.y * b.y ) / n > -0.5 )
+                        continue;
+
+                    // from the nearer of the pair's vias: beyond the partner is this side's far end
+                    const double d = std::min( ( f - pos ).EuclideanNorm(), ( f - partnerPos ).EuclideanNorm() );
+
+                    if( m.otherSide < 0 || d < m.otherSide )
+                        m.otherSide = d;
+                }
+            }
+
+            for( const BGA& g : bgas )
+            {
+                if( !g.box.Contains( pos ) )
+                    continue;
+
+                int n = 0;
+
+                for( const CONDUCTOR& c : joiners[m.planeNet] )
+                    n += g.box.Contains( c.pos );
+
+                m.bga = "in " + g.ref + "'s BGA field (" + std::to_string( n ) + " " + netName( m.planeNet ) + " vias, "
+                        + std::to_string( g.pads ) + " pads)";
+            }
+        }
+        else
+        {
+            // different plane nets: the return current crosses through a capacitor between them
+            for( const CAP& c : caps )
+            {
+                bool hasA = false, hasB = false;
+
+                for( const REF& a : A )
+                    hasA = hasA || c.nets.count( a.second );
+
+                for( const REF& b : B )
+                    hasB = hasB || c.nets.count( b.second );
+
+                const double d = ( c.pos - pos ).EuclideanNorm();
+
+                if( hasA && hasB && ( m.capDist < 0 || d < m.capDist ) )
+                {
+                    m.capDist = d;
+                    m.capRef = c.ref;
+                }
+            }
+
+            std::set<std::string> na, nb;
+
+            for( const REF& r : A )
+                na.insert( netName( r.second ) );
+
+            for( const REF& r : B )
+                nb.insert( netName( r.second ) );
+
+            std::string ga, gb;
+
+            for( const std::string& n : na )
+                ga += ( ga.empty() ? "" : " + " ) + n;
+
+            for( const std::string& n : nb )
+                gb += ( gb.empty() ? "" : " + " ) + n;
+
+            m.group = std::min( ga, gb ) + " / " + std::max( ga, gb );
+        }
+
+        measured.push_back( m );
     }
 
-    aOut.set_plane_vias( changing );
-    emit( aOut, "return_via", noReturn, "signal via(s) without a return via", named );
+    aOut.set_plane_vias( (int) measured.size() );
 
-    // vias between planes of different nets, by the pair of nets: how many, and the farthest from a capacitor
-    std::map<std::string, std::vector<ISSUE*>> byPair;
+    auto far = []( double d ) { return d < 0 ? 1e15 : d; };
+    auto dist = [&]( double d ) { return d < 0 ? std::string( "none" ) : mm( d / 1e6 ) + " mm"; };
 
-    for( ISSUE& i : netChange )
-        byPair[i.group].push_back( &i );
+    // vias between planes of different nets, by the pair of plane nets (measured in both modes)
+    std::map<std::string, std::vector<const VIAM*>> byPair;
+    int                                             sameNet = 0;
 
-    std::vector<ISSUE> groups;
-
-    for( auto& [pair, list] : byPair )
+    for( const VIAM& m : measured )
     {
-        ISSUE* far = *std::max_element( list.begin(), list.end(), []( ISSUE* a, ISSUE* b ) { return a->size < b->size; } );
-        ISSUE  g = *far;
-        g.size = (double) list.size();
-        g.text = std::to_string( list.size() ) + " signal via(s) change between planes of " + pair + " more than "
-                 + mm( 2 * reach / 1e6 ) + " mm from a capacitor between them (the return current crosses "
-                 "through one); the farthest: " + far->text;
-        groups.push_back( g );
+        if( m.planeNet )
+            sameNet++;
+        else
+            byPair[m.group].push_back( &m );
     }
 
-    emitList( aOut, "return_via", "info", groups, "pair(s) of plane nets", 10 );
+    if( measured.empty() )
+    {
+        // nothing to say: no signal via changes planes
+    }
+    else if( viaLimit.empty() )
+    {
+        // the overview: per signal net, the farthest return via first
+        std::map<int, std::vector<const VIAM*>> byNet;
+
+        for( const VIAM& m : measured )
+        {
+            if( m.planeNet )
+                byNet[m.via->GetNetCode()].push_back( &m );
+        }
+
+        std::vector<std::pair<int, const VIAM*>> rows;   // net, its worst via
+
+        for( const auto& [net, list] : byNet )
+            rows.push_back( { net, *std::max_element( list.begin(), list.end(), [&]( const VIAM* a, const VIAM* b )
+                                                      { return far( a->nearest ) < far( b->nearest ); } ) } );
+
+        std::sort( rows.begin(), rows.end(),
+                   [&]( const auto& a, const auto& b ) { return far( a.second->nearest ) > far( b.second->nearest ); } );
+
+        note( aOut, "return_via",
+              std::to_string( measured.size() ) + " signal via(s) change reference planes: " + std::to_string( sameNet )
+                      + " between planes of the same net (the return via measured, per net below, the farthest first), "
+                      + std::to_string( measured.size() - sameNet )
+                      + " between different plane nets (a capacitor measured). No verdicts: judge them, or pass "
+                        "return_via {glob: mm}" );
+
+        for( size_t i = 0; i < rows.size() && i < limit; i++ )
+        {
+            const auto& [net, w] = rows[i];
+            const auto& list = byNet[net];
+            int         oneSide = 0, inBga = 0;
+            double      worstOther = 0;
+            std::string bga;
+
+            for( const VIAM* m : list )
+            {
+                oneSide += m->otherSide < 0;
+                worstOther = std::max( worstOther, far( m->otherSide ) );
+                inBga += !m->bga.empty();
+                bga = m->bga.empty() ? bga : m->bga;
+            }
+
+            std::string t = tagged( net ) + ": " + std::to_string( list.size() ) + " via(s); farthest return via "
+                            + dist( w->nearest ) + " (" + netName( w->planeNet ) + ") at " + at( w->via->GetPosition() )
+                            + ", " + w->what + "; other side " + ( worstOther >= 1e15 ? std::string( "none" )
+                                                                                      : "up to " + mm( worstOther / 1e6 ) + " mm" );
+
+            if( oneSide )
+                t += " (" + std::to_string( oneSide ) + " via(s) with return vias on one side only)";
+
+            if( inBga )
+                t += "; " + std::to_string( inBga ) + " " + bga;
+
+            line( aOut, "return_via", "info", t, w->via->GetPosition() );
+        }
+
+        if( rows.size() > limit )
+            note( aOut, "return_via", std::to_string( rows.size() - limit ) + " more net(s) (plane_limit)" );
+    }
+    else
+    {
+        // the agent's limits: the nearest return via, and with two_sided one on the other side too
+        std::vector<std::pair<double, std::string>> bad;   // how far over, text
+        std::vector<VECTOR2I>                       where;
+
+        for( const VIAM& m : measured )
+        {
+            if( !m.planeNet )
+                continue;
+
+            const GLOBS::GLOB* g = viaLimit.match( netName( m.via->GetNetCode() ) );
+
+            if( !g )
+                continue;
+
+            double      max = g->value * 1e6;
+            std::string rule = "max " + mm( g->value ) + " for " + g->pattern;
+
+            if( !m.bga.empty() && aReq.bga_return_via_mm() > 0 )
+            {
+                max = aReq.bga_return_via_mm() * 1e6;
+                rule = "max " + mm( aReq.bga_return_via_mm() ) + " in a BGA field";
+            }
+
+            const std::string head = "via at " + at( m.via->GetPosition() ) + " takes " + tagged( m.via->GetNetCode() )
+                                     + " from " + m.what + ": ";
+
+            if( m.nearest < 0 || m.nearest > max )
+                bad.push_back( { far( m.nearest ) - max,
+                                 head + "nearest " + netName( m.planeNet ) + " return via " + dist( m.nearest ) + " ("
+                                         + rule + ( m.bga.empty() ? "" : "; " + m.bga ) + ")" } );
+            else if( twoSided.match( netName( m.via->GetNetCode() ) ) && ( m.otherSide < 0 || m.otherSide > max ) )
+                bad.push_back( { far( m.otherSide ) - max,
+                                 head + "return via on one side only: nearest " + dist( m.nearest ) + ", on the other side "
+                                         + dist( m.otherSide ) + " (two_sided, " + rule + ")" } );
+            else
+                continue;
+
+            where.push_back( m.via->GetPosition() );
+        }
+
+        std::vector<size_t> order( bad.size() );
+
+        for( size_t i = 0; i < order.size(); i++ )
+            order[i] = i;
+
+        std::sort( order.begin(), order.end(), [&]( size_t a, size_t b ) { return bad[a].first > bad[b].first; } );
+
+        for( size_t i = 0; i < order.size() && i < 2 * limit; i++ )
+            line( aOut, "return_via", "warning", bad[order[i]].second, where[order[i]] );
+
+        if( bad.size() > 2 * limit )
+            line( aOut, "return_via", "warning", std::to_string( bad.size() - 2 * limit ) + " more (plane_limit)" );
+    }
+
+    for( const auto& [pair, list] : byPair )
+    {
+        const VIAM* w = *std::max_element( list.begin(), list.end(),
+                                           [&]( const VIAM* a, const VIAM* b ) { return far( a->capDist ) < far( b->capDist ); } );
+        line( aOut, "return_via", "info",
+              std::to_string( list.size() ) + " via(s) go between planes of " + pair
+                      + " (the return current crosses through a capacitor between them); farthest from one: "
+                      + tagged( w->via->GetNetCode() ) + " at " + at( w->via->GetPosition() ) + ", "
+                      + ( w->capDist < 0 ? std::string( "no such capacitor on the board" )
+                                         : w->capRef + " " + mm( w->capDist / 1e6 ) + " mm away" ),
+              w->via->GetPosition(), w->capRef.empty() ? std::vector<std::string>{} : std::vector<std::string>{ w->capRef } );
+    }
 }
 
 } // namespace kicadd

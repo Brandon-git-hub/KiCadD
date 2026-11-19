@@ -1699,19 +1699,24 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "voltages {\"VPP\": 13} (V; nets named like +12V or 3V3 are read from the name, others "
             "count as 0 V) checks the closest copper of other nets per layer against IPC-2221B table 6-1; "
             "silkscreen text over pads and overlapping references; nets without a test point. Reference "
-            "planes: signal tracks against the filled zones on the copper layers next to them (plane "
-            "splits, gaps longer than plane_gap_mm (1), stretches past the plane's edge), and signal vias "
-            "that change planes without a return via of the plane net within return_via_mm (2) or, for "
-            "different plane nets, a capacitor between them; plane_nets [..] picks the nets (default: "
-            "every net with tracks, no zone and no supply name). Refill zones first for the voltage and "
-            "plane checks. Run run_erc and run_drc too.",
+            "planes (refill zones first): along each signal track, plane splits and stretches with no "
+            "plane under it (plane); at each via that changes planes, the nearest return via of the "
+            "plane net, the nearest on the other side, BGA fields, or the capacitor between different "
+            "plane nets (return_via). Without limits these are an overview per net, worst first "
+            "(plane_limit rows, default 10), no verdicts; you set the limits by net glob in mm, e.g. "
+            "return_via {\"*PCIE*\": 1.0, \"*DDR*\": 2, \"*\": 3}, plane_gap {\"*USB*\": 0.5}, "
+            "two_sided [\"*PCIE*\"] (G-S-S-G), bga_return_via_mm; plane_nets [globs] picks the nets "
+            "(default: tracks, no zone, no supply name). Run run_erc and run_drc too.",
             obj( { { "max_decap_mm", { { "type", "number" } } },
                    { "currents", { { "type", "object" }, { "description", "net -> A" } } },
                    { "voltages", { { "type", "object" }, { "description", "net -> V" } } },
                    { "temp_rise", { { "type", "number" }, { "description", "C over ambient (10)" } } },
                    { "plane_nets", { { "type", "array" }, { "items", { { "type", "string" } } } } },
-                   { "plane_gap_mm", { { "type", "number" } } },
-                   { "return_via_mm", { { "type", "number" } } } } ),
+                   { "plane_gap", { { "type", "object" }, { "description", "net glob -> mm" } } },
+                   { "return_via", { { "type", "object" }, { "description", "net glob -> mm" } } },
+                   { "two_sided", { { "type", "array" }, { "items", { { "type", "string" } } } } },
+                   { "bga_return_via_mm", { { "type", "number" } } },
+                   { "plane_limit", { { "type", "integer" } } } } ),
             [&aIpc]( const json& a )
             {
                 kicadd::board::BoardAudit boardReq;
@@ -1737,23 +1742,45 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                 if( a.contains( "temp_rise" ) && a["temp_rise"].is_number() )
                     boardReq.set_temp_rise( a["temp_rise"].get<double>() );
 
-                if( a.contains( "plane_nets" ) )
+                for( const char* key : { "plane_nets", "two_sided" } )
                 {
-                    if( !a["plane_nets"].is_array() )
-                        return fail( "plane_nets is [\"NET\", ...]" );
+                    if( !a.contains( key ) )
+                        continue;
 
-                    for( const json& n : a["plane_nets"] )
+                    if( !a[key].is_array() )
+                        return fail( std::string( key ) + " is [\"glob\", ...]" );
+
+                    for( const json& n : a[key] )
                     {
                         if( n.is_string() )
-                            boardReq.add_plane_nets( n.get<std::string>() );
+                            ( std::string( key ) == "plane_nets" ? boardReq.add_plane_nets( n.get<std::string>() )
+                                                                 : boardReq.add_two_sided( n.get<std::string>() ) );
                     }
                 }
 
-                if( a.contains( "plane_gap_mm" ) && a["plane_gap_mm"].is_number() )
-                    boardReq.set_plane_gap_mm( a["plane_gap_mm"].get<double>() );
+                for( const char* key : { "plane_gap", "return_via" } )
+                {
+                    if( !a.contains( key ) )
+                        continue;
 
-                if( a.contains( "return_via_mm" ) && a["return_via_mm"].is_number() )
-                    boardReq.set_return_via_mm( a["return_via_mm"].get<double>() );
+                    if( !a[key].is_object() )
+                        return fail( std::string( key ) + " is {\"glob\": mm}" );
+
+                    for( const auto& [glob, v] : a[key].items() )
+                    {
+                        if( !v.is_number() || v.get<double>() < 0 )
+                            return fail( std::string( key ) + "." + glob + ": mm, a number" );
+
+                        ( std::string( key ) == "plane_gap" ? *boardReq.mutable_plane_gap()
+                                                            : *boardReq.mutable_return_via() )[glob] = v.get<double>();
+                    }
+                }
+
+                if( a.contains( "bga_return_via_mm" ) && a["bga_return_via_mm"].is_number() )
+                    boardReq.set_bga_return_via_mm( a["bga_return_via_mm"].get<double>() );
+
+                if( a.contains( "plane_limit" ) && a["plane_limit"].is_number_integer() )
+                    boardReq.set_plane_limit( a["plane_limit"].get<int>() );
 
                 ks::SchAudit           req;
                 ks::SchAuditResponse   r;

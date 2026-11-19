@@ -58,7 +58,7 @@ Claude Code：`claude mcp add kicadd -- C:\KiCadD\bin\kicadd-mcp.exe --stdio`（
 | 電路圖到 PCB | `sync_pcb`（照 UUID 對應，重新編號的零件原地改名）、`auto_place`（依連線擺放、去耦電容靠 IC，可設分群和擺件規則；USB、RJ45、DC 插座等連接器可依板邊規則朝外伸出板框） |
 | PCB 編輯 | 查詢、移動、翻面、新增 / 刪除封裝、`pcb_set_fields`、`delete_tracks`、`board_outline`、`board_setup`（疊層，或 JLCPCB 的阻抗疊層）、`set_rules`（網路類別、JLCPCB 製程預設、依電流算線寬、依阻抗算線寬 / 差分間距）、`impedance`（各銅層的控制阻抗線寬）、`zones` |
 | 佈線（逐條） | `route`（一條線，可以指定經過點和換層位置）、`route_short`、`fanout`、`stitch_vias`、`teardrops` |
-| 審查與出廠 | `audit`（去耦、電源、ESD、電流對線寬、電壓對間距、絲印、測試點、參考平面：跨分割、平面缺口、回流地孔）、`run_drc`、`board_diff`、`silk_tidy`、`board_render`、`export_fab`（先跑 DRC，再輸出 Gerber、鑽孔、BOM、CPL） |
+| 審查與出廠 | `audit`（去耦、電源、ESD、電流對線寬、電壓對間距、絲印、測試點、參考平面：跨分割、平面缺口、回流地孔；不給門檻時只回總覽，門檻由 agent 依網路萬用字元指定 mm）、`run_drc`、`board_diff`、`silk_tidy`、`board_render`、`export_fab`（先跑 DRC，再輸出 Gerber、鑽孔、BOM、CPL） |
 | 協同 | Agent 的每次修改都是編輯器的一筆提交，可以按 Ctrl+Z 撤回；Agent 也有自己的 `undo` / `redo` / `sch_undo` / `sch_redo`。你正在用互動工具（走線、畫線、對話框）時，Agent 的修改會被擋下。`batch` 一次跑多個工具。 |
 
 **做不到（刻意不做或還沒做）**

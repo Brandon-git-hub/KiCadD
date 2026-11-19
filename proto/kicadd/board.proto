@@ -1111,11 +1111,16 @@ message BoardAudit
   map<string, double> currents  = 1;   // net -> A ("VCC" also matches "/VCC")
   map<string, double> voltages  = 2;   // net -> V; nets not given are taken as 0 V
   double              temp_rise = 3;   // C over ambient for the current check (default 10)
-  // Reference planes: signal tracks against the filled zones on the copper layers next to them
-  // (splits, gaps, past the plane's edge); signal vias that change planes against return vias.
-  repeated string     plane_nets    = 4;   // default: every net with tracks and no zone, not named like a supply
-  double              plane_gap_mm  = 5;   // shorter stretches with no plane under them are not reported (default 1)
-  double              return_via_mm = 6;   // a return via this close to a signal via (default 2)
+  // Reference planes (signal tracks against the filled zones on the copper layers next to them;
+  // signal vias that change planes against return vias). Without plane_gap / return_via: an
+  // overview per net, worst first, no verdicts. Globs: * and ?, matching the whole net name or the
+  // part after its sheet path; an exact name wins, then the glob with the most literal characters.
+  repeated string     plane_nets        = 4;   // globs; default: nets with tracks, no zone, no supply name
+  map<string, double> plane_gap         = 5;   // glob -> mm: splits and longer stretches with no plane are warnings
+  map<string, double> return_via        = 6;   // glob -> mm: farther return vias are warnings
+  repeated string     two_sided         = 7;   // globs: a return via on the other side within the limit too (G-S-S-G)
+  double              bga_return_via_mm = 8;   // the limit for vias in a BGA's field instead
+  int32               plane_limit       = 9;   // rows per list (default 10; warnings twice that)
 }
 
 message BoardAuditFinding
