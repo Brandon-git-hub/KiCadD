@@ -52,7 +52,7 @@ Claude Code：`claude mcp add kicadd -- C:\KiCadD\bin\kicadd-mcp.exe --stdio`（
 | 類別 | 工具 |
 |---|---|
 | 電路圖 | `sch_add_part`（符號庫、立創編號、電源符號）、`sch_connect` / `sch_disconnect`、`sch_move`、`sch_wire`、`sch_delete`、`sch_set_fields`、階層圖紙 `sch_add_sheet`、`run_erc`、`sch_netlist` |
-| 電路圖文件 | `sch_annotate`（重新編號，可以 dry run、限定圖紙或零件、設定起始號、每頁一段）、`sch_export_pdf`（所有圖紙合成一份 PDF，可點擊跳頁）、`sch_render`（PNG） |
+| 電路圖文件 | `sch_annotate`（重新編號，可以 dry run、限定圖紙或零件、設定起始號、每頁一段）、`sch_export_pdf`（所有圖紙合成一份 PDF，可點擊跳頁；在 Adobe Acrobat / Reader 點零件會跳出欄位選單，瀏覽器內建的 PDF 檢視器不支援）、`sch_render`（PNG） |
 | 立創零件 | `lcsc_fetch`（封裝、符號、3D 模型（VRML）、庫存、價格）、`lcsc_search`（依規格找料）、`lcsc_match`（批次配料號）；編輯器裡的 Place → Add LCSC Part / Symbol |
 | 自建元件 | `lib_create_symbol`、`lib_create_footprint`、`lib_register` |
 | 電路圖到 PCB | `sync_pcb`（照 UUID 對應，重新編號的零件原地改名）、`auto_place`（依連線擺放、去耦電容靠 IC，可設分群和擺件規則；USB、RJ45、DC 插座等連接器可依板邊規則朝外伸出板框） |
