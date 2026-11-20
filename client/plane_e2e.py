@@ -15,7 +15,11 @@ usage: python3 -I plane_e2e.py --build BUILD --demos DEMOS_DIR --work DIR
   pic_programmer  2 layers, GND on the bottom only: the bottom layer has no plane (said once); R8's
                   net has a 6.1 mm gap; no via changes planes
   vme-wren        12 layers: vias in IC14's BGA field say so (784 pads, the GND vias there);
-                  bga_return_via_mm applies there
+                  bga_return_via_mm applies there. In1.Cu's zones taken off: F.Cu's plane is
+                  In3.Cu across In1 and In2 (the header says so), In2's supply pours under F.Cu
+                  tracks are local copper (said, not judged); a 4 x 10 mm GND pour
+                  on In1.Cu under USERIO_A.IO30 is 10 mm of local copper, said with plane_gap
+                  too but not judged; undo takes it away
   video           4 layers, GND / +5V: HD_PAL- 166 mm past the edge of the In1 GND plane with
                   plane_gap; vias between +5V and GND grouped (capacitor distance); in seconds
 """
@@ -29,6 +33,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from m5_e2e import FAILS, Mcp, Server, binaries, check  # noqa: E402
+from xtalk_e2e import strip  # noqa: E402
 
 
 def section(t, name):
@@ -42,9 +47,13 @@ def section(t, name):
     return out
 
 
-def board(a, work, demo, fname):
-    dst = os.path.join(work, demo[:6])
+def board(a, work, demo, fname, unpour=()):
+    dst = os.path.join(work, demo[:6] + ("u" if unpour else ""))
     shutil.copytree(os.path.join(a.demos, demo), dst)
+    if unpour:
+        p = os.path.join(dst, fname)
+        t = open(p).read()
+        open(p, "w").write(strip(t, unpour))
     sock = os.path.join(work, demo[:6] + ".sock")
     _, kicadd_mcp, env = binaries(a.build)
     srv = Server(a.build, sock, os.path.join(dst, fname), env, os.path.join(work, demo[:6] + ".log"))
@@ -174,6 +183,46 @@ def main():
         check(len(rv) > 1 and not any("BGA field" in ln for ln in rv), "bga_return_via_mm 50: no via in a BGA field fails")
         _, t = m.tool("audit", {"return_via": {"*": 0.1}, "plane_limit": 400})
         check(any("BGA field" in ln for ln in warnings(section(t, "return_via"))), "without it they are judged by the glob")
+        _, t = m.tool("audit")
+        pl = section(t, "plane")
+        check(pl and "run over a pour" not in pl[0], "as it is: F.Cu over In1's GND, no local copper")
+    finally:
+        m.close()
+        srv.stop()
+
+    print("[vme-wren, In1.Cu not poured, a GND pour on it under USERIO_A.IO30]")
+    io30 = "/vme_interface/VMEPX_USERIO_A.IO30"   # F.Cu only, straight down x 212.94 from y 268.9 to 298.9
+    srv, m = board(a, work, "vme-wren", "vme-wren.kicad_pcb", unpour=("In1.Cu",))
+    try:
+        _, t = m.tool("audit")
+        pl = section(t, "plane")
+        print("      ", pl[0][:300] if pl else pl)
+        lc = re.search(r"(\d+) run over a pour on a signal layer between them and their plane", pl[0] if pl else "")
+        check(lc and int(lc.group(1)) > 5 and "Over local copper the most: /SFP0.RX_P/N (pair)" in pl[0]
+              and "over VCC_PSPLL L3" in pl[0], f"local copper: {lc and lc.group(1)} nets / pairs over In2's (L3) supply pours")
+        _, t = m.tool("audit", {"plane_nets": [io30]})
+        pl = section(t, "plane")
+        check(len(pl) == 1 and "Planes across signal layers: Top Layer -> L4GND (across L2GND, L3)" in pl[0]
+              and "run over a pour" not in pl[0], "IO30: F.Cu's plane is In3.Cu (L4GND) across In1 and In2, nothing to say")
+        err, t = m.tool("zones", {"create": {"net": "GND", "layers": ["In1.Cu"], "rect": [211, 278, 215, 288]}})
+        check(not err and t.startswith("new zone"), "a 4 x 10 mm GND pour on In1.Cu under IO30 (F.Cu)")
+        _, t = m.tool("audit", {"plane_nets": [io30]})
+        pl = section(t, "plane")
+        print("      ", pl[1] if len(pl) > 1 else pl)
+        mm_ = re.search(r"([\d.]+) mm over local copper on a signal layer between, the longest ([\d.]+) mm over GND L2GND at \(212.94, 283\)",
+                        pl[1] if len(pl) > 1 else "")
+        check(pl and "1 run over a pour on a signal layer between them and their plane" in pl[0]
+              and mm_ and abs(float(mm_.group(2)) - 10) < 0.6, f"10 mm over the GND pour on In1: {mm_ and mm_.group(2)} mm")
+        check(not warnings(pl), "local copper is not judged")
+        _, t = m.tool("audit", {"plane_gap": {io30: 2}})
+        pl = section(t, "plane")
+        check("info: /vme_interface/VMEPX_USERIO_A.IO30 (max 2 mm with no plane): 1 net(s) / pair(s) judged, all within" in pl
+              and any(ln.startswith("info: 1 judged net(s) / pair(s) run over a pour") for ln in pl),
+              "plane_gap: within (the plane is under it), the local copper said in a line of its own")
+        m.tool("undo")
+        _, t = m.tool("audit", {"plane_nets": [io30]})
+        pl = section(t, "plane")
+        check(pl and "run over a pour" not in pl[0], "undo: the pour gone, no local copper")
     finally:
         m.close()
         srv.stop()

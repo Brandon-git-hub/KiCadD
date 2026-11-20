@@ -65,7 +65,12 @@ what each tool does; this skill says how to use them together.
    - relaxed, 3.0 mm: a BGA's fanout when it has an even GND via array (the overview counts
      the GND vias and pads in the field), SPI, UART, GPIO and other slow control lines.
    Read the overview first, then call again with limits for the nets that matter; a split
-   under a fast pair is worth fixing, a slow line over a gap seldom is.
+   under a fast pair is worth fixing, a slow line over a gap seldom is. A track's planes are
+   the ones `impedance` uses (by poured copper, across signal layers between; the header names
+   such layers). A pour on a signal layer between a track and its plane is reported as "over
+   local copper", never judged: the return runs on that pour there, so the line's impedance
+   steps (see `audit impedance` with `z_nets`); for a fast net, move the pour or the track,
+   or make the pour the plane.
 4. **Diff pairs and lengths** (checks only: you never route or meander; the human tunes on
    the desktop with KiCad's tools, so say which net needs how much). `audit` alone gives one
    `diff_pair` line: routed pairs (`X+/-`, `X_P/N`), the worst skew and the most uncoupled

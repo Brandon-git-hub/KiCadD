@@ -5,13 +5,16 @@
  * of each checked net are joined into chains per layer (broken at vias, branches and ends); along a
  * chain the edges of the reference layers' fills cut it into runs, and each run's reference is the
  * set of (layer, net) fills under its middle. Runs with no fill under them are voids, splits (when
- * the planes on either side share nothing) or stretches past the plane's edge.
+ * the planes on either side share nothing) or stretches past the plane's edge. A layer's reference
+ * layers are its planes from impedance::Line (the same ones as the impedance tool and audit
+ * impedance); the fills of the signal layers between, cut the same way, are the local copper.
  *
  * This file is part of KiCadD and is licensed GPL-3.0-or-later, like KiCad.
  */
 
 #include "pcb/kicadd_refplane.h"
 #include "pcb/kicadd_fills.h"
+#include "pcb/kicadd_impedance.h"
 #include "pcb/kicadd_netnames.h"
 
 #include <board.h>
@@ -127,7 +130,8 @@ struct CHAIN
     int                   net = 0;
     PCB_LAYER_ID          layer = UNDEFINED_LAYER;
     std::vector<VECTOR2I> pts;
-    std::vector<RUN>      runs;
+    std::vector<RUN>      runs;     // by the reference planes' fills
+    std::vector<RUN>      locals;   // by the fills on the signal layers between (local copper)
     double                length = 0;
 };
 
@@ -228,8 +232,8 @@ void buildChains( const std::vector<std::vector<VECTOR2I>>& aPieces, const std::
     }
 }
 
-/// Cut the chain into runs by what is under it on aPlanes.
-void classify( CHAIN& aChain, const std::vector<std::pair<int, const LAYER_FILLS*>>& aPlanes )
+/// Cut the chain into runs (aRuns) by what is under it on aPlanes.
+void classify( CHAIN& aChain, const std::vector<std::pair<int, const LAYER_FILLS*>>& aPlanes, std::vector<RUN>& aRuns )
 {
     double base = 0;
 
@@ -275,14 +279,14 @@ void classify( CHAIN& aChain, const std::vector<std::pair<int, const LAYER_FILLS
 
                 const double from = base + ts[i] * plen, to = base + ts[i + 1] * plen;
 
-                if( !aChain.runs.empty() && aChain.runs.back().refs == refs )
+                if( !aRuns.empty() && aRuns.back().refs == refs )
                 {
-                    aChain.runs.back().to = to;
-                    aChain.runs.back().b = e;
+                    aRuns.back().to = to;
+                    aRuns.back().b = e;
                 }
                 else
                 {
-                    aChain.runs.push_back( { from, to, s, e, refs } );
+                    aRuns.push_back( { from, to, s, e, refs } );
                 }
             }
 
@@ -541,23 +545,44 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
         note( aOut, "plane", std::to_string( unfilled ) + " zone(s) not filled count as no copper: refill them "
                                                            "(fill_zones) first" );
 
-    // ---- reference layers of each copper layer: its neighbours in the stack that have fills
-    std::map<int, std::vector<std::pair<int, const LAYER_FILLS*>>> planesOf;
-    std::map<int, std::string>                                    nextTo;   // layer -> its neighbours, named
+    // ---- reference layers of each copper layer: its planes as the impedance tool has them (by
+    // their poured copper, across signal layers; on a board with no plane yet the nearest copper
+    // layers), those with fills; the signal layers crossed on the way: their fills are local copper
+    std::map<int, std::vector<std::pair<int, const LAYER_FILLS*>>> planesOf, localOf;
+    std::map<int, std::string>                                    nextTo;   // layer -> its planes, named
+    std::map<int, std::string>                                    crossedOf;   // layer -> "In1.Cu, In2.Cu"
 
     for( size_t i = 0; i < stack.size(); i++ )
     {
-        for( size_t j : { i - 1, i + 1 } )
+        std::vector<PCB_LAYER_ID> refs, crossed;
+        std::string               err;
+
+        if( std::optional<impedance::LAYER_LINE> ln = impedance::Line( aBoard, stack[i], err ) )
         {
-            if( j >= stack.size() )   // i - 1 wraps
-                continue;
+            refs = ln->planes;
+            crossed = ln->crossed;
+        }
+        else
+        {
+            for( size_t j : { i - 1, i + 1 } )
+                if( j < stack.size() )   // i - 1 wraps
+                    refs.push_back( stack[j] );
+        }
 
-            nextTo[stack[i]] += ( nextTo[stack[i]].empty() ? "" : " / " ) + layerName( stack[j] );
+        for( PCB_LAYER_ID p : refs )
+        {
+            nextTo[stack[i]] += ( nextTo[stack[i]].empty() ? "" : " / " ) + layerName( p );
 
-            auto f = fills.find( stack[j] );
+            if( auto f = fills.find( p ); f != fills.end() )
+                planesOf[stack[i]].push_back( { p, &f->second } );
+        }
 
-            if( f != fills.end() )
-                planesOf[stack[i]].push_back( { stack[j], &f->second } );
+        for( PCB_LAYER_ID c : crossed )
+        {
+            crossedOf[stack[i]] += ( crossedOf[stack[i]].empty() ? "" : ", " ) + layerName( c );
+
+            if( auto f = fills.find( c ); f != fills.end() )
+                localOf[stack[i]].push_back( { c, &f->second } );
         }
     }
 
@@ -625,18 +650,26 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
         const size_t first = chains.size();
         buildChains( list, viaNodes[net], net, PCB_LAYER_ID( layer ), chains );
 
+        const auto local = localOf.find( layer );
+
         for( size_t i = first; i < chains.size(); i++ )
-            classify( chains[i], planes->second );
+        {
+            classify( chains[i], planes->second, chains[i].runs );
+
+            if( local != localOf.end() )
+                classify( chains[i], local->second, chains[i].locals );
+        }
     }
 
     // ---- along the tracks: every split, gap and stretch off the plane, measured
     struct EVENT
     {
         int         net;
-        int         kind;   // 0 split, 1 gap in a plane, 2 off the plane
-        double      len;    // nm with no plane under the track
+        int         kind;   // 0 split, 1 gap in a plane, 2 off the plane, 3 over local copper
+        double      len;    // nm with no plane under the track (3: over the local copper)
         VECTOR2I    at;
         std::string text;
+        std::string what;   // 3: the local copper, "GND In1.Cu"
     };
 
     struct NETSTAT
@@ -647,9 +680,28 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
         int                   splits = 0;
         const EVENT*          gap = nullptr;
         const EVENT*          off = nullptr;
+        const EVENT*          local = nullptr;   // the longest stretch over local copper
+        double                localLen = 0;
     };
 
     std::vector<EVENT> events;
+
+    // the local copper under a stretch of a chain (sampled at its middle), for a gap's text
+    auto localUnder = [&]( const CHAIN& c, const VECTOR2I& p ) -> std::string
+    {
+        auto l = localOf.find( c.layer );
+        REFS refs;
+
+        if( l == localOf.end() )
+            return "";
+
+        for( const auto& [layer, f] : l->second )
+            f->refsAt( layer, p, refs );
+
+        std::sort( refs.begin(), refs.end() );
+        refs.erase( std::unique( refs.begin(), refs.end() ), refs.end() );
+        return refs.empty() ? "" : " (" + planesShort( refs ) + " copper under it there)";
+    };
     double             total = 0, covered = 0;
 
     for( const CHAIN& c : chains )
@@ -685,7 +737,7 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
                     events.push_back( { c.net, 0, len, mid,
                                         who + " crosses a plane split at " + at( mid ) + ": " + describe( prev->refs )
                                                 + " to " + describe( next->refs ) + " (" + mm( len / 1e6 )
-                                                + " mm with no plane under it)" } );
+                                                + " mm with no plane under it)" + localUnder( c, mid ) } );
                     continue;
                 }
 
@@ -704,21 +756,37 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
                 events.push_back( { c.net, inside ? 1 : 2, len, mid,
                                     who + " runs " + mm( len / 1e6 ) + " mm "
                                             + ( inside ? "over a gap in " : "past the edge of " ) + describe( prev->refs )
-                                            + " at " + at( mid ) } );
+                                            + " at " + at( mid ) + localUnder( c, mid ) } );
             }
             else if( !prev && !next )
             {
                 events.push_back( { c.net, 2, len, mid,
                                     who + ": " + mm( len / 1e6 ) + " mm with no plane under it on " + nextTo[c.layer]
-                                            + " (from " + at( c.pts.front() ) + ")" } );
+                                            + " (from " + at( c.pts.front() ) + ")" + localUnder( c, mid ) } );
             }
             else if( len > 1e6 )   // at an end, the antipad of its via or pad is not counted
             {
                 const RUN* side = prev ? prev : next;
                 events.push_back( { c.net, 2, len, mid,
                                     who + " runs " + mm( len / 1e6 ) + " mm past the edge of " + describe( side->refs )
-                                            + " at " + at( mid ) } );
+                                            + " at " + at( mid ) + localUnder( c, mid ) } );
             }
+        }
+
+        // over a pour on a signal layer between the track and its plane: the return current is
+        // drawn onto it (an impedance step); under 0.5 mm (a corner of it) not said
+        for( const RUN& r : c.locals )
+        {
+            const double len = r.to - r.from;
+
+            if( r.refs.empty() || len < 0.5e6 )
+                continue;
+
+            const VECTOR2I mid = pointAt( c, ( r.from + r.to ) / 2 );
+            events.push_back( { c.net, 3, len, mid,
+                                who + " runs " + mm( len / 1e6 ) + " mm over " + planesShort( r.refs )
+                                        + " copper, between it and its plane " + nextTo[c.layer] + ", at " + at( mid ),
+                                planesShort( r.refs ) } );
         }
     }
 
@@ -742,6 +810,11 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
         {
             st.splits++;
             st.split = st.split ? st.split : &e;
+        }
+        else if( e.kind == 3 )
+        {
+            st.localLen += e.len;
+            st.local = !st.local || e.len > st.local->len ? &e : st.local;
         }
         else
         {
@@ -767,6 +840,8 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
         const EVENT*          split = nullptr;
         const EVENT*          gap = nullptr;
         const EVENT*          off = nullptr;
+        const EVENT*          local = nullptr;
+        double                localLen = 0;
     };
 
     std::map<int, UNIT> units;
@@ -779,6 +854,8 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
         u.layers.insert( st.layers.begin(), st.layers.end() );
         u.splits += st.splits;
         u.split = u.split ? u.split : st.split;
+        u.localLen += st.localLen;
+        u.local = !u.local || ( st.local && st.local->len > u.local->len ) ? st.local : u.local;
 
         for( const EVENT* e : { st.gap, st.off } )
         {
@@ -792,28 +869,70 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
 
     auto worstLen = []( const UNIT& u ) { return std::max( u.gap ? u.gap->len : 0.0, u.off ? u.off->len : 0.0 ); };
 
+    // where a unit's row points: its first split, else its longest stretch with no plane, else
+    // its longest over local copper
+    auto unitAt = [&]( const UNIT& u ) -> VECTOR2I
+    {
+        if( u.split )
+            return u.split->at;
+
+        if( u.gap && ( !u.off || u.gap->len >= u.off->len ) )
+            return u.gap->at;
+
+        return u.off ? u.off->at : u.local->at;
+    };
+
+    // the layers checked whose planes are across signal layers: "F.Cu -> In3.Cu (across In1.Cu, In2.Cu)"
+    std::string across;
+
+    for( const auto& [layer, names] : crossedOf )
+    {
+        bool used = false;
+
+        for( const CHAIN& c : chains )
+            used = used || c.layer == layer;
+
+        if( used )
+            across += ( across.empty() ? "" : "; " ) + layerName( layer ) + " -> " + nextTo[layer] + " (across " + names + ")";
+    }
+
+    auto localRow = [&]( const UNIT& u )
+    {
+        return mm( u.localLen / 1e6, 1 ) + " mm over local copper on a signal layer between, the longest "
+               + mm( u.local->len / 1e6, 1 ) + " mm over " + u.local->what + " at " + at( u.local->at );
+    };
+
+    const std::string localWhy = " (the return current is drawn onto it: an impedance step there; audit impedance "
+                                 "has the Z, z_nets)";
+
     if( gapLimit.empty() )
     {
         // the overview: per net or pair, worst first (splits, then the longest stretch with no plane)
         std::vector<std::pair<int, const UNIT*>> list;
-        int                                      withSplit = 0, withGap = 0;
+        int                                      withSplit = 0, withGap = 0, withLocal = 0;
+        const std::pair<int, const UNIT*>*       mostLocal = nullptr;
 
         for( const auto& [unit, u] : units )
         {
             withSplit += u.splits > 0;
             withGap += worstLen( u ) > 1e6;
+            withLocal += u.local != nullptr;
 
             // stretches under 0.5 mm (antipads, mostly) are left out
-            if( u.splits || worstLen( u ) >= 0.5e6 )
+            if( u.splits || worstLen( u ) >= 0.5e6 || u.local )
                 list.push_back( { unit, &u } );
         }
 
         std::sort( list.begin(), list.end(),
                    [&]( const auto& a, const auto& b )
                    {
-                       return a.second->splits != b.second->splits ? a.second->splits > b.second->splits
-                                                                   : worstLen( *a.second ) > worstLen( *b.second );
+                       return a.second->splits != b.second->splits         ? a.second->splits > b.second->splits
+                              : worstLen( *a.second ) != worstLen( *b.second ) ? worstLen( *a.second ) > worstLen( *b.second )
+                                                                             : a.second->localLen > b.second->localLen;
                    } );
+
+        for( const auto& e : list )
+            mostLocal = e.second->local && ( !mostLocal || e.second->localLen > mostLocal->second->localLen ) ? &e : mostLocal;
 
         auto row = [&]( int aUnit, const UNIT& u )
         {
@@ -834,26 +953,39 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
             if( u.off )
                 t += "; longest off the plane " + mm( u.off->len / 1e6 ) + " mm at " + at( u.off->at );
 
+            if( u.local )
+                t += "; " + localRow( u );
+
             return t;
         };
 
         std::string head = std::to_string( units.size() ) + " signal net(s) / pair(s) measured: " + std::to_string( withSplit )
                            + " cross a plane split, " + std::to_string( withGap )
-                           + " have a stretch over 1 mm with no plane under them. No verdicts: judge them, or pass "
-                             "plane_gap {glob: mm}";
+                           + " have a stretch over 1 mm with no plane under them";
+
+        if( withLocal )
+            head += ", " + std::to_string( withLocal ) + " run over a pour on a signal layer between them and their plane"
+                    + localWhy;
+
+        if( !across.empty() )
+            head += ". Planes across signal layers: " + across;
+
+        head += ". No verdicts: judge them, or pass plane_gap {glob: mm}";
 
         if( !rows && !list.empty() )
-            head += ". The worst: " + row( list[0].first, *list[0].second )
-                    + ". Per net: plane_limit / plane_nets / pairs_only";
+        {
+            head += ". The worst: " + row( list[0].first, *list[0].second );
+
+            if( mostLocal && mostLocal != &list[0] )
+                head += ". Over local copper the most: " + unitName( mostLocal->first ) + ", " + localRow( *mostLocal->second );
+
+            head += ". Per net: plane_limit / plane_nets / pairs_only";
+        }
 
         note( aOut, "plane", head );
 
         for( size_t i = 0; rows && i < list.size() && i < limit; i++ )
-            line( aOut, "plane", "info", row( list[i].first, *list[i].second ),
-                  list[i].second->split ? list[i].second->split->at
-                  : worstLen( *list[i].second ) == ( list[i].second->gap ? list[i].second->gap->len : -1 )
-                          ? list[i].second->gap->at
-                          : list[i].second->off->at );
+            line( aOut, "plane", "info", row( list[i].first, *list[i].second ), unitAt( *list[i].second ) );
 
         if( rows && list.size() > limit )
             note( aOut, "plane", std::to_string( list.size() - limit ) + " more (plane_limit)" );
@@ -875,7 +1007,7 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
         {
             const GLOBS::GLOB* g = gapLimit.match( netName( e.net ) );
 
-            if( g && ( e.kind == 0 || e.len > g->value * 1e6 ) )
+            if( g && e.kind != 3 && ( e.kind == 0 || e.len > g->value * 1e6 ) )
                 over[g][unitOf( e.net )].push_back( &e );
         }
 
@@ -928,6 +1060,28 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
             if( shown < worst.size() )
                 line( aOut, "plane", "warning", std::to_string( worst.size() - shown ) + " more net(s) / pair(s) over for " + g->pattern + " (plane_limit)" );
         }
+
+        // local copper: said, not judged (plane_gap is about no plane under the track)
+        int                                withLocal = 0;
+        std::pair<int, const UNIT*>        most( 0, nullptr );
+
+        for( const auto& [unit, u] : units )
+        {
+            if( !u.local || !gapLimit.match( netName( unit ) ) )
+                continue;
+
+            withLocal++;
+            most = !most.second || u.localLen > most.second->localLen ? std::make_pair( unit, &u ) : most;
+        }
+
+        if( withLocal )
+            line( aOut, "plane", "info",
+                  std::to_string( withLocal ) + " judged net(s) / pair(s) run over a pour on a signal layer between them and "
+                          "their plane" + localWhy + "; the most: " + unitName( most.first ) + ", " + localRow( *most.second ),
+                  most.second->local->at );
+
+        if( !across.empty() )
+            note( aOut, "plane", "planes across signal layers: " + across );
     }
 
     // ---- vias that change the reference: the return path measured
