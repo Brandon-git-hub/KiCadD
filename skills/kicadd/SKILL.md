@@ -134,7 +134,8 @@ what each tool does; this skill says how to use them together.
 
 - Parts: `sch_add_part` with `lcsc` (fetched from LCSC: the usual way for a new part),
   `lib_id` (a symbol from the project's sym-lib-table) or `lib_id="power:GND"` (power symbols
-  are generated, no library needed). KiCadD ships no symbol libraries: `Device:R` exists only
+  are generated, no library needed; `power:PWR_FLAG` is KiCad's flag, #FLG: connect its pin 1
+  to a net ERC should take as driven, e.g. a connector's VBUS or GND). KiCadD ships no symbol libraries: `Device:R` exists only
   when the project has a Device library, or when the schematic already uses `Device:R` (its own
   copy is taken). On an existing project use the symbols it already uses (`sch_summary`; a
   "not found" reply names them, e.g. `CM5IO:R`). `ref="R?"` takes the next free number. Check

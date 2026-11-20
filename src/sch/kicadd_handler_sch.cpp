@@ -1358,6 +1358,11 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleConnect( const HAND
     std::set<std::string> power( aCtx.Request.power().begin(), aCtx.Request.power().end() );
     SCH_REFERENCE_LIST    powerRefs;
 
+    if( power.count( "PWR_FLAG" ) )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
+                                          "PWR_FLAG is no net: sch_add_part lib_id power:PWR_FLAG, then connect its "
+                                          "pin 1 to the net it flags (\"+5V\": [\"#FLG01.1\", ...])" ) );
+
     if( !power.empty() )
         schematic()->Hierarchy().GetSymbols( powerRefs, SYMBOL_FILTER_POWER );
 
@@ -2085,25 +2090,48 @@ const LIB_SYMBOL* KICADD_HANDLER_SCH::powerSymbol( const std::string& aNet, LIB_
     const std::string hidden = "(effects (font (size 1.27 1.27)) (hide yes))";
     const std::string stroke = "(stroke (width 0) (type default)) (fill (type none))";
 
-    std::string text = "(symbol " + q + " (power) (pin_names (offset 0)) (exclude_from_sim no) (in_bom yes) (on_board yes)\n";
-    text += std::string( "  (property \"Reference\" \"#PWR\" (at 0 " ) + ( ground ? "-6.35" : "-3.81" ) + " 0) " + hidden + ")\n";
-    text += "  (property \"Value\" " + q + " (at 0 " + ( ground ? "-3.81" : "3.556" ) + " 0) " + font + ")\n";
-    text += "  (property \"Footprint\" \"\" (at 0 0 0) " + hidden + ")\n";
-    text += "  (property \"Datasheet\" \"\" (at 0 0 0) " + hidden + ")\n";
-    text += "  (property \"Description\" " + sexprQuote( "Power symbol for net " + aNet + " (KiCadD)" ) + " (at 0 0 0) " + hidden + ")\n";
-    text += "  (symbol " + sexprQuote( aNet + "_0_1" ) + "\n";
+    std::string text;
 
-    if( ground )
-        text += "    (polyline (pts (xy 0 0) (xy 0 -1.27) (xy 1.27 -1.27) (xy 0 -2.54) (xy -1.27 -1.27) (xy 0 -1.27)) " + stroke + ")\n";
+    if( aNet == "PWR_FLAG" )
+    {
+        // KiCad's PWR_FLAG: tells ERC the net it touches is driven. Its pin is a power output,
+        // so it names no net (a power input would: every net flagged would become one, PWR_FLAG).
+        text = "(symbol \"PWR_FLAG\" (power) (pin_numbers (hide yes)) (pin_names (offset 0) (hide yes)) "
+               "(exclude_from_sim no) (in_bom yes) (on_board yes)\n"
+               "  (property \"Reference\" \"#FLG\" (at 0 1.905 0) " + hidden + ")\n"
+               "  (property \"Value\" \"PWR_FLAG\" (at 0 3.81 0) " + font + ")\n"
+               "  (property \"Footprint\" \"\" (at 0 0 0) " + hidden + ")\n"
+               "  (property \"Datasheet\" \"~\" (at 0 0 0) " + hidden + ")\n"
+               "  (property \"Description\" \"Special symbol for telling ERC where power comes from\" (at 0 0 0) " + hidden + ")\n"
+               "  (symbol \"PWR_FLAG_0_0\"\n"
+               "    (pin power_out line (at 0 0 90) (length 0) (name \"pwr\" " + font + ") (number \"1\" " + font + "))\n"
+               "  )\n"
+               "  (symbol \"PWR_FLAG_0_1\"\n"
+               "    (polyline (pts (xy 0 0) (xy 0 1.27) (xy -1.016 1.905) (xy 0 2.54) (xy 1.016 1.905) (xy 0 1.27)) " + stroke + ")\n"
+               "  )\n)\n";
+    }
     else
-        text += "    (polyline (pts (xy -0.762 1.27) (xy 0 2.54) (xy 0.762 1.27)) " + stroke + ")\n"
-                "    (polyline (pts (xy 0 0) (xy 0 2.54)) " + stroke + ")\n";
+    {
+        text = "(symbol " + q + " (power) (pin_names (offset 0)) (exclude_from_sim no) (in_bom yes) (on_board yes)\n";
+        text += std::string( "  (property \"Reference\" \"#PWR\" (at 0 " ) + ( ground ? "-6.35" : "-3.81" ) + " 0) " + hidden + ")\n";
+        text += "  (property \"Value\" " + q + " (at 0 " + ( ground ? "-3.81" : "3.556" ) + " 0) " + font + ")\n";
+        text += "  (property \"Footprint\" \"\" (at 0 0 0) " + hidden + ")\n";
+        text += "  (property \"Datasheet\" \"\" (at 0 0 0) " + hidden + ")\n";
+        text += "  (property \"Description\" " + sexprQuote( "Power symbol for net " + aNet + " (KiCadD)" ) + " (at 0 0 0) " + hidden + ")\n";
+        text += "  (symbol " + sexprQuote( aNet + "_0_1" ) + "\n";
 
-    text += "  )\n";
-    text += "  (symbol " + sexprQuote( aNet + "_1_1" ) + "\n";
-    text += std::string( "    (pin power_in line (at 0 0 " ) + ( ground ? "270" : "90" ) + ") (length 0) (hide yes) (name " + q
-            + " " + font + ") (number \"1\" " + font + "))\n";
-    text += "  )\n)\n";
+        if( ground )
+            text += "    (polyline (pts (xy 0 0) (xy 0 -1.27) (xy 1.27 -1.27) (xy 0 -2.54) (xy -1.27 -1.27) (xy 0 -1.27)) " + stroke + ")\n";
+        else
+            text += "    (polyline (pts (xy -0.762 1.27) (xy 0 2.54) (xy 0.762 1.27)) " + stroke + ")\n"
+                    "    (polyline (pts (xy 0 0) (xy 0 2.54)) " + stroke + ")\n";
+
+        text += "  )\n";
+        text += "  (symbol " + sexprQuote( aNet + "_1_1" ) + "\n";
+        text += std::string( "    (pin power_in line (at 0 0 " ) + ( ground ? "270" : "90" ) + ") (length 0) (hide yes) (name " + q
+                + " " + font + ") (number \"1\" " + font + "))\n";
+        text += "  )\n)\n";
+    }
 
     std::vector<LIB_SYMBOL*> parsed;
 

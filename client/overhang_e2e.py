@@ -124,6 +124,20 @@ def main():
         err, t = mcp.tool("auto_place", {"rules": {"edge": {"J2": 3}}})
         check(err and "edge rule J2: a side" in t, "an edge rule neither a side nor an object: refused")
 
+        print("[mounting holes stay]")
+        err, t = mcp.tool("board_outline", {"keep_old": True, "hole_inset": 3})
+        holes = {k: v for k, v in where(mcp).items() if re.fullmatch(r"H\d+", k)}
+        check(not err and len(holes) == 4, f"4 corner holes: {sorted(holes)}")
+        err, t = mcp.tool("auto_place", {"refs": [], "time_limit": 1})
+        check("kept: H1, H2, H3, H4 (mounting holes: name them in refs to move them)" in t,
+              "auto_place: the holes (boxes past the edge) kept, said: "
+              + next((ln.strip() for ln in t.splitlines() if "kept:" in ln), t[:80]))
+        err, t = mcp.tool("auto_place", {"all": True, "time_limit": 1})
+        check({k: where(mcp)[k] for k in holes} == holes, "all: True moves everything but the holes")
+        mcp.tool("undo")
+        mcp.tool("undo")
+        mcp.tool("undo")
+
         print("[no room]")
         err, t = mcp.tool("board_outline", {"rect": [0, 0, 12, 8]})
         err, t = mcp.tool("auto_place", {"all": True})

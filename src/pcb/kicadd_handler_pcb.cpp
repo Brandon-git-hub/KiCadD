@@ -5250,6 +5250,8 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
         }
     };
 
+    std::vector<std::string> keptHoles;     // mounting holes left where they are
+
     for( FOOTPRINT* fp : b->Footprints() )
     {
         ap::PART  part;
@@ -5266,6 +5268,20 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
 
         bool wanted = !asked.empty() ? asked.count( fp->GetReference() ) > 0
                                      : ( req.all() || !inside( fp ) );
+
+        // A mounting hole (board_outline's, KiCad's MountingHole_*, or only unplated holes)
+        // stays where the outline put it unless refs names it: by the corner its box may reach
+        // past a rounded edge, and moving it would not be what the board needs.
+        const bool hole = fp->GetFPID().GetLibItemName().wx_str().Lower().StartsWith( wxS( "mountinghole" ) )
+                          || ( !fp->Pads().empty()
+                               && std::all_of( fp->Pads().begin(), fp->Pads().end(),
+                                               []( PAD* p ) { return p->GetAttribute() == PAD_ATTRIB::NPTH; } ) );
+
+        if( wanted && hole && asked.empty() && !fixed.count( fp->GetReference() ) )
+        {
+            wanted = false;
+            keptHoles.push_back( fp->GetReference().ToStdString() );
+        }
 
         part.movable = wanted && !fixed.count( fp->GetReference() );
 
@@ -5327,6 +5343,19 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
 
         parts.push_back( std::move( part ) );
         fps.push_back( fp );
+    }
+
+    if( !keptHoles.empty() )
+    {
+        // H1, H2 ... H10 in their order
+        std::sort( keptHoles.begin(), keptHoles.end(), []( const std::string& x, const std::string& y )
+                   { return x.size() != y.size() ? x.size() < y.size() : x < y; } );
+        std::string list;
+
+        for( const std::string& h : keptHoles )
+            list += ( list.empty() ? "" : ", " ) + h;
+
+        out.add_skipped( list + " (mounting holes: name them in refs to move them)" );
     }
 
     ap::OPTIONS opt;

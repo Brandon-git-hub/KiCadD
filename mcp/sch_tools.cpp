@@ -1087,13 +1087,36 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                         { "'exclude from position files'", "exclude_from_pos" },
                         { "'exclude from BOM'", "exclude_from_bom" },
                         { "'Do not place'", "dnp" } };
-                size_t                   from = 0;
+                // the report's lines; the footprints this sync adds ("Add(ed) R1 (footprint ..."):
+                // their library defaults (value, fabrication attributes) giving way to the
+                // symbol's are part of adding them, no change to report
+                std::vector<std::string> lines;
+                std::set<std::string>    fresh;
 
-                while( from < r.report().size() )
+                for( size_t from = 0; from < r.report().size(); )
                 {
-                    size_t      to = r.report().find( '\n', from );
-                    std::string line = r.report().substr( from, to == std::string::npos ? std::string::npos : to - from );
+                    size_t to = r.report().find( '\n', from );
+                    lines.push_back( r.report().substr( from, to == std::string::npos ? std::string::npos : to - from ) );
                     from = to == std::string::npos ? r.report().size() : to + 1;
+                }
+
+                auto word2 = []( const std::string& aLine )
+                {
+                    size_t sp = aLine.find( ' ' ), sp2 = sp == std::string::npos ? sp : aLine.find( ' ', sp + 1 );
+                    return sp2 == std::string::npos ? std::string() : aLine.substr( sp + 1, sp2 - sp - 1 );
+                };
+
+                for( const std::string& line : lines )
+                    if( ( line.rfind( "Add ", 0 ) == 0 || line.rfind( "Added ", 0 ) == 0 )
+                        && line.find( " (footprint '" ) != std::string::npos )
+                        fresh.insert( word2( line ) );
+
+                for( const std::string& line : lines )
+                {
+                    if( fresh.count( word2( line ) )
+                        && ( line.find( "attribute." ) != std::string::npos
+                             || ( line.rfind( "Change", 0 ) == 0 && line.find( " value from " ) != std::string::npos ) ) )
+                        continue;
 
                     // routine bookkeeping of new parts: the summary line above says it
                     static const char* routine[] = { "Processing symbol", "Updated ", "Changed REF**",
@@ -1183,7 +1206,8 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "connects to (decoupling caps and pull-ups next to their IC pin), courtyards kept apart, "
             "rotations tried, as one undoable edit. Default: the parts outside the board (new from "
             "sync_pcb); refs for chosen parts, all for every unlocked part; fixed keeps parts where "
-            "they are (place connectors first, then lock or fix them). Functional blocks are kept "
+            "they are (place connectors first, then lock or fix them). Mounting holes (board_outline's "
+            "H1..., MountingHole footprints) stay unless refs names them. Functional blocks are kept "
             "together: from groups, else the parts' Block field (sch_add_part block); groups "
             "\"sheets\" uses the schematic sheets, false none. Keeping blocks together costs some "
             "wire length (group_weight trades one for the other). Bottom side: back lists parts that "

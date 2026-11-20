@@ -303,6 +303,24 @@ def main():
                                            "block": "LED"})
         check(t.startswith("added R2 "), "R2 is free again")
         mcp.tool("sch_connect", {"nets": {"LED_K": ["R2.1"], "GND": ["R2.2"]}})
+
+        print("[PWR_FLAG]")
+        unflagged, _ = netlist(mcp)
+        flags = []
+        for _ in range(2):
+            err, t = mcp.tool("sch_add_part", {"lib_id": "power:PWR_FLAG"})
+            m = re.match(r"added (\S+) ", t)
+            flags.append(m.group(1) if m else None)
+        check(flags == ["#FLG01", "#FLG02"], f"PWR_FLAGs numbered #FLG: {flags}")
+        err, t = mcp.tool("sch_connect", {"nets": {"VIN": [f"{flags[0]}.1"], "GND": [f"{flags[1]}.1"]}})
+        check(not err, "a flag on VIN, one on GND: " + t[:60])
+        flagged, _ = netlist(mcp)       # (the netlist leaves out the flags' own pins: no parts)
+        check(flagged == unflagged, "VIN and GND stay apart, no PWR_FLAG net (the flag names no net): "
+              + str(sorted(flagged)))
+        err, t = mcp.tool("sch_connect", {"nets": {"+3V3": ["C2.1"]}, "power": ["PWR_FLAG"]})
+        check(err and "PWR_FLAG is no net" in t, "PWR_FLAG as a power net refused")
+        err, t = mcp.tool("sch_delete", {"refs": flags})
+        check(not err, "flags deleted")
         before, _ = netlist(mcp)
 
         print("[save, restart]")
@@ -329,6 +347,9 @@ def main():
         err, t = mcp.tool("sync_pcb")
         check(not err and re.match(r"5 footprint\(s\) added: (\S+ ?){5}; board now 5 footprints", t),
               "sync_pcb: " + t.splitlines()[0][:100])
+        check(" value from " not in t and "fabrication attribute" not in t,
+              "the new footprints' library values giving way to the symbols' are not reported as changes: "
+              + t.replace("\n", " | ")[:200])
         for net, pins in after.items():
             pins = {p for p in pins}
             if len(pins) < 2:

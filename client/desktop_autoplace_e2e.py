@@ -64,7 +64,7 @@ try:
     check(not th.is_alive(), "an agent edit meanwhile waits for auto_place")
     err, t = box["r"]
     print(f"[2] finished in {box['dt']:.1f} s")
-    check(not err and "placed 62 part(s)" in t and "undo: \"auto-place 62 parts\"" in t, "applied: " + t.splitlines()[0][-60:])
+    check(not err and "placed 56 part(s)" in t and "undo: \"auto-place 56 parts\"" in t and "(mounting holes: name them in refs" in t, "applied: " + t.splitlines()[0][-60:])
     err, s = other.tool("undo"); print("       undo 1:", s.splitlines()[0][:80])
     check(not err and "move" in s.lower(), "first undo: the move (it came after the placement)")
     err, s = other.tool("undo"); print("       undo 2:", s.splitlines()[0][:80])

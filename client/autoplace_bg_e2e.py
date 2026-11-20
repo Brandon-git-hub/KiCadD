@@ -42,7 +42,7 @@ try:
     r = k.call(kd.MoveDelta(refs=["R1"], dx=1000000), kd.MoveResponse)
     check(True, "edits accepted again after cancel")
     r = k.call(kd.AutoPlace(all=True, background=False, time_limit=2), kd.AutoPlaceResponse)
-    check(r.moved == 62 and not r.running and r.timed_out, f"synchronous call still works (moved {r.moved}, timed_out {r.timed_out})")
+    check(r.moved == 56 and not r.running and r.timed_out, f"synchronous call still works (moved {r.moved} of 62, the 6 mounting holes stay; timed_out {r.timed_out})")
 finally:
     srv.stop()
 print("\nRESULT:", "PASS" if not fails else f"FAIL ({len(fails)})")
