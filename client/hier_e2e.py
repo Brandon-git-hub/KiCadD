@@ -14,6 +14,9 @@ two-pad footprint. Through kicadd-mcp:
   * sync_pcb brings all parts onto the board with the cross-sheet nets; auto_place with
     groups "sheets" sees three blocks
   * sch_delete LED removes the sheet and its parts
+  * the Device library taken out of the tables (an old project here): Device:R / Device:C from
+    the copy the schematic keeps, shared (no duplicate copy); a symbol not there either: why, what
+    the schematic uses for that kind of part, the other ways
 """
 
 import argparse
@@ -182,6 +185,35 @@ def main():
         check(not err, "sch_delete LED: " + t[:60])
         err, t = mcp.tool("sch_summary")
         check(" 3 parts" in t and t.count("SHEET ") == 1 and "SHEET Power" in t, "Power and 3 parts left")
+
+        print("[library not in the tables: the schematic's own copy]")
+        err, t = mcp.tool("sch_save")
+        mcp.close()
+        mcp = None
+        server.stop()
+        open(os.path.join(proj, "sym-lib-table"), "w").write("(sym_lib_table\n  (version 7)\n)\n")
+        os.remove(os.path.join(proj, "Device.kicad_sym"))
+        check(server.start(), "restarted with no Device library (as an old project here)")
+        mcp = Mcp(mcp_cmd, env)
+        err, t = mcp.tool("sch_add_part", {"lib_id": "Device:R", "value": "2k2", "sheet": "Power", "footprint": FP})
+        check(not err and re.match(r"added R\d+ 2k2 Device:R ", t)
+              and "from the schematic's own copy of Device:R (not in the project's libraries)" in t,
+              "Device:R from the copy the schematic keeps: " + t.splitlines()[0][:100])
+        err, t = mcp.tool("sch_add_part", {"lib_id": "Device:C"})
+        check(not err and "from the schematic's own copy of Device:C" in t, "Device:C too (its copy on Power, placed on the root)")
+        err, t = mcp.tool("sch_save")
+        power_sch = open(os.path.join(proj, "Power.kicad_sch")).read()
+        check(power_sch.count('(symbol "Device:R"') == 1 and '"Device:R_1"' not in power_sch,
+              "saved: one Device:R copy in Power.kicad_sch, shared (no Device:R_1)")
+        root_sch = open(os.path.join(proj, "blank.kicad_sch")).read()
+        check('(symbol "Device:C"' in root_sch, "the root sheet got its own copy of Device:C")
+        err, t = mcp.tool("sch_add_part", {"lib_id": "Device:R_Small", "ref": "R?"})
+        print("      ", t.strip()[:300])
+        check(err and t.count("symbol Device:R_Small not found: no library Device in the project's sym-lib-table "
+                              "(KiCadD ships no symbol libraries, power:* is generated)") == 1
+              and re.search(r"this schematic uses Device:R \(\d+\) for R\* parts", t)
+              and "or lcsc (an LCSC part), lib_create_symbol" in t,
+              "not anywhere: why (no Device library here), what this schematic uses for R*, the other ways")
     finally:
         if mcp:
             mcp.close()

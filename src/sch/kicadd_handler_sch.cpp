@@ -339,6 +339,159 @@ bool shapeOf( const std::string& aName, LABEL_FLAG_SHAPE& aOut )
     return true;
 }
 
+
+/// The screens of @a aHierarchy, each once (a sheet file used twice is one screen).
+std::vector<SCH_SCREEN*> screensOf( const SCH_SHEET_LIST& aHierarchy )
+{
+    std::vector<SCH_SCREEN*> out;
+
+    for( const SCH_SHEET_PATH& path : aHierarchy )
+        if( SCH_SCREEN* s = path.LastScreen(); s && std::find( out.begin(), out.end(), s ) == out.end() )
+            out.push_back( s );
+
+    return out;
+}
+
+
+/// The schematic's own copy of @a aId (what the .kicad_sch keeps of every symbol it uses): the
+/// one most of its symbols with that lib_id use, its cache name in @a aName ("Device:R", or
+/// "Device:R_1" when KiCad kept a changed copy apart), how many copies differ in @a aVariants.
+/// Null when no symbol uses @a aId.
+const LIB_SYMBOL* embeddedCopy( const SCH_SHEET_LIST& aHierarchy, const LIB_ID& aId, wxString& aName, int& aVariants )
+{
+    std::map<wxString, std::pair<int, const LIB_SYMBOL*>> seen;
+
+    for( SCH_SCREEN* screen : screensOf( aHierarchy ) )
+    {
+        for( SCH_ITEM* item : screen->Items().OfType( SCH_SYMBOL_T ) )
+        {
+            const SCH_SYMBOL* sym = static_cast<const SCH_SYMBOL*>( item );
+
+            if( sym->GetLibId() == aId && sym->GetLibSymbolRef() )
+            {
+                auto& [n, copy] = seen[sym->GetSchSymbolLibraryName()];
+                n++;
+                copy = sym->GetLibSymbolRef().get();
+            }
+        }
+    }
+
+    const LIB_SYMBOL* best = nullptr;
+    int               most = 0;
+
+    for( const auto& [name, use] : seen )
+    {
+        if( use.first > most )
+        {
+            most = use.first;
+            best = use.second;
+            aName = name;
+        }
+    }
+
+    aVariants = (int) seen.size();
+    return best;
+}
+
+
+/// Why @a aId is not there and what to use instead, for an agent: is its library in the tables
+/// (KiCadD ships none but power), the symbols this schematic already uses for the same thing
+/// (same name, or the reference letters @a aRef has; the most used first), the other ways.
+std::string notFoundHint( SYMBOL_LIBRARY_ADAPTER* aAdapter, const SCH_SHEET_LIST& aHierarchy, const LIB_ID& aId,
+                          const std::string& aRef )
+{
+    const wxString lib = aId.GetLibNickname();
+    const wxString item = aId.GetLibItemName();
+    std::string    out;
+
+    if( !aAdapter->HasLibrary( lib ) )
+    {
+        std::vector<std::string> names;
+
+        if( std::optional<LIBRARY_TABLE*> prj = aAdapter->ProjectTable(); prj && *prj )
+            for( const LIBRARY_TABLE_ROW& row : ( *prj )->Rows() )
+                names.push_back( str( row.Nickname() ) );
+
+        out = ": no library " + str( lib ) + " in the project's sym-lib-table (KiCadD ships no symbol libraries, "
+              "power:* is generated)";
+
+        if( !names.empty() )
+        {
+            out += "; it has ";
+
+            for( size_t i = 0; i < names.size() && i < 8; ++i )
+                out += ( i ? ", " : "" ) + names[i];
+
+            if( names.size() > 8 )
+                out += " and " + std::to_string( names.size() - 8 ) + " more";
+        }
+    }
+    else
+    {
+        out = ": library " + str( lib ) + " has no symbol " + str( item );
+    }
+
+    // the reference letters: of the ref asked ("R?", "R5" -> "R"), else of the symbol's name
+    // when it reads like one ("R", "C", "LED" -> none)
+    auto letters = []( const wxString& s )
+    {
+        wxString l;
+
+        for( wxUniChar c : s )
+        {
+            if( !wxIsalpha( c ) )
+                break;
+
+            l += c;
+        }
+
+        return l.Upper();
+    };
+
+    wxString prefix = letters( wx( aRef ) );
+
+    if( prefix.IsEmpty() && item.length() <= 2 )
+        prefix = letters( item );
+
+    std::map<wxString, int> uses;
+
+    for( const SCH_SHEET_PATH& path : aHierarchy )
+    {
+        for( SCH_ITEM* it : path.LastScreen()->Items().OfType( SCH_SYMBOL_T ) )
+        {
+            const SCH_SYMBOL* sym = static_cast<const SCH_SYMBOL*>( it );
+
+            if( sym->IsPower() )
+                continue;
+
+            if( sym->GetLibId().GetLibItemName().wx_str().IsSameAs( item, false )
+                || ( !prefix.IsEmpty() && letters( sym->GetRef( &path ) ) == prefix ) )
+            {
+                uses[sym->GetLibId().Format().wx_str()]++;
+            }
+        }
+    }
+
+    std::vector<std::pair<int, wxString>> ranked;
+
+    for( const auto& [id, n] : uses )
+        ranked.emplace_back( n, id );
+
+    std::sort( ranked.begin(), ranked.end(), []( const auto& a, const auto& b ) { return a.first > b.first; } );
+
+    if( !ranked.empty() )
+    {
+        out += "; this schematic uses ";
+
+        for( size_t i = 0; i < ranked.size() && i < 3; ++i )
+            out += ( i ? ", " : "" ) + str( ranked[i].second ) + " (" + std::to_string( ranked[i].first ) + ")";
+
+        out += std::string( " for " ) + ( prefix.IsEmpty() ? str( item ) : str( prefix ) + "*" ) + " parts";
+    }
+
+    return out + "; or lcsc (an LCSC part), lib_create_symbol (a symbol of your own)";
+}
+
 } // namespace
 
 
@@ -865,11 +1018,30 @@ HANDLER_RESULT<SchPartResponse> KICADD_HANDLER_SCH::handleAddPart( const HANDLER
         libSymbol = const_cast<LIB_SYMBOL*>( powerSymbol( str( libId.GetLibItemName() ), powerId ) );
     }
 
+    SCH_SHEET_LIST hierarchy = schematic()->Hierarchy();
+    wxString       embeddedName;
+
+    // Not in the libraries (an old project whose library is not in the tables here): the
+    // schematic's own copy of it, when its symbols already use it (KiCad keeps one in the
+    // .kicad_sch). The new symbol shares that copy (same cache name), so nothing is duplicated.
+    // (an LCSC symbol just fetched is in its library or nowhere)
+    if( !libSymbol && req.lcsc().empty() )
+    {
+        int variants = 0;
+        libSymbol = const_cast<LIB_SYMBOL*>( embeddedCopy( hierarchy, libId, embeddedName, variants ) );
+
+        if( libSymbol )
+            note += std::string( note.empty() ? "" : "; " ) + "from the schematic's own copy of " + str( libId.Format().wx_str() )
+                    + " (not in the project's libraries)"
+                    + ( variants > 1 ? ", the one most of its " + std::to_string( variants ) + " versions are" : "" );
+    }
+
     if( !libSymbol )
         return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
-                                          "symbol " + str( libId.Format().wx_str() ) + " not found" ) );
+                                          "symbol " + str( libId.Format().wx_str() ) + " not found"
+                                                  + ( req.lcsc().empty() ? notFoundHint( adapter, hierarchy, libId, req.ref() )
+                                                                         : std::string() ) ) );
 
-    SCH_SHEET_LIST hierarchy = schematic()->Hierarchy();
     SCH_SHEET_PATH sheet = *hierarchy.begin();
     std::string    sheetErr;
 
@@ -901,6 +1073,9 @@ HANDLER_RESULT<SchPartResponse> KICADD_HANDLER_SCH::handleAddPart( const HANDLER
                                                   + std::to_string( libSymbol->GetUnitCount() ) + " units)" ) );
 
     auto symbol = std::make_unique<SCH_SYMBOL>( *libSymbol, libId, &sheet, unit, 0, VECTOR2I( 0, 0 ) );
+
+    if( !embeddedName.IsEmpty() && embeddedName != libId.Format().wx_str() )
+        symbol->SetSchSymbolLibraryName( embeddedName );
 
     switch( ( ( req.rotation() % 360 ) + 360 ) % 360 )
     {

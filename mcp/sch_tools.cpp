@@ -718,9 +718,12 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             } } );
 
     aTools.push_back( { "sch_add_part",
-            "Place a symbol on the schematic: from a library (lib_id \"Device:R\", "
-            "\"Device:C\", ...) or an LCSC part (lcsc \"C25804\": fetched from the JLCEDA/EasyEDA "
-            "Official Library, symbol + footprint saved to the project's LCSC libraries). ref \"R?\" "
+            "Place a symbol on the schematic: an LCSC part (lcsc \"C25804\": fetched from the "
+            "JLCEDA/EasyEDA Official Library, symbol + footprint saved to the project's LCSC "
+            "libraries; the usual way for a new part) or a symbol from the project's sym-lib-table "
+            "(lib_id \"Library:Symbol\"; KiCadD ships no symbol libraries: power:* is generated, "
+            "and a lib_id the schematic already uses is taken from its own copy when the library "
+            "is not here; not found, the reply names what the schematic uses instead). ref \"R?\" "
             "or empty is numbered automatically. Without x/y it goes to the next free spot. Returns "
             "its pins (number, name, type, side) to connect with sch_connect. block names the "
             "functional block the part belongs to (\"LDO\", \"MCU\", \"USB\"): auto_place keeps "

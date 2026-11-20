@@ -132,9 +132,13 @@ what each tool does; this skill says how to use them together.
 
 ## Edit a schematic
 
-- Parts: `sch_add_part` with `lib_id` (a library symbol), `lcsc` (fetched from LCSC) or
-  `lib_id="power:GND"` (power symbols are generated, no library needed). `ref="R?"` takes the
-  next free number. Check the reply: it names the footprint and warns when it is missing.
+- Parts: `sch_add_part` with `lcsc` (fetched from LCSC: the usual way for a new part),
+  `lib_id` (a symbol from the project's sym-lib-table) or `lib_id="power:GND"` (power symbols
+  are generated, no library needed). KiCadD ships no symbol libraries: `Device:R` exists only
+  when the project has a Device library, or when the schematic already uses `Device:R` (its own
+  copy is taken). On an existing project use the symbols it already uses (`sch_summary`; a
+  "not found" reply names them, e.g. `CM5IO:R`). `ref="R?"` takes the next free number. Check
+  the reply: it names the footprint and warns when it is missing.
 - Connections: `sch_connect` (stubs + net labels; `power: ["GND", "+3V3"]` for power symbols;
   `NC` for no-connect) is the reliable way. `sch_wire` draws real wires for readability.
 - Change: `sch_move`, `sch_set_fields` (values, footprints, LCSC numbers, DNP, BOM flags; many
