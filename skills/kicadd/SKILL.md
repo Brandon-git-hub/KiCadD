@@ -87,10 +87,23 @@ what each tool does; this skill says how to use them together.
      a pair;
    - uncoupled: keep breakouts short; a few mm over a whole pair is usual.
    Unrouted connections are flagged ("length so far"): judge lengths on a routed board.
-5. `run_erc` (`warnings=true` for the full list) and, on a board, `refill_zones` then
+5. **DC IR drop** (refill zones first). `audit` alone gives one `ir_drop` line: the supply
+   rails solved as resistor networks (zone fills on a grid, tracks, via barrels, the stackup's
+   copper) and the worst drop. Rows per rail with `ir_limit 10` or `ir_nets ["+3V3", "GND"]`
+   (ground only when named): source -> loads, the drop range and the worst load with where it
+   is, the loss split (tracks / planes / vias: what to widen), the busiest via, the most loaded
+   track. Read the source and loads first: they are guessed (an output pin, else an inductor,
+   a connector, a module; loads: the rail's ICs, the current split per pad). Fix them with
+   `ir_source {"+3V3": "U1.5"}` and `ir_loads {"+3V3": "U5:0.8,U7"}` (A per part; parts without
+   a number share the rest). Without `currents {"+3V3": 1.2}` drops are per A and the limits
+   don't judge that rail. Limits: `ir_drop {glob: mV}`, `via_current {glob: A}`. Typical
+   starting points: a few % of the rail (3.3 V: about 50-100 mV board drop; core rails under
+   1 V: 1-2 %, from the SoC's guide); about 1 A per 0.3 mm via (0.5 A for 0.2 mm). Show a
+   hotspot with `board_render marks=[[x, y, "label"]]` (it zooms to them).
+6. `run_erc` (`warnings=true` for the full list) and, on a board, `refill_zones` then
    `run_drc`. Narrow with `types` / `refs`; the type counts are the whole board, the filter line
    says what matches.
-6. Report what matters, grouped by severity, with the refs and nets involved.
+7. Report what matters, grouped by severity, with the refs and nets involved.
 
 ## Edit a schematic
 

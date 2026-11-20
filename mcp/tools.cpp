@@ -2358,7 +2358,30 @@ TOOL_RESULT boardRender( IPC_CLIENT& aIpc, const json& aArgs )
         req.mutable_area_max()->set_y( toNm( a[3].get<double>() ) );
     }
 
-    req.set_zoom( aArgs.value( "zoom", req.refs_size() + req.nets_size() > 0 ) );
+    if( aArgs.contains( "marks" ) )
+    {
+        const json& ms = aArgs["marks"];
+        auto        bad = []( const json& m )
+        {
+            return !m.is_array() || m.size() < 2 || m.size() > 3 || !m[0].is_number() || !m[1].is_number()
+                   || ( m.size() == 3 && !m[2].is_string() );
+        };
+
+        if( !ms.is_array() || std::any_of( ms.begin(), ms.end(), bad ) )
+            return error( "marks is [[x, y, \"label\"], ...] in mm (the label optional)" );
+
+        for( const json& m : ms )
+        {
+            kb::RenderMark* mk = req.add_marks();
+            mk->mutable_at()->set_x( toNm( m[0].get<double>() ) );
+            mk->mutable_at()->set_y( toNm( m[1].get<double>() ) );
+
+            if( m.size() == 3 )
+                mk->set_label( m[2].get<std::string>() );
+        }
+    }
+
+    req.set_zoom( aArgs.value( "zoom", req.refs_size() + req.nets_size() + req.marks_size() > 0 ) );
     req.set_no_ratsnest( !aArgs.value( "ratsnest", true ) );
     req.set_labels( aArgs.value( "labels", false ) );
     req.set_back( aArgs.value( "back", false ) );
@@ -2395,6 +2418,9 @@ TOOL_RESULT boardRender( IPC_CLIENT& aIpc, const json& aArgs )
 
     if( req.nets_size() )
         s += "\ncyan: the nets asked for";
+
+    if( req.marks_size() )
+        s += "\norange rings: the points asked for";
 
     if( !req.no_ratsnest() )
         s += "\n" + std::to_string( r.unrouted() ) + " unrouted connection(s) as thin white lines";
@@ -3118,7 +3144,8 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        "run, what is left unrouted. KiCad's own plot of the layers (default front: all "
                        "copper, front silkscreen, outline; back=true from below, mirrored). refs are framed "
                        "and labelled, nets drawn in cyan, and with either the picture zooms to them (zoom=false "
-                       "keeps the whole board); area [x0, y0, x1, y1] mm for a region. Rulers in mm on the "
+                       "keeps the whole board); marks [[x, y, \"label\"], ...] mm rings points (audit's IR "
+                       "hotspots: the worst load, the busiest via) and zooms to them too; area [x0, y0, x1, y1] mm for a region. Rulers in mm on the "
                        "top and left. size: pixels on the long side (default 1200). labels=true writes every "
                        "part's reference. path also saves the PNG (relative: in the project folder).",
                        schema( { { "layers", { { "type", "array" }, { "items", { { "type", "string" } } },
@@ -3128,6 +3155,8 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                                  { "nets", { { "type", "array" }, { "items", { { "type", "string" } } } } },
                                  { "area", { { "type", "array" }, { "items", { { "type", "number" } } },
                                              { "description", "[x0, y0, x1, y1] mm" } } },
+                                 { "marks", { { "type", "array" }, { "items", { { "type", "array" } } },
+                                              { "description", "[[x, y, \"label\"], ...] mm" } } },
                                  { "zoom", { { "type", "boolean" } } },
                                  { "size", { { "type", "integer" } } },
                                  { "margin", { { "type", "number" }, { "description", "mm around a zoom (3)" } } },

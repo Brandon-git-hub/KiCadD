@@ -55,6 +55,7 @@ set( KICADD_PCB_SRCS
     ${KICADD_DIR}/src/pcb/kicadd_audit.cpp
     ${KICADD_DIR}/src/pcb/kicadd_refplane.cpp
     ${KICADD_DIR}/src/pcb/kicadd_lengths.cpp
+    ${KICADD_DIR}/src/pcb/kicadd_irdrop.cpp
     ${KICADD_DIR}/src/pcb/kicadd_diff.cpp
     ${KICADD_DIR}/src/pcb/kicadd_silk.cpp
     ${KICADD_DIR}/src/pcb/kicadd_fpgen.cpp
@@ -67,6 +68,10 @@ set( KICADD_PCB_SRCS
     ${KICADD_DIR}/src/common/kicadd_libtable.cpp
     )
 set( KICADD_INCLUDE_DIRS ${KICADD_DIR}/src ${KICADD_CPP_OUT} )
+# Eigen (KiCad's thirdparty, header only) for the IR drop solver, on that one file: it is compiled
+# in pcbnew_kiface_objects, which pcbnew/ defines later, so the property is set at the end
+cmake_language( DEFER CALL set_source_files_properties ${KICADD_DIR}/src/pcb/kicadd_irdrop.cpp
+    TARGET_DIRECTORY pcbnew_kiface_objects PROPERTIES INCLUDE_DIRECTORIES ${CMAKE_SOURCE_DIR}/thirdparty/eigen )
 # eeschema kiface: LCSC symbols (M4b), reached from pcbnew through KIFACE_KICADD_LCSC_SYMBOL
 set( KICADD_SCH_SRCS
     ${KICADD_DIR}/src/sch/kicadd_lcsc_sym.cpp

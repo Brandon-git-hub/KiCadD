@@ -610,6 +610,13 @@ message RenderBoard
   string path              = 10;  // also write the PNG there
   bool   back              = 11;  // seen from below (mirrored), back layers on top
   double margin            = 12;  // mm around a zoom (default 3)
+  repeated RenderMark marks = 13;  // points ringed in orange and labelled (audit's hotspots), zoomed to
+}
+
+message RenderMark
+{
+  Point  at    = 1;   // nm
+  string label = 2;
 }
 
 message RenderBoardResponse
@@ -1135,11 +1142,21 @@ message BoardAudit
   map<string, double> max_length   = 16;  // glob -> mm
   map<string, double> min_length   = 18;  // glob -> mm
   int32               length_limit = 17;  // rows (default: header only; 10 with length_nets); per rule with limits
+  // DC IR drop per rail (a resistor network of the zone fills, tracks and via barrels). Without
+  // limits: an overview, no verdicts. The current per rail comes from currents (else per A).
+  repeated string     ir_nets     = 19;  // globs; default: supply nets that are not ground, on two parts or more
+  map<string, string> ir_source   = 20;  // glob -> "U1" / "U1.5" / "U1.5,U1.6": where the current enters
+                                         // (default guessed: an output pin, else an inductor, else a connector)
+  map<string, string> ir_loads    = 21;  // glob -> "U5:0.5,U7" (A per part; parts with none share the rest of
+                                         // currents); default: the rail's ICs, the current split per part
+  map<string, double> ir_drop     = 22;  // glob -> mV: the worst load's drop over it is a warning
+  map<string, double> via_current = 23;  // glob -> A: a via carrying more is a warning
+  int32               ir_limit    = 24;  // rows (default: header only; 10 with ir_nets); per rule with limits
 }
 
 message BoardAuditFinding
 {
-  string          category = 1;   // current, voltage, silk, testpoint, plane, return_via, diff_pair, length
+  string          category = 1;   // current, voltage, silk, testpoint, plane, return_via, diff_pair, length, ir_drop
   string          severity = 2;   // warning, info
   string          message  = 3;
   repeated string refs     = 4;
@@ -1159,6 +1176,7 @@ message BoardAuditResponse
   int32  plane_vias         = 9;   // their vias that change the reference plane
   int32  diff_pairs         = 10;  // routed diff pairs measured
   int32  length_nets        = 11;  // nets measured for length
+  int32  ir_rails           = 12;  // rails looked at for IR drop
 }
 
 // ---------------------------------------------------------------------------

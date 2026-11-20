@@ -247,7 +247,7 @@ bool RenderBoardPng( BOARD* aBoard, const kicadd::board::RenderBoard& aReq,
         area = BOX2I( a, c - a );
         area.Normalize();
     }
-    else if( aReq.zoom() && ( !marked.empty() || !nets.empty() ) )
+    else if( aReq.zoom() && ( !marked.empty() || !nets.empty() || aReq.marks_size() > 0 ) )
     {
         bool first = true;
 
@@ -263,6 +263,9 @@ bool RenderBoardPng( BOARD* aBoard, const kicadd::board::RenderBoard& aReq,
 
         for( FOOTPRINT* fp : marked )
             add( fp->GetBoundingBox( false ) );
+
+        for( const kicadd::board::RenderMark& m : aReq.marks() )
+            add( BOX2I( VECTOR2I( m.at().x(), m.at().y() ) - VECTOR2I( 500000, 500000 ), VECTOR2I( 1000000, 1000000 ) ) );
 
         for( PCB_TRACK* t : aBoard->Tracks() )
         {
@@ -543,6 +546,27 @@ bool RenderBoardPng( BOARD* aBoard, const kicadd::board::RenderBoard& aReq,
 
         VECTOR2I at( back ? box.GetRight() : box.GetLeft(), box.GetTop() - 3 * px );
         text( at, fp->GetReference(), 14, mark, GR_TEXT_H_ALIGN_LEFT, GR_TEXT_V_ALIGN_BOTTOM );
+    }
+
+    // --- the points asked about: an orange ring and the label
+    for( const kicadd::board::RenderMark& m : aReq.marks() )
+    {
+        const COLOR4D  mark = rgba( 255, 150, 0 );
+        const VECTOR2I c( m.at().x(), m.at().y() );
+        plotter.SetColor( mark );
+        plotter.ThickCircle( c, 24 * px, 3 * px, nullptr );
+
+        if( !m.label().empty() )
+        {
+            // on a dark box, readable over copper (the stroke font is about 0.9 of its height wide)
+            const wxString label = wxString::FromUTF8( m.label() );
+            const VECTOR2I pos = c + VECTOR2I( back ? -14 * px : 14 * px, -14 * px );
+            const int      w = (int) ( label.length() * 13 * 0.9 * px ) + 6 * px;
+            const VECTOR2I a( back ? pos.x + 3 * px : pos.x - 3 * px, pos.y + 3 * px );
+            plotter.SetColor( rgba( 20, 22, 28, 0.85 ) );
+            plotter.Rect( a, VECTOR2I( back ? a.x - w : a.x + w, pos.y - 17 * px ), FILL_T::FILLED_SHAPE, 0 );
+            text( pos, label, 13, mark, back ? GR_TEXT_H_ALIGN_RIGHT : GR_TEXT_H_ALIGN_LEFT, GR_TEXT_V_ALIGN_BOTTOM );
+        }
     }
 
     // --- the rulers: top (x) and left (y), mm

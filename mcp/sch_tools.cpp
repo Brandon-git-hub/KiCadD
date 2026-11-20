@@ -1715,7 +1715,15 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "those nets' lengths). Limits by glob in mm: skew {\"*USB*\": 0.15}, uncoupled "
             "{\"*\": 5}, pair_gap (tolerance) {\"*\": 0.02}; length_match {\"*DDR_DQ*\": 0.5} "
             "(each glob a group, a pair as its mean; says what each short net needs), max_length / "
-            "min_length {glob: mm}. Checks only: the human tunes on the desktop. Run run_erc and run_drc too.",
+            "min_length {glob: mm}. Checks only: the human tunes on the desktop. DC IR drop (ir_drop) per "
+            "supply rail (not ground unless in ir_nets): the zone fills, tracks and via barrels as a "
+            "resistor network from the source pads to the loads; the drop at the worst load (per A "
+            "unless currents gives the rail's A), where the loss is (tracks / planes / vias), the "
+            "busiest via, the most loaded track. The source is guessed (an output pin, else an "
+            "inductor, else a connector) and said; ir_source {\"+3V3\": \"U1.5\"} sets it, ir_loads "
+            "{\"+3V3\": \"U5:0.8,U7\"} the loads (default: the rail's ICs, split per part). Header only "
+            "by default; rows with ir_limit n or ir_nets [globs]. Limits: ir_drop {glob: mV}, "
+            "via_current {glob: A}. Run run_erc and run_drc too.",
             obj( { { "max_decap_mm", { { "type", "number" } } },
                    { "currents", { { "type", "object" }, { "description", "net -> A" } } },
                    { "voltages", { { "type", "object" }, { "description", "net -> V" } } },
@@ -1734,7 +1742,13 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                    { "length_match", { { "type", "object" }, { "description", "net glob -> mm" } } },
                    { "max_length", { { "type", "object" }, { "description", "net glob -> mm" } } },
                    { "min_length", { { "type", "object" }, { "description", "net glob -> mm" } } },
-                   { "length_limit", { { "type", "integer" } } } } ),
+                   { "length_limit", { { "type", "integer" } } },
+                   { "ir_nets", { { "type", "array" }, { "items", { { "type", "string" } } } } },
+                   { "ir_source", { { "type", "object" }, { "description", "net glob -> \"U1\" / \"U1.5,U1.6\"" } } },
+                   { "ir_loads", { { "type", "object" }, { "description", "net glob -> \"U5:0.5,U7\" (A per part)" } } },
+                   { "ir_drop", { { "type", "object" }, { "description", "net glob -> mV" } } },
+                   { "via_current", { { "type", "object" }, { "description", "net glob -> A per via" } } },
+                   { "ir_limit", { { "type", "integer" } } } } ),
             [&aIpc]( const json& a )
             {
                 kicadd::board::BoardAudit boardReq;
@@ -1799,6 +1813,57 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
 
                 if( a.contains( "length_limit" ) && a["length_limit"].is_number_integer() )
                     boardReq.set_length_limit( a["length_limit"].get<int>() );
+
+                if( a.contains( "ir_nets" ) )
+                {
+                    if( !a["ir_nets"].is_array() )
+                        return fail( "ir_nets is [\"glob\", ...]" );
+
+                    for( const json& n : a["ir_nets"] )
+                    {
+                        if( n.is_string() )
+                            boardReq.add_ir_nets( n.get<std::string>() );
+                    }
+                }
+
+                for( const char* key : { "ir_source", "ir_loads" } )
+                {
+                    if( !a.contains( key ) )
+                        continue;
+
+                    if( !a[key].is_object() )
+                        return fail( std::string( key ) + " is {\"glob\": \"REF.PAD,...\"}" );
+
+                    for( const auto& [glob, v] : a[key].items() )
+                    {
+                        if( !v.is_string() )
+                            return fail( std::string( key ) + "." + glob + ": a string (\"U1.5\", \"U5:0.5,U7\")" );
+
+                        ( std::string( key ) == "ir_source" ? *boardReq.mutable_ir_source()
+                                                            : *boardReq.mutable_ir_loads() )[glob] = v.get<std::string>();
+                    }
+                }
+
+                for( const char* key : { "ir_drop", "via_current" } )
+                {
+                    if( !a.contains( key ) )
+                        continue;
+
+                    if( !a[key].is_object() )
+                        return fail( std::string( key ) + " is {\"glob\": number}" );
+
+                    for( const auto& [glob, v] : a[key].items() )
+                    {
+                        if( !v.is_number() || v.get<double>() < 0 )
+                            return fail( std::string( key ) + "." + glob + ( std::string( key ) == "ir_drop" ? ": mV, a number" : ": A, a number" ) );
+
+                        ( std::string( key ) == "ir_drop" ? *boardReq.mutable_ir_drop()
+                                                          : *boardReq.mutable_via_current() )[glob] = v.get<double>();
+                    }
+                }
+
+                if( a.contains( "ir_limit" ) && a["ir_limit"].is_number_integer() )
+                    boardReq.set_ir_limit( a["ir_limit"].get<int>() );
 
                 for( const char* key : { "plane_nets", "two_sided" } )
                 {
@@ -1955,7 +2020,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                 else
                     t += "; no board (" + boardErr + "): schematic checks only";
 
-                for( const char* cat : { "decoupling", "power", "esd", "net", "current", "voltage", "silk", "testpoint", "plane", "return_via", "diff_pair", "length" } )
+                for( const char* cat : { "decoupling", "power", "esd", "net", "current", "voltage", "silk", "testpoint", "plane", "return_via", "diff_pair", "length", "ir_drop" } )
                 {
                     std::string extra = std::string( cat ) == "decoupling" ? far : "";
 
