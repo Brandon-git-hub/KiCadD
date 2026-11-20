@@ -1518,14 +1518,39 @@ void CheckIrDrop( BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& aOu
 
     if( !sourceless.empty() )
     {
-        head += ". " + std::to_string( sourceless.size() ) + " supply-named net(s) with no source part, left out: ";
+        head += ". " + std::to_string( sourceless.size() ) + " supply-named net(s) with no source part, left out, the most copper first: ";
 
-        // the big ones first: the main supplies an agent should give a source to
+        // the most copper first (fills + track length x width, mm2): where the designer expects
+        // current, also a low-pad input rail (+12V through a connector, a FET, a few bucks)
+        std::map<int, double> copper;
+
+        for( const RAIL* r : sourceless )
+            copper[r->code] = 0;
+
+        for( PCB_TRACK* t : aBoard.Tracks() )
+        {
+            if( t->Type() != PCB_VIA_T && copper.count( t->GetNetCode() ) )
+                copper[t->GetNetCode()] += t->GetLength() / 1e6 * t->GetWidth() / 1e6;
+        }
+
+        for( ZONE* z : aBoard.Zones() )
+        {
+            if( z->GetIsRuleArea() || !copper.count( z->GetNetCode() ) )
+                continue;
+
+            for( PCB_LAYER_ID l : z->GetLayerSet().CuStack() )
+            {
+                if( std::shared_ptr<SHAPE_POLY_SET> poly = z->GetFilledPolysList( l ) )
+                    copper[z->GetNetCode()] += poly->Area() / 1e12;
+            }
+        }
+
         std::stable_sort( sourceless.begin(), sourceless.end(),
-                          [&]( const RAIL* a, const RAIL* b ) { return netPads[a->code].size() > netPads[b->code].size(); } );
+                          [&]( const RAIL* a, const RAIL* b ) { return copper[a->code] > copper[b->code]; } );
 
         for( size_t k = 0; k < sourceless.size() && k < 5; k++ )
-            head += ( k ? ", " : "" ) + sourceless[k]->name + " (" + std::to_string( netPads[sourceless[k]->code].size() ) + " pads)";
+            head += ( k ? ", " : "" ) + sourceless[k]->name + " (" + std::to_string( netPads[sourceless[k]->code].size() )
+                    + " pads, " + mm( copper[sourceless[k]->code], copper[sourceless[k]->code] < 10 ? 1 : 0 ) + " mm2)";
 
         head += sourceless.size() > 5 ? " +" + std::to_string( sourceless.size() - 5 ) + " more" : "";
         head += " (ir_source to include)";

@@ -171,8 +171,8 @@ def main():
         ir = section(t)
         print("      ", ir[0][:200], f"({dt:.1f} s)")
         check(ir and ir[0].startswith("info: 14 rail(s) solved") and dt < 30, f"14 rails solved, the audit in {dt:.1f} s")
-        check("3 supply-named net(s) with no source part, left out: VCC_PSPLL (8 pads), MGT_0V85 (6 pads), /power-supply-3/5VPG (3 pads)" in ir[0],
-              "nets with no source part are left out and named, the most pads first")
+        check("3 supply-named net(s) with no source part, left out, the most copper first: VCC_PSPLL (8 pads, 215 mm2), MGT_0V85 (6 pads, 118 mm2), /power-supply-3/5VPG (3 pads, 17 mm2)" in ir[0],
+              "nets with no source part are left out and named, the most copper first")
         check(row(ir, "MGT_1V8") and row(ir, "P0V85"), "FPGA rails by name (MGT_1V8, P0V85)")
         r = row(ir, "P3V3")
         check("IC40.34 (VOUT)" in r and re.search(r"mesh 0\.(1\d|2[0-4])\d* mm", r) and "loss in tracks 1%, planes 9" in r,
@@ -192,8 +192,9 @@ def main():
         print("      ", ir[0][:200])
         check(not any("_1V8" in n and ("I2C" in n or "LED" in n or "ID" in n) for n in names)
               and not any("PWR_ON" in n or "PWR_BAD" in n for n in names), "no domain-suffixed signals or controls as rails")
-        check("with no source part, left out: VCC (67 pads), +1V8 (58 pads), +5V (55 pads)" in ir[0],
-              "the main supplies with no source part first (by pads), for ir_source")
+        check("the most copper first: +5V (55 pads, 7339 mm2), VCC (67 pads, 3499 mm2), +1V8 (58 pads, 2771 mm2), "
+              "+20V (11 pads, 277 mm2)" in ir[0],
+              "the main supplies with no source part first by copper (fills + tracks), +20V with 11 pads among them")
         check(any(ln.startswith("info: /DCDC/5V_OUT: U12.18 (V_{OUT}) (guessed: an output pin)") for ln in ir),
               "a DC-DC output from its V_OUT pin")
     finally:
