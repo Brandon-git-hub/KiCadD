@@ -1724,7 +1724,12 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "{\"+3V3\": \"U5:0.8,U7\"} the loads (default: the rail's ICs, split per part). Header only "
             "by default; rows with ir_limit n or ir_nets [globs]; ir_mesh_mm for a finer mesh than a big pour gets "
             "(rows say the mesh). Limits: ir_drop {glob: mV}, "
-            "via_current {glob: A}. Run run_erc and run_drc too.",
+            "via_current {glob: A}. Crosstalk pre-screen (crosstalk): signal tracks of two nets side by side "
+            "on one layer with an edge gap under 3H (H: the dielectric to the nearest copper layer; "
+            "xtalk_spacing sets the multiple), per net pair the length, per layer, and the closest gap "
+            "(diff pair partners together and supplies left out; a pair is one name). Header only by "
+            "default; rows with xtalk_limit n or xtalk_nets [globs]. Limits: xtalk_length {glob: mm} "
+            "(a pair takes the tightest glob of its nets). Run run_erc and run_drc too.",
             obj( { { "max_decap_mm", { { "type", "number" } } },
                    { "currents", { { "type", "object" }, { "description", "net -> A" } } },
                    { "voltages", { { "type", "object" }, { "description", "net -> V" } } },
@@ -1750,7 +1755,11 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                    { "ir_drop", { { "type", "object" }, { "description", "net glob -> mV" } } },
                    { "via_current", { { "type", "object" }, { "description", "net glob -> A per via" } } },
                    { "ir_limit", { { "type", "integer" } } },
-                   { "ir_mesh_mm", { { "type", "number" }, { "description", "cell size (default 0.1, coarser on big pours)" } } } } ),
+                   { "ir_mesh_mm", { { "type", "number" }, { "description", "cell size (default 0.1, coarser on big pours)" } } },
+                   { "xtalk_nets", { { "type", "array" }, { "items", { { "type", "string" } } } } },
+                   { "xtalk_length", { { "type", "object" }, { "description", "net glob -> mm coupled" } } },
+                   { "xtalk_spacing", { { "type", "number" }, { "description", "the gap limit in H (default 3)" } } },
+                   { "xtalk_limit", { { "type", "integer" } } } } ),
             [&aIpc]( const json& a )
             {
                 kicadd::board::BoardAudit boardReq;
@@ -1866,6 +1875,43 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
 
                 if( a.contains( "ir_limit" ) && a["ir_limit"].is_number_integer() )
                     boardReq.set_ir_limit( a["ir_limit"].get<int>() );
+
+                if( a.contains( "xtalk_nets" ) )
+                {
+                    if( !a["xtalk_nets"].is_array() )
+                        return fail( "xtalk_nets is [\"glob\", ...]" );
+
+                    for( const json& n : a["xtalk_nets"] )
+                    {
+                        if( n.is_string() )
+                            boardReq.add_xtalk_nets( n.get<std::string>() );
+                    }
+                }
+
+                if( a.contains( "xtalk_length" ) )
+                {
+                    if( !a["xtalk_length"].is_object() )
+                        return fail( "xtalk_length is {\"glob\": mm}" );
+
+                    for( const auto& [glob, v] : a["xtalk_length"].items() )
+                    {
+                        if( !v.is_number() || v.get<double>() < 0 )
+                            return fail( "xtalk_length." + glob + ": mm, a number" );
+
+                        ( *boardReq.mutable_xtalk_length() )[glob] = v.get<double>();
+                    }
+                }
+
+                if( a.contains( "xtalk_spacing" ) )
+                {
+                    if( !a["xtalk_spacing"].is_number() || a["xtalk_spacing"].get<double>() <= 0 )
+                        return fail( "xtalk_spacing: a positive number (in H)" );
+
+                    boardReq.set_xtalk_spacing( a["xtalk_spacing"].get<double>() );
+                }
+
+                if( a.contains( "xtalk_limit" ) && a["xtalk_limit"].is_number_integer() )
+                    boardReq.set_xtalk_limit( a["xtalk_limit"].get<int>() );
 
                 if( a.contains( "ir_mesh_mm" ) )
                 {
@@ -2030,7 +2076,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                 else
                     t += "; no board (" + boardErr + "): schematic checks only";
 
-                for( const char* cat : { "decoupling", "power", "esd", "net", "current", "voltage", "silk", "testpoint", "plane", "return_via", "diff_pair", "length", "ir_drop" } )
+                for( const char* cat : { "decoupling", "power", "esd", "net", "current", "voltage", "silk", "testpoint", "plane", "return_via", "diff_pair", "length", "ir_drop", "crosstalk" } )
                 {
                     std::string extra = std::string( cat ) == "decoupling" ? far : "";
 

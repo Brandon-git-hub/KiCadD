@@ -11,7 +11,8 @@
  * - testpoint: nets with no test point (TP* footprints or TestPoint library parts);
  * - plane, return_via: reference planes under signal tracks and at their vias (kicadd_refplane);
  * - diff_pair, length: diff pair skew / coupling and net lengths (kicadd_lengths);
- * - ir_drop: DC IR drop per supply rail, via and track currents (kicadd_irdrop).
+ * - ir_drop: DC IR drop per supply rail, via and track currents (kicadd_irdrop);
+ * - crosstalk: signal tracks side by side within 3H (kicadd_xtalk).
  *
  * This file is part of KiCadD and is licensed GPL-3.0-or-later, like KiCad.
  */
@@ -21,6 +22,7 @@
 #include "pcb/kicadd_irdrop.h"
 #include "pcb/kicadd_lengths.h"
 #include "pcb/kicadd_refplane.h"
+#include "pcb/kicadd_xtalk.h"
 
 #include <board.h>
 #include <board_design_settings.h>
@@ -924,6 +926,7 @@ void AuditBoard( BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& aOut
     CheckReferencePlanes( aBoard, aReq, aOut );
     CheckLengths( aBoard, aReq, aOut );
     CheckIrDrop( aBoard, aReq, aOut );
+    CheckCrosstalk( aBoard, aReq, aOut );
 }
 
 } // namespace kicadd

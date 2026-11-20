@@ -104,10 +104,20 @@ what each tool does; this skill says how to use them together.
    `ir_mesh_mm 0.1` before trusting a close call. The model: copper at 20 C (at 85 C about 25%
    more drop), the rail alone (add the ground's drop with `ir_nets ["GND"]`), several source pads
    as one ideal 0 V node (parallel regulators share perfectly).
-6. `run_erc` (`warnings=true` for the full list) and, on a board, `refill_zones` then
+6. **Crosstalk pre-screen** (routed boards). `audit` alone gives one `crosstalk` line: signal
+   net pairs whose tracks run side by side on one layer with an edge gap under 3H (H: the
+   dielectric to the nearest copper layer, from the stackup), the longest with its closest gap
+   in mm and in H. Diff pair partners together and supplies are left out; a pair is one name.
+   Rows with `xtalk_limit 20` or `xtalk_nets ["*CLK*", "*PCIE*"]`. Judge only what matters:
+   fast edges (clocks, high-speed lanes, resets next to them) against long neighbours, e.g.
+   `xtalk_length {"*CLK*": 5, "*PCIE*": 10}`; slow buses (I2C, GPIO) coupling for centimetres
+   are usually fine. `xtalk_spacing` changes the multiple of H. On a 2-layer board H is the whole
+   board, so 3H takes in most neighbours (the line says so): read the closest gaps instead.
+   Same-layer only (broadside coupling between adjacent signal layers is not screened).
+7. `run_erc` (`warnings=true` for the full list) and, on a board, `refill_zones` then
    `run_drc`. Narrow with `types` / `refs`; the type counts are the whole board, the filter line
    says what matches.
-7. Report what matters, grouped by severity, with the refs and nets involved.
+8. Report what matters, grouped by severity, with the refs and nets involved.
 
 ## Edit a schematic
 
