@@ -2279,6 +2279,22 @@ TOOL_RESULT lcscSearch( IPC_CLIENT& aIpc, const json& aArgs )
     req.set_limit( (int) d( "limit" ) );
     req.set_update( aArgs.value( "update", false ) );
 
+    if( aArgs.contains( "where" ) )
+    {
+        if( !aArgs["where"].is_object() )
+            return error( "where: an object of parameter -> condition, e.g. {\"rds_on\": \"<=20m\", \"vds\": \">=30\"}" );
+
+        for( const auto& [k, v] : aArgs["where"].items() )
+        {
+            if( v.is_number() )
+                ( *req.mutable_where() )[k] = "=" + v.dump();
+            else if( v.is_string() )
+                ( *req.mutable_where() )[k] = v.get<std::string>();
+            else
+                return error( "where " + k + ": a condition string (\"<=20m\", \">=30\", \"1u..10u\") or a number" );
+        }
+    }
+
     if( aArgs.contains( "live" ) && aArgs["live"].is_number() )
         req.set_live( aArgs["live"].get<int>() <= 0 ? -1 : aArgs["live"].get<int>() );
 
@@ -2323,6 +2339,9 @@ TOOL_RESULT lcscSearch( IPC_CLIENT& aIpc, const json& aArgs )
         }
 
         out += "\n    " + h.description();
+
+        if( !h.params().empty() )
+            out += "\n    " + h.params();
     }
 
     if( r.hits().empty() )
@@ -3125,7 +3144,12 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        "KiCadD's parts index (JLCPCB parts in stock, daily data from jlcparts; about 45 MB, "
                        "downloaded on first use, refreshed weekly), basic parts first, then preferred "
                        "(no extended fee), then by stock; the first few (live, default 3) are checked "
-                       "now against LCSC. Then sch_add_part lcsc=... places one.",
+                       "now against LCSC. Each hit lists its electrical parameters when the index has them "
+                       "(MOSFETs, LDOs, op-amps, inductors, diodes: Rds(on), Qg, Ciss, dropout, PSRR, GBW, "
+                       "slew, DCR, Isat, Vf, trr ...; the datasheet's single test condition after @). Filter "
+                       "on them with where {\"rds_on\": \"<=20m\", \"vds\": \">=30\", \"vgs_th\": \"1..2.5\"}: "
+                       "SI units, prefixes allowed; a part without the parameter does not match (a bad name "
+                       "lists them). Then sch_add_part lcsc=... places one.",
                        schema( { { "keyword", { { "type", "string" } } },
                                  { "category", { { "type", "string" },
                                                  { "description", "resistor, capacitor, inductor, or a JLCPCB category word (\"LDO\", \"MOSFET\")" } } },
@@ -3138,7 +3162,9 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                                  { "min_stock", { { "type", "integer" } } },
                                  { "limit", { { "type", "integer" } } },
                                  { "live", { { "type", "integer" } } },
-                                 { "update", { { "type", "boolean" }, { "description", "fetch the index again now" } } } } ),
+                                 { "update", { { "type", "boolean" }, { "description", "fetch the index again now" } } },
+                                 { "where", { { "type", "object" },
+                                              { "description", "parameter -> condition: \"<=20m\", \">=30V\", \"1u..10u\", \"3.3\"" } } } } ),
                        [&aIpc]( const json& a ) { return lcscSearch( aIpc, a ); } } );
 
     tools.push_back( { "board_render",

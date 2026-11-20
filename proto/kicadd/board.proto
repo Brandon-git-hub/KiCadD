@@ -652,6 +652,10 @@ message LcscSearch
   int32  limit       = 10;  // default 8, at most 50
   int32  live        = 11;  // how many of the first to check live (default 3, -1 none)
   bool   update      = 12;  // fetch the index again now
+  // second-order parameters (the index's params table: MOSFETs, LDOs, op-amps, inductors,
+  // diodes), id -> condition in the parameter's unit, SI prefixes allowed: "<=20m", ">=30V",
+  // "1u..10u" (a range), "=3.3" (within 0.1%). A part without the parameter does not match.
+  map<string, string> where = 13;
 }
 
 message LcscHit
@@ -669,6 +673,7 @@ message LcscHit
   string live_class   = 11;  // "Basic Part" / "Extended Part" (now)
   bool   live_smt     = 12;  // JLCPCB can assemble it (now)
   string live_note    = 13;
+  string params       = 14;  // "Vds 60 V, Rds(on) 12 mΩ @10V, ..." (what the index has of it)
 }
 
 message LcscSearchResponse

@@ -5,10 +5,15 @@ usage: python3 -I build_parts_index.py OUT_DIR [--source DIR_WITH_cache.zXX]
 Downloads https://yaqwsx.github.io/jlcparts/data/cache.zip + cache.z01.. (a split zip of
 jlcparts' cache.sqlite3, MIT, scraped daily from JLCPCB's catalogue), keeps the parts in stock,
 turns their attributes into numbers (value + unit, voltage, tolerance, dielectric, power,
-current, output voltage), adds a full-text index and writes OUT_DIR/parts.db.gz plus
+current, output voltage), keeps the second-order parameters of MOSFETs, LDOs, op-amps,
+inductors and diodes (part_params.py: table params, one row per part and parameter, SI, with
+the test condition), adds a full-text index and writes OUT_DIR/parts.db.gz plus
 OUT_DIR/parts-meta.json (date, counts, sha256). Only the standard library.
 """
 import argparse, datetime, gzip, hashlib, json, os, re, shutil, sqlite3, struct, sys, tempfile, urllib.request, zlib
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import part_params  # noqa: E402
 
 BASE = "https://yaqwsx.github.io/jlcparts/data/"
 UA = {"User-Agent": "KiCadD-parts-index (+https://github.com/Brandon-git-hub/KiCadD)"}
@@ -98,8 +103,19 @@ def build(source_db, out_db):
             description TEXT,
             value REAL, unit TEXT, voltage REAL, tolerance REAL, dielectric TEXT, power REAL,
             current REAL, vout REAL);
+        CREATE TABLE params(lcsc INTEGER, name TEXT, value REAL, cond TEXT, PRIMARY KEY(lcsc, name)) WITHOUT ROWID;
+        CREATE TABLE param_names(name TEXT PRIMARY KEY, ord INTEGER, label TEXT, unit TEXT, classes TEXT);
     """)
-    rows = []
+    names = {}
+    for cls, (_, defs) in part_params.CLASSES.items():
+        for pid, label, unit, _, _ in defs:
+            n = names.setdefault(pid, [len(names), label, unit, []])
+            if (n[1], n[2]) != (label, unit):
+                raise SystemExit(f"part_params: {pid} has two labels / units")
+            n[3].append(cls)
+    db.executemany("INSERT INTO param_names VALUES (?, ?, ?, ?, ?)",
+                   [(pid, o, label, unit, ", ".join(c)) for pid, (o, label, unit, c) in names.items()])
+    rows, params = [], []
     for (lcsc, cat, sub, mfr, pkg, maker, lib, pref, stock, price, desc, attrs) in src.execute(
             "SELECT lcsc, category, subcategory, mfr, package, manufacturer, library_type, preferred, stock, "
             "price, description, attributes FROM jlc_components WHERE stock > 0 AND present = 1"):
@@ -128,10 +144,13 @@ def build(source_db, out_db):
         current = si(a.get("Current Rating") or a.get("Output Current") or a.get("Current - Continuous Drain(Id)")
                      or a.get("Rectified Current"), "A")
         vout = si(a.get("Output Voltage"), "V")
+        params += [(lcsc, n, v, c) for n, v, c in part_params.extract(sub, a)]
         rows.append((lcsc, cat, sub, mfr, pkg, maker, 1 if lib == "base" else 0, pref, stock, first_price(price),
                      desc, value, unit, voltage, tol, diel, power, current, vout))
     db.executemany("INSERT INTO parts VALUES (" + ",".join("?" * 19) + ")", rows)
+    db.executemany("INSERT INTO params VALUES (?, ?, ?, ?)", params)
     db.executescript("""
+        CREATE INDEX params_value ON params(name, value);
         CREATE INDEX parts_value ON parts(unit, value);
         CREATE INDEX parts_package ON parts(package);
         CREATE VIRTUAL TABLE fts USING fts5(description, mfr, package, subcategory, category,
@@ -168,7 +187,8 @@ def main():
         today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
         con = sqlite3.connect(db)
         con.executemany("INSERT INTO meta VALUES (?, ?)", [("date", today), ("source", BASE),
-                                                           ("source_modified", modified), ("parts", str(total))])
+                                                           ("source_modified", modified), ("parts", str(total)),
+                                                           ("params", "1")])
         con.commit()
         con.close()
         gz = os.path.join(a.out, "parts.db.gz")

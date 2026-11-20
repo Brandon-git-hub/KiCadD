@@ -159,6 +159,13 @@ what each tool does; this skill says how to use them together.
 1. Find candidates by specification: `lcsc_search` (`value`, `package`, `tolerance`,
    `dielectric`, `voltage_min`, `keyword`, `basic_only`). Prefer **basic** parts (no JLCPCB
    setup fee), then preferred, then extended; the first hits are checked live for stock.
+   MOSFETs, LDOs, op-amps, inductors and diodes list their electrical parameters (one test
+   condition each, after @: `Rds(on) 17 mΩ @10V`); filter with `where`, your thresholds in
+   SI with prefixes: `category "MOSFET", where {"rds_on": "<=20m", "vds": ">=30", "vgs_th":
+   "1..2.5"}` (gate drive from 3.3 V logic), `category "LDO", where {"vout": "3.3",
+   "dropout": "<=300m", "iout": ">=500m"}`. A part that lacks a parameter does not match
+   (inductor Isat is given for about half, SRF for a quarter; diode Cj and MLCC ESR / DC bias
+   never), so drop a condition rather than conclude no part exists. A wrong name lists them.
 2. Use one: `sch_add_part lcsc="C25804"` (symbol + footprint saved to the project's LCSC
    library), or `lcsc_fetch` first to inspect pins and pads, or put the number on an existing
    part with `sch_set_fields {"LCSC": "C25804"}`.

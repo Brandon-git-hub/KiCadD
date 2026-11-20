@@ -1290,7 +1290,13 @@ F, Inductance H), `voltage` (rating), `tolerance` %, `dielectric` (X7R, X5R, C0G
 description, part number, package and category. 180 MB, **46 MB as `parts.db.gz`**, built in
 about 30 s. `.github/workflows/parts-index.yml` builds it daily (03:30 UTC) and publishes it as
 the assets of the pre-release `parts-index` (not a version; the Windows workflow only builds
-`v*` tags). kicadd downloads it on the first `lcsc_search` into the user cache
+`v*` tags). Since 2026-11-21 it also has a `params` table (ROADMAP phase 3, item 1): the
+second-order parameters of MOSFETs, LDOs, op-amps, inductors and diodes read by
+`ci/part_params.py` (SI, one row per part and parameter, the datasheet's test condition after
+`@`; 420k rows for 76k parts, +6 MB packed) and `param_names` (id, label, unit, classes);
+`lcsc_search` lists them per hit and filters on them with `where {id: "<=20m" | ">=30" |
+"1..2.5" | "3.3"}`. Coverage per parameter: [docs/PARAM_COVERAGE.md](docs/PARAM_COVERAGE.md).
+kicadd downloads it on the first `lcsc_search` into the user cache
 (`<cache>/kicadd/parts.db`) and again when it is over a week old (`update` forces it; a failed
 update keeps the old one). `KICADD_PARTS_URL` points elsewhere, `KICADD_PARTS_DB` uses a file
 as it is.

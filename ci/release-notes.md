@@ -16,6 +16,9 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 ## 這一版（beta.6）
 工具數不變（59 個）。
 
+**新功能**
+- **`lcsc_search` 依電氣參數找料（ROADMAP 階段三第 1 項）：** 零件索引加入 MOSFET、LDO、Op-Amp、電感、二極體的二階參數（Rds(on)、Vgs(th)、Qg、Ciss/Coss/Crss、Dropout、Iq、PSRR、GBW、Slew、Vos、DCR、Isat、SRF、Vf、trr、Vz… 共 38 項，附資料表上的測試條件，例如 `Rds(on) 17 mΩ @10V`）。每筆結果列出這些參數；`where` 用門檻篩選，例如 `{"rds_on": "<=20m", "vds": ">=30", "vgs_th": "1..2.5"}`。缺該參數的零件不會列入：電感的 Isat 約一半有、SRF 約四分之一有，二極體的 Cj 與 MLCC 的 ESR / DC Bias 都沒有資料（填寫率見 [docs/PARAM_COVERAGE.md](https://github.com/Brandon-git-hub/KiCadD/blob/main/docs/PARAM_COVERAGE.md)）。需要新版零件索引：舊索引用 `where` 會提示 `update=true`。
+
 **變更**
 - **`audit plane` / `return_via` 跨層找參考平面：** 以前只看緊鄰銅層的鋪銅，現在和 `impedance`、`audit impedance` 用同一套參考平面（依鋪銅判定，跨過中間的訊號層；整板還沒有平面時仍取緊鄰銅層）。標頭會列出跨層的層，例如「Top Layer -> L4GND (across L2GND, L3)」。兩層訊號層相鄰的板子，數字會和以前不同。
 - **新增提示：線下夾著局部銅皮。** 走線和主參考平面之間的訊號層，如果有局部鋪銅壓在線下（0.5 mm 以上），會報「over local copper」：總長、最長一段、是哪個網路的銅、在哪一層。高頻回流會走在那塊銅上，阻抗在那裡會跳一階（用 `audit impedance` 的 `z_nets` 看實際 Z）。這項只提示，不下判定；給了 `plane_gap` 時，被判定的網路另有一行說明。平面缺口處如果有局部銅，也會註明。

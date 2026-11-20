@@ -1,6 +1,9 @@
 """lcsc_search end to end (headless): the parts index is downloaded (from a local HTTP server
 here, KICADD_PARTS_URL), unpacked into the user cache, searched by value / package / tolerance /
-dielectric / voltage / keyword, the first hits checked live (EasyEDA, needs the network).
+dielectric / voltage / keyword, the first hits checked live (EasyEDA, needs the network). With
+an index that has part parameters (ci/part_params.py): each MOSFET / LDO hit lists them, `where`
+filters on them (every hit within), a bad name lists the parameters, a bad condition is
+refused; with an older index `where` is refused with update=true advice.
 
 usage: python3 -I search_e2e.py --build BUILD --demos DEMOS_DIR --work DIR --index PARTS_DB_GZ [--no-live]
 
@@ -64,6 +67,37 @@ try:
     check(not err and "4.7kΩ" in t, "4k7 means 4.7 kΩ")
     err, t = m.tool("lcsc_search", {"value": "banana", "live": 0})
     check(err and "not understood" in t, "a bad value is refused")
+
+    print("[part parameters: where]")
+    q = {"category": "MOSFET", "where": {"rds_on": "<=20m", "vds": ">=30", "vgs_th": "1..2.5"}, "limit": 10, "live": 0}
+    err, t = m.tool("lcsc_search", q)
+    if err and "predates them" in t:
+        check("update=true" in t, "an index without parameters: where refused, update=true advised")
+    else:
+        rows = re.findall(r"^    (Vds .*)$", t, re.M)
+        print("      ", rows[0][:160] if rows else t[:300])
+        SI = {"": 1, "m": 1e-3, "µ": 1e-6, "k": 1e3}
+
+        def val(row, label, unit):
+            g = re.search(re.escape(label) + r" ([\d.e+-]+) (m|µ|k|)" + unit, row)
+            return float(g.group(1)) * SI[g.group(2)] if g else None
+        ok = rows and len(rows) == len(hits(t)) and all(
+            val(r, "Rds(on)", "Ω") <= 0.02 and val(r, "Vds", "V") >= 30 and 1 <= val(r, "Vgs(th)", "V") <= 2.5 for r in rows)
+        check(not err and ok, f"MOSFETs Rds(on) <= 20 mΩ, Vds >= 30 V, Vgs(th) 1..2.5 V: {len(rows)} hits, every one within")
+        check(rows and re.search(r"Rds\(on\) [\d.]+ mΩ @[\d.]+V", rows[0]), "Rds(on) with its test condition (@Vgs)")
+        n = int(re.match(r"(\d+) match", t).group(1)) if re.match(r"(\d+) match", t) else 0
+        _, t2 = m.tool("lcsc_search", dict(q, where={"rds_on": "<=20m", "vds": ">=30"}))
+        n2 = int(re.match(r"(\d+) match", t2).group(1)) if re.match(r"(\d+) match", t2) else 0
+        check(0 < n < n2, f"each condition narrows: {n2} -> {n}")
+        err, t = m.tool("lcsc_search", {"category": "LDO", "where": {"vout": "3.3", "dropout": "<=300mV", "iout": ">=500m"}, "live": 0})
+        rows = re.findall(r"^    (Vin max .*)$", t, re.M)
+        check(not err and rows and all("Vout 3.3 V" in r for r in rows), f"LDOs Vout 3.3 V (= within 0.1%), dropout <= 300 mV: {len(rows)}")
+        err, t = m.tool("lcsc_search", {"category": "MOSFET", "where": {"rdson": "<1"}, "live": 0})
+        check(err and "no parameter rdson" in t and "mosfet: vds (V), id (A), rds_on (Ω)" in t, "a bad name lists the parameters")
+        err, t = m.tool("lcsc_search", {"category": "MOSFET", "where": {"vds": "<=lots"}, "live": 0})
+        check(err and "is not a number" in t, "a bad condition is refused")
+        err, t = m.tool("lcsc_search", {"value": "10k", "package": "0603", "limit": 1, "live": 0})
+        check(not err and not re.search(r"^    Vds", t, re.M), "a resistor has no parameter line")
 
     if not a.no_live:
         print("[live check]")

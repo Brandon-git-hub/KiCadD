@@ -41,9 +41,12 @@ Beta 已能走完整個設計流程（電路圖 → 選料 → 擺件 → 規則
 
 ## 階段三：區域模擬與二階模型
 
-**開工條件：** 先統計 `jlcparts` 中 MOSFET、LDO、Op-Amp、電感、二極體各參數的實際填寫率，用數據決定哪些類別可行。
+**開工條件：** 先統計 `jlcparts` 中 MOSFET、LDO、Op-Amp、電感、二極體各參數的實際填寫率，用數據決定哪些類別可行。 ✅ `ci/param_coverage.py`，結果在 [docs/PARAM_COVERAGE.md](docs/PARAM_COVERAGE.md)（2026-11-11 的 jlcparts 快照，有庫存的零件；「可用」＝有填且能讀成該單位的數字）（2026-11-21）：
+   - **可行：** MOSFET（Vds、Id、Rds(on)、Vgs(th) ≥99%，Ciss 96%、Qg 94%、Crss 93%、Coss 86%）；Op-Amp（Vos、Ib、CMRR ≥97%，Slew 95%、GBW 92%、en 88%）；LDO（Vin、Vout、Iout ≥98%，Iq 89%、Dropout 88%、PSRR 76%）；電感 L、DCR、額定電流 ≥93%；二極體 Vr、If、Vf ≥99%，開關二極體 trr 96%；Zener Vz、Zzt ≥96%。
+   - **缺：** 電感 Isat 58%（basic / preferred 0%）、SRF 23%；快恢復二極體 trr 61%；**Schottky 的 Cj、所有二極體的 Cj、MLCC 的 ESR 與 DC Bias 全為 0%**；LDO 的 PSRR 只有一個數字，沒有頻率；Rds(on)、Qg 只有一個測試條件（`12mΩ@10V`）。
+   - **影響：** 第 1 項先做上面「可行」的參數；缺的不猜數字，標成 unknown。MLCC DC Bias / ESR 沒有資料，第 2 項的 Corner Sweep 只能做容差（`Tolerance` 84%），DC Bias 要另外決定（依介質與尺寸的通用曲線，或不做）；PDN Z(f)（第 3 項）需要 ESR / ESL，同樣受限。
 
-1. **二階電氣屬性抽取：** MOSFET（Rds(on)、Qg、Ciss/Coss/Crss、Vgs(th)）、電感（DCR、SRF）、二極體（Vf、trr、Cj）、Op-Amp / LDO（GBW、SR、Dropout、PSRR）。
+1. **二階電氣屬性抽取：** MOSFET（Rds(on)、Qg、Ciss/Coss/Crss、Vgs(th)）、電感（DCR、SRF）、二極體（Vf、trr、Cj）、Op-Amp / LDO（GBW、SR、Dropout、PSRR）。 ✅ 零件索引新增 `params` 表（`ci/part_params.py` 讀屬性，SI 單位，附資料表的測試條件，如 Rds(on) `@10V`、Vf `@1A`；8 類 38 個參數，76k 顆、42 萬列，壓縮後多 6 MB）與 `param_names`。`lcsc_search` 每筆列出參數，`where {"rds_on": "<=20m", "vds": ">=30", "vgs_th": "1..2.5"}` 篩選（門檻由 agent 給；缺該參數的零件不列入）；舊索引會說明要 `update=true`。Cj 與 MLCC 的 ESR / DC Bias 沒有資料，不做。測試 `client/search_e2e.py`（2026-11-21）。
 2. **區域子電路 headless 模擬（`ngspice` 外部執行檔）：** 依零件、圖紙或 N-hop 圈選子電路，自動注入邊界電源與激勵；封裝寄生查表與 MLCC DC Bias / 容差 Corner Sweep；回傳結構化量測（紋波、頻寬、過衝、穩態誤差）與輕量波形圖。
 3. **局部 PDN 交流阻抗 Z(f)：** 電容二階模型加 PCB 實際迴路電感，找反諧振尖峰（需要上兩項）。
 4. **傳輸線反射與串聯端接建議。**

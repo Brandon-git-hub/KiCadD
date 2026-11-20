@@ -723,7 +723,7 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
                 if( prev && !prev->refs.empty() && noNetInCommon( prev->refs, r.refs ) )
                     events.push_back( { c.net, 0, 0, r.a,
                                         who + " crosses from " + describe( prev->refs ) + " to " + describe( r.refs )
-                                                + " at " + at( r.a ) } );
+                                                + " at " + at( r.a ), {} } );
 
                 continue;
             }
@@ -737,7 +737,7 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
                     events.push_back( { c.net, 0, len, mid,
                                         who + " crosses a plane split at " + at( mid ) + ": " + describe( prev->refs )
                                                 + " to " + describe( next->refs ) + " (" + mm( len / 1e6 )
-                                                + " mm with no plane under it)" + localUnder( c, mid ) } );
+                                                + " mm with no plane under it)" + localUnder( c, mid ), {} } );
                     continue;
                 }
 
@@ -756,20 +756,20 @@ void CheckReferencePlanes( const BOARD& aBoard, const BoardAudit& aReq, BoardAud
                 events.push_back( { c.net, inside ? 1 : 2, len, mid,
                                     who + " runs " + mm( len / 1e6 ) + " mm "
                                             + ( inside ? "over a gap in " : "past the edge of " ) + describe( prev->refs )
-                                            + " at " + at( mid ) + localUnder( c, mid ) } );
+                                            + " at " + at( mid ) + localUnder( c, mid ), {} } );
             }
             else if( !prev && !next )
             {
                 events.push_back( { c.net, 2, len, mid,
                                     who + ": " + mm( len / 1e6 ) + " mm with no plane under it on " + nextTo[c.layer]
-                                            + " (from " + at( c.pts.front() ) + ")" + localUnder( c, mid ) } );
+                                            + " (from " + at( c.pts.front() ) + ")" + localUnder( c, mid ), {} } );
             }
             else if( len > 1e6 )   // at an end, the antipad of its via or pad is not counted
             {
                 const RUN* side = prev ? prev : next;
                 events.push_back( { c.net, 2, len, mid,
                                     who + " runs " + mm( len / 1e6 ) + " mm past the edge of " + describe( side->refs )
-                                            + " at " + at( mid ) + localUnder( c, mid ) } );
+                                            + " at " + at( mid ) + localUnder( c, mid ), {} } );
             }
         }
 
