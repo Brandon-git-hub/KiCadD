@@ -76,9 +76,9 @@ def main():
         x = imp(t)
         check("warning: z_target *HDMI* (50 ohm +/-10%, 1 mm off allowed): 4 net(s) judged, 2 off" in x,
               "z_target: HDMI's DDC 2 of 4 off 50 ohm")
-        check("warning: /CM5/HDMI_PI.SDA: 11.6 mm of 13.4 off 50 ohm, the longest 11.6 mm at 56.9 ohm (B.Cu 0.13 mm) "
+        check("warning: /CM5/HDMI_PI.SDA: 11.8 mm of 13.6 off 50 ohm, the longest 11.8 mm at 56.9 ohm (B.Cu 0.13 mm) "
               "at (96.58, 68.91)" in x, "the row: how much off, at what, where")
-        check(any(ln.startswith("warning: /CM5/HDMI_PI.SCL: 1.1 mm of 11.2 off 50 ohm") and ln.endswith("; main 53 ohm (B.Cu 0.15 mm)")
+        check(any(ln.startswith("warning: /CM5/HDMI_PI.SCL: 1.1 mm of 12.6 off 50 ohm") and ln.endswith("; main 53 ohm (B.Cu 0.15 mm)")
                   for ln in x), "its main Z when that is not the off one")
         check("warning: z_diff_target *ETH* (100 ohm +/-10%, 1 mm off allowed): 4 pair(s) judged, 4 off" in x
               and any(ln.startswith("warning: /CM5/ETH_PI.TRD2_P/N (pair): 36.8 mm of 36.8 off 100 ohm, the longest 35.1 mm "

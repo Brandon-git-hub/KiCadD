@@ -2,18 +2,31 @@
      {{UPSTREAM}} is filled from patches/UPSTREAM_BASE; build info and SHA-256 are appended. -->
 KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修剪版 Windows x64 build，加上 Agent（MCP）協同設計。
 
-> ⚠️ Beta（pre-release）。已能走完整個設計流程，功能仍會持續加入。由 GitHub Actions 自動建置；30 個端到端測試在 Linux 上全部通過（含桌面版），Windows CI 跑 smoke test 與 headless 的出廠、貼片、電路圖文件、工具、設定、undo 歷史測試；桌面版在 Windows 上只有人工試用。
+> ⚠️ Beta（pre-release）。已能走完整個設計流程，功能仍會持續加入。由 GitHub Actions 自動建置；33 個端到端測試在 Linux 上全部通過（含桌面版），Windows CI 跑 smoke test 與 headless 的出廠、貼片、電路圖文件、工具、設定、undo 歷史測試；桌面版在 Windows 上只有人工試用。
 
 ## 使用前須知
 完整的使用說明（安裝、接上 Agent、skill、存檔格式、做得到 / 做不到）：[docs/GUIDE.md](https://github.com/Brandon-git-hub/KiCadD/blob/main/docs/GUIDE.md)。
 
 - **存檔格式：** KiCadD 以 KiCad nightly（10.99）為基礎。用 KiCadD 存過的 `.kicad_pcb`、`.kicad_sch` 會寫成新格式，**KiCad 9 / 10 正式版可能打不開**。請用專案副本試用；要知道這次改了什麼，存檔前先用 `board_diff`。
 - **平台：** 只提供 Windows x64。Linux 可以自行從原始碼編譯，沒有 macOS 版。
-- **不附 KiCad 官方元件庫：** 符號和封裝請用 `lcsc_fetch`、`lcsc_match` 從 LCSC 取得，或用 `lib_create_symbol`、`lib_create_footprint` 自建，也可以 `lib_register` 專案裡現有的庫。
+- **不附 KiCad 官方元件庫：** 符號和封裝請用 `lcsc_fetch`、`lcsc_match` 從 LCSC 取得，或用 `lib_create_symbol`、`lib_create_footprint` 自建，也可以 `lib_register` 專案裡現有的庫。舊專案裡已經用過的符號（例如 `Device:R`），庫沒掛也能從電路圖內嵌的副本再放。
 - **一次一個專案：** 一個服務同時只開一個專案（板子加電路圖），換專案請用 `open_board`。
 - **目前不支援：** 差分對與等長佈線、全板自動佈線（`route` 只代替重複的手動佈線）、電路圖自動排版、組裝圖、STEP 匯出（3D 模型只有 VRML）、ODB++ / IPC-2581 / DXF、MCP resources / prompts。
 
-## 這一版（beta.4）
+## 這一版（beta.5）
+修正版：Windows 上從空白專案做 USB-C → AMS1117 → LED 小板，以及拿舊專案試用時發現的問題。工具數不變（59 個）。
+
+**修正**
+- **`power:PWR_FLAG` 會把電源網路短路（請更新）：** 以前產生的 PWR_FLAG 是一個腳名叫 PWR_FLAG 的電源符號，接上的 +5V、+3V3、GND 會併成同一個網路 PWR_FLAG，ERC 卻不報。現在和 KiCad 官方的定義相同（電源輸出腳、本身不成網路、位號 `#FLG01`…），可以用來消掉 `power_pin_not_driven`。`sch_connect` 的 `power` 清單寫 PWR_FLAG 會被拒絕並說明用法。**用 beta.4 以前版本放過 PWR_FLAG 的電路圖，請刪掉重放後再看 `sch_netlist`。**
+- **新增檢查：標籤被電源符號蓋掉。** 標籤直接接到另一個名字的電源腳時，網路會被改成電源的名字、並和所有同名網路相連，KiCad 的 ERC 沒有這項檢查。現在 `sch_connect` 當場警告，`run_erc` 報 `kicadd_power_overrules_label`（錯誤）。以 7 個舊專案驗證沒有誤報。
+- **`run_erc` 列出被忽略的檢查名稱：** 分成專案自己關掉的，和 KiCad 預設就關掉的（`single_global_label`、`four_way_junction`、`simulation_model_issue`、`footprint_filter`）；以前一律寫「ignored by the project's ERC settings: 4 check(s)」。
+- **`auto_place` 不再搬動安裝孔：** `board_outline` 的 H1…、`MountingHole_*` 封裝與只有非電鍍孔的封裝，預設留在原位（`all` 也一樣），要搬請寫進 `refs`。以前角落孔的外框超出板邊一點，會被當成板外零件搬進板中。
+- **`auto_place` 的 `rules` 寫錯會報錯：** 少了外層 `edge`（`{"J2": {"side": "left"}}`）、板邊規則裡打錯字，以前直接被略過；現在報錯並提示該放哪裡。
+- **`sch_add_part` 找不到符號：** KiCadD 不附符號庫，舊專案的 `Device:R` 這類 lib_id 以前只回「not found」。現在電路圖已經用過的符號會從內嵌的副本放（共用同一份，不會多存）；真的找不到時，說明是庫表裡沒有這個庫、還是庫裡沒有這個符號，並列出這張圖同類零件用的符號（例如 `CM5IO:R (19)`）。工具說明不再以 `Device:R` 當範例。
+- **`sync_pcb` 少報雜訊：** 新加入的封裝，原本元件庫的值與製造屬性改成電路圖的設定，不再列成「Changed R1 value from 1k to 5.1k」，也不會誤列進「被丟掉的製造屬性」。
+- **`audit impedance` 的 breakout 從銅邊量：** 各網路自己的 pad 周圍 0.5 mm 不計時，改從 pad 的實際銅形往外量（以前從中心畫圓，長條 pad 窄邊外會多排除）。cm5 的 HDMI DDC 計入的長度因此多約 0.2–1.4 mm。
+
+## beta.4
 ROADMAP 階段二（版圖感知檢查）的第二到第五項，階段二至此完成（規劃見 [ROADMAP](https://github.com/Brandon-git-hub/KiCadD/blob/main/ROADMAP.md)）。四項都併入 `audit`，工具數不變（59 個）；和 beta.3 一樣，不給門檻時每項只回一行總覽、不下判定，門檻由 Agent 依網路萬用字元指定。
 
 **新功能：`audit` 的四項檢查**

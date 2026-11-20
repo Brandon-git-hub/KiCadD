@@ -22,6 +22,7 @@
 #include <pcb_track.h>
 #include <zone.h>
 #include <geometry/shape_arc.h>
+#include <geometry/shape.h>
 
 #include <algorithm>
 #include <cmath>
@@ -340,9 +341,19 @@ void CheckImpedance( BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& 
         return UNDEFINED_LAYER;
     };
 
-    // each net's own pads and vias, with 0.5 mm around them: the breakout, left out (the pad or
-    // via is the discontinuity there, and the antipad around it no gap in the plane)
-    std::unordered_map<int, std::vector<std::pair<VECTOR2D, double>>> breakout;   // net -> (centre, radius)
+    // each net's own pads and vias, with 0.5 mm around their copper: the breakout, left out (the
+    // pad or via is the discontinuity there, and the antipad around it no gap in the plane). A
+    // pad by its shape (a long SMA or backplane pad: 0.5 mm past its narrow side too, not its
+    // long half), a via by its round pad.
+    struct BREAK
+    {
+        BOX2I                  box;     // the copper, 0.5 mm out: a quick first test
+        std::shared_ptr<SHAPE> shape;   // a pad's copper; null for a via (a circle)
+        VECTOR2D               centre;
+        double                 radius = 0;
+    };
+
+    std::unordered_map<int, std::vector<BREAK>> breakout;   // net -> its pads and vias
 
     for( FOOTPRINT* fp : aBoard.Footprints() )
     {
@@ -350,9 +361,11 @@ void CheckImpedance( BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& 
         {
             if( groupOf.count( pad->GetNetCode() ) )
             {
-                const VECTOR2I sz = pad->GetBoundingBox().GetSize();
-                breakout[pad->GetNetCode()].push_back(
-                        { VECTOR2D( pad->GetPosition() ), std::max( sz.x, sz.y ) / 2.0 + BREAKOUT } );
+                BREAK b;
+                b.shape = pad->GetEffectiveShape( pad->GetPrincipalLayer() );
+                b.box = b.shape->BBox();
+                b.box.Inflate( KiROUND( BREAKOUT ) );
+                breakout[pad->GetNetCode()].push_back( std::move( b ) );
             }
         }
     }
@@ -360,20 +373,33 @@ void CheckImpedance( BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& 
     for( PCB_TRACK* t : aBoard.Tracks() )
     {
         if( t->Type() == PCB_VIA_T && groupOf.count( t->GetNetCode() ) )
-            breakout[t->GetNetCode()].push_back( { VECTOR2D( t->GetPosition() ), static_cast<PCB_VIA*>( t )->GetWidth( F_Cu ) / 2.0 + BREAKOUT } );
+        {
+            BREAK b;
+            b.centre = VECTOR2D( t->GetPosition() );
+            b.radius = static_cast<PCB_VIA*>( t )->GetWidth( F_Cu ) / 2.0 + BREAKOUT;
+            b.box = BOX2I( t->GetPosition(), VECTOR2I( 0, 0 ) );
+            b.box.Inflate( KiROUND( b.radius ) );
+            breakout[t->GetNetCode()].push_back( std::move( b ) );
+        }
     }
 
     auto inBreakout = [&]( int aNet, const VECTOR2D& p )
     {
-        auto b = breakout.find( aNet );
+        auto list = breakout.find( aNet );
 
-        if( b != breakout.end() )
+        if( list == breakout.end() )
+            return false;
+
+        const VECTOR2I q( KiROUND( p.x ), KiROUND( p.y ) );
+
+        for( const BREAK& b : list->second )
         {
-            for( const auto& [c, r] : b->second )
-            {
-                if( ( p - c ).SquaredEuclideanNorm() < r * r )
-                    return true;
-            }
+            if( !b.box.Contains( q ) )
+                continue;
+
+            if( b.shape ? b.shape->Collide( q, KiROUND( BREAKOUT ) )
+                        : ( p - b.centre ).SquaredEuclideanNorm() < b.radius * b.radius )
+                return true;
         }
 
         return false;
