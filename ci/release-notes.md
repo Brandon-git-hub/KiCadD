@@ -2,7 +2,7 @@
      {{UPSTREAM}} is filled from patches/UPSTREAM_BASE; build info and SHA-256 are appended. -->
 KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修剪版 Windows x64 build，加上 Agent（MCP）協同設計。
 
-> ⚠️ Beta（pre-release）。已能走完整個設計流程，功能仍會持續加入。由 GitHub Actions 自動建置；29 個端到端測試在 Linux 上全部通過（含桌面版），Windows CI 跑 smoke test 與 headless 的出廠、貼片、電路圖文件、工具、設定、undo 歷史測試；桌面版在 Windows 上只有人工試用。
+> ⚠️ Beta（pre-release）。已能走完整個設計流程，功能仍會持續加入。由 GitHub Actions 自動建置；30 個端到端測試在 Linux 上全部通過（含桌面版），Windows CI 跑 smoke test 與 headless 的出廠、貼片、電路圖文件、工具、設定、undo 歷史測試；桌面版在 Windows 上只有人工試用。
 
 ## 使用前須知
 完整的使用說明（安裝、接上 Agent、skill、存檔格式、做得到 / 做不到）：[docs/GUIDE.md](https://github.com/Brandon-git-hub/KiCadD/blob/main/docs/GUIDE.md)。
@@ -13,7 +13,21 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 - **一次一個專案：** 一個服務同時只開一個專案（板子加電路圖），換專案請用 `open_board`。
 - **目前不支援：** 差分對與等長佈線、全板自動佈線（`route` 只代替重複的手動佈線）、電路圖自動排版、組裝圖、STEP 匯出（3D 模型只有 VRML）、ODB++ / IPC-2581 / DXF、MCP resources / prompts。
 
-## 這一版（beta.3）
+## 這一版（beta.4）
+ROADMAP 階段二（版圖感知檢查）的第二到第五項，階段二至此完成（規劃見 [ROADMAP](https://github.com/Brandon-git-hub/KiCadD/blob/main/ROADMAP.md)）。四項都併入 `audit`，工具數不變（59 個）；和 beta.3 一樣，不給門檻時每項只回一行總覽、不下判定，門檻由 Agent 依網路萬用字元指定。
+
+**新功能：`audit` 的四項檢查**
+- **`diff_pair` / `length`：差分對與等長（只檢查，不繞線）。** 長度用 KiCad 自己的長度計算（和網路檢視器相同：走線、過孔跨距、pad-to-die）。差分對每 0.1 mm 量一次到對方的間距，依層取目標，報 skew、未耦合長度、間距範圍與過孔數。門檻：`skew`（指出短的那條要補多少）、`uncoupled`、`pair_gap`、`length_match`（每個 glob 一組，列出每條要補的長度）、`max_length` / `min_length`。
+- **`ir_drop`：電源軌 DC 壓降。** 每個電源軌用鋪銅（取 fill，已扣掉 antipad）、走線、過孔與通孔建立電阻網路求解，報最差負載的壓降與位置、損耗分佈（走線 / 鋪銅 / 過孔）、最忙的過孔、負載最重的走線（給了電流時附 IPC-2221 所需線寬）。來源自動猜並註明，可用 `ir_source` / `ir_loads` 覆寫；格點大小會寫在每一行。門檻：`ir_drop`（mV）、`via_current`（A），要先用 `currents` 給電流。`board_render` 新增 `marks`，可在圖上圈出熱點。
+- **`crosstalk`：平行走線串擾初篩。** 同一層、兩個不同訊號網路平行（10° 以內）且邊到邊間距小於 3H 的耦合長度，依網路對加總，分層列出，附最近間距（mm 與 H 的倍數）。差分對兩條合為一個名稱，電源與地不列。門檻：`xtalk_length`（mm）、`xtalk_spacing`（H 的倍數）。只看同層；相鄰兩層都是訊號層時，標頭會提醒寬邊耦合沒有篩。
+- **`impedance`：沿線阻抗剖面。** 每條訊號線逐段計算（差分對每 0.25 mm），依實際線寬、所在層，以及該處上下實際的銅：中間訊號層的局部鋪銅壓在線下時以它當該處的平面，平面有缺口時取更遠一層。差分對依實際間距算 Zdiff，算法與 `impedance` 工具相同。總覽列出差分對與單線的主 Z 範圍、偏離最多的一條及原因（換層、線寬、局部鋪銅、平面缺口）。門檻：`z_target`（Z0）、`z_diff_target`（Zdiff）、`z_tolerance`、`z_off_mm`。過孔、pad 與同層共面地沒有計入。
+
+**變更：參考平面依鋪銅判定（`impedance`、`set_rules`、`crosstalk`、`audit impedance` 共用）**
+- 以前取緊鄰的銅層當參考平面，兩層訊號層相鄰時，H 會偏小（阻抗算低、串擾漏篩）。現在某層的鋪銅佔板框 40% 以上才算平面；還沒鋪銅的層，Board Setup 標成 power / mixed，或整層沒有走線（待鋪的平面）也算。不看層名，也不只看層類型。
+- 往上、往下各找最近的平面，中間跨過的訊號層銅厚會算進 H，輸出標「across In2.Cu」；內層只有一側有平面時當 embedded microstrip。`impedance` 的 note 會列出每層的覆蓋率。
+- **影響：** 依舊版算出線寬的板子，如果有兩層訊號層相鄰，請重跑 `impedance` 或 `set_rules impedance`。
+
+## beta.3
 ROADMAP 階段二（版圖感知檢查）第一項（規劃見 [ROADMAP](https://github.com/Brandon-git-hub/KiCadD/blob/main/ROADMAP.md)）。
 
 **新功能：`audit` 的參考平面檢查（工具數不變，59 個）**
