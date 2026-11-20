@@ -1725,7 +1725,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "by default; rows with ir_limit n or ir_nets [globs]; ir_mesh_mm for a finer mesh than a big pour gets "
             "(rows say the mesh). Limits: ir_drop {glob: mV}, "
             "via_current {glob: A}. Crosstalk pre-screen (crosstalk): signal tracks of two nets side by side "
-            "on one layer with an edge gap under 3H (H: the dielectric to the nearest copper layer; "
+            "on one layer with an edge gap under 3H (H: the dielectric to the nearest plane, as impedance takes it; "
             "xtalk_spacing sets the multiple), per net pair the length, per layer, and the closest gap "
             "(diff pair partners together and supplies left out; a pair is one name). Header only by "
             "default; rows with xtalk_limit n or xtalk_nets [globs]. Limits: xtalk_length {glob: mm} "

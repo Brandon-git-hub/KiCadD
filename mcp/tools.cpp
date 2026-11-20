@@ -3042,9 +3042,12 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
 
     tools.push_back( { "impedance",
                        "Controlled impedance from the board's stackup, per copper layer; changes nothing (set_rules "
-                       "impedance / diff_impedance writes it into a net class). An outer layer is a microstrip over "
-                       "the next copper layer in (with the solder mask), an inner one a stripline between its two "
-                       "neighbours; those layers must be poured planes (zones create) for it to hold. z: a track's "
+                       "impedance / diff_impedance writes it into a net class). A layer's reference planes are the "
+                       "nearest plane layers each way: zones over 40% of the board (an unpoured layer: typed power, "
+                       "or empty), not by name; signal layers between are passed over (their copper in H, said). An "
+                       "outer layer is a microstrip over its plane (with the solder mask), an inner one a stripline "
+                       "between two, or an embedded microstrip with a plane on one side; the note lists each "
+                       "layer's coverage. The planes must be poured (zones create) for it to hold. z: a track's "
                        "width for this Z0 (ohm); z_diff: a pair's width at gap (mm, default 0.2), or its gap at "
                        "width; neither: the impedance of width (and gap: of the pair). layers: default all. Uses "
                        "KiCad's transmission line calculations (as pcb_calculator); set board_setup stackup=... "

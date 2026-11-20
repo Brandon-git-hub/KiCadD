@@ -3,8 +3,9 @@
  * Measures only: no routing.
  *
  * On each copper layer, signal tracks of two different nets that run side by side (within 10
- * degrees) with an edge-to-edge gap under 3 H, H being the dielectric to the nearest copper layer
- * (the reference plane, as the impedance tool takes it). Per net pair: the length coupled, per
+ * degrees) with an edge-to-edge gap under 3 H, H being the dielectric to the nearest plane, as the
+ * impedance tool takes it (planes by their poured copper; signal layers between passed over, and
+ * signal layers next to each other named: broadside coupling is not screened). Per net pair: the length coupled, per
  * layer, and the closest gap (in mm and in H). Diff pair partners together are no aggressor and
  * victim (a pair is one name, "X_P/N (pair)"); supplies and grounds are left out.
  *

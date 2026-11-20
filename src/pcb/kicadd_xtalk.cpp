@@ -176,7 +176,7 @@ void CheckCrosstalk( BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& 
     if( signal.empty() )
         return;
 
-    // ---- H per layer (the dielectric to the nearest copper layer) and the limit
+    // ---- H per layer (the dielectric to the nearest plane, the impedance tool's) and the limit
     std::map<PCB_LAYER_ID, double> hNm, limitNm;
     std::vector<std::string>       noH;
 
@@ -451,7 +451,7 @@ void CheckCrosstalk( BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& 
 
     // ---- the header
     std::string head = std::to_string( rows.size() ) + " net pair(s) side by side within " + sp + " for "
-                       + mm( MIN_LIST / 1e6, 0 ) + " mm or more (same layer, H: the dielectric to the nearest copper layer; "
+                       + mm( MIN_LIST / 1e6, 0 ) + " mm or more (same layer, H: the dielectric to the nearest plane; "
                        "diff pair partners together and supplies left out)";
 
     if( !rows.empty() )
@@ -473,8 +473,30 @@ void CheckCrosstalk( BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& 
     if( !distant.empty() )
     {
         head += ". On " + distant[0] + ( distant.size() > 1 ? ", " + distant[1] : "" ) + ( distant.size() > 2 ? " +more" : "" ) + " H is "
-                + mm( farH / 1e6 ) + " mm (no copper layer closer: a 2-layer board), so " + sp + " = "
+                + mm( farH / 1e6 ) + " mm (no plane closer), so " + sp + " = "
                 + mm( spacing * farH / 1e6, 1 ) + " mm takes in most neighbours: read the closest gaps, or xtalk_spacing 1";
+    }
+
+    // signal layers next to each other with no plane between: broadside coupling, not screened
+    {
+        const std::set<PCB_LAYER_ID> planes = impedance::Planes( aBoard );
+        const LSEQ                   stack = aBoard.GetEnabledLayers().CuStack();
+        std::string                  side;
+        int                          n = 0;
+
+        for( size_t i = 0; !planes.empty() && i + 1 < stack.size(); ++i )
+        {
+            if( planes.count( stack[i] ) || planes.count( stack[i + 1] ) || !segs.count( stack[i] )
+                || !segs.count( stack[i + 1] ) )
+                continue;
+
+            if( n++ < 2 )
+                side += ( side.empty() ? "" : ", " ) + str( LSET::Name( stack[i] ) ) + " / " + str( LSET::Name( stack[i + 1] ) );
+        }
+
+        if( n )
+            head += ". " + side + ( n > 2 ? " +" + std::to_string( n - 2 ) + " more" : "" )
+                    + ": signal layers with no plane between, tracks over each other couple broadside (not screened)";
     }
 
     if( !noH.empty() )

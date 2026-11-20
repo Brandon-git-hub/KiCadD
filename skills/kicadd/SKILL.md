@@ -106,7 +106,7 @@ what each tool does; this skill says how to use them together.
    as one ideal 0 V node (parallel regulators share perfectly).
 6. **Crosstalk pre-screen** (routed boards). `audit` alone gives one `crosstalk` line: signal
    net pairs whose tracks run side by side on one layer with an edge gap under 3H (H: the
-   dielectric to the nearest copper layer, from the stackup), the longest with its closest gap
+   dielectric to the nearest plane, as `impedance` takes it), the longest with its closest gap
    in mm and in H. Diff pair partners together and supplies are left out; a pair is one name.
    Rows with `xtalk_limit 20` or `xtalk_nets ["*CLK*", "*PCIE*"]`. Judge only what matters:
    fast edges (clocks, high-speed lanes, resets next to them) against long neighbours, e.g.
@@ -255,9 +255,13 @@ length matching, dense escapes).
   gives a width's impedance. `set_rules {"classes": {"RF": {"impedance": 50}, "USB":
   {"diff_impedance": 90, "diff_pair_gap": 0.15}}}` writes them into net classes, for F.Cu unless
   `impedance_layer` names another (a class has one width: the note gives the other layers').
-  A pair with no gap given uses the class's clearance as the gap. The reference planes (the next
-  copper layers) must be poured (`zones create`); the response says which are not. Tell the user
-  to check the widths with the fab's calculator before ordering.
+  A pair with no gap given uses the class's clearance as the gap. The reference planes are the
+  nearest layers poured over 40% of the board (not their name or Board Setup type; an empty layer
+  counts as a plane to be), so a layer next to another signal layer is measured to the plane
+  beyond (`across In2.Cu` in the line, its copper in H). The note lists each layer's coverage:
+  if a layer meant as a plane shows as a signal layer, pour it (`zones create`) and look again;
+  the response also says which planes are not poured. Tell the user to check the widths with the
+  fab's calculator before ordering.
 - `zones` lists copper zones; with `nets` / `layers` / `ids` / `all` and new values it changes
   clearance, minimum width, priority or pad connection and refills. `create` makes a new one
   (see "A new board").

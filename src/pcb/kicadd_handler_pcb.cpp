@@ -7597,6 +7597,8 @@ HANDLER_RESULT<ImpedanceResponse> KICADD_HANDLER_PCB::handleImpedance( const HAN
         o->set_delay( r.delay );
     }
 
-    out.set_note( kicadd::impedance::Source( *b ) );
+    std::string planes;
+    kicadd::impedance::Planes( *b, &planes );
+    out.set_note( planes + "\n" + kicadd::impedance::Source( *b ) );
     return out;
 }

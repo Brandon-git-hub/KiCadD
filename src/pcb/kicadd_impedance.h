@@ -1,8 +1,12 @@
 /*
  * KiCadD: controlled-impedance track widths from the board's own stackup (the impedance tool,
- * set_rules impedance / diff_impedance). A track's reference planes are the nearest copper
- * layers above and below it: an outer layer is a microstrip over the next layer in, an inner
- * one a stripline between its two neighbours. The arithmetic is kicadd_zcalc's.
+ * set_rules impedance / diff_impedance; the crosstalk pre-screen takes its H from here). A
+ * track's reference planes are the nearest plane layers above and below it (Planes: by their
+ * poured copper, not by their name or type), the signal layers between passed over (their copper
+ * thickness in H): an outer layer is a microstrip over the nearest plane in, an inner one a
+ * stripline between its planes, or with a plane on one side only an embedded microstrip (the
+ * board on the other side as its cover). With no plane on the board yet, the nearest copper
+ * layers. The arithmetic is kicadd_zcalc's.
  *
  * This file is part of KiCadD and is licensed GPL-3.0-or-later, like KiCad.
  */
@@ -10,6 +14,7 @@
 #pragma once
 
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -27,7 +32,20 @@ struct LAYER_LINE
     PCB_LAYER_ID              layer = UNDEFINED_LAYER;
     std::vector<PCB_LAYER_ID> planes;   ///< the reference layers: one (microstrip) or two
     kicadd::zcalc::LINE       line;
+    std::vector<PCB_LAYER_ID> crossed;          ///< signal layers between it and its planes
+    bool                      embedded = false; ///< inner, a plane on one side: line.mask* is the cover
+    bool                      guessed = false;  ///< no plane on the board: the nearest copper layers
 };
+
+
+/// A layer is a plane with its zones' copper (fills; outlines while not filled) over this much of
+/// the board outline; with no zone yet, when Board Setup types it power or mixed or it has no
+/// tracks (a plane not poured yet).
+constexpr double PLANE_COVER = 0.4;
+
+/// The copper layers taken as reference planes (see PLANE_COVER). aWhy: each layer, plane or
+/// not, and why ("In1.Cu 93%"), for a note.
+std::set<PCB_LAYER_ID> Planes( const BOARD& aBoard, std::string* aWhy = nullptr );
 
 
 /// A track's cross-section on aLayer, from the board's stackup (its default one when none is

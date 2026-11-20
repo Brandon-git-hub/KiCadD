@@ -12,7 +12,9 @@ Blank project (m5_e2e's), no parts:
   set_rules       RF {impedance: 50} -> the F.Cu width, the note gives the other layers';
                   USB {diff_impedance: 90, diff_pair_gap: 0.15}; a pair with no gap takes the
                   clearance; impedance_layer In1.Cu; refusals; undo puts the class back
-  planes          a GND zone on In1.Cu: F.Cu's plane is no longer said to be missing
+  planes          a GND zone on In1.Cu: F.Cu's plane is no longer said to be missing; a small zone
+                  on In2.Cu makes it a signal layer (planes by their copper): B.Cu over In1.Cu
+                  across it, H with In2's copper; the note lists each layer's coverage
 """
 
 import argparse
@@ -161,6 +163,25 @@ def main():
         lines = {ln.split(":")[0]: ln for ln in t.splitlines()}
         check("no copper zone" not in lines.get("F.Cu", "x"), "F.Cu's plane is poured now")
         check("In2.Cu has no copper zone yet" in lines.get("In1.Cu", ""), "In1.Cu still lacks In2.Cu")
+
+        # a plane by its copper, not its neighbour: In2.Cu with a small zone only is a signal layer,
+        # so B.Cu's plane is In1.Cu across it (H: the core, In2's copper and the 7628 under B.Cu)
+        err, t = mcp.tool("zones", {"create": {"net": "GND", "layers": ["In2.Cu"], "rect": [2, 2, 6, 6]}})
+        check(not err and t.startswith("new zone"), "a small zone on In2.Cu")
+        err, t = mcp.tool("impedance", {"z": 50})
+        lines = {ln.split(":")[0]: ln for ln in t.splitlines()}
+        b = lines.get("B.Cu", "")
+        print("      ", b[:220])
+        hb = re.search(r"microstrip over (\S+), ([\d.]+) mm", b)
+        check(hb and hb.group(1) == "In1.Cu" and abs(float(hb.group(2)) - 1.2906) < 0.002
+              and "across In2.Cu (a signal layer, under 40% poured: no plane)" in b,
+              f"B.Cu over In1.Cu across In2.Cu, H {hb and hb.group(2)} mm (0.2104 + In2's 0.0152 copper + 1.065 core)")
+        check(widths(t).get("B.Cu", (0,))[0] > 1.5 * widths(t).get("F.Cu", (9,))[0], "so B.Cu's 50 ohm track is far wider")
+        check(re.search(r"planes \(zones over 40% of the board\): .*In1\.Cu 100%.*; signal layers: In2\.Cu \d+%", t),
+              "the note: each layer, plane or not, by its copper")
+        mcp.tool("undo")
+        err, t = mcp.tool("impedance", {"z": 50, "layers": ["B.Cu"]})
+        check("microstrip over In2.Cu, 0.2104 mm" in t, "undo: In2.Cu empty again, B.Cu's plane to be")
     finally:
         mcp.close()
         server.stop()
