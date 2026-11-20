@@ -115,6 +115,15 @@ def main():
         x, y, r = where(mcp).get("J3", (0, 0, 0))
         check(y + 12.5 <= 40, f"J3 inside: front at y {y + 12.5:.2f}")
 
+        print("[misplaced rules refused]")
+        err, t = mcp.tool("auto_place", {"rules": {"J2": {"side": "left", "overhang": 1}}})
+        check(err and 'unknown key "J2"' in t and '{"edge": {"J2": ...}}' in t,
+              "a ref at the top of rules (edge left out): refused, the edge rule hinted: " + t[:160])
+        err, t = mcp.tool("auto_place", {"rules": {"edge": {"J2": {"sid": "left"}}}})
+        check(err and 'edge rule J2: unknown key "sid"' in t, "a typo in an edge rule: refused")
+        err, t = mcp.tool("auto_place", {"rules": {"edge": {"J2": 3}}})
+        check(err and "edge rule J2: a side" in t, "an edge rule neither a side nor an object: refused")
+
         print("[no room]")
         err, t = mcp.tool("board_outline", {"rect": [0, 0, 12, 8]})
         err, t = mcp.tool("auto_place", {"all": True})

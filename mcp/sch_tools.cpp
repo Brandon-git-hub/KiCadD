@@ -1285,6 +1285,25 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                     if( !rules.is_object() )
                         return fail( "rules: an object with edge, region, rotation, near" );
 
+                    // A misplaced rule (a ref at the top, a typo) is refused, not ignored: the
+                    // placement would come out without it and nothing would say so.
+                    for( const auto& [key, val] : rules.items() )
+                    {
+                        if( key == "edge" || key == "region" || key == "rotation" || key == "near" )
+                            continue;
+
+                        std::string hint;
+
+                        if( val.is_string() || ( val.is_object() && val.contains( "side" ) ) )
+                            hint = " (a board edge rule? {\"edge\": {\"" + key + "\": ...}})";
+                        else if( val.is_array() && val.size() == 4 )
+                            hint = " (a region rule? {\"region\": {\"" + key + "\": [x0, y0, x1, y1]}})";
+                        else if( val.is_number() )
+                            hint = " (a rotation rule? {\"rotation\": {\"" + key + "\": deg}})";
+
+                        return fail( "rules: unknown key \"" + key + "\"; the keys are edge, region, rotation, near" + hint );
+                    }
+
                     // (named: items() of a temporary would dangle in the loop)
                     const json edge = rules.value( "edge", json::object() );
                     const json region = rules.value( "region", json::object() );
@@ -1301,6 +1320,14 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
 
                         if( side.is_object() )
                         {
+                            for( const auto& [k, v] : side.items() )
+                                if( k != "side" && k != "overhang" && k != "inside" )
+                                    return fail( "edge rule " + ref + ": unknown key \"" + k
+                                                 + "\"; the keys are side, overhang, inside" );
+
+                            if( !side.contains( "side" ) || !side["side"].is_string() )
+                                return fail( "edge rule " + ref + ": {\"side\": \"left\"|\"right\"|\"top\"|\"bottom\"|\"any\", ...}" );
+
                             r->set_side( side.value( "side", std::string() ) );
 
                             if( side.contains( "overhang" ) )
@@ -1315,7 +1342,10 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                         }
                         else
                         {
-                            r->set_side( side.is_string() ? side.get<std::string>() : "" );
+                            if( !side.is_string() )
+                                return fail( "edge rule " + ref + ": a side (\"left\", ...) or {\"side\": ..., \"overhang\": mm}" );
+
+                            r->set_side( side.get<std::string>() );
                         }
                     }
 
