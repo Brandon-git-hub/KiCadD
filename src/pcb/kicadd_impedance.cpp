@@ -188,7 +188,12 @@ std::set<PCB_LAYER_ID> Planes( const BOARD& aBoard, std::string* aWhy )
 }
 
 
-std::optional<LAYER_LINE> Line( const BOARD& aBoard, PCB_LAYER_ID aLayer, std::string& aError )
+namespace
+{
+
+// aGiven: the planes above / below (UNDEFINED_LAYER: none that way), else found by Planes()
+std::optional<LAYER_LINE> build( const BOARD& aBoard, PCB_LAYER_ID aLayer, std::string& aError,
+                                 const std::pair<PCB_LAYER_ID, PCB_LAYER_ID>* aGiven )
 {
     if( !IsCopperLayer( aLayer ) || !aBoard.GetEnabledLayers().Contains( aLayer ) )
     {
@@ -235,10 +240,22 @@ std::optional<LAYER_LINE> Line( const BOARD& aBoard, PCB_LAYER_ID aLayer, std::s
     // its planes: the nearest plane layer each way, the signal layers between passed over; with
     // no planes on the board (nothing poured, no layer typed power) or none but itself, the
     // nearest copper layers
-    std::set<PCB_LAYER_ID> planes = Planes( aBoard );
+    std::set<PCB_LAYER_ID> planes;
+
+    if( aGiven )
+    {
+        for( PCB_LAYER_ID l : { aGiven->first, aGiven->second } )
+            if( l != UNDEFINED_LAYER )
+                planes.insert( l );
+    }
+    else
+    {
+        planes = Planes( aBoard );
+    }
+
     planes.erase( aLayer );
 
-    if( planes.empty() )
+    if( planes.empty() && !aGiven )
     {
         out.guessed = true;
 
@@ -268,7 +285,28 @@ std::optional<LAYER_LINE> Line( const BOARD& aBoard, PCB_LAYER_ID aLayer, std::s
         return -1;
     };
 
-    const int above = find( -1, out.crossed ), below = find( +1, out.crossed );
+    if( planes.empty() )
+    {
+        aError = "no plane on either side";
+        return std::nullopt;
+    }
+
+    // given: each way only its own plane (the other one, past it, is no plane of that side)
+    if( aGiven )
+    {
+        planes = { aGiven->first };
+        planes.erase( UNDEFINED_LAYER );
+    }
+
+    const int above = find( -1, out.crossed );
+
+    if( aGiven )
+    {
+        planes = { aGiven->second };
+        planes.erase( UNDEFINED_LAYER );
+    }
+
+    const int below = find( +1, out.crossed );
 
     if( above >= 0 && below >= 0 )
     {
@@ -337,6 +375,22 @@ std::optional<LAYER_LINE> Line( const BOARD& aBoard, PCB_LAYER_ID aLayer, std::s
     }
 
     return out;
+}
+
+} // namespace
+
+
+std::optional<LAYER_LINE> Line( const BOARD& aBoard, PCB_LAYER_ID aLayer, std::string& aError )
+{
+    return build( aBoard, aLayer, aError, nullptr );
+}
+
+
+std::optional<LAYER_LINE> LineOver( const BOARD& aBoard, PCB_LAYER_ID aLayer, PCB_LAYER_ID aAbove, PCB_LAYER_ID aBelow,
+                                    std::string& aError )
+{
+    const std::pair<PCB_LAYER_ID, PCB_LAYER_ID> given( aAbove, aBelow );
+    return build( aBoard, aLayer, aError, &given );
 }
 
 

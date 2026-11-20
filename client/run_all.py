@@ -161,6 +161,7 @@ def tests(a):
         ("length", "headless", [], lambda w: py + [c("length_e2e.py")] + b + d + ["--work", w]),
         ("irdrop", "headless", [], lambda w: py + [c("irdrop_e2e.py")] + b + d + ["--work", w]),
         ("xtalk", "headless", [], lambda w: py + [c("xtalk_e2e.py")] + b + d + ["--work", w]),
+        ("zprofile", "headless", [], lambda w: py + [c("zprofile_e2e.py")] + b + d + ["--work", w]),
         ("hier", "headless", [], lambda w: py + [c("hier_e2e.py")] + b + k + ["--work", w]),
         ("sch_edit", "headless", [], lambda w: py + [c("sch_edit_e2e.py")] + b + k + ["--work", w]),
         ("sch_doc", "headless", [], lambda w: py + [c("sch_doc_e2e.py")] + b + d + ["--work", w]),

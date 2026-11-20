@@ -1155,18 +1155,28 @@ message BoardAudit
   double              ir_mesh_mm  = 25;  // the cell asked for (default 0.1, coarser on big pours: 600k cells a
                                          // rail; asked: 2M); finer resolves a BGA's antipads
   // Parallel-track crosstalk pre-screen: signal tracks of two nets side by side on one layer with
-  // an edge gap under xtalk_spacing x H (H: the dielectric to the nearest copper layer). Without
+  // an edge gap under xtalk_spacing x H (H: the dielectric to the nearest plane). Without
   // limits: an overview, no verdicts.
   repeated string     xtalk_nets    = 26;  // globs: rows for the pairs these nets are in
   map<string, double> xtalk_length  = 27;  // glob -> mm: coupled longer is a warning (a pair takes
                                            // the tightest glob of its nets)
   double              xtalk_spacing = 28;  // in H (default 3)
   int32               xtalk_limit   = 29;  // rows (default: header only; 10 with xtalk_nets); per rule
+  // Impedance along the line: each signal track piece by piece (pairs every 0.25 mm), from its
+  // width, its layer and the copper over / under that spot (a pour on a signal layer between is
+  // the plane there; none: off plane); a diff pair's Zdiff at its gap there. Without targets: an
+  // overview, no verdicts.
+  map<string, double> z_target      = 30;  // glob -> ohm: a net's Z0 (not a diff pair's members)
+  map<string, double> z_diff_target = 31;  // glob -> ohm (a diff pair's Zdiff; the glob on either member)
+  double              z_tolerance   = 32;  // percent (default 10)
+  double              z_off_mm      = 33;  // a net off its target this long or more is a warning (default 1)
+  repeated string     z_nets        = 34;  // globs: rows for these nets
+  int32               z_limit       = 35;  // rows (default: header only; 10 with z_nets); per rule
 }
 
 message BoardAuditFinding
 {
-  string          category = 1;   // current, voltage, silk, testpoint, plane, return_via, diff_pair, length, ir_drop, crosstalk
+  string          category = 1;   // current, voltage, silk, testpoint, plane, return_via, diff_pair, length, ir_drop, crosstalk, impedance
   string          severity = 2;   // warning, info
   string          message  = 3;
   repeated string refs     = 4;
@@ -1188,6 +1198,7 @@ message BoardAuditResponse
   int32  length_nets        = 11;  // nets measured for length
   int32  ir_rails           = 12;  // rails looked at for IR drop
   int32  xtalk_pairs        = 13;  // net pairs coupled 2 mm or more
+  int32  z_nets             = 14;  // nets (a diff pair: one) profiled for impedance
 }
 
 // ---------------------------------------------------------------------------

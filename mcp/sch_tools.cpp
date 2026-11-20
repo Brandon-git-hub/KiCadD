@@ -1729,7 +1729,13 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "xtalk_spacing sets the multiple), per net pair the length, per layer, and the closest gap "
             "(diff pair partners together and supplies left out; a pair is one name). Header only by "
             "default; rows with xtalk_limit n or xtalk_nets [globs]. Limits: xtalk_length {glob: mm} "
-            "(a pair takes the tightest glob of its nets). Run run_erc and run_drc too.",
+            "(a pair takes the tightest glob of its nets). Impedance along the line (impedance): each signal "
+            "track piece by piece from its width, its layer and the copper over / under that spot (a pour "
+            "on a signal layer between is the plane there; none: off plane), a diff pair's Zdiff at its gap "
+            "there; the nets that vary most from their own main Z. Header only by default; rows with "
+            "z_limit n or z_nets [globs]. Targets: z_target {glob: ohm} (Z0 of nets), z_diff_target "
+            "{glob: ohm} (Zdiff of pairs), z_tolerance (%, default 10), z_off_mm (default 1). "
+            "Run run_erc and run_drc too.",
             obj( { { "max_decap_mm", { { "type", "number" } } },
                    { "currents", { { "type", "object" }, { "description", "net -> A" } } },
                    { "voltages", { { "type", "object" }, { "description", "net -> V" } } },
@@ -1759,7 +1765,13 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                    { "xtalk_nets", { { "type", "array" }, { "items", { { "type", "string" } } } } },
                    { "xtalk_length", { { "type", "object" }, { "description", "net glob -> mm coupled" } } },
                    { "xtalk_spacing", { { "type", "number" }, { "description", "the gap limit in H (default 3)" } } },
-                   { "xtalk_limit", { { "type", "integer" } } } } ),
+                   { "xtalk_limit", { { "type", "integer" } } },
+                   { "z_target", { { "type", "object" }, { "description", "net glob -> ohm (Z0)" } } },
+                   { "z_diff_target", { { "type", "object" }, { "description", "diff pair glob -> ohm (Zdiff)" } } },
+                   { "z_tolerance", { { "type", "number" }, { "description", "percent (default 10)" } } },
+                   { "z_off_mm", { { "type", "number" }, { "description", "mm off target allowed (default 1)" } } },
+                   { "z_nets", { { "type", "array" }, { "items", { { "type", "string" } } } } },
+                   { "z_limit", { { "type", "integer" } } } } ),
             [&aIpc]( const json& a )
             {
                 kicadd::board::BoardAudit boardReq;
@@ -1912,6 +1924,51 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
 
                 if( a.contains( "xtalk_limit" ) && a["xtalk_limit"].is_number_integer() )
                     boardReq.set_xtalk_limit( a["xtalk_limit"].get<int>() );
+
+                for( const char* key : { "z_target", "z_diff_target" } )
+                {
+                    if( !a.contains( key ) )
+                        continue;
+
+                    if( !a[key].is_object() )
+                        return fail( std::string( key ) + " is {\"glob\": ohm}" );
+
+                    for( const auto& [glob, v] : a[key].items() )
+                    {
+                        if( !v.is_number() || v.get<double>() <= 0 )
+                            return fail( std::string( key ) + "." + glob + ": ohm, a positive number" );
+
+                        auto* m = std::string( key ) == "z_target" ? boardReq.mutable_z_target() : boardReq.mutable_z_diff_target();
+                        ( *m )[glob] = v.get<double>();
+                    }
+                }
+
+                for( const char* key : { "z_tolerance", "z_off_mm" } )
+                {
+                    if( !a.contains( key ) )
+                        continue;
+
+                    if( !a[key].is_number() || a[key].get<double>() <= 0 )
+                        return fail( std::string( key ) + ": a positive number" );
+
+                    if( std::string( key ) == "z_tolerance" )
+                        boardReq.set_z_tolerance( a[key].get<double>() );
+                    else
+                        boardReq.set_z_off_mm( a[key].get<double>() );
+                }
+
+                if( a.contains( "z_nets" ) )
+                {
+                    if( !a["z_nets"].is_array() )
+                        return fail( "z_nets is [\"glob\", ...]" );
+
+                    for( const json& n : a["z_nets"] )
+                        if( n.is_string() )
+                            boardReq.add_z_nets( n.get<std::string>() );
+                }
+
+                if( a.contains( "z_limit" ) && a["z_limit"].is_number_integer() )
+                    boardReq.set_z_limit( a["z_limit"].get<int>() );
 
                 if( a.contains( "ir_mesh_mm" ) )
                 {
@@ -2076,7 +2133,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                 else
                     t += "; no board (" + boardErr + "): schematic checks only";
 
-                for( const char* cat : { "decoupling", "power", "esd", "net", "current", "voltage", "silk", "testpoint", "plane", "return_via", "diff_pair", "length", "ir_drop", "crosstalk" } )
+                for( const char* cat : { "decoupling", "power", "esd", "net", "current", "voltage", "silk", "testpoint", "plane", "return_via", "diff_pair", "length", "ir_drop", "crosstalk", "impedance" } )
                 {
                     std::string extra = std::string( cat ) == "decoupling" ? far : "";
 

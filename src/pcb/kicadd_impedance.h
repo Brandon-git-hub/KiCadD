@@ -52,6 +52,12 @@ std::set<PCB_LAYER_ID> Planes( const BOARD& aBoard, std::string* aWhy = nullptr 
 /// defined). nullopt: aError says why (not a copper layer of the board, no dielectric ...).
 std::optional<LAYER_LINE> Line( const BOARD& aBoard, PCB_LAYER_ID aLayer, std::string& aError );
 
+/// aLayer's cross-section over the planes given, aAbove towards F.Cu and aBelow towards B.Cu
+/// (UNDEFINED_LAYER: none that way): what a track sees where the copper under it is not its
+/// planes' (a pour on a signal layer between, a gap in a plane). nullopt with neither.
+std::optional<LAYER_LINE> LineOver( const BOARD& aBoard, PCB_LAYER_ID aLayer, PCB_LAYER_ID aAbove, PCB_LAYER_ID aBelow,
+                                    std::string& aError );
+
 /// "microstrip over In1.Cu, 0.2104 mm Er 4.4, copper 0.035 mm, mask 0.01 mm Er 3.8"
 std::string Describe( const LAYER_LINE& aLine );
 

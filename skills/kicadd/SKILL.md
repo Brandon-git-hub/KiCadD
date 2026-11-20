@@ -114,10 +114,21 @@ what each tool does; this skill says how to use them together.
    are usually fine. `xtalk_spacing` changes the multiple of H. On a 2-layer board H is the whole
    board, so 3H takes in most neighbours (the line says so): read the closest gaps instead.
    Same-layer only (broadside coupling between adjacent signal layers is not screened).
-7. `run_erc` (`warnings=true` for the full list) and, on a board, `refill_zones` then
+7. **Impedance along the line** (routed boards). `audit` alone gives one `impedance` line: Z of
+   each signal track piece by piece, from its width, its layer and the copper actually over and
+   under that spot (a pour on a signal layer between is the plane there, a gap in a plane takes
+   the copper past it; 0.5 mm around a net's own pads and vias left out). Diff pairs first, as
+   Zdiff at their gap there: each kind's range of main Z, how many vary 10% from their own, the
+   one varying most and why. Rows with `z_limit` / `z_nets`. Judge the controlled nets against
+   the stackup's targets: `z_diff_target {"*USB*": 90, "*PCIE*": 85, "*ETH*": 100}`,
+   `z_target {"*RF*": 50}` (`z_tolerance` %, default 10; `z_off_mm`, default 1 mm, the length
+   allowed off). A layer change to a layer the class width does not fit, a neck, a pour under
+   it on the layer between show as stretches off, with where. Fix with `set_rules` widths per
+   layer (`impedance_layer`) or by routing; tracks off plane have no Z (see `plane`).
+8. `run_erc` (`warnings=true` for the full list) and, on a board, `refill_zones` then
    `run_drc`. Narrow with `types` / `refs`; the type counts are the whole board, the filter line
    says what matches.
-8. Report what matters, grouped by severity, with the refs and nets involved.
+9. Report what matters, grouped by severity, with the refs and nets involved.
 
 ## Edit a schematic
 
