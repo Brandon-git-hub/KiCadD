@@ -8,8 +8,8 @@ usage: python3 -I irdrop_e2e.py --build BUILD --demos DEMOS_DIR --work DIR
               pins, the USB-C connector for +5V); +1V8 against a hand calculation (one 0.96 mm,
               0.15 mm track: 3.14 mOhm); a track ending along another (a T) connects; linear in
               the current; ir_drop / via_current judge only rails with a current; ir_loads /
-              ir_source; GND by ir_nets from the connector; deleted tracks leave the load without
-              copper; bad arguments refused; board_render marks
+              ir_source; ir_mesh_mm; GND by ir_nets from the connector; deleted tracks leave the load
+              without copper; bad arguments refused; board_render marks (far apart: both in the picture)
   vme-wren    FPGA rails (MGT_*, P0V85) by name, supply-named nets with no source part left out and
               said; the plane rails meshed under the cell budget, in seconds
   jetson      domain-suffixed signals (I2C5_SCL_1V8) and controls (CARRIER_PWR_ON) are no rails;
@@ -127,6 +127,13 @@ def main():
         err, t = m.tool("audit", {"ir_source": {"*": 5}})
         check(err and "a string" in t, "an ir_source that is not a string is refused")
 
+        _, t = m.tool("audit", {"ir_nets": ["+5V"], "ir_mesh_mm": 0.05})
+        r = row(section(t), "+5V")
+        print("       +5V at 0.05 mm:", drop(r))
+        check("mesh 0.05 mm" in r and abs(drop(r) - 3.56) < 0.15, "ir_mesh_mm 0.05: within a few % of the 0.1 mm mesh")
+        err, t = m.tool("audit", {"ir_mesh_mm": 0})
+        check(err and "a positive number" in t, "ir_mesh_mm 0 refused")
+
         _, t = m.tool("audit", {"ir_nets": ["GND"]})
         r = row(section(t), "GND")
         check("CN1.2 (guessed: a connector)" in r and "loss in planes" in r, "GND by ir_nets: from the connector, mostly planes")
@@ -144,6 +151,10 @@ def main():
                                          "path": os.path.join(work, "marks.png")})
         check(not err and "orange rings: the points asked for" in t and os.path.getsize(os.path.join(work, "marks.png")) > 10000,
               "board_render marks: rings the hotspots, zoomed to them")
+        err, t = m.tool("board_render", {"marks": [[80, 30, "a"], [130, 78, "b"]]})
+        ext = re.search(r"x ([\d.]+) \.\. ([\d.]+), y ([\d.]+) \.\. ([\d.]+) mm", t)
+        check(ext and float(ext.group(1)) < 80 and float(ext.group(2)) > 130 and float(ext.group(3)) < 30
+              and float(ext.group(4)) > 78, "two marks far apart: the picture holds both (their union plus the margin)")
         err, t = m.tool("board_render", {"marks": [[1, "x"]]})
         check(err and "marks is [[x, y" in t, "bad marks refused")
     finally:
@@ -160,12 +171,13 @@ def main():
         ir = section(t)
         print("      ", ir[0][:200], f"({dt:.1f} s)")
         check(ir and ir[0].startswith("info: 14 rail(s) solved") and dt < 30, f"14 rails solved, the audit in {dt:.1f} s")
-        check("3 supply-named net(s) with no source part, left out: /power-supply-3/5VPG, MGT_0V85, VCC_PSPLL" in ir[0],
-              "nets with no source part are left out and named")
+        check("3 supply-named net(s) with no source part, left out: VCC_PSPLL (8 pads), MGT_0V85 (6 pads), /power-supply-3/5VPG (3 pads)" in ir[0],
+              "nets with no source part are left out and named, the most pads first")
         check(row(ir, "MGT_1V8") and row(ir, "P0V85"), "FPGA rails by name (MGT_1V8, P0V85)")
         r = row(ir, "P3V3")
-        check("IC40.34 (VOUT)" in r and re.search(r"mesh 0\.(1[0-9]|2[0-5]) mm", r) and "loss in tracks 1%, planes 9" in r,
+        check("IC40.34 (VOUT)" in r and re.search(r"mesh 0\.(1\d|2[0-4])\d* mm", r) and "loss in tracks 1%, planes 9" in r,
               "P3V3: from the regulator's VOUT, mostly planes, a mesh under 0.25 mm")
+        check("(coarse: antipads and necks under about" in r and "ir_mesh_mm 0.1" in r, "a coarse mesh is said, with how to refine it")
     finally:
         m.close()
         srv.stop()
@@ -180,6 +192,8 @@ def main():
         print("      ", ir[0][:200])
         check(not any("_1V8" in n and ("I2C" in n or "LED" in n or "ID" in n) for n in names)
               and not any("PWR_ON" in n or "PWR_BAD" in n for n in names), "no domain-suffixed signals or controls as rails")
+        check("with no source part, left out: VCC (67 pads), +1V8 (58 pads), +5V (55 pads)" in ir[0],
+              "the main supplies with no source part first (by pads), for ir_source")
         check(any(ln.startswith("info: /DCDC/5V_OUT: U12.18 (V_{OUT}) (guessed: an output pin)") for ln in ir),
               "a DC-DC output from its V_OUT pin")
     finally:

@@ -56,7 +56,10 @@ namespace
 
 constexpr double RHO = 1.72e-8;        // ohm m, copper at 20 C
 constexpr double PLATING = 20e-6;      // m, the copper on a hole's wall
-constexpr double MAX_CELLS = 600000;   // grid cells per rail, all layers together
+constexpr double MAX_CELLS = 600000;   // copper cells per rail, all layers together (default)
+constexpr double MAX_ASKED = 2000000;  // with ir_mesh_mm
+constexpr double MAX_GRID = 40e6;      // grid cells (copper or not) over the layers with fills: memory
+constexpr int    COARSE = 150000;      // nm: a coarser mesh blurs antipads (a BGA's "Swiss cheese")
 constexpr int    H_MIN = 100000;       // nm, the smallest cell
 constexpr int    BUCKET = 2000000;     // nm, the pad / via lookup grid
 
@@ -333,6 +336,8 @@ struct RAIL
     const PCB_TRACK*        hotTrack = nullptr;
     double                  hotAmps = 0;
     double                  hMm = 0;
+    std::string             meshWhy;      // why the mesh is not the one asked for
+    int                     unfilled = 0; // its zones with no fill (nothing to solve on)
     int                     nodes = 0;
 };
 
@@ -348,7 +353,7 @@ std::vector<PCB_LAYER_ID> copperLayers( const BOARD& aBoard )
 }
 
 /// Builds and solves the network of one rail (source, loads and amps set).
-void solve( BOARD& aBoard, RAIL& r, const std::map<PCB_LAYER_ID, double>& aCopperM )
+void solve( BOARD& aBoard, RAIL& r, const std::map<PCB_LAYER_ID, double>& aCopperM, double aMeshMm )
 {
     const double              sigma = 1.0 / RHO;
     const std::vector<PCB_LAYER_ID> cu = copperLayers( aBoard );
@@ -410,6 +415,9 @@ void solve( BOARD& aBoard, RAIL& r, const std::map<PCB_LAYER_ID, double>& aCoppe
         if( z->GetIsRuleArea() || z->GetNetCode() != r.code )
             continue;
 
+        r.unfilled += !z->IsFilled();
+
+        // the fill, not the outline: other nets' clearances (antipads round vias and pads) are cut out
         for( PCB_LAYER_ID l : z->GetLayerSet().CuStack() )
         {
             if( !aBoard.GetEnabledLayers().Contains( l ) )
@@ -437,7 +445,21 @@ void solve( BOARD& aBoard, RAIL& r, const std::map<PCB_LAYER_ID, double>& aCoppe
         for( const PAD* p : pads )
             box.Merge( p->GetBoundingBox() );
 
-        grid.h = (int) std::max<double>( H_MIN, std::sqrt( area / MAX_CELLS ) );
+        // the cell: asked for (ir_mesh_mm), else 0.1 mm; larger when the copper needs more cells than
+        // the budget, or the grid over the layers more than memory allows
+        std::set<PCB_LAYER_ID> fillLayers;
+
+        for( const auto& f : fills )
+            fillLayers.insert( f.first );
+
+        const double want = aMeshMm > 0 ? std::max( aMeshMm * 1e6, 20000.0 ) : H_MIN;
+        const double byCells = std::sqrt( area / ( aMeshMm > 0 ? MAX_ASKED : MAX_CELLS ) );
+        const double byGrid = std::sqrt( (double) box.GetWidth() * box.GetHeight() * fillLayers.size() / MAX_GRID );
+        grid.h = (int) std::max( { want, byCells, byGrid } );
+
+        if( aMeshMm > 0 && grid.h > want * 1.01 )
+            r.meshWhy = "asked " + mm( aMeshMm, 3 ) + ", the cell limit";
+
         box.Inflate( grid.h );
         grid.x0 = box.GetLeft();
         grid.y0 = box.GetTop();
@@ -1145,7 +1167,18 @@ std::string row( const RAIL& r, double aRise, const std::map<PCB_LAYER_ID, doubl
     }
 
     if( r.hMm > 0 )
-        s += "; mesh " + mm( r.hMm ) + " mm";
+    {
+        s += "; mesh " + mm( r.hMm, 3 ) + " mm";
+
+        if( !r.meshWhy.empty() )
+            s += " (" + r.meshWhy + ")";
+        else if( r.hMm * 1e6 > COARSE )
+            s += " (coarse: antipads and necks under about " + mm( 2 * r.hMm, 1 )
+                 + " mm blur, a few % off, up to 15% at 0.35 mm; ir_mesh_mm 0.1 for a finer one)";
+    }
+
+    if( r.unfilled )
+        s += "; " + std::to_string( r.unfilled ) + " zone(s) not filled, left out: refill_zones first";
 
     return s;
 }
@@ -1435,7 +1468,7 @@ void CheckIrDrop( BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& aOu
         r.loadsSaid = parts.empty() ? "?" : partsSaid( said );
 
         if( r.problem.empty() )
-            solve( aBoard, r, copperM );
+            solve( aBoard, r, copperM, aReq.ir_mesh_mm() );
     }
 
     aOut.set_ir_rails( (int) rails.size() );
@@ -1475,14 +1508,26 @@ void CheckIrDrop( BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& aOu
             "given for " + std::to_string( given ) + " of " + std::to_string( solved.size() + unsolved.size() )
             + " (else drops are per A: currents {net: A})";
 
+    int unfilled = 0;
+
+    for( const RAIL& r : rails )
+        unfilled += r.unfilled > 0;
+
+    if( unfilled )
+        head += ". " + std::to_string( unfilled ) + " rail(s) have zones with no fill (left out of the copper): refill_zones first";
+
     if( !sourceless.empty() )
     {
         head += ". " + std::to_string( sourceless.size() ) + " supply-named net(s) with no source part, left out: ";
 
-        for( size_t k = 0; k < sourceless.size() && k < 3; k++ )
-            head += ( k ? ", " : "" ) + sourceless[k]->name;
+        // the big ones first: the main supplies an agent should give a source to
+        std::stable_sort( sourceless.begin(), sourceless.end(),
+                          [&]( const RAIL* a, const RAIL* b ) { return netPads[a->code].size() > netPads[b->code].size(); } );
 
-        head += sourceless.size() > 3 ? " +" + std::to_string( sourceless.size() - 3 ) + " more" : "";
+        for( size_t k = 0; k < sourceless.size() && k < 5; k++ )
+            head += ( k ? ", " : "" ) + sourceless[k]->name + " (" + std::to_string( netPads[sourceless[k]->code].size() ) + " pads)";
+
+        head += sourceless.size() > 5 ? " +" + std::to_string( sourceless.size() - 5 ) + " more" : "";
         head += " (ir_source to include)";
     }
 

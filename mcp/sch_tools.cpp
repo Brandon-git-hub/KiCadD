@@ -1722,7 +1722,8 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "busiest via, the most loaded track. The source is guessed (an output pin, else an "
             "inductor, else a connector) and said; ir_source {\"+3V3\": \"U1.5\"} sets it, ir_loads "
             "{\"+3V3\": \"U5:0.8,U7\"} the loads (default: the rail's ICs, split per part). Header only "
-            "by default; rows with ir_limit n or ir_nets [globs]. Limits: ir_drop {glob: mV}, "
+            "by default; rows with ir_limit n or ir_nets [globs]; ir_mesh_mm for a finer mesh than a big pour gets "
+            "(rows say the mesh). Limits: ir_drop {glob: mV}, "
             "via_current {glob: A}. Run run_erc and run_drc too.",
             obj( { { "max_decap_mm", { { "type", "number" } } },
                    { "currents", { { "type", "object" }, { "description", "net -> A" } } },
@@ -1748,7 +1749,8 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                    { "ir_loads", { { "type", "object" }, { "description", "net glob -> \"U5:0.5,U7\" (A per part)" } } },
                    { "ir_drop", { { "type", "object" }, { "description", "net glob -> mV" } } },
                    { "via_current", { { "type", "object" }, { "description", "net glob -> A per via" } } },
-                   { "ir_limit", { { "type", "integer" } } } } ),
+                   { "ir_limit", { { "type", "integer" } } },
+                   { "ir_mesh_mm", { { "type", "number" }, { "description", "cell size (default 0.1, coarser on big pours)" } } } } ),
             [&aIpc]( const json& a )
             {
                 kicadd::board::BoardAudit boardReq;
@@ -1864,6 +1866,14 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
 
                 if( a.contains( "ir_limit" ) && a["ir_limit"].is_number_integer() )
                     boardReq.set_ir_limit( a["ir_limit"].get<int>() );
+
+                if( a.contains( "ir_mesh_mm" ) )
+                {
+                    if( !a["ir_mesh_mm"].is_number() || a["ir_mesh_mm"].get<double>() <= 0 )
+                        return fail( "ir_mesh_mm: mm, a positive number" );
+
+                    boardReq.set_ir_mesh_mm( a["ir_mesh_mm"].get<double>() );
+                }
 
                 for( const char* key : { "plane_nets", "two_sided" } )
                 {

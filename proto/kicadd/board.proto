@@ -1152,6 +1152,8 @@ message BoardAudit
   map<string, double> ir_drop     = 22;  // glob -> mV: the worst load's drop over it is a warning
   map<string, double> via_current = 23;  // glob -> A: a via carrying more is a warning
   int32               ir_limit    = 24;  // rows (default: header only; 10 with ir_nets); per rule with limits
+  double              ir_mesh_mm  = 25;  // the cell asked for (default 0.1, coarser on big pours: 600k cells a
+                                         // rail; asked: 2M); finer resolves a BGA's antipads
 }
 
 message BoardAuditFinding

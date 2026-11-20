@@ -99,7 +99,11 @@ what each tool does; this skill says how to use them together.
    don't judge that rail. Limits: `ir_drop {glob: mV}`, `via_current {glob: A}`. Typical
    starting points: a few % of the rail (3.3 V: about 50-100 mV board drop; core rails under
    1 V: 1-2 %, from the SoC's guide); about 1 A per 0.3 mm via (0.5 A for 0.2 mm). Show a
-   hotspot with `board_render marks=[[x, y, "label"]]` (it zooms to them).
+   hotspot with `board_render marks=[[x, y, "label"]]` (it zooms to them all). The mesh is the
+   zone fills (antipads cut out); big pours get a coarser one, said in the row: under a BGA pass
+   `ir_mesh_mm 0.1` before trusting a close call. The model: copper at 20 C (at 85 C about 25%
+   more drop), the rail alone (add the ground's drop with `ir_nets ["GND"]`), several source pads
+   as one ideal 0 V node (parallel regulators share perfectly).
 6. `run_erc` (`warnings=true` for the full list) and, on a board, `refill_zones` then
    `run_drc`. Narrow with `types` / `refs`; the type counts are the whole board, the filter line
    says what matches.
