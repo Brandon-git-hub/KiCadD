@@ -147,6 +147,9 @@ TOOL_RESULT connectResult( const ks::SchConnectResponse& r, const std::string& a
     for( const std::string& e : r.errors() )
         t += "\n  error: " + e;
 
+    for( const std::string& w : r.warnings() )
+        t += "\n  warning: " + w;
+
     return { t, r.done() == 0 && r.errors_size() > 0 };
 }
 
@@ -1740,8 +1743,21 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                         t += "\n    " + item;
                 }
 
+                auto names = []( const auto& aList )
+                {
+                    std::string l;
+
+                    for( const std::string& n : aList )
+                        l += ( l.empty() ? "" : ", " ) + n;
+
+                    return l;
+                };
+
                 if( !r.ignored().empty() )
-                    t += "\n  ignored by the project's ERC settings: " + std::to_string( r.ignored_size() ) + " check(s)";
+                    t += "\n  ignored by the project's ERC settings: " + names( r.ignored() );
+
+                if( !r.ignored_default().empty() )
+                    t += "\n  ignored by KiCad's defaults: " + names( r.ignored_default() );
 
                 return TOOL_RESULT{ t, false };
             } } );

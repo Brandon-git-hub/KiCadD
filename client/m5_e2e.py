@@ -321,6 +321,23 @@ def main():
         check(err and "PWR_FLAG is no net" in t, "PWR_FLAG as a power net refused")
         err, t = mcp.tool("sch_delete", {"refs": flags})
         check(not err, "flags deleted")
+
+        print("[a power symbol overrules a label]")
+        err, t = mcp.tool("sch_add_part", {"lib_id": "power:+9V"})
+        p9 = (re.match(r"added (\S+) ", t) or re.match(r"(.*)", t)).group(1)
+        err, t = mcp.tool("sch_connect", {"nets": {"VIN": [f"{p9}.1"]}})
+        print("      ", t.replace("\n", " | ")[:300])
+        check(not err and f"warning: label VIN (/) is wired to the power pin of {p9}: the net is +9V, one with every other +9V" in t,
+              "sch_connect: VIN onto a +9V power pin, said (the net is +9V now)")
+        err, t = mcp.tool("run_erc")
+        check("kicadd_power_overrules_label" in t and f"label VIN (/) is wired to the power pin of {p9}" in t,
+              "run_erc: the same, as an error (KiCad's ERC has no check for it)")
+        check("ignored by KiCad's defaults: " in t and "ignored by the project's ERC settings" not in t,
+              "run_erc: the checks ignored are KiCad's defaults, named: "
+              + next((ln.strip() for ln in t.splitlines() if "ignored by" in ln), ""))
+        err, t = mcp.tool("sch_delete", {"refs": [p9]})
+        err, t = mcp.tool("run_erc")
+        check("kicadd_power_overrules_label" not in t, "the power symbol gone: no more")
         before, _ = netlist(mcp)
 
         print("[save, restart]")

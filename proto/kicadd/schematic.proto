@@ -170,6 +170,7 @@ message SchConnectResponse
   int32 done = 1;
   repeated string errors = 2;
   string history_label = 3;
+  repeated string warnings = 4;   // a label on a net a power symbol names otherwise, ...
 }
 
 // Returns SchNetlist
@@ -275,7 +276,8 @@ message SchErcResponse
   int32 errors   = 1;
   int32 warnings = 2;
   repeated SchErcViolation violations = 3;
-  repeated string ignored = 4;   // checks set to ignore in the project's ERC settings
+  repeated string ignored = 4;   // checks set to ignore in the project's ERC settings (beyond KiCad's defaults)
+  repeated string ignored_default = 5;   // checks KiCad ignores by default (not changed by the project)
 }
 
 // Add a library that is already on disk to the project's library table: a symbol library

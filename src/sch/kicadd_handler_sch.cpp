@@ -23,6 +23,7 @@
 #include <sch_edit_frame.h>
 #include <tool/tool_manager.h>
 #include <sch_field.h>
+#include <connection_graph.h>
 #include <sch_label.h>
 #include <sch_line.h>
 #include <sch_no_connect.h>
@@ -490,6 +491,78 @@ std::string notFoundHint( SYMBOL_LIBRARY_ADAPTER* aAdapter, const SCH_SHEET_LIST
     }
 
     return out + "; or lcsc (an LCSC part), lib_create_symbol (a symbol of your own)";
+}
+
+
+/// Labels a power symbol overrules: on wire connected to a power pin whose name differs, the net
+/// takes the power pin's name (it outranks a label) and joins every other net with that power
+/// pin; KiCad's ERC says nothing (no two drivers of one rank). E.g. a power input pin named
+/// PWR_FLAG on VIN, +5V and GND makes them one net. Needs the connectivity up to date.
+std::vector<std::string> overruledLabels( SCHEMATIC* aSch )
+{
+    std::vector<std::string>                out;
+    std::set<std::pair<wxString, wxString>> seen;
+    const SCH_CONNECTIVITY::FACADE&         conn = aSch->Connectivity();
+
+    for( const SCH_SHEET_PATH& path : aSch->Hierarchy() )
+    {
+        for( SCH_ITEM* it : path.LastScreen()->Items().OfType( SCH_SYMBOL_T ) )
+        {
+            SCH_SYMBOL* sym = static_cast<SCH_SYMBOL*>( it );
+
+            if( !sym->IsPower() )
+                continue;
+
+            for( SCH_PIN* pin : sym->GetPins( &path ) )
+            {
+                if( !pin->IsPower() )
+                    continue;
+
+                std::optional<SCH_CONNECTIVITY::ITEM_VIEW> view = conn.Connection( pin->m_Uuid, path.Path() );
+
+                if( !view || !view->IsNet() )
+                    continue;
+
+                const wxString net = view->Name( true );
+
+                // what is wired to the pin (wires and junctions walked; labels join by name, so
+                // the walk stops at them)
+                std::set<SCH_ITEM*>    done{ pin };
+                std::vector<SCH_ITEM*> todo = view->ConnectedItems();
+
+                while( !todo.empty() )
+                {
+                    SCH_ITEM* item = todo.back();
+                    todo.pop_back();
+
+                    if( !item || !done.insert( item ).second )
+                        continue;
+
+                    if( item->Type() == SCH_LABEL_T || item->Type() == SCH_GLOBAL_LABEL_T )
+                    {
+                        const wxString label = static_cast<SCH_LABEL_BASE*>( item )->GetText();
+
+                        if( label != net && seen.insert( { label, net } ).second )
+                            out.push_back( "label " + str( label ) + " (" + str( path.PathHumanReadable() )
+                                           + ") is wired to the power pin of " + str( sym->GetRef( &path ) )
+                                           + ": the net is " + str( net ) + ", one with every other " + str( net )
+                                           + " (a label does not rename a power net)" );
+
+                        continue;
+                    }
+
+                    if( item->Type() != SCH_LINE_T && item->Type() != SCH_JUNCTION_T )
+                        continue;
+
+                    if( std::optional<SCH_CONNECTIVITY::ITEM_VIEW> v = conn.Connection( item->m_Uuid, path.Path() ) )
+                        for( SCH_ITEM* next : v->ConnectedItems() )
+                            todo.push_back( next );
+                }
+            }
+        }
+    }
+
+    return out;
 }
 
 } // namespace
@@ -1524,6 +1597,20 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleConnect( const HAND
         pushRecorded( commit, wx( out.history_label() ) );
         rebuildConnectivity();
         announce( wxS( "Agent: " ) + wx( out.history_label() ) );
+
+        // the nets asked for: one a power symbol renames (and joins to others) is said here
+        std::set<std::string> asked;
+
+        for( const SchPinNet& link : aCtx.Request.links() )
+            asked.insert( link.net() );
+
+        for( const std::string& w : overruledLabels( schematic() ) )
+            for( const std::string& n : asked )
+                if( w.rfind( "label " + n + " (", 0 ) == 0 )
+                {
+                    out.add_warnings( w );
+                    break;
+                }
     }
     else
     {
@@ -2749,11 +2836,29 @@ HANDLER_RESULT<SchErcResponse> KICADD_HANDLER_SCH::handleRunErc( const HANDLER_C
             o->set_sheet( str( item->GetSpecificSheetPath().PathHumanReadable() ) );
     }
 
+    // KiCadD's own: labels a power pin overrules (a short KiCad's ERC does not see)
+    for( const std::string& w : overruledLabels( sch ) )
+    {
+        out.set_errors( out.errors() + 1 );
+        SchErcViolation* o = out.add_violations();
+        o->set_severity( "error" );
+        o->set_type( "kicadd_power_overrules_label" );
+        o->set_description( w );
+    }
+
+    // ignored: the project's own choice, or KiCad's default (the same in every new project)
+    const ERC_SETTINGS defaults( nullptr, "" );
+
     for( const std::reference_wrapper<RC_ITEM>& item : ERC_ITEM::GetItemsWithSeverities() )
     {
         int code = item.get().GetErrorCode();
 
-        if( code > 0 && settings.GetSeverity( code ) == RPT_SEVERITY_IGNORE )
+        if( code <= 0 || settings.GetSeverity( code ) != RPT_SEVERITY_IGNORE )
+            continue;
+
+        if( defaults.GetSeverity( code ) == RPT_SEVERITY_IGNORE )
+            out.add_ignored_default( str( item.get().GetSettingsKey() ) );
+        else
             out.add_ignored( str( item.get().GetSettingsKey() ) );
     }
 
