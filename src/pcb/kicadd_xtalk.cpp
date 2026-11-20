@@ -457,22 +457,22 @@ void CheckCrosstalk( BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& 
     if( !rows.empty() )
         head += "; the longest: " + describe( rows[0] );
 
-    // a layer far from any copper (a 2-layer board: H is the board): 3H takes in most neighbours
-    std::vector<std::string> far;
+    // a layer distant from any copper (a 2-layer board: H is the board): 3H takes in most neighbours
+    std::vector<std::string> distant;
     double                   farH = 0;
 
     for( const auto& [l, list] : segs )
     {
         if( !list.empty() && hNm[l] > 600000 )
         {
-            far.push_back( str( LSET::Name( l ) ) );
+            distant.push_back( str( LSET::Name( l ) ) );
             farH = std::max( farH, hNm[l] );
         }
     }
 
-    if( !far.empty() )
+    if( !distant.empty() )
     {
-        head += ". On " + far[0] + ( far.size() > 1 ? ", " + far[1] : "" ) + ( far.size() > 2 ? " +more" : "" ) + " H is "
+        head += ". On " + distant[0] + ( distant.size() > 1 ? ", " + distant[1] : "" ) + ( distant.size() > 2 ? " +more" : "" ) + " H is "
                 + mm( farH / 1e6 ) + " mm (no copper layer closer: a 2-layer board), so " + sp + " = "
                 + mm( spacing * farH / 1e6, 1 ) + " mm takes in most neighbours: read the closest gaps, or xtalk_spacing 1";
     }
