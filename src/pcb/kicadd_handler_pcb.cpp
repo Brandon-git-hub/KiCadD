@@ -546,6 +546,19 @@ KICADD_HANDLER_PCB::handleQueryRadius( const HANDLER_CONTEXT<QueryRadius>& aCtx 
 
     const int limit = req.limit() > 0 ? req.limit() : DEFAULT_RADIUS_LIMIT;
 
+    // centred on a part: the part itself first (where it is, its side and rotation), then what
+    // is around it
+    if( anchorFp && want( IK_FOOTPRINT ) )
+    {
+        CompactItem self = describeFootprint( anchorFp );
+        self.set_dist( 0 );
+
+        if( req.with_ids() )
+            self.set_id( anchorFp->m_Uuid.AsStdString() );
+
+        hits.insert( hits.begin(), { std::move( self ), 0.0 } );
+    }
+
     QueryResponse out;
     out.set_total( static_cast<int>( hits.size() ) );
     out.set_truncated( static_cast<int>( hits.size() ) > limit );
@@ -1427,6 +1440,9 @@ KICADD_HANDLER_PCB::handleMoveDelta( const HANDLER_CONTEXT<MoveDelta>& aCtx )
 
     const MoveDelta& req = aCtx.Request;
 
+    if( !req.poses().empty() )
+        return movePoses( req );
+
     if( req.refs().empty() )
         return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "MoveDelta needs refs" ) );
 
@@ -1493,6 +1509,82 @@ KICADD_HANDLER_PCB::handleMoveDelta( const HANDLER_CONTEXT<MoveDelta>& aCtx )
         record( std::move( entry ) );
     }
 
+    return out;
+}
+
+
+HANDLER_RESULT<MoveResponse> KICADD_HANDLER_PCB::movePoses( const MoveDelta& aReq )
+{
+    BOARD*                                          b = board();
+    MoveResponse                                    out;
+    std::vector<FOOTPRINT*>                         targets;
+    std::map<const FOOTPRINT*, const PartPose*>     poseOf;
+
+    for( const PartPose& p : aReq.poses() )
+    {
+        FOOTPRINT* fp = b->FindFootprintByReference( wxString::FromUTF8( p.ref() ) );
+
+        if( !fp )
+        {
+            out.add_missing( p.ref() );
+            continue;
+        }
+
+        if( poseOf.count( fp ) )
+            return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, p.ref() + " given twice" ) );
+
+        // only parts that change: nothing to undo for the others
+        const bool flip = p.has_back() && p.back() != fp->IsFlipped();
+        const bool turn = p.has_rot_decideg() && std::lround( fp->GetOrientation().AsDegrees() * 10 ) != p.rot_decideg();
+        const bool move = ( p.has_x() && p.x() != fp->GetPosition().x ) || ( p.has_y() && p.y() != fp->GetPosition().y );
+
+        poseOf[fp] = &p;
+
+        if( flip || turn || move )
+            targets.push_back( fp );
+    }
+
+    if( targets.empty() )
+        return out;
+
+    HISTORY_ENTRY entry;
+
+    for( const FOOTPRINT* fp : targets )
+        entry.before.push_back( stateOf( fp, false, true ) );
+
+    const std::string label = "place " + refList( targets );
+
+    applyFootprintEdit( targets,
+                        [&]( FOOTPRINT* fp )
+                        {
+                            const PartPose& p = *poseOf[fp];
+
+                            // the side first (a flip mirrors around the anchor), then the
+                            // orientation, then the place
+                            if( p.has_back() && p.back() != fp->IsFlipped() )
+                                fp->Flip( fp->GetPosition(), FLIP_DIRECTION::LEFT_RIGHT );
+
+                            if( p.has_rot_decideg() )
+                                fp->SetOrientation( EDA_ANGLE( p.rot_decideg() / 10.0, DEGREES_T ) );
+
+                            VECTOR2I to = fp->GetPosition();
+
+                            if( p.has_x() )
+                                to.x = (int) p.x();
+
+                            if( p.has_y() )
+                                to.y = (int) p.y();
+
+                            fp->SetPosition( to );
+                        },
+                        wxString::FromUTF8( "Agent: " + label ), out );
+
+    for( const FOOTPRINT* fp : targets )
+        entry.after.push_back( stateOf( fp, false, true ) );
+
+    entry.label = label;
+    out.set_history_label( entry.label );
+    record( std::move( entry ) );
     return out;
 }
 
@@ -1908,11 +2000,8 @@ KICADD_HANDLER_PCB::handleDeleteTracks( const HANDLER_CONTEXT<DeleteTracks>& aCt
         region.Normalize();
     }
 
-    for( PCB_TRACK* t : b->Tracks() )
-    {
-        if( req.all() || nets.count( t->GetNetname() ) || ( byRegion && t->HitTest( region, false ) ) )
-            match.insert( t );
-    }
+    // the filters given narrow each other (nets AND region AND refs); all alone takes everything
+    std::set<const PCB_TRACK*> fromRefs;
 
     // refs: the copper running from their pads, through tracks and vias, up to the next pad
     if( !req.refs().empty() )
@@ -1983,12 +2072,27 @@ KICADD_HANDLER_PCB::handleDeleteTracks( const HANDLER_CONTEXT<DeleteTracks>& aCt
                 KICAD_T type = next->Type();
 
                 if( ( type == PCB_TRACE_T || type == PCB_ARC_T || type == PCB_VIA_T )
-                    && match.insert( static_cast<PCB_TRACK*>( next ) ).second )
+                    && fromRefs.insert( static_cast<PCB_TRACK*>( next ) ).second )
                 {
                     todo.push_back( next );
                 }
             }
         }
+    }
+
+    for( PCB_TRACK* t : b->Tracks() )
+    {
+        bool take = req.all() && req.nets().empty() && !byRegion && req.refs().empty();
+
+        if( !take )
+        {
+            take = ( req.nets().empty() || nets.count( t->GetNetname() ) )
+                   && ( !byRegion || t->HitTest( region, false ) )
+                   && ( req.refs().empty() || fromRefs.count( t ) );
+        }
+
+        if( take )
+            match.insert( t );
     }
 
     std::vector<PCB_TRACK*> targets;
@@ -2018,6 +2122,31 @@ KICADD_HANDLER_PCB::handleDeleteTracks( const HANDLER_CONTEXT<DeleteTracks>& aCt
         std::shared_ptr<CONNECTIVITY_DATA> conn = b->GetConnectivity();
         out.set_unconnected( static_cast<int>( conn->GetUnconnectedCountNoFlush( false ) ) );
         return out;
+    }
+
+    // what goes, per net (most first): so a filter that took more than meant shows at once
+    {
+        std::map<wxString, std::pair<int, int>> perNet;   // tracks / arcs, vias
+
+        for( PCB_TRACK* t : targets )
+            ( t->Type() == PCB_VIA_T ? perNet[t->GetNetname()].second : perNet[t->GetNetname()].first )++;
+
+        std::vector<std::pair<wxString, std::pair<int, int>>> rows( perNet.begin(), perNet.end() );
+        std::sort( rows.begin(), rows.end(), []( const auto& x, const auto& y )
+                   { return x.second.first + x.second.second > y.second.first + y.second.second; } );
+        std::string list;
+
+        for( size_t i = 0; i < rows.size() && i < 12; ++i )
+        {
+            const auto& [net, n] = rows[i];
+            list += ( list.empty() ? "" : "; " ) + ( net.IsEmpty() ? std::string( "(no net)" ) : net.ToStdString( wxConvUTF8 ) ) + " "
+                    + std::to_string( n.first ) + " track(s)" + ( n.second ? " " + std::to_string( n.second ) + " via(s)" : "" );
+        }
+
+        if( rows.size() > 12 )
+            list += "; " + std::to_string( rows.size() - 12 ) + " more net(s)";
+
+        out.add_notes( "deleted per net: " + list );
     }
 
     HISTORY_ENTRY entry;
@@ -2183,6 +2312,7 @@ void fillResult( RouteResult& aOut, const kicadd::route::RESULT& aRes )
     aOut.set_width( aRes.width );
     aOut.set_length( aRes.length );
     aOut.set_direct( aRes.direct );
+    aOut.set_ends( aRes.ends );
     aOut.set_segments( aRes.segments );
     aOut.set_vias( aRes.vias );
     aOut.set_min_gap( aRes.minGap );
@@ -2193,6 +2323,12 @@ void fillResult( RouteResult& aOut, const kicadd::route::RESULT& aRes )
     {
         aOut.mutable_reached()->set_x( aRes.reached->x );
         aOut.mutable_reached()->set_y( aRes.reached->y );
+    }
+
+    if( aRes.blockerAt )
+    {
+        aOut.mutable_blocker_at()->set_x( aRes.blockerAt->x );
+        aOut.mutable_blocker_at()->set_y( aRes.blockerAt->y );
     }
 
     if( aRes.blockedAt )
@@ -2273,7 +2409,112 @@ HANDLER_RESULT<RouteResponse> KICADD_HANDLER_PCB::handleRoute( const HANDLER_CON
 
     std::optional<ROUTE_END> to;
 
-    if( req.has_to() && ( !req.to().pad().empty() || req.to().has_pos() ) )
+    // to the net's own pour: spots in its fill, nearest first, tried in turn below (a via must fit
+    // at the end when the pour is on another layer)
+    struct ZONE_SPOT
+    {
+        VECTOR2I     pos;
+        PCB_LAYER_ID layer;
+        double       cost;
+    };
+
+    std::vector<ZONE_SPOT> zoneSpots;
+    PCB_LAYER_ID           zoneStart = UNDEFINED_LAYER;
+
+    if( req.has_to() && req.to().zone() )
+    {
+        const int net = from->item->GetNetCode();
+        zoneStart = r.layer != UNDEFINED_LAYER ? r.layer
+                    : from->item->IsOnLayer( F_Cu ) ? F_Cu
+                    : from->item->IsOnLayer( B_Cu ) ? B_Cu
+                                                    : from->item->GetLayer();
+        const int inset = std::max( (int) req.width(), b->GetDesignSettings().GetCurrentViaSize() ) / 2 + 100000;
+        bool      inIt = false;
+
+        for( ZONE* z : b->Zones() )
+        {
+            if( z->GetIsRuleArea() || z->GetNetCode() != net )
+                continue;
+
+            for( PCB_LAYER_ID l : z->GetLayerSet().CuStack() )
+            {
+                if( !z->HasFilledPolysForLayer( l ) )
+                    continue;
+
+                SHAPE_POLY_SET fill = z->GetFilledPolysList( l )->CloneDropTriangulation();
+
+                if( l == zoneStart && fill.Contains( from->pos ) )
+                    inIt = true;
+
+                fill.Inflate( -inset, CORNER_STRATEGY::ROUND_ALL_CORNERS, ARC_LOW_DEF );
+
+                if( fill.OutlineCount() == 0 )
+                    continue;
+
+                const double viaCost = l == zoneStart ? 0 : 0.5e6;   // a via costs a little
+
+                // the nearest point of the fill, then points round the start at 0.5 mm steps
+                VECTOR2I near;
+                fill.SquaredDistance( from->pos, false, &near );
+
+                if( fill.Contains( from->pos ) )
+                    near = from->pos;
+
+                if( l == zoneStart || !from->item->HitTest( near, inset + 100000 ) )
+                    zoneSpots.push_back( { near, l, ( VECTOR2D( near ) - VECTOR2D( from->pos ) ).EuclideanNorm() + viaCost } );
+
+                // a grid over 6 mm round the start (0.4 mm steps): every point inside the fill
+                fill.BuildBBoxCaches();
+
+                for( int gx = -15; gx <= 15; ++gx )
+                {
+                    for( int gy = -15; gy <= 15; ++gy )
+                    {
+                        const VECTOR2I p = from->pos + VECTOR2I( gx * 400000, gy * 400000 );
+
+                        // a via clear of the start pad (no via in an SMD pad: it wicks the solder)
+                        const bool viaInPad = l != zoneStart && from->item->HitTest( p, inset + 100000 );
+
+                        if( fill.Contains( p ) && !viaInPad )
+                            zoneSpots.push_back( { p, l, ( VECTOR2D( p ) - VECTOR2D( from->pos ) ).EuclideanNorm() + viaCost } );
+                    }
+                }
+            }
+        }
+
+        if( inIt )
+            return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
+                                              "to zone: " + from->name + " is already in its pour on "
+                                              + LSET::Name( zoneStart ).ToStdString() + " (the fill joins it; refill_zones)" ) );
+
+        if( zoneSpots.empty() )
+            return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
+                                              "to zone: " + from->item->GetNetname().ToStdString( wxConvUTF8 )
+                                              + " has no filled pour (zones create, then refill_zones)" ) );
+
+        std::stable_sort( zoneSpots.begin(), zoneSpots.end(), []( const ZONE_SPOT& x, const ZONE_SPOT& y ) { return x.cost < y.cost; } );
+
+        // the nearest 24 at least 0.5 mm apart (a blocked spot's neighbour is likely blocked too)
+        std::vector<ZONE_SPOT> spread;
+
+        for( const ZONE_SPOT& s : zoneSpots )
+        {
+            if( spread.size() >= 24 )
+                break;
+
+            bool close = std::any_of( spread.begin(), spread.end(), [&]( const ZONE_SPOT& q )
+                                      { return q.layer == s.layer && ( VECTOR2D( q.pos ) - VECTOR2D( s.pos ) ).EuclideanNorm() < 0.5e6; } );
+
+            if( !close )
+                spread.push_back( s );
+        }
+
+        zoneSpots = std::move( spread );
+
+        const ZONE_SPOT& first = zoneSpots.front();
+        to = ROUTE_END{ nullptr, first.pos, "pour " + LSET::Name( first.layer ).ToStdString() + " @" + ptText( first.pos ) };
+    }
+    else if( req.has_to() && ( !req.to().pad().empty() || req.to().has_pos() ) )
     {
         to = resolveEnd( b, req.to(), UNDEFINED_LAYER, from->item->GetNetCode(), true, err );
 
@@ -2334,11 +2575,45 @@ HANDLER_RESULT<RouteResponse> KICADD_HANDLER_PCB::handleRoute( const HANDLER_CON
 
     RouteResponse                 out;
     kicadd::route::SESSION        session( b );
-    kicadd::route::RESULT         res = session.Route( r );
+    kicadd::route::RESULT         res;
+
+    if( !zoneSpots.empty() )
+    {
+        // each spot in turn until one is reached; the first failure is the one said
+        std::optional<kicadd::route::RESULT> firstFail;
+
+        for( const ZONE_SPOT& spot : zoneSpots )
+        {
+            r.to = spot.pos;
+            r.toItem = nullptr;
+            r.layer = zoneStart;
+            r.endViaTo = spot.layer != zoneStart ? spot.layer : UNDEFINED_LAYER;
+            res = session.Route( r );
+
+            if( res.ok )
+            {
+                to = ROUTE_END{ nullptr, spot.pos, "pour " + LSET::Name( spot.layer ).ToStdString() + " @" + ptText( spot.pos ) };
+                break;
+            }
+
+            if( !firstFail )
+                firstFail = res;
+        }
+
+        if( !res.ok && firstFail )
+        {
+            res = *firstFail;
+            res.error += " (and " + std::to_string( zoneSpots.size() - 1 ) + " other spot(s) in the pour)";
+        }
+    }
+    else
+    {
+        res = session.Route( r );
+    }
 
     // The end taken from the ratsnest can't be reached (a track on the other layer): the pads and
     // vias joined to it may be
-    const bool autoTo = !( req.has_to() && ( !req.to().pad().empty() || req.to().has_pos() ) );
+    const bool autoTo = !( req.has_to() && ( !req.to().pad().empty() || req.to().has_pos() || req.to().zone() ) );
 
     if( !res.ok && autoTo && to->item && r.stops.empty() )
     {
@@ -3706,6 +3981,7 @@ KICADD_HANDLER_PCB::handleFetchLcsc( const HANDLER_CONTEXT<FetchLcsc>& aCtx )
                 s->set_reference( sym.reference );
                 s->set_units( sym.units );
                 s->set_registered( sym.registered );
+                s->set_pin_types( sym.pinTypes );
 
                 std::set<std::string> pads;
 
@@ -4824,6 +5100,17 @@ KICADD_HANDLER_PCB::handleDescribeItems( const HANDLER_CONTEXT<DescribeItems>& a
 
         d->set_net( netOf( item ) );
 
+        // the copper it is on: a bottom-side pad says B.Cu (the DRC marker's layer may not)
+        if( item->Type() == PCB_PAD_T || item->Type() == PCB_VIA_T || item->Type() == PCB_TRACE_T || item->Type() == PCB_ARC_T )
+        {
+            LSEQ cu = LSET( item->GetLayerSet() & LSET::AllCuMask() ).CuStack();
+
+            if( cu.size() == 1 )
+                d->set_layer( LSET::Name( cu.front() ).ToStdString() );
+            else if( cu.size() > 1 )
+                d->set_layer( LSET::Name( cu.front() ).ToStdString() + "-" + LSET::Name( cu.back() ).ToStdString() );
+        }
+
         switch( item->Type() )
         {
         case PCB_FOOTPRINT_T:
@@ -5257,11 +5544,15 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
             corners( aItem->GetBoundingBox(), aOutline );
         };
 
-        for( const BOARD_ITEM* item : f->GraphicalItems() )
-            addSilk( item );
+        // the silkscreen: room for it unless asked not to (a dense board: courtyards only, as DRC)
+        if( !req.no_silk_room() )
+        {
+            for( const BOARD_ITEM* item : f->GraphicalItems() )
+                addSilk( item );
 
-        for( const PCB_FIELD* field : f->GetFields() )
-            addSilk( field );
+            for( const PCB_FIELD* field : f->GetFields() )
+                addSilk( field );
+        }
 
         for( const PAD* pad : f->Pads() )
         {
@@ -5461,11 +5752,12 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
             p.group = -1;
     }
 
-    if( req.spacing() > 0 )
-        opt.spacing = (int) req.spacing();
+    // given, 0 included (a dense board placed by hand); unset: the defaults
+    if( req.has_spacing() )
+        opt.spacing = (int) std::max<int64_t>( 0, req.spacing() );
 
-    if( req.edge() > 0 )
-        opt.edge = (int) req.edge();
+    if( req.has_edge() )
+        opt.edge = (int) std::max<int64_t>( 0, req.edge() );
 
     opt.rotate = !req.no_rotate();
     opt.backSatellites = req.back_decaps();
@@ -5795,6 +6087,7 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
     job->outline = outline;
     job->opt = opt;
     job->opt.progress = &job->progress;
+    job->noSilkRoom = req.no_silk_room();
     job->measureOnly = req.measure_only();
     job->groupSource = groupSource;
     job->overhang = std::move( overhangHow );
@@ -6007,7 +6300,7 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::finishAutoPlace( AUTOPLACE
         SHAPE_POLY_SET inner = aJob.outline;
         inner.Inflate( -aJob.opt.edge, CORNER_STRATEGY::CHAMFER_ALL_CORNERS, ARC_HIGH_DEF );
         const BOX2I area = inner.BBox();
-        double      need = 0;
+        double      need = 0, needFront = 0, needBack = 0;
         std::vector<std::string> tooBig;
 
         for( const ap::PART& p : parts )
@@ -6021,8 +6314,18 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::finishAutoPlace( AUTOPLACE
                 box.Merge( v );
 
             // what it takes: the parts to be placed (left out or not), and the fixed ones on the board
+            // per side: an SMD part takes its own side, a through-hole one both
             if( p.movable || unplaced.count( p.ref ) || aJob.outline.Collide( box.Centre() + p.pos ) )
-                need += ( box.GetWidth() + aJob.opt.spacing ) / 1e6 * ( box.GetHeight() + aJob.opt.spacing ) / 1e6;
+            {
+                const double a = ( box.GetWidth() + aJob.opt.spacing ) / 1e6 * ( box.GetHeight() + aJob.opt.spacing ) / 1e6;
+                need += a;
+
+                if( p.tht || !p.back )
+                    needFront += a;
+
+                if( p.tht || p.back )
+                    needBack += a;
+            }
 
             const bool fits = ( box.GetWidth() <= area.GetWidth() && box.GetHeight() <= area.GetHeight() )
                               || ( box.GetHeight() <= area.GetWidth() && box.GetWidth() <= area.GetHeight() );
@@ -6037,18 +6340,26 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::finishAutoPlace( AUTOPLACE
         }
 
         const double have = inner.Area() / 1e12;
+        const double worst = std::max( needFront, needBack );
         char         buf[400];
         std::snprintf( buf, sizeof( buf ),
-                       "the parts' courtyards with their spacing take %.0f mm^2; inside the outline (%.1f mm from "
-                       "the edge) there are %.0f mm^2",
-                       need, aJob.opt.edge / 1e6, have );
+                       "the parts' courtyards with their spacing (%.2f mm) take %.0f mm^2 on the top, %.0f on the "
+                       "bottom (through-hole parts on both); inside the outline (%.1f mm from the edge) each side "
+                       "has %.0f mm^2",
+                       aJob.opt.spacing / 1e6, needFront, needBack, aJob.opt.edge / 1e6, have );
         std::string note = buf;
 
-        if( need > 0.7 * have )
-            note += need > have ? ": the board is too small for them (board_outline bigger, or parts on the back: back=[...])"
-                                : ": tight (a placer fills ~70% at most; a bigger outline, a smaller spacing, or parts on the back)";
+        if( worst > 0.7 * have )
+            note += worst > have ? ": too full on the " + std::string( needFront >= needBack ? "top" : "bottom" )
+                                           + " (board_outline bigger, or parts to the other side: back=[...])"
+                                 : ": tight (a placer fills ~70% at most; a bigger outline, a smaller spacing, or parts "
+                                   "on the other side)";
         else
-            note += ": the area would do; rules, holes, tracks or keep-outs block them (fewer rules, or delete_tracks)";
+            note += ": the area would do; the spacing against parts placed closer by hand, rules, holes, tracks "
+                    "or keep-outs block them (spacing smaller or 0, fewer rules, or delete_tracks)";
+
+        if( !aJob.noSilkRoom )
+            note += "; the parts' silkscreen (references, outlines) counts too (silk_room=false: courtyards only, as DRC; silk_tidy after)";
 
         if( !tooBig.empty() )
         {

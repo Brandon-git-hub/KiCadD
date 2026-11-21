@@ -54,6 +54,16 @@ set_rules, zones, pdn, reflection), or when a call fails: a tool's first error a
    `+12V` / `3V3` are read on their own, other nets count as 0 V) checks the spacing to every
    other net against IPC-2221B table 6-1 (refill zones first). Judge the findings (a socket for
    a programmed chip needs less decoupling than a switching regulator).
+   The ESD check goes by connector names: wire-to-board connectors (JST SH / PH / GH, Molex
+   PicoBlade, pin headers) are taken as on-board and not checked. When one takes an outside
+   cable (a port at the board edge), check its TVS yourself.
+   ICs are found by their pins' electrical types. LCSC symbols come with most pins
+   "unspecified"; fetching types them from their names, conservatively (`lcsc_fetch` says so):
+   GND / VSS / VCC / VDD / VIN power_in, a regulator's or switch's output and an IC's own
+   regulator outputs (VD33_O, 3V3_OUT) power_out, connectors and everything else passive.
+   A net fed only by a connector's VBUS then needs a PWR_FLAG for ERC (as in KiCad). Check
+   the ICs' supply pins with `sch_part` when the audit header still says "0 IC(s)" (a
+   symbol fetched before this, or names the rules did not know).
 3. **Reference planes** (a routed board with planes; refill zones first). `audit` alone gives
    one line per section, measured and not judged, with the worst net: plane splits and the
    longest stretch with no plane under a track (`plane`); the farthest return via of the vias
@@ -159,6 +169,12 @@ set_rules, zones, pdn, reflection), or when a call fails: a tool's first error a
   parts at once with `refs` + `set`), `sch_disconnect`, `sch_delete` (parts, `wires` by a point
   on them, `dangling=true` for wires hanging off nothing).
 - Hierarchy: `sch_add_sheet` with `ports`; on the parent connect `SheetName.PORT`.
+  **Plan sheets before entering parts:** one A4 sheet holds about 30-40 parts. Beyond that,
+  `sch_add_part` without x / y puts parts below the frame. Give each functional block its own
+  sheet early (power, the main IC, each connector group); moving parts between sheets later is
+  costly.
+- Give x / y on a clear spot. A pin that lands on another part's pin joins their nets with no
+  warning: read the `->` net names in the reply.
 - Check with `sch_netlist` (or `sch_part` for one part) after each group of edits, and
   `run_erc` at the end.
 
@@ -166,7 +182,11 @@ set_rules, zones, pdn, reflection), or when a call fails: a tool's first error a
 
 1. Find candidates by specification: `lcsc_search` (`value`, `package`, `tolerance`,
    `dielectric`, `voltage_min`, `keyword`, `basic_only`). Prefer **basic** parts (no JLCPCB
-   setup fee), then preferred, then extended; the first hits are checked live for stock.
+   setup fee), then preferred, then extended; the first hit is checked live for stock (`live`,
+   default 1). **Live checks and fetches share one EasyEDA rate limit:** after about 30
+   requests in a few minutes, EasyEDA refuses requests (HTTP 403) for a while. Browse with
+   `live: 0`, fetch each part number once, and wait rather than retry when refused.
+   The index already has JLC stock; the live check is a second opinion.
    MOSFETs, LDOs, op-amps, inductors and diodes list their electrical parameters (one test
    condition each, after @: `Rds(on) 17 mΩ @10V`); filter with `where`, your thresholds in
    SI with prefixes: `category "MOSFET", where {"rds_on": "<=20m", "vds": ">=30", "vgs_th":
@@ -350,7 +370,28 @@ From a blank project, before placing parts:
 4. After moving parts: `refill_zones`, then `run_drc`. Zones keep their old shape until
    refilled, and that shows up as clearance / soldermask errors that are not real.
 5. Fine-tune with `move_footprints` (every reply carries a local DRC of the moved parts) and
-   `check_drc`.
+   `check_drc`: by a delta (`refs`, `dx`, `dy`, `rotate`, `flip`), or to absolute places,
+   `parts {"U1": {"x": 105, "y": 120, "rotation": 90, "side": "bottom"}, "C3": {...}}`, many
+   parts in one undoable edit. `query_area ref="U1" radius=1` gives the part's own position,
+   side and rotation first, then its neighbours.
+6. **A dense board** (a small outline, parts on both sides): `auto_place` keeps room for each
+   part's courtyard *and* its silkscreen (reference text, outline) by default. When it says
+   "no room" with an area that should do, use `silk_room=false` (courtyards only, as DRC
+   checks them; `silk_tidy` or hidden references afterwards), `spacing` 0.1 or 0, and `back`
+   for the parts that may go underneath. The "no room" line gives the area per side.
+
+**Before placing a dense or two-sided board, plan it on paper:**
+- **Area per side.** Add up the courtyards. The connectors usually fix one side; is the rest
+  room for everything else?
+- **Pair order.** A part on the bottom is mirrored. An IC on B.Cu presents its pins in the
+  opposite order to a connector on F.Cu, so every D+/D- pair between them must cross (a via
+  pair each). Prefer the high-speed IC on the connectors' side, or check that the pins' order
+  matches the connector before flipping it.
+- **Thin board for 2-layer impedance.** On 2 layers the plane is the whole board away. 90 Ω
+  differential on 1.6 mm needs about 0.7 mm tracks, impossible at a fine-pitch IC. Either take
+  a thinner board (0.8 mm: about 0.55 mm), or accept a higher Zdiff on short runs: USB 2.0
+  tolerates about 110-130 Ω over a few cm, and hand designs on 2 layers often run there. Say
+  which you chose.
 
 ## Routing (the repetitive part, not an autorouter)
 
@@ -374,6 +415,13 @@ length matching, dense escapes).
    the track leaves (`from: [x, y]`), not at its centre.
    A route that changes layer reports them in order ("F.Cu -> B.Cu").
 5. Everything of one call is one `undo`. Then `refill_zones` and `run_drc`.
+6. Pour ties: `route from="C12.2" to="zone"` ends on the net's own pour: on the pad's layer
+   when the pour is there, else with a via down to the nearest layer that has it (not in the
+   pad). It tries the nearest spots in the fill until one works. Use it for VBUS / power pads
+   to their pours; `fanout` does many GND / supply pads at once.
+7. Rip-up: `delete_tracks` filters narrow each other (`nets: ["GND"], region: [...]` deletes
+   only GND inside the box). The reply lists what went, per net: check it before going on
+   (`undo` brings it back).
 
 ## Rules and zones
 

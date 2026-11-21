@@ -132,7 +132,8 @@ bool RunFullDrc( IPC_CLIENT& aIpc, DRC_REPORT& aReport, std::string& aError )
         if( m.excluded() )
             continue;
 
-        DRC_ENTRY e;
+        DRC_ENTRY   e;
+        std::string layerA, layerB;
         e.type = typeName( m.error_type() );
         e.warning = m.severity() != kiapi::common::types::RS_ERROR;
         e.layer = layerName( m.layer() );
@@ -149,7 +150,15 @@ bool RunFullDrc( IPC_CLIENT& aIpc, DRC_REPORT& aReport, std::string& aError )
 
             ( i == 0 ? e.a : e.b ) = handle;
             ( i == 0 ? e.netA : e.netB ) = net;
+
+            if( it != byId.end() && !it->second->layer().empty() )
+                ( i == 0 ? layerA : layerB ) = it->second->layer();
         }
+
+        // an unconnected pair is between two items, each on its own layer (KiCad's marker sits
+        // on F.Cu for both): their layers, so a bottom-side pad reads B.Cu
+        if( e.type == "unconnected_items" && !layerA.empty() )
+            e.layer = layerB.empty() || layerB == layerA ? layerA : layerA + " / " + layerB;
 
         ( e.warning ? aReport.warnings : aReport.errors )[e.type]++;
         aReport.entries.push_back( std::move( e ) );

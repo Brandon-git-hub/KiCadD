@@ -136,7 +136,24 @@ double rulerStep( double aPxPerMm, double aMinPx )
 bool RenderBoardPng( BOARD* aBoard, const kicadd::board::RenderBoard& aReq,
                      kicadd::board::RenderBoardResponse& aOut, std::string& aError )
 {
-    const bool back = aReq.back();
+    // "back" in layers is the view from below too (as back=true): its silkscreen, mirrored
+    auto named = [&]( const char* aWord )
+    {
+        return std::any_of( aReq.layers().begin(), aReq.layers().end(), [&]( const std::string& s )
+                            {
+                                std::string low = s;
+                                std::transform( low.begin(), low.end(), low.begin(), ::tolower );
+                                return low == aWord;
+                            } );
+    };
+
+    if( named( "front" ) && ( named( "back" ) || aReq.back() ) )
+    {
+        aError = "front and back: one view at a time (layers [\"back\"] or back=true for the bottom)";
+        return false;
+    }
+
+    const bool back = aReq.back() || named( "back" );
     const int  copper = aBoard->GetCopperLayerCount();
     const LSET enabled = aBoard->GetEnabledLayers();
 

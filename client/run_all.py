@@ -106,6 +106,12 @@ def alive(pid):
 
 
 def stack_stop(state):
+    # history_e2e restarts the stack from another process (--restart-stack): the servers running
+    # now are the ones in the state file, not the ones this process started
+    try:
+        state["pids"] = json.load(open(state["file"])).get("pids", state.get("pids", []))
+    except (OSError, ValueError):
+        pass
     for pid in reversed(state.get("pids", [])):
         if os.name == "nt":
             subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)

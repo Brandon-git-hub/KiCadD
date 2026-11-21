@@ -244,6 +244,22 @@ def main():
         check("C25804" not in mod and '(property "Value" "R0603"' in mod,
               "R0603.kicad_mod names no part (no LCSC number, value R0603): fetching another 0603 resistor leaves it as it is")
 
+        print("[pin types from the names]")
+        # EasyEDA leaves IC and connector pins unspecified: typed from their names, conservatively
+        for part, want in (("C6186", ("power_out", "power_in")), ("C441824", ("power_out", "power_in")),
+                           ("C2765186", ("passive",))):
+            if not os.path.isfile(os.path.join(a.cache, part + ".json")):
+                print(f"  skip {part}: not in the cache")
+                continue
+            err, text = m.tool("lcsc_fetch", {"lcsc": part})
+            line = next((ln for ln in text.splitlines() if "pin types inferred" in ln), "")
+            check(not err and all(w in line for w in want) and (part != "C2765186" or "connector" in line),
+                  f"{part}: " + (line.strip() or text.strip()[:120]))
+        sym = open(os.path.join(a.project, "lcsc.kicad_sym"), encoding="utf-8").read()
+        block = sym[sym.find('(symbol "AMS1117-3.3"'):]
+        check(re.search(r'\(pin power_out [^\n]*\n[^\n]*\n\s*\(name "VOUT', block) or 'power_out' in block[:20000],
+              "AMS1117: VOUT power_out in the library")
+
         print("[library table, cache, errors]")
         table = open(os.path.join(a.project, "fp-lib-table"), encoding="utf-8").read()
         check(table.count('(name "LCSC")') == 1, "LCSC row in the project fp-lib-table exactly once")

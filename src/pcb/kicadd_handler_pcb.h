@@ -108,6 +108,9 @@ private:
     HANDLER_RESULT<kicadd::board::ImpedanceResponse>
     handleImpedance( const HANDLER_CONTEXT<kicadd::board::Impedance>& aCtx );
 
+    /// MoveDelta with poses: each part to its own absolute place, one undoable edit
+    HANDLER_RESULT<kicadd::board::MoveResponse> movePoses( const kicadd::board::MoveDelta& aReq );
+
     HANDLER_RESULT<kicadd::board::PdnGeometryResponse>
     handlePdnGeometry( const HANDLER_CONTEXT<kicadd::board::PdnGeometry>& aCtx );
 
@@ -188,6 +191,7 @@ private:
         kicadd::autoplace::OPTIONS           opt;
         kicadd::autoplace::PROGRESS          progress;
         bool                                 measureOnly = false;
+        bool                                 noSilkRoom = false;   ///< only the courtyards took room
         int                                  movable = 0;
         std::string                          groupSource;
         std::map<std::string, std::string>   overhang;      ///< connector over the edge: how far, from what

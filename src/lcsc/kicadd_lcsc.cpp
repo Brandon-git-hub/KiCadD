@@ -938,6 +938,7 @@ bool SaveSymbolToProjectLibrary( const wxString& dir, KIWAY* aKiway, const PART&
     aSaved.file = lib.GetFullPath().ToStdString( wxConvUTF8 );
     aSaved.reference = str( ans, "reference" );
     aSaved.units = ans.value( "units", 1 );
+    aSaved.pinTypes = str( ans, "pin_types" );
 
     for( const json& p : ans.value( "pins", json::array() ) )
         aSaved.pins.push_back( p.get<std::string>() );

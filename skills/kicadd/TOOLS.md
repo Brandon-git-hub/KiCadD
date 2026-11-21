@@ -12,7 +12,7 @@ Counts, layer count and board outline of the open PCB. Units: mm. KiCad's Y axis
 
 Items near a part or a point, nearest first. Use instead of dumping the board.
 
-Items near a footprint (ref) or a point (x,y), nearest first. Lines: KIND handle [net] layer @x,y (pads are REF.PADNUM; tracks start>end wWIDTH; ~DIST from the centre). Use this instead of dumping the board.
+Items near a footprint (ref: the part itself first, then what is around it) or a point (x,y), nearest first. Lines: KIND handle [net] layer @x,y (pads are REF.PADNUM; tracks start>end wWIDTH; ~DIST from the centre). Use this instead of dumping the board.
 
 Parameter notes:
 
@@ -40,9 +40,9 @@ Arguments:
 
 ## move_footprints
 
-Move / rotate / flip parts as one undoable edit; returns their positions and a local DRC around them.
+Move parts by a delta or to absolute places (x, y, rotation, side), one undoable edit; returns a local DRC around them.
 
-Move/rotate/flip footprints as one undoable edit (move, then rotate, then flip; each around its own anchor, or as a group with pivot=group). Returns new positions (B.Cu = bottom side), the unrouted-connection count and a local DRC of the moved parts (clearance, shorts, hole clearance, courtyard overlap, board-edge clearance, copper outside the board). Large nets (GND, power) skip ratsnest updates while you iterate; the count says which.
+Move/rotate/flip footprints as one undoable edit: refs with dx / dy / rotate / flip (move, then rotate, then flip; each around its own anchor, or as a group with pivot=group), or parts {"U1": {"x": 105, "y": 120, "rotation": 90, "side": "bottom"}} to put each where it is to be (absolute: anchor mm, orientation as KiCad shows it, side top / bottom; what is left out stays). Returns new positions (B.Cu = bottom side), the unrouted-connection count and a local DRC of the moved parts (clearance, shorts, hole clearance, courtyard overlap, board-edge clearance, copper outside the board). Large nets (GND, power) skip ratsnest updates while you iterate; the count says which.
 
 Parameter notes:
 
@@ -55,6 +55,7 @@ Arguments:
 - `dx` (number): Delta X, mm
 - `dy` (number): Delta Y, mm (down is +)
 - `flip` (boolean): to the other side (mirrored)
+- `parts` (object): {ref: {x, y, rotation, side}}, absolute
 - `pivot` (string): each part around itself (default), or the group
 - `refs` (array): Reference designators, e.g. ["U5", "C12"]
 - `rotate` (number): Rotation delta, degrees CCW
@@ -112,7 +113,7 @@ Arguments:
 
 Delete tracks / vias (all, by net, by part, or in an area), as one undoable edit.
 
-Delete routing (tracks, arcs, vias) as one undoable edit, e.g. before auto_place on a routed board. all: every track; nets: by net name; refs: the copper running from these parts' pads up to the next pad (rip up their connections); region: [x0, y0, x1, y1] mm, anything crossing it. Locked tracks stay unless include_locked. Zones are not touched (refill_zones afterwards). Returns the new unrouted count.
+Delete routing (tracks, arcs, vias) as one undoable edit, e.g. before auto_place on a routed board. all: every track; nets: by net name; refs: the copper running from these parts' pads up to the next pad (rip up their connections); region: [x0, y0, x1, y1] mm, anything crossing it. Given together, nets / refs / region narrow each other (GND in this box). The answer lists what went per net. Locked tracks stay unless include_locked. Zones are not touched (refill_zones afterwards). Returns the new unrouted count.
 
 Arguments:
 
@@ -126,9 +127,9 @@ Arguments:
 
 ## route
 
-Draw one connection like the interactive router (around obstacles, net class width). Not an autorouter.
+Draw one connection like the interactive router (to a pad, a point, or the net's pour). Not an autorouter.
 
-Draw one connection the way the interactive router does (45-degree tracks around obstacles; existing copper is never moved; the net class's width and via, the clearance, keepout and edge rules). Not an autorouter: say what to connect. from: a pad "U1.5" or a point [x, y] on the net's pad / track / via (inside a pad: the track leaves the pad there, for a way out between close pads); to: likewise, or any point (a free end); without to: the nearest unrouted connection of from. waypoints: [[x, y], ...] to pass through, [x, y, "B.Cu"] puts a via there and goes on on that layer; via: [x, y] is short for one via to the other side (the end's layer). layer: where to start (default: the start pad's / the end's / F.Cu); width in mm. Reports length vs the straight line, segments, vias and the narrowest gap; when blocked, how far it got and what is in the way. One undoable edit; dry_run reports without drawing. Mm, Y down.
+Draw one connection the way the interactive router does (45-degree tracks around obstacles; existing copper is never moved; the net class's width and via, the clearance, keepout and edge rules). Not an autorouter: say what to connect. from: a pad "U1.5" or a point [x, y] on the net's pad / track / via (inside a pad: the track leaves the pad there, for a way out between close pads); to: likewise, or any point (a free end), or "zone": the net's own pour, its nearest filled copper (on the start's layer, else with a via down to the nearest layer that has it: a pad to a VBUS / GND pour); without to: the nearest unrouted connection of from. waypoints: [[x, y], ...] to pass through, [x, y, "B.Cu"] puts a via there and goes on on that layer; via: [x, y] is short for one via to the other side (the end's layer). layer: where to start (default: the start pad's / the end's / F.Cu); width in mm. Reports length vs the straight line, segments, vias and the narrowest gap; when blocked, how far it got and what is in the way. One undoable edit; dry_run reports without drawing. Mm, Y down.
 
 Parameter notes:
 
@@ -139,7 +140,7 @@ Arguments:
 - `dry_run` (boolean)
 - `from`: "U1.5" or [x, y]
 - `layer` (string)
-- `to`: "C3.1" or [x, y]; omit for the ratsnest
+- `to`: "C3.1", [x, y], or "zone" (the net's pour); omit: ratsnest
 - `via` (array)
 - `waypoints` (array)
 - `width` (number)
@@ -379,7 +380,7 @@ Refill all copper zones. Fills go stale when parts move; refill before judging c
 
 Find JLCPCB / LCSC parts by value, package, specs or electrical parameters.
 
-Find JLCPCB / LCSC parts by specification, e.g. value "100nF", package "0402", dielectric "X5R", voltage_min 16, basic_only; or keyword "AMS1117 3.3". Searches KiCadD's parts index (JLCPCB parts in stock, daily data from jlcparts; about 45 MB, downloaded on first use, refreshed weekly), basic parts first, then preferred (no extended fee), then by stock; the first few (live, default 3) are checked now against LCSC. Each hit lists its electrical parameters when the index has them (MOSFETs, LDOs, op-amps, inductors, diodes: Rds(on), Qg, Ciss, dropout, PSRR, GBW, slew, DCR, Isat, Vf, trr ...; the datasheet's single test condition after @). Filter on them with where {"rds_on": "<=20m", "vds": ">=30", "vgs_th": "1..2.5"}: SI units, prefixes allowed; a part without the parameter does not match (a bad name lists them). Inductor Isat is in the data for about half the inductors and for no basic / preferred one: with where i_sat leave basic_only off (or filter on i_rated). Then sch_add_part lcsc=... places one.
+Find JLCPCB / LCSC parts by specification, e.g. value "100nF", package "0402", dielectric "X5R", voltage_min 16, basic_only; or keyword "AMS1117 3.3". Searches KiCadD's parts index (JLCPCB parts in stock, daily data from jlcparts; about 45 MB, downloaded on first use, refreshed weekly), basic parts first, then preferred (no extended fee), then by stock; the first (live, default 1; each is an EasyEDA request, rate-limited with lcsc_fetch) is checked now against LCSC. Each hit lists its electrical parameters when the index has them (MOSFETs, LDOs, op-amps, inductors, diodes: Rds(on), Qg, Ciss, dropout, PSRR, GBW, slew, DCR, Isat, Vf, trr ...; the datasheet's single test condition after @). Filter on them with where {"rds_on": "<=20m", "vds": ">=30", "vgs_th": "1..2.5"}: SI units, prefixes allowed; a part without the parameter does not match (a bad name lists them). Inductor Isat is in the data for about half the inductors and for no basic / preferred one: with where i_sat leave basic_only off (or filter on i_rated). Then sch_add_part lcsc=... places one.
 
 Parameter notes:
 
@@ -620,7 +621,7 @@ Arguments:
 
 Place parts inside the outline near what they connect to, with optional rules (edges, regions, groups), undoable.
 
-Place parts automatically inside the board outline: each part goes near what it connects to (decoupling caps and pull-ups next to their IC pin), courtyards kept apart, rotations tried, as one undoable edit. Default: the parts outside the board (new from sync_pcb); refs for chosen parts, all for every unlocked part; fixed keeps parts where they are (place connectors first, then lock or fix them). Mounting holes (board_outline's H1..., MountingHole footprints) stay unless refs names them. Functional blocks are kept together: from groups, else the parts' Block field (sch_add_part block); groups "sheets" uses the schematic sheets, false none. Keeping blocks together costs some wire length (group_weight trades one for the other). Bottom side: back lists parts that may go there, back_decaps lets decoupling caps go under their IC pin (SMD only; off by default: two-sided assembly costs more). Reports wire length before/after, how mixed the blocks are and how far the small passives (decaps, pull-ups) are from their IC pin. Existing tracks and vias are obstacles: on a routed board fewer parts find room, so place before routing (right after sync_pcb), or delete_tracks first. Runs beside the editor (it stays responsive); if the board is changed meanwhile nothing is moved. When every part is already placed (no overlaps, no rules), a result that is not better than the current placement is not applied (force applies it anyway). Moving parts leaves the board's tracks behind and copper zones in their old shape: refill_zones before run_drc.
+Place parts automatically inside the board outline: each part goes near what it connects to (decoupling caps and pull-ups next to their IC pin), courtyards kept apart, rotations tried, as one undoable edit. Default: the parts outside the board (new from sync_pcb); refs for chosen parts, all for every unlocked part; fixed keeps parts where they are (place connectors first, then lock or fix them). Mounting holes (board_outline's H1..., MountingHole footprints) stay unless refs names them. Functional blocks are kept together: from groups, else the parts' Block field (sch_add_part block); groups "sheets" uses the schematic sheets, false none. Keeping blocks together costs some wire length (group_weight trades one for the other). Bottom side: back lists parts that may go there, back_decaps lets decoupling caps go under their IC pin (SMD only; off by default: two-sided assembly costs more). A dense board: spacing / edge 0 are taken, and silk_room=false keeps room for the courtyards only, as DRC does (no room for references and silk outlines; silk_tidy after); a "no room" says the area per side. Reports wire length before/after, how mixed the blocks are and how far the small passives (decaps, pull-ups) are from their IC pin. Existing tracks and vias are obstacles: on a routed board fewer parts find room, so place before routing (right after sync_pcb), or delete_tracks first. Runs beside the editor (it stays responsive); if the board is changed meanwhile nothing is moved. When every part is already placed (no overlaps, no rules), a result that is not better than the current placement is not applied (force applies it anyway). Moving parts leaves the board's tracks behind and copper zones in their old shape: refill_zones before run_drc.
 
 Parameter notes:
 
@@ -648,6 +649,7 @@ Arguments:
 - `refs` (array)
 - `rotate` (boolean): try 90/180/270 (default true)
 - `rules` (object): edge / region / rotation / near (tool_help auto_place)
+- `silk_room` (boolean): room for silkscreen (default true)
 - `spacing` (number): courtyard gap, mm (default 0.25)
 - `time_limit` (number): seconds of improving (default 10, -1 none)
 

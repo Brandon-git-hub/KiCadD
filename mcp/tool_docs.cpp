@@ -29,7 +29,7 @@ const std::map<std::string, std::string> BRIEFS = {
     { "board_summary", "Counts, copper layers and outline of the open PCB (mm, Y down). Start here." },
     { "query_area", "Items near a part or a point, nearest first. Use instead of dumping the board." },
     { "query_net", "Pads, tracks, vias and zones of one net." },
-    { "move_footprints", "Move / rotate / flip parts as one undoable edit; returns their positions and a local DRC around them." },
+    { "move_footprints", "Move parts by a delta or to absolute places (x, y, rotation, side), one undoable edit; returns a local DRC around them." },
     { "check_drc", "Local DRC of parts against their surroundings, without moving them." },
     { "flush_ratsnest", "Rebuild the ratsnest deferred during moves; returns the full unrouted count." },
     { "add_footprint", "Place a new footprint (library, LCSC number, or a copy of a part) with its pad nets, as one undoable edit." },
@@ -52,7 +52,7 @@ const std::map<std::string, std::string> BRIEFS = {
     { "refill_zones", "Refill all pours (before judging connectivity, DRC or fabrication)." },
     // placement and routing
     { "auto_place", "Place parts inside the outline near what they connect to, with optional rules (edges, regions, groups), undoable." },
-    { "route", "Draw one connection like the interactive router (around obstacles, net class width). Not an autorouter." },
+    { "route", "Draw one connection like the interactive router (to a pad, a point, or the net's pour). Not an autorouter." },
     { "route_short", "Route the shortest unrouted connections of given parts / nets, one by one as route does." },
     { "fanout", "Short track + via from SMD pads to a pour of the same net on another layer (GND / power fan-out)." },
     { "stitch_vias", "Stitching vias on a grid over a net's pours (default GND), plus one per unconnected island." },

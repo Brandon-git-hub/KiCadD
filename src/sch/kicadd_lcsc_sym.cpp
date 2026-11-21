@@ -35,6 +35,7 @@
 #include <algorithm>
 #include <map>
 #include <memory>
+#include <regex>
 #include <set>
 
 using json = nlohmann::json;
@@ -280,6 +281,93 @@ wxString KicaddLcscSymbol( const wxString& aRequest )
                 pin->SetType( ELECTRICAL_PINTYPE::PT_PASSIVE );
         }
 
+        // EasyEDA leaves most pins of ICs and connectors "unspecified": ERC then warns on every
+        // net, and nothing knows an IC's supply pins. Typed from the pin names, conservatively
+        // (a wrong power_out or input would make false ERC errors): connectors passive; ground
+        // and supply-in names power_in; a regulator's / switch's output and an IC's own
+        // regulator outputs (VD33_O, 3V3_OUT) power_out; everything else passive. Only the
+        // pins the data left unspecified; a type it gives is kept.
+        std::string pinTypes;
+
+        if( !passives.count( ref.Upper() ) && !symPins.empty() )
+        {
+            static const std::set<wxString> connectors = { wxS( "J" ), wxS( "CN" ), wxS( "P" ), wxS( "USB" ), wxS( "CON" ),
+                                                           wxS( "JP" ), wxS( "H" ), wxS( "SW" ), wxS( "K" ) };
+            const bool connector = connectors.count( ref.Upper() ) > 0;
+
+            static const std::regex ground( R"(^(A|D|P|S|SIG|PWR)?(GND|VSS|VEE)[A-Z]?\d*(_?\d+)?$)" );
+            static const std::regex supplyIn(
+                    R"(^(A|D|P|IO)?(VCC|VDD|VIN|VBAT|VDDIO|VCCIO|VDDA|VDDD|VCCA|VPP|VM|VS)[A-Z]?\d*(_?(IO|A|D|PLL|CORE|\d+))?$|^V(DD|CC)\d+$|^V[+-]$)" );
+            static const std::regex regOut( R"(^(V?OUT\d?|VO\d?)$)" );
+            static const std::regex ownRegOut(
+                    R"(^(V(DD|CC|D)?\d+V?\d*|\d+V\d*|REG)_?O(UT)?$)" );   // VD33_O, VDD18_OUT, 3V3_OUT, REGOUT
+
+            // the part's category is in the EasyEDA answer's tags ("Linear Voltage Regulators (LDO)")
+            std::string desc = jstr( req, "description" ) + " " + jstr( req, "keywords" );
+
+            if( result.contains( "tags" ) && result["tags"].is_array() )
+            {
+                for( const json& tag : result["tags"] )
+                {
+                    if( tag.is_string() )
+                        desc += " " + tag.get<std::string>();
+                }
+            }
+
+            std::transform( desc.begin(), desc.end(), desc.begin(), ::toupper );
+            const bool regulator = std::regex_search( desc, std::regex( R"(REGULATOR|LDO|DC-DC|BUCK|BOOST|CONVERTER|LOAD SWITCH|POWER SWITCH|DISTRIBUTION|POWER MANAGEMENT)" ) );
+
+            auto clean = []( const wxString& aName )
+            {
+                std::string s;
+
+                for( wxUniChar c : aName.Upper() )
+                {
+                    if( c != '~' && c != '{' && c != '}' && c != ' ' )
+                        s += (char) c;
+                }
+
+                return s;
+            };
+
+            const bool hasIn = std::any_of( symPins.begin(), symPins.end(), [&]( const SCH_PIN* p )
+                                            {
+                                                std::string n = clean( p->GetName() );
+                                                return n == "VIN" || n == "IN" || std::regex_match( n, supplyIn );
+                                            } );
+
+            std::map<std::string, int> count;
+
+            for( SCH_PIN* pin : symPins )
+            {
+                if( pin->GetType() != ELECTRICAL_PINTYPE::PT_UNSPECIFIED )
+                    continue;
+
+                const std::string  n = clean( pin->GetName() );
+                ELECTRICAL_PINTYPE t = ELECTRICAL_PINTYPE::PT_PASSIVE;
+
+                if( !connector )
+                {
+                    if( std::regex_match( n, ground ) || std::regex_match( n, supplyIn ) || ( regulator && n == "IN" ) )
+                        t = ELECTRICAL_PINTYPE::PT_POWER_IN;
+                    else if( std::regex_match( n, ownRegOut ) || ( regulator && hasIn && std::regex_match( n, regOut ) ) )
+                        t = ELECTRICAL_PINTYPE::PT_POWER_OUT;
+                }
+
+                pin->SetType( t );
+                count[t == ELECTRICAL_PINTYPE::PT_POWER_IN    ? "power_in"
+                      : t == ELECTRICAL_PINTYPE::PT_POWER_OUT ? "power_out"
+                                                              : "passive"]++;
+            }
+
+            for( const auto& [k, v] : count )
+                pinTypes += ( pinTypes.empty() ? "" : ", " ) + std::to_string( v ) + " " + k;
+
+            if( !pinTypes.empty() )
+                pinTypes = "pin types inferred from their names (the data left them unspecified): " + pinTypes
+                           + ( connector ? " (a connector: all passive)" : "" );
+        }
+
         // A different part may already use this name in the library: keep both.
         SCH_IO_KICAD_SEXPR io;
         wxString           libPath = wx( library );
@@ -364,7 +452,8 @@ wxString KicaddLcscSymbol( const wxString& aRequest )
                      { "name", name.ToStdString( wxConvUTF8 ) },
                      { "reference", ref.ToStdString( wxConvUTF8 ) },
                      { "units", sym->GetUnitCount() },
-                     { "pins", pins } };
+                     { "pins", pins },
+                     { "pin_types", pinTypes } };
 
         io.SaveSymbol( libPath, std::move( sym ) );
         return answer( out );

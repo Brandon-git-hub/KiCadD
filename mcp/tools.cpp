@@ -510,8 +510,54 @@ TOOL_RESULT moveFootprints( IPC_CLIENT& aIpc, const json& aArgs )
 {
     std::vector<std::string> refs = getStrings( aArgs, "refs" );
 
+    // absolute: parts {"U1": {x, y, rotation, side}}
+    if( aArgs.contains( "parts" ) )
+    {
+        if( !refs.empty() || aArgs.contains( "dx" ) || aArgs.contains( "dy" ) || aArgs.contains( "rotate" ) || aArgs.contains( "flip" ) )
+            return error( "parts (absolute places) or refs with dx / dy / rotate / flip, not both" );
+
+        if( !aArgs["parts"].is_object() || aArgs["parts"].empty() )
+            return error( "parts: {\"U1\": {\"x\": 105, \"y\": 120, \"rotation\": 90, \"side\": \"bottom\"}} (mm, degrees)" );
+
+        kb::MoveDelta req;
+
+        for( const auto& [ref, p] : aArgs["parts"].items() )
+        {
+            if( !p.is_object() )
+                return error( "parts." + ref + ": {x, y, rotation, side}" );
+
+            kb::PartPose* pose = req.add_poses();
+            pose->set_ref( ref );
+
+            for( const auto& [k, v] : p.items() )
+            {
+                if( k == "x" && v.is_number() )
+                    pose->set_x( toNm( v.get<double>() ) );
+                else if( k == "y" && v.is_number() )
+                    pose->set_y( toNm( v.get<double>() ) );
+                else if( k == "rotation" && v.is_number() )
+                    pose->set_rot_decideg( (int) std::lround( std::remainder( v.get<double>(), 360.0 ) * 10 ) );
+                else if( k == "side" && v.is_string() && ( v == "top" || v == "bottom" || v == "front" || v == "back" ) )
+                    pose->set_back( v == "bottom" || v == "back" );
+                else
+                    return error( "parts." + ref + "." + k + ": x / y (mm), rotation (degrees), side (\"top\" / \"bottom\")" );
+            }
+        }
+
+        kb::MoveResponse r;
+        std::string      err;
+
+        if( !aIpc.Call( req, r, err ) )
+            return error( err );
+
+        if( r.moved().empty() && r.missing().empty() )
+            return { "nothing to do: every part is already there\n" };
+
+        return { renderMoveResult( r, detailOf( aArgs ) ), r.moved().empty() };
+    }
+
     if( refs.empty() )
-        return error( "refs (list of reference designators) is required" );
+        return error( "refs (with dx / dy / rotate / flip) or parts (absolute places) is required" );
 
     double dx = 0, dy = 0, rot = 0;
     getNumber( aArgs, "dx", dx );
@@ -571,6 +617,12 @@ bool routeEnd( const json& aArgs, const char* aKey, kb::RouteEnd& aOut, std::str
 {
     const json& v = aArgs[aKey];
 
+    if( v.is_string() && v.get<std::string>() == "zone" && std::string( aKey ) == "to" )
+    {
+        aOut.set_zone( true );
+        return true;
+    }
+
     if( v.is_string() )
     {
         aOut.set_pad( v.get<std::string>() );
@@ -612,13 +664,21 @@ std::string renderRoute( const kb::RouteResult& r, bool aDryRun )
             s += "; got to " + pt( r.reached() );
 
         if( !r.blocked_by().empty() )
-            s += "; in the way: " + r.blocked_by() + ( r.has_blocked_at() ? " at " + pt( r.blocked_at() ) : "" );
+            s += "; in the way: " + r.blocked_by() + ( r.has_blocker_at() ? " (at " + pt( r.blocker_at() ) + ")" : "" )
+                 + ( r.has_blocked_at() ? ", met at " + pt( r.blocked_at() ) : "" );
 
         return s + "\n";
     }
 
-    s += std::string( aDryRun ? "would route" : "routed" ) + " on " + r.layer() + ", " + mm( r.length() ) + " mm ("
-         + ratio( r.length(), r.direct() ) + " the straight line), " + std::to_string( r.segments() ) + " segment(s), "
+    // against the straight line from end to end; with waypoints, against the path through them too
+    const bool viaStops = r.ends() > 0 && r.direct() > r.ends() + 1000;
+    const std::string straight = ratio( r.length(), r.ends() > 0 ? r.ends() : r.direct() );
+    s += std::string( aDryRun ? "would route" : "routed" ) + " on " + r.layer() + ", " + mm( r.length() ) + " mm"
+         + ( straight.empty() || r.length() == 0 ? std::string()
+                                                : " (" + straight + " the straight line"
+                                                          + ( viaStops ? ", " + ratio( r.length(), r.direct() ) + " the path through the waypoints" : "" )
+                                                          + ")" )
+         + ", " + std::to_string( r.segments() ) + " segment(s), "
          + std::to_string( r.vias() ) + " via(s), width " + mm( r.width() );
 
     if( r.min_gap() >= 0 )
@@ -1180,7 +1240,8 @@ TOOL_RESULT lcscFetch( IPC_CLIENT& aIpc, const json& aArgs )
         out += "\n  symbol " + s.lib_id() + " (" + s.file() + "), reference " + s.reference() + ", "
                + std::to_string( s.pins_size() ) + " pins"
                + ( s.units() > 1 ? ", " + std::to_string( s.units() ) + " units" : "" )
-               + ( s.registered() ? "; LCSC library added to the project sym-lib-table" : "" );
+               + ( s.registered() ? "; LCSC library added to the project sym-lib-table" : "" )
+               + ( s.pin_types().empty() ? "" : "\n  " + s.pin_types() );
 
         auto list = []( const auto& aItems )
         {
@@ -2779,7 +2840,7 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        [&aIpc]( const json& ) { return boardSummary( aIpc ); } } );
 
     tools.push_back( { "query_area",
-                       "Items near a footprint (ref) or a point (x,y), nearest first. Lines: KIND handle [net] "
+                       "Items near a footprint (ref: the part itself first, then what is around it) or a point (x,y), nearest first. Lines: KIND handle [net] "
                        "layer @x,y (pads are REF.PADNUM; tracks start>end wWIDTH; ~DIST from the centre). "
                        "Use this instead of dumping the board.",
                        schema( { { "ref", { { "type", "string" }, { "description", "Centre on this footprint" } } },
@@ -2799,8 +2860,11 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        [&aIpc]( const json& a ) { return queryNet( aIpc, a ); } } );
 
     tools.push_back( { "move_footprints",
-                       "Move/rotate/flip footprints as one undoable edit (move, then rotate, then flip; each "
-                       "around its own anchor, or as a group with pivot=group). Returns new positions (B.Cu = bottom side), the "
+                       "Move/rotate/flip footprints as one undoable edit: refs with dx / dy / rotate / flip "
+                       "(move, then rotate, then flip; each around its own anchor, or as a group with "
+                       "pivot=group), or parts {\"U1\": {\"x\": 105, \"y\": 120, \"rotation\": 90, \"side\": "
+                       "\"bottom\"}} to put each where it is to be (absolute: anchor mm, orientation as KiCad shows "
+                       "it, side top / bottom; what is left out stays). Returns new positions (B.Cu = bottom side), the "
                        "unrouted-connection count and a local DRC of the moved parts (clearance, shorts, "
                        "hole clearance, courtyard overlap, board-edge clearance, copper outside the board). "
                        "Large nets (GND, power) skip ratsnest updates while you iterate; the count says which.",
@@ -2813,8 +2877,8 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                                  { "pivot", { { "type", "string" }, { "enum", { "each", "group" } },
                                               { "description", "Rotate/flip each part around its own anchor (default) or "
                                                                "the parts as one group around their common centre" } } },
-                                 { "detail", DETAIL_PROP } },
-                               { "refs" } ),
+                                 { "parts", { { "type", "object" }, { "description", "{ref: {x, y, rotation, side}}, absolute" } } },
+                                 { "detail", DETAIL_PROP } } ),
                        [&aIpc]( const json& a ) { return moveFootprints( aIpc, a ); } } );
 
     tools.push_back( { "lcsc_fetch",
@@ -2864,7 +2928,8 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        "Delete routing (tracks, arcs, vias) as one undoable edit, e.g. before auto_place "
                        "on a routed board. all: every track; nets: by net name; refs: the copper running "
                        "from these parts' pads up to the next pad (rip up their connections); region: "
-                       "[x0, y0, x1, y1] mm, anything crossing it. Locked tracks stay unless include_locked. "
+                       "[x0, y0, x1, y1] mm, anything crossing it. Given together, nets / refs / region narrow each "
+                       "other (GND in this box). The answer lists what went per net. Locked tracks stay unless include_locked. "
                        "Zones are not touched (refill_zones afterwards). Returns the new unrouted count.",
                        schema( { { "all", { { "type", "boolean" } } },
                                  { "nets", nets },
@@ -2881,7 +2946,9 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        "clearance, keepout and edge rules). Not an autorouter: say what to connect. from: a "
                        "pad \"U1.5\" or a point [x, y] on the net's pad / track / via (inside a pad: the track leaves the "
                        "pad there, for a way out between close pads); to: likewise, or any point "
-                       "(a free end); without to: the nearest unrouted connection of from. waypoints: "
+                       "(a free end), or \"zone\": the net's own pour, its nearest filled copper (on the start's layer, "
+                       "else with a via down to the nearest layer that has it: a pad to a VBUS / GND pour); without to: "
+                       "the nearest unrouted connection of from. waypoints: "
                        "[[x, y], ...] to pass through, [x, y, \"B.Cu\"] puts a via there and goes on on that "
                        "layer; via: [x, y] is short for one via to the other side (the end's layer). layer: "
                        "where to start (default: the start pad's / the end's / F.Cu); width in mm. Reports "
@@ -2889,7 +2956,7 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        "far it got and what is in the way. One undoable edit; dry_run reports without "
                        "drawing. Mm, Y down.",
                        schema( { { "from", { { "description", "\"U1.5\" or [x, y] (a point inside a pad: the track leaves the pad there, not at its centre)" } } },
-                                 { "to", { { "description", "\"C3.1\" or [x, y]; omit for the ratsnest" } } },
+                                 { "to", { { "description", "\"C3.1\", [x, y], or \"zone\" (the net's pour); omit: ratsnest" } } },
                                  { "waypoints", { { "type", "array" } } },
                                  { "via", { { "type", "array" }, { "items", { { "type", "number" } } } } },
                                  { "layer", { { "type", "string" } } },
@@ -3163,7 +3230,7 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        "dielectric \"X5R\", voltage_min 16, basic_only; or keyword \"AMS1117 3.3\". Searches "
                        "KiCadD's parts index (JLCPCB parts in stock, daily data from jlcparts; about 45 MB, "
                        "downloaded on first use, refreshed weekly), basic parts first, then preferred "
-                       "(no extended fee), then by stock; the first few (live, default 3) are checked "
+                       "(no extended fee), then by stock; the first (live, default 1; each is an EasyEDA request, rate-limited with lcsc_fetch) is checked "
                        "now against LCSC. Each hit lists its electrical parameters when the index has them "
                        "(MOSFETs, LDOs, op-amps, inductors, diodes: Rds(on), Qg, Ciss, dropout, PSRR, GBW, "
                        "slew, DCR, Isat, Vf, trr ...; the datasheet's single test condition after @). Filter "

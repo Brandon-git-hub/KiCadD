@@ -8,6 +8,14 @@ usage: python3 -I tools_e2e.py --build BUILD --demos DEMOS_DIR --work DIR
     parameters under 61, the whole list under 40k characters); tool_help gives a tool's full
     text; a tool's first error points at tool_help, the second does not; skills/kicadd/TOOLS.md
     is what kicadd-mcp --tool-docs prints (regenerate it when a description changes)
+  * found by the blind design test (2026-11-22): delete_tracks nets + region delete only that net
+    inside the box, and say per net what went; query_area ref= gives the part itself first;
+    board_render layers ["back"] is the view from below (its silkscreen), front + back refused;
+    run_drc's unconnected lines give a bottom-side pad's own layer (B.Cu), not the marker's
+  * placement / routing for agents: move_footprints parts {ref: {x, y, rotation, side}} (absolute,
+    one undo); auto_place spacing / edge 0 taken (not the defaults), its "no room" said per side;
+    route to "zone" (the net's pour: here +5V's on B.Cu, a via at the end), the length against the
+    end-to-end straight line and against the waypoints (project_e2e routes to pours on a clean board)
   * open_board: errors (no path, relative, a missing file, not a board: the old board comes
     back); unsaved changes refused unless discard=true; another project by .kicad_pcb and by
     .kicad_pro, with its schematic and rules; the agent history starts over; the same file
@@ -58,6 +66,47 @@ try:
     m.tool("undo")
     err, t = m.tool("flush_ratsnest")
     check(not err and t.strip().endswith("unconnected=0"), "after undo: routed again, unconnected=0")
+
+    print("[blind-test fixes]")
+    err, t = m.tool("delete_tracks", {"nets": ["GND"], "region": [145, 95, 150, 100]})
+    n = re.search(r"(\d+) track\(s\)/via\(s\) deleted", t)
+    check(not err and n and 0 < int(n.group(1)) < 30 and "note: deleted per net: GND " in t and "; " not in t.split("per net: ")[1].split("\n")[0],
+          "delete_tracks nets + region: GND in the box only, listed per net (" + (n.group(1) if n else "?") + ")")
+    m.tool("undo")
+    err, t = m.tool("query_area", {"ref": "U1", "radius": 0.5})
+    check(not err and t.splitlines()[1].startswith("FP U1 B.Cu @"), "query_area ref=U1: U1 itself first (B.Cu, its position)")
+    err, t = m.tool("board_render", {"layers": ["back"]})
+    check(not err and "B.Silkscreen" in t and "F.Silkscreen" not in t, "board_render layers [back]: the bottom's silkscreen")
+    err, t = m.tool("board_render", {"layers": ["front", "back"]})
+    check(err and "one view at a time" in t, "front and back together: refused")
+    m.tool("delete_tracks", {"nets": ["/U2D-"]})
+    err, t = m.tool("run_drc", {"limit": 5})
+    check(re.search(r"E unconnected_items U1\.\d+\[/U2D-\] x J3\.2\[/U2D-\] B\.Cu / F\.Cu", t),
+          "run_drc: U1 (bottom) to J3 (top) unconnected: B.Cu / F.Cu, not the marker's F.Cu")
+    m.tool("undo")
+
+    print("[placement / routing for agents]")
+    err, t = m.tool("move_footprints", {"parts": {"C21": {"x": 150, "y": 110, "rotation": 90, "side": "top"}}})
+    err2, t2 = m.tool("query_area", {"ref": "C21", "radius": 0.1, "kinds": ["footprint"]})
+    check(not err and t2.splitlines()[1].startswith("FP C21 F.Cu @150,110 r90"), "move_footprints parts: C21 to (150, 110), 90 deg, top: " + t2.splitlines()[1][:60])
+    err, t = m.tool("move_footprints", {"parts": {"C21": {"x": 150, "y": 110, "rotation": 90, "side": "top"}}})
+    check("nothing to do" in t, "the same place again: nothing to do")
+    m.tool("undo")
+    err, t = m.tool("move_footprints", {"parts": {"C21": {"x": 1}}, "dx": 1})
+    check(err and "not both" in t, "parts and dx together: refused")
+    err, t = m.tool("auto_place", {"refs": ["U1"], "spacing": 0, "edge": 0, "measure_only": True})
+    check(not err, "auto_place spacing 0 / edge 0 taken: " + t.splitlines()[0][:80])
+    err, t = m.tool("auto_place", {"refs": ["C21"], "force": True, "rules": {"region": {"C21": [140, 80, 140.3, 80.3]}}})
+    check("on the top," in t and "on the bottom" in t and "each side" in t, "no room: the area per side")
+    m.tool("undo")
+    err, t = m.tool("auto_place", {"refs": ["C21"], "force": True, "silk_room": False, "spacing": 0.1})
+    check(not err and "placed 1 part" in t, "auto_place silk_room=false (courtyards only): C21 placed: " + t.splitlines()[0][:70])
+    m.tool("undo")
+    err, t = m.tool("route", {"from": "J3.1", "to": "zone", "dry_run": True})
+    check("pour B.Cu" in t and ("would route" in t or "other spot(s) in the pour" in t),
+          "route to zone: J3.1 tries the +5V pour on B.Cu (under U1 there is little room: " + t.strip()[-60:] + ")")
+    err, t = m.tool("route", {"from": "R7.2", "to": "zone", "dry_run": True})
+    check(err and ("no filled pour" in t or "already in its pour" in t), "route to zone of a net without one / in it: said: " + t.strip()[:90])
 
     print("[tool descriptions]")
     tools = m.rpc("tools/list", {})["result"]["tools"]

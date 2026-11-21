@@ -300,6 +300,7 @@ struct SESSION::IMPL
             {
                 BOARD_ITEM* p = obs->m_item->Parent();
                 aOut.blockedBy = p->IsConnected() ? Describe( static_cast<BOARD_CONNECTED_ITEM*>( p ) ) : handle( p );
+                aOut.blockerAt = p->GetPosition();
             }
             else if( obs->m_item && obs->m_item->Kind() == PNS::ITEM::SOLID_T )
             {
@@ -326,6 +327,9 @@ struct SESSION::IMPL
                 aOut.blockedBy = !p ? std::string( "board edge or keepout" )
                                     : p->IsConnected() ? Describe( static_cast<BOARD_CONNECTED_ITEM*>( p ) )
                                                        : handle( p );
+
+                if( p )
+                    aOut.blockerAt = p->GetPosition();
 
                 if( obs->m_item )
                     aOut.blockedAt = obs->m_item->Anchor( 0 );
@@ -483,6 +487,7 @@ RESULT SESSION::Route( const REQUEST& aReq )
     }
 
     out.direct += ( aReq.to - prev ).EuclideanNorm();
+    out.ends = ( aReq.to - aReq.from ).EuclideanNorm();
 
     PNS::NODE* world = router.GetWorld();
     PNS::ITEM* startItem = world->FindItemByParent( aReq.fromItem );
@@ -650,6 +655,20 @@ RESULT SESSION::Route( const REQUEST& aReq )
 
     std::vector<PCB_TRACK*> mine = m.iface.current;
     m.iface.current.clear();
+
+    // a zero-length piece (a waypoint on a pad's anchor, a stop the router passed through) is
+    // no track: out of the session, not drawn
+    std::erase_if( mine, [&]( PCB_TRACK* t )
+                   {
+                       if( t->Type() != PCB_TRACE_T || t->GetStart() != t->GetEnd() )
+                           return false;
+
+                       if( PNS::ITEM* item = router.GetWorld()->FindItemByParent( t ) )
+                           router.GetWorld()->Remove( item );
+
+                       std::erase_if( m.iface.added, [&]( const std::unique_ptr<PCB_TRACK>& a ) { return a.get() == t; } );
+                       return true;
+                   } );
 
     for( PCB_TRACK* t : mine )
     {

@@ -12,11 +12,14 @@ The server starts on a copy of pic_programmer, then:
   unsaved     an edit on the open board: a new project is refused (and the folder it would have made
               is not there), discard=true goes ahead
   stackup     stackup=JLC04161H-7628 sets the fab's stackup; a .kicad_pro path names the project
+  pours       route to "zone" on the new 4-layer board: a GND pad to its plane on In1.Cu (a via at
+              the end), a VCC pad to its pour beside it on F.Cu (no via); DRC finds them connected
   open_board  the first project opens again from disk
 """
 
 import argparse
 import json
+import re
 import os
 import shutil
 import sys
@@ -92,8 +95,31 @@ def main():
         err, t = m.tool("board_setup", {})
         check("JLC04161H-7628" in t or "7628" in t, "the fab's stackup set: " + t.splitlines()[0][:80])
 
+        print("[route to a pour]")
+        # on the 4-layer alpha: a capacitor GND / VCC, GND as a plane on In1.Cu, VCC as a pour on
+        # F.Cu beside the part: GND reaches its plane through a via, VCC its pour on its own layer
+        err, t = m.tool("open_board", {"path": files[".kicad_pro"], "discard": True})
+        err, t = m.tool("lib_create_footprint", {"kind": "chip", "size": "0603", "prefix": "C"})
+        fp = re.search(r"(kicadd:[\w.-]+)", t)
+        check(not err and fp, "a 0603 footprint made: " + t.splitlines()[0][:80])
+        err, t = m.tool("add_footprint", {"footprint": fp.group(1) if fp else "", "ref": "C1", "x": 120, "y": 120,
+                                          "nets": {"1": "GND", "2": "VCC"}})
+        check(not err, "C1 placed with GND / VCC" + ("" if not err else ": " + t.strip()[:160]))
+        m.tool("zones", {"create": {"net": "GND", "layers": ["In1.Cu"]}})
+        m.tool("zones", {"create": {"net": "VCC", "layers": ["F.Cu"], "rect": [125, 110, 140, 130]}})
+        m.tool("refill_zones", {})
+        err, t = m.tool("route", {"from": "C1.1", "to": "zone"})
+        print("      ", t.strip().splitlines()[0][:160])
+        check(not err and "pour In1.Cu" in t and "1 via(s)" in t, "C1.1 (GND) to its plane on In1.Cu: a via at the end")
+        err, t = m.tool("route", {"from": "C1.2", "to": "zone"})
+        print("      ", t.strip().splitlines()[0][:160])
+        check(not err and "pour F.Cu" in t and "0 via(s)" in t, "C1.2 (VCC) to its pour on F.Cu: no via")
+        m.tool("refill_zones", {})
+        err, t = m.tool("run_drc", {})
+        check("unconnected_items" not in t, "after a refill both are connected: " + t.splitlines()[0][:80])
+
         print("[open_board]")
-        err, t = m.tool("open_board", {"path": files[".kicad_pro"]})
+        err, t = m.tool("open_board", {"path": files[".kicad_pro"], "discard": True})
         check(not err and "file=alpha.kicad_pcb" in t and "cu_layers=4" in t, "alpha opens again from disk")
     finally:
         m.close()

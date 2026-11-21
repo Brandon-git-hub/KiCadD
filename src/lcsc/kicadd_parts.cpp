@@ -886,7 +886,7 @@ bool SearchParts( const kicadd::board::LcscSearch& aReq, kicadd::board::LcscSear
     }
 
     // --- stage 2: today's stock and assembly for the first few
-    const int live = aReq.live() == 0 ? 3 : std::max( 0, aReq.live() );
+    const int live = aReq.live() == 0 ? 1 : std::max( 0, aReq.live() );   // each is an EasyEDA request: they count against its rate limit
 
     for( int i = 0; i < aOut.hits_size() && i < live; ++i )
     {

@@ -329,7 +329,19 @@ private:
         if( aB->IsConnected() )
             v.set_net_b( static_cast<const BOARD_CONNECTED_ITEM*>( aB )->GetNetname().ToStdString() );
 
-        v.set_layer( LSET::Name( aLayer ).ToStdString() );
+        // a padstack's own layer (F.Cu stands for "every copper layer" in a padstack) is not
+        // where a flipped part's pad is: say the copper it is on
+        PCB_LAYER_ID shown = aLayer;
+
+        if( IsCopperLayer( aLayer ) && !aA->IsOnLayer( aLayer ) )
+        {
+            LSEQ cu = LSET( aA->GetLayerSet() & LSET::AllCuMask() ).CuStack();
+
+            if( !cu.empty() )
+                shown = cu.front();
+        }
+
+        v.set_layer( LSET::Name( shown ).ToStdString() );
         v.set_required( aRequired );
         v.set_actual( aActual );
         v.mutable_pos()->set_x( aPos.x );

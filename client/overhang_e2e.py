@@ -151,7 +151,7 @@ def main():
         err, t = mcp.tool("auto_place", {"all": True})
         why = next((ln.strip() for ln in t.splitlines() if ln.strip().startswith("why:")), "")
         print("      ", why[:300])
-        check("no room for" in t and "the board is too small for them" in why, "a 12 x 8 mm board: too small, said")
+        check("no room for" in t and "too full on the" in why and "each side has" in why, "a 12 x 8 mm board: too full, said per side")
         check(re.search(r"bigger than the board in any rotation:.* J4 \(", why) is not None, "J4 (RJ12) can't fit it at all: said")
     finally:
         mcp.close()

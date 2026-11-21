@@ -109,6 +109,7 @@ struct SAVED_SYMBOL
     std::vector<std::string> pins;         ///< pin numbers, sorted
     bool                     registered = false;   ///< the LCSC row was added to sym-lib-table now
     std::string              note;
+    std::string              pinTypes;     ///< "pin types inferred ...: 8 power_in, ..." ("" none)
 };
 
 /**

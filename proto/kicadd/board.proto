@@ -119,6 +119,17 @@ message MoveDelta
   bool   group_pivot = 6;     // rotate / flip the refs as one group around the centre of
                               // their combined body box (as the editor does for a selection)
                               // instead of each around its own anchor
+  repeated PartPose poses = 7;   // instead of refs + deltas: each part where it is to be
+}
+
+// A part's place, absolute; what is not given stays as it is
+message PartPose
+{
+  string          ref  = 1;
+  optional int64  x    = 2;            // nm, the anchor
+  optional int64  y    = 3;
+  optional int32  rot_decideg = 4;     // the orientation as KiCad shows it
+  optional bool   back = 5;            // on the bottom (flipped there first, around its anchor)
 }
 
 message MoveResult
@@ -242,8 +253,8 @@ message AutoPlace
 {
   repeated string refs  = 1;   // these parts; default: the parts outside the board outline
   bool   all            = 2;   // every unlocked part
-  int64  spacing        = 3;   // courtyard to courtyard, nm (0 = 0.25 mm)
-  int64  edge           = 4;   // courtyard to board edge, nm (0 = 0.5 mm)
+  optional int64 spacing = 3;   // courtyard to courtyard, nm (unset: 0.25 mm; 0 allowed)
+  optional int64 edge    = 4;   // courtyard to board edge, nm (unset: 0.5 mm; 0 allowed)
   bool   no_rotate      = 5;
   repeated string fixed = 6;   // keep these where they are (in addition to locked parts)
   repeated PartGroup groups = 7; // functional blocks kept together; default: the footprints' "Block" field
@@ -273,6 +284,10 @@ message AutoPlace
   // Apply the result even when it is worse than the parts' current places (every movable part
   // already on the board, not overlapping): by default those are kept and nothing moves.
   bool   force          = 20;
+
+  // Only the courtyards take room (what DRC keeps apart): no room for the silkscreen (texts and
+  // graphics), for a dense board; silk_tidy / hidden references after
+  bool   no_silk_room   = 21;
 }
 
 // Returns AutoPlaceResponse: running (progress), or the finished result, applied now
@@ -409,6 +424,7 @@ message LcscSymbol
   bool   registered = 6;   // the LCSC row was just added to the project sym-lib-table
   repeated string pins_without_pad = 7;   // symbol pins the footprint has no pad for
   repeated string pads_without_pin = 8;   // numbered footprint pads no symbol pin uses
+  string pin_types  = 9;   // the pins' electrical types inferred from their names, said
 }
 
 // ---------------------------------------------------------------------------
@@ -557,6 +573,7 @@ message DescribedItem
   string   handle = 2;   // "U5", "U5.3", short id for tracks/vias, "zone:<net>", "edge", ...
   string   net    = 3;
   ItemKind kind   = 4;
+  string   layer  = 5;   // its copper layer ("F.Cu"; "F.Cu-B.Cu" a through hole / via); "" none
 }
 
 message DescribeItemsResponse
@@ -652,7 +669,7 @@ message LcscSearch
   bool   basic_only  = 8;
   int64  min_stock   = 9;   // default 1
   int32  limit       = 10;  // default 8, at most 50
-  int32  live        = 11;  // how many of the first to check live (default 3, -1 none)
+  int32  live        = 11;  // how many of the first to check live (default 1, -1 none)
   bool   update      = 12;  // fetch the index again now
   // second-order parameters (the index's params table: MOSFETs, LDOs, op-amps, inductors,
   // diodes), id -> condition in the parameter's unit, SI prefixes allowed: "<=20m", ">=30V",
@@ -984,6 +1001,8 @@ message RouteEnd
 {
   string pad = 1;        // "U1.5"
   Point  pos = 2;        // or a point: on a track / via of the net (from), or anywhere (to)
+  bool   zone = 3;       // to: the net's own pour, the nearest filled copper of it (the start's
+                         // layer first; else a via down to the nearest layer that has it)
 }
 
 message RouteStop
@@ -1022,7 +1041,9 @@ message RouteResult
   string gap_to     = 13;
   Point  reached    = 14;   // failed: how far it got
   string blocked_by = 16;
-  Point  blocked_at = 17;
+  Point  blocked_at = 17;   // where the route meets it
+  int64  ends       = 18;   // nm, from -> to in one straight line (direct: through the stops)
+  Point  blocker_at = 19;   // the item in the way: its own position (a pad's centre)
 }
 
 message RouteResponse

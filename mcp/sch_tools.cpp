@@ -1250,7 +1250,10 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "\"sheets\" uses the schematic sheets, false none. Keeping blocks together costs some "
             "wire length (group_weight trades one for the other). Bottom side: back lists parts that "
             "may go there, back_decaps lets decoupling caps go under their IC pin (SMD only; off by "
-            "default: two-sided assembly costs more). Reports wire length before/after, how mixed "
+            "default: two-sided assembly costs more). A dense board: spacing / edge 0 are taken, and "
+            "silk_room=false keeps room for the courtyards only, as DRC does (no room for references and silk "
+            "outlines; silk_tidy after); "
+            "a \"no room\" says the area per side. Reports wire length before/after, how mixed "
             "the blocks are and how far the small passives (decaps, pull-ups) are from their IC pin. "
             "Existing tracks and vias are obstacles: on a routed board fewer parts find room, so "
             "place before routing (right after sync_pcb), or delete_tracks first. Runs beside "
@@ -1265,6 +1268,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                    { "spacing", { { "type", "number" }, { "description", "courtyard gap, mm (default 0.25)" } } },
                    { "edge", { { "type", "number" }, { "description", "courtyard to board edge, mm (default 0.5)" } } },
                    { "rotate", { { "type", "boolean" }, { "description", "try 90/180/270 (default true)" } } },
+                   { "silk_room", { { "type", "boolean" }, { "description", "room for silkscreen (default true)" } } },
                    { "groups", { { "description", "{\"LDO\": [\"U2\", \"C3\"], ...} blocks to keep together, "
                                                    "\"sheets\", or false: no blocks" } } },
                    { "group_weight", { { "type", "number" },
@@ -1465,6 +1469,12 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
 
                 if( a.contains( "edge" ) && a["edge"].is_number() )
                     req.set_edge( (int64_t) std::llround( a["edge"].get<double>() * 1e6 ) );
+
+                if( ( a.contains( "spacing" ) && a["spacing"].is_number() && a["spacing"].get<double>() < 0 )
+                    || ( a.contains( "edge" ) && a["edge"].is_number() && a["edge"].get<double>() < 0 ) )
+                    return TOOL_RESULT{ "spacing / edge: mm, 0 or more", true };
+
+                req.set_no_silk_room( !a.value( "silk_room", true ) );
 
                 kicadd::board::AutoPlaceResponse r;
                 std::string                      err;

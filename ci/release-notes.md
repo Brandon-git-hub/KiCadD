@@ -36,6 +36,30 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
   - **可設定：** 層數、疊層（可用 JLCPCB 的阻抗疊層）、矩形板框，最後由 KiCad 存檔。
   - **安全：** 已有任一個檔就拒絕，不覆寫。目前的板子有未存檔修改時也拒絕，除非 `discard=true`。
 
+**盲測回饋（子代理從規格從頭設計 7 埠 USB hub，與真人設計比對後的修正）**
+- **`delete_tracks`：** 同時給 `nets` 與 `region` 時，以前會忽略區域、刪掉全板該網路。現在兩者交集，回應會逐網路列出刪了什麼。
+- **`board_render layers:["back"]`：** 現在就是從底面看（底面絲印、鏡像），與 `back=true` 相同；front 與 back 同時給會拒絕。
+- **`query_area ref=`：** 第一行就是零件本身（位置、面、角度），再列周圍。
+- **DRC 的層：** 底面零件的焊盤以前標成 F.Cu，現在標實際的層（未連線標兩端各自的層）。
+- **`move_footprints` 絕對擺放：** `parts {"U1": {x, y, rotation, side}}`，多顆一次、一步 undo。
+- **`auto_place`：**
+  - `spacing` / `edge` 給 0 會照用（以前被當成預設值）。
+  - 新增 `silk_room=false`：只保留 courtyard（與 DRC 相同），密集的雙面板放得下了。
+  - 「no room」改為分面列出面積。
+- **`route to:"zone"`：** 可接到該網路自己的鋪銅；同層直接接，否則在端點打過孔，不打在焊盤上，並依序試最近的點。
+- **`route` 的回報：**
+  - 長度比改為對端點直線；有經過點時另列對經過點路徑的比。
+  - 不再留下零長度線段。
+  - 「in the way」同時列出物件位置與碰到的位置。
+- **LCSC 符號的腳位型別：** 依腳名保守推定：GND/VCC/VDD/VIN 為 power_in；穩壓器 / 開關的輸出與 IC 內部穩壓輸出為 power_out；連接器與其他腳為 passive。`lcsc_fetch` 會說明推定結果。
+- **`lcsc_search`：** 預設 live 檢查從 3 筆降為 1 筆（與 `lcsc_fetch` 共用 EasyEDA 的頻率限制）。
+- **skill：** 補上下列建議：
+  - 雙面與密集板的擺件規劃。
+  - 底面 IC 會使差分對順序反向。
+  - 兩層板做 90 Ω 的取捨。
+  - 大電路圖要分圖紙。
+  - JST 類外接埠的 ESD 要自行確認。
+
 **`simulate` 新增**
 - **`plot=true`：** 回傳 PNG 圖。
   - tran：波形，另一格畫電流。

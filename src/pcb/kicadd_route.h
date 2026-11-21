@@ -60,13 +60,15 @@ struct RESULT
     int         width = 0;
     long long   length = 0;     ///< nm, along the new tracks
     long long   direct = 0;     ///< nm, from -> stops -> to in straight lines
+    long long   ends = 0;       ///< nm, from -> to in one straight line
     int         segments = 0;
     int         vias = 0;
     int         minGap = -1;    ///< nm to the nearest other-net copper or the edge (-1: none within 5 mm)
     std::string gapTo;          ///< what that is
     std::optional<VECTOR2I> reached;     ///< failed: how far the route got
     std::string             blockedBy;   ///< failed: what is in the way there
-    std::optional<VECTOR2I> blockedAt;
+    std::optional<VECTOR2I> blockedAt;   ///< where the route meets it
+    std::optional<VECTOR2I> blockerAt;   ///< the item's own position (a pad's centre, a track's start)
     std::vector<board::DrcViolation> drc;   ///< clearance / edge violations of the new tracks
 };
 
