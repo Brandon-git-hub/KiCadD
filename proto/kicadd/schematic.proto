@@ -502,6 +502,9 @@ message SchSimPin
   string net    = 3;   // the schematic's name; empty: not connected
   string type   = 4;   // "passive", "power input", ...
   string unit   = 5;   // "A" for a unit of a multi-unit part
+  bool   has_xy = 6;   // x / y known
+  double x      = 7;   // the pin's place in the symbol (mm, the library's; not as placed)
+  double y      = 8;
 }
 
 message SchSimPart

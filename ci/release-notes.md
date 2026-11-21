@@ -13,7 +13,17 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 - **一次一個專案：** 一個服務同時只開一個專案（板子加電路圖），換專案請用 `open_board`。
 - **目前不支援：** 差分對與等長佈線、全板自動佈線（`route` 只代替重複的手動佈線）、電路圖自動排版、組裝圖、STEP 匯出（3D 模型只有 VRML）、ODB++ / IPC-2581 / DXF、MCP resources / prompts。
 
-## 這一版（beta.6）
+## 這一版（beta.7）
+修正版：本地試用 beta.5、beta.6 時回報的問題。工具數不變（60 個）。
+
+**修正**
+- **`simulate` 的 Op-Amp 被排除：** 從 LCSC 轉來的符號腳名是 `INVERTING INPUT`、`NONINVERTING INPUT`，以前認不得，所以用 `lcsc=` 加進來的這類運放都無法模擬。現在也認得這種寫法，以及 `IN+`、`INA+`、`IN A+`、`OUTA`；KiCad 原生庫沒有名字的輸出腳，改依腳位型別判斷。
+- **多通道配對：** 依序用 unit（A / B）、腳名的通道字尾（`INA+` / `OUTA`、`1IN-` / `1OUT`）配對。同一個 unit 裡腳名重複時，每個輸出配符號上畫在它旁邊的輸入；拿不到位置時才退回用最近的腳號。這兩種是推測出來的，模型那一行會註明，例如 `inferred pairing: OUT 1 with +6 -7; OUT 8 with +2 -3 (by place in the symbol)`。
+- **`simulate` 失敗時看不到原因：** probe 指到的網路上沒有任何有模型的零件時，以前只回 `no such vector n_BUF`；現在直接說明，並附上 left out 清單。其他 ngspice 執行失敗也會附上這份清單。
+- **`simulate ac` 沒算 MLCC 的 DC Bias：** ac 前的 DC 預跑以前沒取到電容電壓，每顆 MLCC 都被當成 0 V、沒有衰減。現在和 `op`、`tran` 一樣，例如 `@ 3.3 V: C_eff ≈ 2.24 µF (est. ...)`。
+- **`lcsc_match` 認得 LCSC 庫的封裝名稱：** `R0603`、`C0805`、`LED0603-RD` 這類名稱（`lcsc=` 產生的封裝）以前回「not a chip package」，現在讀得出尺寸。`0603Metric` 仍視為 0201。
+
+## beta.6
 新增 1 個工具（共 60 個）。壓縮檔裡多附了 ngspice（BSD 授權，`bin\ngspice\`）。
 
 **新功能**

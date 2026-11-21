@@ -190,8 +190,20 @@ std::string chipSize( const std::string& aFootprint )
             bool   before = at == 0 || !std::isalnum( static_cast<unsigned char>( name[at - 1] ) );
             bool   after = end == name.size() || !std::isalnum( static_cast<unsigned char>( name[end] ) );
 
-            // "R_0603_1608Metric", "LED_0805", "C_0402"; not "1608Metric"
-            if( before && after )
+            // the LCSC library's names: letters right before it ("R0603", "C0805", "LED0603-RD"), a
+            // letter after it but no more digits and not "Metric" (0603Metric is 0201)
+            size_t word = at;
+
+            while( word > 0 && std::isalpha( static_cast<unsigned char>( name[word - 1] ) ) )
+                word--;
+
+            bool letters = word < at && ( word == 0 || !std::isalnum( static_cast<unsigned char>( name[word - 1] ) ) );
+
+            if( letters && !after )
+                after = !std::isdigit( static_cast<unsigned char>( name[end] ) ) && name.compare( end, 6, "Metric" ) != 0;
+
+            // "R_0603_1608Metric", "LED_0805", "C_0402", "R0603"; not "1608Metric"
+            if( ( before || letters ) && after )
                 return size;
 
             at = end;

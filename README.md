@@ -1367,7 +1367,7 @@ ROADMAP phase 3, item 2. Three pieces, none linking ngspice:
     - The input draws the output current plus Iq. Rout is 10 mΩ.
     - Fixed parts use Vout. Adjustable parts use a reference on FB, either the data's Vout
       when it is below 1.3 V or `vref`.
-  - **Op-amps:** behavioural, per channel, found from pin names (+IN / -IN / OUT, units).
+  - **Op-amps:** behavioural, per channel, found from pin names (+IN / IN+ / INA+ / NONINVERTING INPUT, -IN / INVERTING INPUT, OUT, units). Channels come from the units (A / B), then from what is left of the names (INA+ / OUTA, 1IN- / 1OUT). Where one unit has the same names more than once, each output takes the inputs drawn nearest to it in the symbol, or without places the nearest pin numbers; those are guesses and the model line says `inferred pairing: OUT 1 with +3 -2; ...`.
     - A transconductance into R‖C: 100 dB, then a pole at GBW / 1e5.
     - The current is limited to slew·C, and a clamp stops wind-up past the rails.
     - The output is limited to the rails: 1.2 V or 20 mV (rail to rail) from them.

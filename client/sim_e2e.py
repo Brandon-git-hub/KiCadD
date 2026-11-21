@@ -103,16 +103,30 @@ def main():
         r3 = part("Device:R", "2k", 50.8, 140)
         r4 = part("Device:R", "1k", 76.2, 140)
         mcp.tool("sch_set_fields", {"parts": {r3: {"Sim.Device": "R", "Sim.Params": "r=2k"}}})
+        # a dual in one unit with the names twice (as some EasyEDA symbols), numbered so the nearest
+        # pin numbers pair it wrong (OUT 1 next to 2 3, channel B's): each channel drawn together
+        L, R = "left", "right"
+        mcp.tool("lib_create_symbol", {"name": "OPA2", "value": "GS8552", "pins": [
+            {"number": "6", "name": "NONINVERTING_INPUT", "type": "input", "side": L},
+            {"number": "7", "name": "INVERTING_INPUT", "type": "input", "side": L},
+            {"number": "9", "name": "NC", "type": "no_connect", "side": L}, {"number": "10", "name": "NC", "type": "no_connect", "side": L},
+            {"number": "2", "name": "NONINVERTING_INPUT", "type": "input", "side": L},
+            {"number": "3", "name": "INVERTING_INPUT", "type": "input", "side": L},
+            {"number": "1", "name": "OUT", "type": "output", "side": R}, {"number": "4", "name": "+V", "type": "power_in", "side": R},
+            {"number": "5", "name": "-V", "type": "power_in", "side": R}, {"number": "11", "name": "NC", "type": "no_connect", "side": R},
+            {"number": "8", "name": "OUT", "type": "output", "side": R}]})
         u3 = part("kicadd:OPA1", "LM358", 127, 127, lcsc="C7950")
+        u4 = part("kicadd:OPA2", "GS8552", 127, 165, lcsc="C157716")
         r5 = part("Device:R", "1k", 101.6, 76.2)
         d2 = part("Device:LED", "RED", 127, 76.2)
         err, t = mcp.tool("sch_connect", {"nets": {
             "VIN": [f"{u1}.3", f"{c3}.1"], "+3V3": [f"{u1}.2", f"{c1}.1", f"{c2}.1", f"{u2}.1", f"{r5}.1"],
-            "GND": [f"{d2}.1", f"{u1}.1", f"{c1}.2", f"{c2}.2", f"{c3}.2", f"{u2}.2", f"{c4}.2", f"{r4}.2", f"{u3}.4"],
+            "GND": [f"{d2}.1", f"{u1}.1", f"{c1}.2", f"{c2}.2", f"{c3}.2", f"{u2}.2", f"{c4}.2", f"{r4}.2", f"{u3}.4", f"{u4}.5"],
             "SIG": [f"{r2}.1"], "OUT": [f"{r2}.2", f"{c4}.1", f"{u2}.3"],
             "SIG2": [f"{r3}.1"], "MID": [f"{r3}.2", f"{r4}.1"],
-            "+5V": [f"{u3}.8"], "AIN": [f"{u3}.3"], "AOUT": [f"{u3}.1", f"{u3}.2"],
-            "LEDA": [f"{r5}.2", f"{d2}.2"]},
+            "+5V": [f"{u3}.8", f"{u4}.4"], "AIN": [f"{u3}.3"], "AOUT": [f"{u3}.1", f"{u3}.2"],
+            "LEDA": [f"{r5}.2", f"{d2}.2"],
+            "BIN1": [f"{u4}.6"], "BOUT1": [f"{u4}.1", f"{u4}.7"], "BIN2": [f"{u4}.2"], "BOUT2": [f"{u4}.8", f"{u4}.3"]},
             "power": ["GND", "+3V3", "+5V"]})
         check(not err, "wired: " + t[:60])
 
@@ -193,6 +207,25 @@ def main():
         err, t = sim({"refs": [u3], "sources": {"AIN": 2.5}})
         v = num(t, r"\n  AOUT: ([\d.]+) V")
         check(v and abs(v - 2.5 - 0.007) < 1e-3, f"follower DC {v} V (2.5 V + Vos 7 mV from the data)")
+
+        err, t = sim({"refs": [u4], "sources": {"BIN1": 1, "BIN2": 2}})
+        print("      ", "\n       ".join(t.splitlines()[-6:]))
+        check(not err and re.search(re.escape(u4) + r" GS8552 \(C157716\): op-amp, 2 channel\(s\)", t),
+              f"{u4} (INVERTING INPUT / OUT twice in one unit): 2 channels")
+        v1, v2 = num(t, r"\n  BOUT1: ([\d.]+) V"), num(t, r"\n  BOUT2: ([\d.]+) V")
+        check(v1 and v2 and abs(v1 - 1) < 0.02 and abs(v2 - 2) < 0.02, f"each output with the inputs drawn next to it, not the nearest numbers: BOUT1 {v1}, BOUT2 {v2}")
+        check("inferred pairing: OUT 1 with +6 -7; OUT 8 with +2 -3 (by place in the symbol)" in t, "the guessed pairing said")
+        check("inferred" not in t.split(f"{u4} GS8552")[0], "LM358's 1IN+ / 1OUT style or a single channel: not inferred")
+
+        print("[a probe on a part left out]")
+        err, t = sim({"refs": [u2, r3, r4], "sources": {"SIG2": 3}, "probes": ["OUT"]})
+        check(err and "OUT has no modelled part on it" in t and f"left out (their pins open): {u2} LOADIC (no model" in t,
+              "refused, with what was left out: " + t.replace("\n", " | ")[:140])
+
+        print("[ac: the MLCCs at their DC bias]")
+        err, t = sim({"around": [u1], "sources": {"VIN": "dc 5 ac 1"}, "loads": {"+3V3": 0.1}, "ac": {"from": 100, "to": "10Meg"}, "probes": ["+3V3"]})
+        check(not err and re.search(re.escape(c1) + r" .*@ 3\.\d+ V: C_eff", t), f"ac: {c1} at the op point's 3.3 V: " +
+              next((l.strip()[:120] for l in t.splitlines() if l.strip().startswith(c1 + " ")), t[:120]))
 
         print("[bad]")
         err, t = sim({})

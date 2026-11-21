@@ -127,6 +127,20 @@ def main():
         err, t = mcp.tool("lcsc_match", {"refs": ["R99"]})
         check(err and "not in the schematic: R99" in t, "an unknown ref is refused")
 
+        print("[the LCSC library's footprint names]")
+        x = 25.4
+        for ref, lib, value, fp in [("R8", "Device:R", "10k", "LCSC:R0603"), ("C8", "Device:C", "1uF", "LCSC:C0805"),
+                                    ("D8", "Device:LED", "LED red", "LCSC:LED0603-RD"), ("C9", "Device:C", "1uF", "LCSC:C0603Metric")]:
+            mcp.tool("sch_add_part", {"lib_id": lib, "ref": ref, "value": value, "x": x, "y": 101.6, "footprint": fp})
+            x += 12.7
+        err, t = mcp.tool("lcsc_match", {"refs": ["R8", "C8", "D8", "C9"], "live": False})
+        print("\n".join("       " + l[:150] for l in t.splitlines()))
+        lines = {l.split(" (")[0].strip(): l for l in t.splitlines()}
+        check(re.search(r"-> C\d+ ", lines.get("R8", "")) is not None, "R0603: 0603 read from the LCSC library's name")
+        check(re.search(r"-> C\d+ ", lines.get("C8", "")) is not None, "C0805")
+        check(re.search(r"-> C\d+ ", lines.get("D8", "")) is not None, "LED0603-RD")
+        check("not a chip package" in lines.get("C9", ""), "C0603Metric: not taken as 0603 (metric 0603 is 0201)")
+
         mcp.close()
     finally:
         server.stop()

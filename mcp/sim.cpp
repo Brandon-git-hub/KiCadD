@@ -36,6 +36,7 @@
 #include <set>
 #include <sstream>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 #include <kicadd/board.pb.h>
@@ -1158,13 +1159,27 @@ bool emit( PART& aP, NETLIST& aN, double aScale )
             const ks::SchSimPin* o = nullptr;
         };
 
-        std::map<std::string, CH> chans;
-        const ks::SchSimPin*      vp = nullptr;
-        const ks::SchSimPin*      vn = nullptr;
+        // the pins' roles by name: +IN / IN+ / INA+ / NONINVERTING INPUT, -IN / INVERTING INPUT, OUT / OUTA
+        struct ROLE
+        {
+            const ks::SchSimPin* pin;
+            int                  role;   // 1 +, 2 -, 3 out
+            std::string          key;    // the channel: the unit and what is left of the name
+        };
+
+        std::vector<ROLE>    roles;
+        const ks::SchSimPin* vp = nullptr;
+        const ks::SchSimPin* vn = nullptr;
 
         for( const ks::SchSimPin& pin : s.pins() )
         {
-            std::string n = pinName( pin );
+            std::string n;
+
+            for( char c : pinName( pin ) )
+            {
+                if( c != '_' )
+                    n += c;
+            }
 
             if( n == "V+" || n == "VCC" || n == "VDD" || n == "VS+" || n == "+VS" || n == "VCC+" || n == "+V" || n == "V+/VDD" )
             {
@@ -1178,20 +1193,27 @@ bool emit( PART& aP, NETLIST& aN, double aScale )
                 continue;
             }
 
-            std::string key = n;
-            int         role = 0;
+            int role = 0;
 
-            if( n.find( "OUT" ) != std::string::npos || n == "~" || n == "O" )
+            if( n.find( "NONINV" ) != std::string::npos || n.find( "NON-INV" ) != std::string::npos )
+                role = 1;
+            else if( n.find( "INV" ) != std::string::npos )
+                role = 2;
+            else if( n.find( "OUT" ) != std::string::npos || n == "O" )
                 role = 3;
             else if( n.find( '+' ) != std::string::npos )
                 role = 1;
             else if( n.find( '-' ) != std::string::npos )
                 role = 2;
+            else if( n.empty() && pin.type().find( "output" ) != std::string::npos )
+                role = 3;   // KiCad's Amplifier_Operational: "~" (no name) for the output
 
             if( !role )
                 continue;
 
-            for( const char* tok : { "OUT", "IN", "+", "-", "~" } )
+            std::string key = n;
+
+            for( const char* tok : { "NON-INVERTING", "NONINVERTING", "INVERTING", "INPUT", "OUTPUT", "OUT", "IN", "+", "-" } )
             {
                 size_t at;
 
@@ -1199,8 +1221,104 @@ bool emit( PART& aP, NETLIST& aN, double aScale )
                     key.erase( at, std::strlen( tok ) );
             }
 
-            CH& ch = chans[pin.unit() + "|" + key];
-            ( role == 1 ? ch.p : role == 2 ? ch.n : ch.o ) = &pin;
+            roles.push_back( { &pin, role, pin.unit() + "|" + key } );
+        }
+
+        // the channels: 1. the units (A / B); 2. what is left of the names (INA+ OUTA, 1IN- 1OUT);
+        // 3. where one unit has the same names more than once, each output with the nearest inputs in
+        // the symbol (who drew it put a channel's pins together); 4. without places, the nearest pin
+        // numbers (a dual's 1 2 3 / 7 6 5). 3 and 4 are guesses: said as inferred.
+        auto pinNo = []( const ks::SchSimPin* aPin ) { return std::strtol( aPin->number().c_str(), nullptr, 10 ); };
+        std::map<std::string, std::vector<const ROLE*>> byKey;
+
+        for( const ROLE& r : roles )
+            byKey[r.key].push_back( &r );
+
+        std::vector<CH> chans;
+        std::string     inferred;
+
+        for( auto& [key, list] : byKey )
+        {
+            std::vector<const ROLE*> outs;
+            int                      nRole[4] = { 0, 0, 0, 0 };
+
+            for( const ROLE* r : list )
+            {
+                nRole[r->role]++;
+
+                if( r->role == 3 )
+                    outs.push_back( r );
+            }
+
+            std::sort( outs.begin(), outs.end(), [&]( const ROLE* x, const ROLE* y ) { return pinNo( x->pin ) < pinNo( y->pin ); } );
+
+            if( outs.size() == 1 && nRole[1] <= 1 && nRole[2] <= 1 )
+            {
+                CH ch;
+                ch.o = outs[0]->pin;
+
+                for( const ROLE* r : list )
+                    ( r->role == 1 ? ch.p : r->role == 2 ? ch.n : ch.o ) = r->pin;
+
+                chans.push_back( ch );
+                continue;
+            }
+
+            const bool byPlace = std::all_of( list.begin(), list.end(), []( const ROLE* r ) { return r->pin->has_xy(); } );
+
+            auto dist = [&]( const ROLE* x, const ROLE* y ) -> double
+            {
+                if( byPlace )
+                    return std::hypot( x->pin->x() - y->pin->x(), x->pin->y() - y->pin->y() );
+
+                return std::labs( pinNo( x->pin ) - pinNo( y->pin ) );
+            };
+
+            std::map<const ROLE*, CH> made;
+
+            for( const ROLE* o : outs )
+                made[o].o = o->pin;
+
+            // the closest output / input pairs first, each pin once
+            for( int want : { 1, 2 } )
+            {
+                std::vector<std::tuple<double, const ROLE*, const ROLE*>> pairs;
+
+                for( const ROLE* o : outs )
+                {
+                    for( const ROLE* r : list )
+                    {
+                        if( r->role == want )
+                            pairs.emplace_back( dist( o, r ), o, r );
+                    }
+                }
+
+                std::stable_sort( pairs.begin(), pairs.end(), []( const auto& x, const auto& y ) { return std::get<0>( x ) < std::get<0>( y ); } );
+                std::set<const ROLE*> taken;
+
+                for( const auto& [d, o, r] : pairs )
+                {
+                    const ks::SchSimPin*& slot = want == 1 ? made[o].p : made[o].n;
+
+                    if( slot || taken.count( r ) )
+                        continue;
+
+                    slot = r->pin;
+                    taken.insert( r );
+                }
+            }
+
+            std::string l;
+
+            for( const ROLE* o : outs )
+            {
+                const CH& ch = made[o];
+                chans.push_back( ch );
+                l += ( l.empty() ? "" : "; " ) + std::string( "OUT " ) + o->pin->number() + " with +" + ( ch.p ? ch.p->number() : "?" ) + " -"
+                     + ( ch.n ? ch.n->number() : "?" );
+            }
+
+            inferred += ( inferred.empty() ? "" : "; " ) + l + ( byPlace ? " (by place in the symbol)" : " (by pin number)" );
         }
 
         if( !vp || !vn )
@@ -1223,7 +1341,7 @@ bool emit( PART& aP, NETLIST& aN, double aScale )
         const std::string nvp = aN.node( *vp, s.ref() ), nvn = aN.node( *vn, s.ref() );
         int          made = 0;
 
-        for( const auto& [key, ch] : chans )
+        for( const CH& ch : chans )
         {
             if( !ch.p || !ch.n || !ch.o )
                 continue;
@@ -1251,7 +1369,7 @@ bool emit( PART& aP, NETLIST& aN, double aScale )
 
         if( !made )
         {
-            aP.why = "op-amp input / output pins not found (+IN / -IN / OUT)";
+            aP.why = "op-amp input / output pins not found (+IN / IN+ / NONINVERTING INPUT, -IN / INVERTING INPUT, OUT)";
             return false;
         }
 
@@ -1262,7 +1380,7 @@ bool emit( PART& aP, NETLIST& aN, double aScale )
         aP.notes = std::to_string( made ) + " channel(s): GBW " + FormatSI( gbw, "Hz" ) + src( "gbw" ) + " (one pole after 100 dB), slew "
                    + fmt( slew / 1e6, 3 ) + " V/µs" + src( "slew" ) + ", Vos " + FormatSI( vos, "V" ) + src( "vos" ) + ", output "
                    + ( rro ? "rail to rail" : "1.2 V from the rails" ) + ( hasParam( aP, "rr_out" ) ? "" : " assumed" )
-                   + "; supply current Iq only";
+                   + "; supply current Iq only" + ( inferred.empty() ? "" : "; inferred pairing: " + inferred );
         return true;
     }
 
@@ -2211,7 +2329,10 @@ TOOL_RESULT Simulate( IPC_CLIENT& aIpc, const json& a )
     if( probes.size() > 24 )
         return fail( "probes: at most 24" );
 
-    // --- the netlist for one run: c / r / l scaled for the corners
+    // --- the netlist for one run: c / r / l scaled for the corners; the DC bias pass (an op, also
+    // before an ac) asks for DC vectors: the MLCCs' voltages, not dB
+    bool biasPass = false;
+
     auto build = [&]( double aScale, std::vector<std::string>& aVectors, std::vector<std::string>& aLabels ) -> std::string
     {
         NETLIST n = base;
@@ -2260,11 +2381,11 @@ TOOL_RESULT Simulate( IPC_CLIENT& aIpc, const json& a )
         for( const std::string& pr : probes )
         {
             const std::string& node = base.spiceOf[pr];
-            aVectors.push_back( analysis == "ac" ? "vdb(" + node + ")" : "v(" + node + ")" );
+            aVectors.push_back( analysis == "ac" && !biasPass ? "vdb(" + node + ")" : "v(" + node + ")" );
             aLabels.push_back( "v:" + pr );
         }
 
-        if( analysis != "ac" )
+        if( analysis != "ac" || biasPass )
         {
             k = 0;
 
@@ -2335,18 +2456,53 @@ TOOL_RESULT Simulate( IPC_CLIENT& aIpc, const json& a )
     std::string              keep;
     const bool               showNetlist = a.value( "netlist", false );
 
+    // the parts with no model: said with an answer, and with a failed run (its cause is often there)
+    auto leftOutText = [&]()
+    {
+        std::string l;
+
+        for( const PART& p : parts )
+        {
+            if( p.kind.empty() )
+                l += ( l.empty() ? "" : "; " ) + p.sch->ref() + " " + p.sch->value() + " (" + p.why + ")";
+        }
+
+        return l;
+    };
+
+    auto runFail = [&]( const std::string& aMsg )
+    {
+        std::string l = leftOutText();
+        return fail( aMsg + ( l.empty() ? "" : "\nleft out (their pins open): " + l ) );
+    };
+
+    // a probe on a net no modelled part is on: no node there
+    for( const std::string& pr : probes )
+    {
+        bool on = std::any_of( parts.begin(), parts.end(), [&]( const PART& p )
+                               { return !p.kind.empty() && std::any_of( p.sch->pins().begin(), p.sch->pins().end(),
+                                                                         [&]( const ks::SchSimPin& pin ) { return pin.net() == pr; } ); } );
+
+        bool src = std::any_of( srcs.begin(), srcs.end(), [&]( const SRC& x ) { return x.net == pr; } );
+
+        if( !on && !src )
+            return runFail( "probes: " + bare( pr ) + " has no modelled part on it" );
+    }
+
     // --- the DC bias pass: the DC voltage across each MLCC (op; for tran its average over the window)
     bool anyBias = biasOn && std::any_of( parts.begin(), parts.end(), []( const PART& p )
                                           { return p.kind == "C" && p.biasOn && p.capKind == "MLCC" && p.dielectric != "C0G"; } );
 
     if( anyBias )
     {
+        biasPass = true;
         std::string circuit = build( 1.0, vectors, labels );
+        biasPass = false;
         RUN         r = runSpice( exe, circuit, analysis == "tran" ? control : "op", vectors, timeout, nullptr );
         spent += r.seconds;
 
         if( !r.ok )
-            return fail( "the DC bias pass: " + r.error + ( showNetlist ? "\n" + circuit : "" ) );
+            return runFail( "the DC bias pass: " + r.error + ( showNetlist ? "\n" + circuit : "" ) );
 
         for( PART& p : parts )
         {
@@ -2383,23 +2539,15 @@ TOOL_RESULT Simulate( IPC_CLIENT& aIpc, const json& a )
         spent += r.seconds;
 
         if( !r.ok )
-            return fail( std::string( scale == 1.0 ? "" : "corner run: " ) + r.error + ( showNetlist ? "\n" + c : "" ) );
+            return runFail( std::string( scale == 1.0 ? "" : "corner run: " ) + r.error + ( showNetlist ? "\n" + c : "" ) );
 
         runs.push_back( std::move( r ) );
         runLabels.push_back( labels );
     }
 
     // --- the answer
-    int modelled = 0;
-    std::string leftOut;
-
-    for( const PART& p : parts )
-    {
-        if( !p.kind.empty() )
-            modelled++;
-        else
-            leftOut += ( leftOut.empty() ? "" : "; " ) + p.sch->ref() + " " + p.sch->value() + " (" + p.why + ")";
-    }
+    int               modelled = std::count_if( parts.begin(), parts.end(), []( const PART& p ) { return !p.kind.empty(); } );
+    const std::string leftOut = leftOutText();
 
     std::string out = "simulate " + analysis;
 

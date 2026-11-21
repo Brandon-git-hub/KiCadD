@@ -95,6 +95,7 @@ bool hasOwnModel( SCH_SYMBOL* aSymbol )
 struct SIM_PIN
 {
     std::string ref, number, name, net, type, unit;
+    double      x = 0, y = 0;   // in the symbol (mm)
 };
 
 } // namespace
@@ -186,7 +187,11 @@ HANDLER_RESULT<SchSimRegionResponse> KICADD_HANDLER_SCH::handleSimRegion( const 
                 std::string net = pinNet( pin, sheet );
                 std::string type = utf8( pin->GetCanonicalElectricalTypeName() );
                 std::transform( type.begin(), type.end(), type.begin(), ::tolower );
-                part.pins.push_back( { ref, utf8( pin->GetNumber() ), utf8( pin->GetShownName() ), net, type, unit } );
+                // the library's place: the same for every unit and however the symbol is turned
+                const SCH_PIN* lib = pin->GetLibPin() ? pin->GetLibPin() : pin;
+                const VECTOR2I at = lib->GetLocalPosition();
+                part.pins.push_back( { ref, utf8( pin->GetNumber() ), utf8( pin->GetShownName() ), net, type, unit,
+                                       schIUScale.IUTomm( at.x ), schIUScale.IUTomm( at.y ) } );
 
                 if( net.empty() )
                     continue;
@@ -480,6 +485,9 @@ HANDLER_RESULT<SchSimRegionResponse> KICADD_HANDLER_SCH::handleSimRegion( const 
             sp->set_net( pin.net );
             sp->set_type( pin.type );
             sp->set_unit( pin.unit );
+            sp->set_has_xy( true );
+            sp->set_x( pin.x );
+            sp->set_y( pin.y );
 
             if( !pin.net.empty() )
                 regionNets.insert( pin.net );
