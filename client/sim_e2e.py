@@ -31,7 +31,7 @@ import shutil
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from m5_e2e import FAILS, Mcp, Server, check, make_project  # noqa: E402
+from m5_e2e import FAILS, Mcp, Server, binaries, check, make_project  # noqa: E402
 
 
 def num(t, pat):
@@ -61,11 +61,12 @@ def main():
             shutil.copyfileobj(src, dst)
         a.index = os.path.join(work, "parts.db")
     sock = os.path.join(work, "s.sock")
-    env = dict(os.environ, KICAD_RUN_FROM_BUILD_DIR="1", KICADD_LCSC_OFFLINE="1",
-               KICADD_PARTS_DB=os.path.abspath(a.index), KICADD_NGSPICE=os.path.abspath(a.ngspice))
+    # a build tree or an installed folder (Windows CI: dist/bin), as the other tests
+    _, kicadd_mcp, env = binaries(os.path.abspath(a.build))
+    env = dict(env, KICADD_LCSC_OFFLINE="1", KICADD_PARTS_DB=os.path.abspath(a.index), KICADD_NGSPICE=os.path.abspath(a.ngspice))
     server = Server(a.build, sock, os.path.join(proj, "blank.kicad_pcb"), env, os.path.join(work, "server.log"))
     check(server.start(), "api-server up")
-    mcp = Mcp([os.path.join(a.build, "kicadd-mcp"), "--socket", sock, "--stdio"], env)
+    mcp = Mcp([kicadd_mcp, "--socket", sock, "--stdio"], env)
     try:
         def part(lib, value, x, y, fp="", lcsc=""):
             err, t = mcp.tool("sch_add_part", {"lib_id": lib, "value": value, "x": x, "y": y, **({"footprint": fp} if fp else {})})
@@ -214,7 +215,7 @@ def main():
     sock2 = os.path.join(work, "r.sock")
     server = Server(a.build, sock2, os.path.join(rect, "rectifier.kicad_pcb"), env, os.path.join(work, "server-rect.log"))
     check(server.start(), "api-server up on the rectifier demo")
-    mcp = Mcp([os.path.join(a.build, "kicadd-mcp"), "--socket", sock2, "--stdio"], env)
+    mcp = Mcp([kicadd_mcp, "--socket", sock2, "--stdio"], env)
     try:
         err, t = mcp.tool("simulate", {"sheet": "/", "tran": {"stop": "50m", "step": "10u"}, "netlist": True})
         print("      ", "\n       ".join(ln for ln in t.splitlines() if ln.startswith(("simulate", "  D1", "  V1", "  rect_out", ".include"))))
