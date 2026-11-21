@@ -68,6 +68,11 @@ std::vector<PCB_LAYER_ID> WithoutZone( const BOARD& aBoard, const std::vector<PC
 /// KiCad's default FR4 numbers, with the advice to check with the fab before ordering.
 std::string Source( const BOARD& aBoard );
 
+/// The dielectric between two copper layers from the stackup (its default one when none is
+/// defined): its thickness (m, the copper of layers between included) and its thickness-weighted
+/// Er. false: not both copper layers of the board.
+bool Between( const BOARD& aBoard, PCB_LAYER_ID aA, PCB_LAYER_ID aB, double& aH, double& aEr );
+
 /// mm, rounded to the micrometre.
 double Mm( double aMetres );
 

@@ -11,6 +11,7 @@
 #define KICADD_MCP_TOOLS_H
 
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -41,6 +42,14 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc );
 
 /// M5a schematic tools (sch_tools.cpp)
 void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc );
+
+/// phase 3 items 3 / 4: pdn (pdn.cpp), reflection (reflect.cpp)
+TOOL PdnTool( IPC_CLIENT& aIpc );
+TOOL ReflectionTool( IPC_CLIENT& aIpc );
+
+/// phase 4 item 3: new_project (project.cpp); it runs open_board, board_setup, board_outline,
+/// save_board and sch_save from aTable
+TOOL NewProjectTool( std::shared_ptr<std::vector<TOOL>> aTable );
 
 } // namespace kicadd::mcp
 

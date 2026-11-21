@@ -1,6 +1,6 @@
 ---
 name: kicadd
-description: How to work on a KiCad schematic or PCB through the kicadd MCP tools (KiCadD): reviewing a design, editing the schematic, sourcing LCSC/JLCPCB parts, a new board's outline / layers / pours / fab rules, schematic-to-board, auto placement, routing (route, route_short, fanout), design rules, DRC/ERC and fabrication output. Use whenever the kicadd tools (board_summary, sch_summary, auto_place, ...) are available and the task touches a schematic, board, footprint, part or manufacturing file.
+description: How to work on a KiCad schematic or PCB through the kicadd MCP tools (KiCadD): a new project, reviewing a design, editing the schematic, sourcing LCSC/JLCPCB parts, simulation, PDN impedance and reflections, a new board's outline / layers / pours / fab rules, schematic-to-board, auto placement, routing (route, route_short, fanout), design rules, DRC/ERC and fabrication output. Use whenever the kicadd tools (board_summary, sch_summary, auto_place, ...) are available and the task touches a schematic, board, footprint, part or manufacturing file.
 ---
 
 # Working with KiCadD (kicadd MCP tools)
@@ -215,10 +215,68 @@ op-amp's GBW when missing), and parts without a model are listed as left out, th
   "8m", "esl": "0.5n"}, "U1": {"psrr": 55, "psrr_f": "5k", "psrr_hf": 25, "loop_bw": "50k"}, "U2": {"subckt": "TPS7A02",
   "lib": "models/tps7a02.lib", "pins": ["IN", "GND", "EN", "OUT"]}}`, `exclude true` to
   leave one out. Say which numbers were estimated when you report.
-- ESL is the part's own: the board's mounting inductance (pads, vias) is not in it yet.
+- ESL is the part's own: the board's mounting inductance (pads, vias) is not in `simulate`;
+  `pdn` adds it from the layout.
+- `plot true` returns a PNG next to the text (tran: the probes, and the sources' / inductors'
+  currents in a second panel; ac: gain and phase; dc: against the swept value; corners as faint
+  lines). Ask for it when the shape matters (ringing, a Bode plot); the numbers stay in the text.
+- `dc {source: "VIN", from: 0, to: 5, step: "10m"}` sweeps one of `sources` (volts) or `loads`
+  (amps): the source's current against its voltage is an I-V curve (a diode, a MOSFET's Id with
+  a gate source fixed).
 - An LDO's PSRR has one number in the data (usually at 100 Hz - 1 kHz). Over frequency it is
   assumed: flat to `psrr_f` (loop_bw / 10), then 20 dB/dec worse to `psrr_hf` (20 dB). For ripple
   from a switcher (100 kHz - 2 MHz), read the datasheet's PSRR curve and set those two.
+
+## PDN impedance (pdn)
+
+`pdn {net: "+1V8"}` works out Z(f) at the load from the layout: each capacitor between the rail
+and its ground as ESR + (body ESL + its mounting) + C_eff, the plane pair's capacitance, the
+regulator (`vrm {r, l}`; 2 mΩ + 20 nH assumed when not given) and the load's own vias. The
+mounting comes from the board: the track from each pad to its vias, the via loop down to the
+rail's and the ground's planes, the plane pair from the capacitor to the load. Read the
+capacitor lines (by SRF): `L 400 pH + 1.3 nH (tracks 0.2, vias 0.9, planes 0.3)` says where
+each one's inductance is, so you can tell a far capacitor from a poorly mounted one.
+
+- The target is yours: `target` (ohm), e.g. V × ripple % / transient current
+  (1.0 V, 3%, 10 A: 3 mΩ). Without it no verdict, only the peaks and the lowest |Z|.
+- Peaks are named by the capacitors on each side (`between 1 µF ... and 100 nF ...`): add a value
+  between them, or cut the mounting of the higher one (vias next to the pads, a via in pad).
+  Try it before placing: `add [{c: "2.2u", package: "0402", count: 4}]` (the board's median
+  mounting), `models {"C12": {"mount": "0.3n"}}` (as if re-routed), `exclude`.
+- The load defaults to the part with most pads on the rail; give `at` for another IC.
+- `volts` sets the DC bias voltage when the name has none. MLCCs lose a lot at their rated
+  voltage (est.), so check C_eff, not the value.
+- Limits: lumped planes (no cavity resonances); a peak above every SRF (planes with the
+  mounting) is rough in height. Above ~100 MHz the package and die capacitance dominate; they
+  are not in the board.
+
+## Reflections and series termination (reflection)
+
+`reflection {net: "CLK"}` simulates the net's edge as routed: every track piece a lossless line
+with its layer's and width's Z0 and delay, the driver a step through `rout`, each receiver
+`cin`. It runs as routed and with a series resistor of Z0 − rout (E24), and reports per
+receiver the overshoot, ringback, flight time, settling and the 50% crossings (more than one:
+not monotonic, which matters on a clock or strobe).
+
+- Give the driver's numbers from the datasheet or IBIS: `rise` (10-90%), `rout`, `vdd`, and
+  `cin` for the receivers. Defaults (1 ns, 30 Ω, 3.3 V, 3 pF) are said as assumed.
+- The `2·TD against the rise` ratio in the copper line: well under 1/3 the line is short
+  (lumped) and termination rarely matters; around 1 or more, read the waveforms.
+- A series resistor already on the net (driver → R → line) is found: the driver is fetched
+  from the other side, and the suggestion replaces its value. `rs [22, 33]` tries values.
+- `driver "U3.12"` when there are several outputs (a bus); one net at a time, single-ended
+  (for a pair, each member).
+- Not in it: losses, via barrels, coupling to other nets (that is `audit` crosstalk), packages.
+
+## A new project (new_project)
+
+`new_project {path: "/abs/folder", copper_layers: 4, outline: [60, 40]}` writes
+`<name>.kicad_pro`, `.kicad_pcb` and `.kicad_sch` in the folder (made when missing), opens
+them, sets the layers and a stackup (or `stackup: "JLC04161H-7628"`), draws the outline and
+saves. It never writes over a file: an existing project is opened with `open_board`. Like
+`open_board`, it is refused while the open board has unsaved changes (`discard=true` drops
+them). KiCadD ships no symbol libraries: start the schematic with `lcsc_fetch` / `sch_add_part
+lcsc=...` or `lib_create_symbol`.
 
 ## A new board (outline, layers, rules, pours)
 

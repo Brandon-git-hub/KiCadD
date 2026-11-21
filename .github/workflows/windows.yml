@@ -35,6 +35,8 @@ on:
       - 'client/smd_e2e.py'
       - 'client/sch_doc_e2e.py'
       - 'client/sim_e2e.py'
+      - 'client/si_e2e.py'
+      - 'client/project_e2e.py'
       - 'client/run_all.py'
       - 'client/tools_e2e.py'
       - 'client/setup_e2e.py'
@@ -55,6 +57,8 @@ on:
       - 'client/smd_e2e.py'
       - 'client/sch_doc_e2e.py'
       - 'client/sim_e2e.py'
+      - 'client/si_e2e.py'
+      - 'client/project_e2e.py'
       - 'client/run_all.py'
       - 'client/tools_e2e.py'
       - 'client/setup_e2e.py'
@@ -305,7 +309,7 @@ jobs:
         run: |
           python -I kicadd/client/smoke.py --bin dist/bin --demos kicad/demos --work "$env:RUNNER_TEMP/smoke"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: End-to-end (fab, SMD, schematic documents through kicadd-mcp)
+      - name: End-to-end (fab, SMD, schematic documents, simulation, PDN / reflections, new project through kicadd-mcp)
         # the tools themselves on Windows, on the installed folder: export_fab against kicad-cli,
         # board_render / sch_render, audit, set_rules, board_diff, silk_tidy (pic_programmer);
         # lcsc_match, fanout, undo refill, audit (stickhub, offline with the published parts index);
@@ -328,6 +332,10 @@ jobs:
           python -I kicadd/client/sch_doc_e2e.py --build dist/bin --demos kicad/demos --work "$env:RUNNER_TEMP/schdoc"
           if ($LASTEXITCODE -ne 0) { $fail = 1 }
           python -I kicadd/client/sim_e2e.py --build dist/bin --kicad kicad --work "$env:RUNNER_TEMP/sim" --index "$idx/parts.db" --ngspice dist/bin/ngspice/bin/ngspice_con.exe
+          if ($LASTEXITCODE -ne 0) { $fail = 1 }
+          python -I kicadd/client/si_e2e.py --build dist/bin --demos kicad/demos --work "$env:RUNNER_TEMP/si" --ngspice dist/bin/ngspice/bin/ngspice_con.exe
+          if ($LASTEXITCODE -ne 0) { $fail = 1 }
+          python -I kicadd/client/project_e2e.py --build dist/bin --kicad kicad --work "$env:RUNNER_TEMP/project"
           if ($LASTEXITCODE -ne 0) { $fail = 1 }
           exit $fail
       - name: End-to-end (tools, setup, undo history through run_all)

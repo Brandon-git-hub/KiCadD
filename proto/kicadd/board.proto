@@ -1271,3 +1271,97 @@ message SilkTidyResponse
   int32           problems_after  = 5;
   string          history_label   = 6;
 }
+
+// ---------------------------------------------------------------------------
+// PDN: a rail's decoupling as the board has it, for the pdn tool (which works out Z(f) at the
+// load from these and the capacitors' data). Every inductance here is an estimate from the
+// geometry (said in how). Returns PdnGeometryResponse
+message PdnGeometry
+{
+  string net    = 1;   // the rail
+  string ground = 2;   // default: the net most of the rail's capacitors go to
+  string at     = 3;   // the load (a reference); default: the part with most pads on the rail
+}
+
+message PdnCap
+{
+  string ref       = 1;
+  string value     = 2;
+  string footprint = 3;
+  string lcsc      = 4;
+  string layer     = 5;    // F.Cu / B.Cu
+  double distance  = 6;    // mm, to the load point
+  double trace     = 7;    // mm of track from its pads to their vias / plane, both pads
+  double trace_l   = 8;    // H, those tracks (Z0 x delay of the layer)
+  int32  vias      = 9;    // vias (or plated pads) taking it to the planes
+  double via_l     = 10;   // H, the via loop down to the planes
+  double spread_l  = 11;   // H, the plane pair from it to the load
+  string how       = 12;   // "F.Cu, tracks 0.6 mm, 2 vias, In1.Cu 0.21 mm / In2.Cu 1.2 mm"
+  double x         = 13;   // mm
+  double y         = 14;
+}
+
+message PdnGeometryResponse
+{
+  string          net          = 1;
+  string          ground       = 2;
+  string          at           = 3;
+  double          at_x         = 4;    // mm, the load point (its rail pads' centre)
+  double          at_y         = 5;
+  repeated PdnCap caps         = 6;
+  double          plane_c      = 7;    // F, the rail's pour over its ground plane
+  double          plane_area   = 8;    // mm2
+  double          plane_h      = 9;    // mm between them
+  double          plane_er     = 10;
+  string          plane_layers = 11;   // "In2.Cu over In1.Cu"
+  double          load_l       = 12;   // H, the load's own vias to the planes
+  int32           load_vias    = 13;
+  repeated string notes        = 14;
+  repeated string others       = 15;   // other parts on the rail (not capacitors to ground), a few
+}
+
+// ---------------------------------------------------------------------------
+// Signal integrity: a net's copper as a graph, for the reflection tool. Edges are the track
+// pieces between junctions (a T splits a track) with their Z0 and delay from the stackup; vias
+// and pads are nodes. Returns NetTopologyResponse
+message NetTopology
+{
+  string net = 1;
+}
+
+message TopoEdge
+{
+  int32  a      = 1;
+  int32  b      = 2;
+  string layer  = 3;
+  double length = 4;   // mm
+  double width  = 5;   // mm
+  double z0     = 6;   // ohm (0: unknown)
+  double delay  = 7;   // ps/cm
+}
+
+message TopoPad
+{
+  int32  node     = 1;
+  string ref      = 2;
+  string pin      = 3;
+  string pin_type = 4;   // the netlist's electrical type: output, input, bidirectional ...
+  string pin_name = 5;
+  double x        = 6;   // mm
+  double y        = 7;
+  int32  pads     = 8;   // pads of the part
+  string value    = 9;
+  string other_net = 10; // a two-pad part: the net of its other pad
+  string lcsc     = 11;
+}
+
+message NetTopologyResponse
+{
+  string           net       = 1;
+  repeated TopoEdge edges    = 2;
+  repeated TopoPad pads      = 3;
+  int32            nodes     = 4;
+  int32            unrouted  = 5;   // connections still in the ratsnest
+  int32            vias      = 6;
+  repeated string  notes     = 7;
+}

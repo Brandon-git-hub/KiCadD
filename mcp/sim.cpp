@@ -18,6 +18,7 @@
  */
 
 #include "sim.h"
+#include "plot.h"
 #include "ipc_client.h"
 
 #include <algorithm>
@@ -535,24 +536,6 @@ std::string pinName( const ks::SchSimPin& aPin )
     return out;
 }
 
-std::string capKindOf( const PART& aP )
-{
-    std::string sub = aP.hit ? upper( aP.hit->subcategory() + " " + aP.hit->description() ) : "";
-    std::string fp = upper( aP.sch->footprint() + " " + aP.sch->lib_id() + " " + aP.sch->value() );
-
-    if( sub.find( "TANTALUM" ) != std::string::npos || fp.find( "TANTALUM" ) != std::string::npos || fp.find( "CP_TANT" ) != std::string::npos )
-        return "tantalum";
-
-    if( sub.find( "POLYMER" ) != std::string::npos || sub.find( "SOLID" ) != std::string::npos )
-        return "polymer";
-
-    if( sub.find( "ALUMINUM" ) != std::string::npos || sub.find( "ALUMINIUM" ) != std::string::npos || sub.find( "ELECTROLYTIC" ) != std::string::npos
-        || fp.find( "CP_ELEC" ) != std::string::npos || fp.find( "CP_RADIAL" ) != std::string::npos || fp.find( "ELEC" ) != std::string::npos )
-        return "aluminium";
-
-    return "MLCC";
-}
-
 /// what kind of part, from the index's subcategory or else the reference
 std::string classify( const PART& aP )
 {
@@ -726,88 +709,23 @@ void passiveValues( PART& aP, std::string& aNote )
     }
     else if( aP.kind == "C" )
     {
-        if( !over( "c", aP.c ) )
+        sim::CAP_MODEL m = sim::CapModel( s.value(), s.footprint() + " " + s.lib_id() + " " + s.value(), s.description(), h, aP.over );
+        aP.c = m.c;
+        aP.capKind = m.kind;
+        aP.package = m.package;
+        aP.dielectric = m.dielectric;
+        aP.vrated = m.vrated;
+        aP.esr = m.esr;
+        aP.esl = m.esl;
+        aP.biasOn = m.biasOn;
+
+        if( !aP.over.contains( "tol" ) && !( h && h->tolerance() > 0 ) )
         {
-            if( h && h->unit() == "F" && h->value() > 0 )
-                aP.c = h->value();
-            else if( valueOf( s.value(), v ) )
-                aP.c = v;
-        }
-
-        aP.capKind = capKindOf( aP );
-        const sim::BODY* b = sim::bodyOf( ( h ? h->package() + " " : "" ) + s.footprint() );
-        aP.package = b ? b->eia : ( h ? h->package() : "" );
-        aP.dielectric = h ? h->dielectric() : "";
-        aP.vrated = h ? h->voltage() : 0;
-
-        // "10uF 6.3V X5R" in the value
-        std::string uv = upper( s.value() + " " + s.description() );
-
-        for( const char* d : { "X5R", "X7R", "X6S", "X7S", "X7T", "X8R", "Y5V", "Z5U", "C0G", "NP0" } )
-        {
-            if( aP.dielectric.empty() && uv.find( d ) != std::string::npos )
-                aP.dielectric = std::string( d ) == "NP0" ? "C0G" : d;
-        }
-
-        std::smatch m;
-        static const std::regex rxV( R"((\d+(?:\.\d+)?)\s*V\b)" );
-
-        if( aP.vrated == 0 && std::regex_search( uv, m, rxV ) )
-            aP.vrated = std::stod( m[1].str() );
-
-        std::string assumed;
-
-        if( aP.capKind == "MLCC" && aP.dielectric.empty() )
-        {
-            // not said: C0G is what small values usually are, X5R the larger (the worse case)
-            aP.dielectric = aP.c <= 1e-9 ? "C0G" : "X5R";
-            assumed = "dielectric " + aP.dielectric + " assumed";
-        }
-
-        if( aP.over.contains( "dc_bias" ) && aP.over["dc_bias"].is_boolean() )
-            aP.biasOn = aP.over["dc_bias"].get<bool>();
-
-        if( aP.capKind != "MLCC" )
-            aP.biasOn = false;
-
-        // ESL: the body's (mounting inductance, pads and vias, comes on top on the board)
-        bool eslGiven = over( "esl", aP.esl );
-        bool esrGiven = over( "esr", aP.esr );
-
-        if( !eslGiven )
-        {
-            if( aP.capKind == "MLCC" )
-                aP.esl = b ? b->esl : 0.6e-9;
-            else
-                aP.esl = aP.capKind == "aluminium" ? 3e-9 : 1.5e-9;
-        }
-
-        // ESR, typical: MLCC ~15 mΩ x (C / 1 µF)^-1/2 (100 nF ~50 mΩ, 10 µF ~5 mΩ), at least 2 mΩ;
-        // aluminium ~0.3 Ω at 100 µF falling as the root of C; tantalum ~0.5 Ω, polymer ~20 mΩ
-        if( !esrGiven )
-        {
-            const double cu = std::max( aP.c, 1e-12 ) / 1e-6;
-
-            if( aP.capKind == "MLCC" )
-                aP.esr = std::max( 0.002, 0.015 / std::sqrt( cu ) );
-            else if( aP.capKind == "aluminium" )
-                aP.esr = std::clamp( 0.3 / std::sqrt( cu / 100 ), 0.02, 5.0 );
-            else if( aP.capKind == "tantalum" )
-                aP.esr = std::clamp( 0.5 / std::sqrt( cu / 10 ), 0.05, 5.0 );
-            else
-                aP.esr = 0.02;
-        }
-
-        if( aP.tol == 0 )
-        {
-            aP.tol = aP.capKind == "MLCC" ? ( aP.dielectric == "C0G" ? 0.05 : 0.1 ) : 0.2;
+            aP.tol = m.tol;
             aP.tolAssumed = true;
         }
 
-        aNote = std::string( esrGiven ? "ESR " : "ESR ~" ) + FormatSI( aP.esr, "Ω", 2 ) + ( eslGiven ? ", ESL " : ", ESL ~" )
-                + FormatSI( aP.esl, "H", 2 ) + ( esrGiven && eslGiven ? "" : " (est.: typical for " + aP.capKind
-                                                                                   + ( aP.package.empty() ? "" : " " + aP.package ) + ")" )
-                + ( assumed.empty() ? "" : "; " + assumed );
+        aNote = m.note;
     }
     else if( aP.kind == "L" || aP.kind == "FB" )
     {
@@ -1563,11 +1481,7 @@ int runProgram( const std::string& aExe, const std::vector<std::string>& aArgs, 
 #endif
 }
 
-struct TABLE
-{
-    std::vector<std::string>         names;
-    std::vector<std::vector<double>> cols;   // cols[0] the scale (time / frequency), then each vector
-};
+using sim::TABLE;
 
 bool readTable( const fs::path& aFile, TABLE& aOut )
 {
@@ -1598,13 +1512,7 @@ bool readTable( const fs::path& aFile, TABLE& aOut )
     return !aOut.cols.empty() && !aOut.cols[0].empty();
 }
 
-struct RUN
-{
-    bool        ok = false;
-    std::string error;
-    TABLE       table;
-    double      seconds = 0;
-};
+using sim::RUN;
 
 std::atomic<int> g_runs{ 0 };
 
@@ -1837,8 +1745,9 @@ std::string SimulateDescription()
            "\"pulse(0 5 0 1u 1u 5m 10m)\", \"sin(5 0.05 100k)\"} to ground; supplies not given and not made in the region "
            "get the voltage their name says (+3V3) and that is said. loads {net: amps, a SPICE current source "
            "(\"pulse(0.1 1 1m 1u 1u 1m 2m)\") or \"10 ohm\"}. analysis: op (default), tran {stop, step?, window?: "
-           "the last part measured, default the last 20%} or ac {from, to, points per decade} (needs a source with "
-           "ac 1). probes: nets to measure (default the loads', the regulators' outputs, else the region's nets). "
+           "the last part measured, default the last 20%}, ac {from, to, points per decade} (needs a source with "
+           "ac 1) or dc {source: a net of sources (volts) or loads (amps), from, to, step}: that source swept "
+           "(I-V curves: the source's current against its voltage). probes: nets to measure (default the loads', the regulators' outputs, else the region's nets). "
            "Measured: op the voltages; tran the average, ripple p-p and min / max over the window, a step's "
            "overshoot, 10-90% rise and settling (settle_pct, default 2), a sketch line; ac the gain at the "
            "lowest frequency, its peak and the -3 dB frequency; the sources' currents and power, inductors' peak "
@@ -1851,7 +1760,8 @@ std::string SimulateDescription()
            "l, dcr, tol (%), dc_bias, vout, vref, dropout, iq, psrr, psrr_f, psrr_hf, loop_bw, rout, gbw, slew, vos, rds_on, vgs_th, "
            "vf ... (any parameter, SI), exclude: true, or subckt + lib (a .lib / .cir path, relative to the project) "
            "+ pins (the subckt's pin order as pin numbers or names)}} override what the data gives. netlist true "
-           "adds the netlist made.";
+           "adds the netlist made. plot true: a PNG chart too (tran: the probes over time; ac: gain and phase over log f; "
+           "dc: the probes and the sources' currents against the swept value; corners as faint lines of the same colour).";
 }
 
 
@@ -1868,9 +1778,11 @@ json SimulateSchema()
                  { "hops", { { "type", "integer" } } },
                  { "sources", anyMap },
                  { "loads", anyMap },
-                 { "analysis", { { "type", "string" }, { "enum", { "op", "tran", "ac" } } } },
+                 { "analysis", { { "type", "string" }, { "enum", { "op", "tran", "ac", "dc" } } } },
                  { "tran", { { "type", "object" }, { "description", "{stop: \"2m\", step?: \"1u\", window?: \"0.4m\"}" } } },
                  { "ac", { { "type", "object" }, { "description", "{from: \"10\", to: \"10Meg\", points?: 20}" } } },
+                 { "dc", { { "type", "object" }, { "description", "{source: \"VIN\", from: 0, to: 5, step: \"10m\"}" } } },
+                 { "plot", { { "type", "boolean" } } },
                  { "probes", strArr },
                  { "settle_pct", { { "type", "number" } } },
                  { "corners", { { "type", "boolean" } } },
@@ -2203,13 +2115,15 @@ TOOL_RESULT Simulate( IPC_CLIENT& aIpc, const json& a )
     }
 
     // --- the analysis
-    std::string analysis = a.contains( "tran" ) ? "tran" : a.contains( "ac" ) ? "ac" : "op";
+    std::string analysis = a.contains( "tran" ) ? "tran" : a.contains( "ac" ) ? "ac" : a.contains( "dc" ) ? "dc" : "op";
 
     if( a.contains( "analysis" ) && a["analysis"].is_string() )
         analysis = a["analysis"].get<std::string>();
 
-    double tstop = 0, tstep = 0, window = 0, f0 = 10, f1 = 100e6;
-    int    ppd = 20;
+    double      tstop = 0, tstep = 0, window = 0, f0 = 10, f1 = 100e6, d0 = 0, d1 = 0, dstep = 0;
+    int         ppd = 20;
+    std::string sweptName, sweptNet;
+    bool        sweptCurrent = false;
 
     if( analysis == "tran" )
     {
@@ -2267,10 +2181,53 @@ TOOL_RESULT Simulate( IPC_CLIENT& aIpc, const json& a )
         if( !hasAc )
             return fail( "ac: give a source or load with ac in it, e.g. sources {VIN: \"dc 5 ac 1\"}" );
     }
+    else if( analysis == "dc" )
+    {
+        const json d = a.value( "dc", json::object() );
+
+        if( !d.is_object() || !d.contains( "source" ) || !d["source"].is_string() || !d.contains( "from" ) || !d.contains( "to" ) )
+            return fail( "dc: {source: a net in sources or loads, from, to, step?}" );
+
+        std::string e;
+        std::string net = findNet( d["source"].get<std::string>(), e );
+
+        if( net.empty() )
+            return fail( "dc.source: " + e );
+
+        for( size_t k = 0; k < srcs.size(); ++k )
+        {
+            if( srcs[k].net == net && !srcs[k].resistor )
+            {
+                sweptName = ( srcs[k].load ? "Ikd_load" : "Vkd_src" ) + std::to_string( k );
+                sweptCurrent = srcs[k].load;
+                sweptNet = net;
+            }
+        }
+
+        if( sweptName.empty() )
+            return fail( "dc.source: " + bare( net ) + " is not in sources (volts) or loads (amps, not ohms)" );
+
+        if( !jsonSI( d["from"], d0 ) || !jsonSI( d["to"], d1 ) || d0 == d1 )
+            return fail( "dc: from and to, two different values (SI)" );
+
+        if( d.contains( "step" ) )
+            jsonSI( d["step"], dstep );
+
+        if( dstep <= 0 )
+            dstep = std::fabs( d1 - d0 ) / 200;
+
+        if( std::fabs( d1 - d0 ) / dstep > 1e5 )
+            return fail( "dc: over 100000 points (a larger step)" );
+
+        if( d1 < d0 )
+            dstep = -dstep;
+    }
     else if( analysis != "op" )
     {
-        return fail( "analysis: op, tran or ac" );
+        return fail( "analysis: op, tran, ac or dc" );
     }
+
+    const bool plotOn = a.value( "plot", false );
 
     const double settlePct = a.contains( "settle_pct" ) && a["settle_pct"].is_number() ? a["settle_pct"].get<double>() : 2.0;
     const int    timeout = a.contains( "timeout_s" ) && a["timeout_s"].is_number_integer() ? std::clamp( a["timeout_s"].get<int>(), 1, 600 ) : 60;
@@ -2396,6 +2353,12 @@ TOOL_RESULT Simulate( IPC_CLIENT& aIpc, const json& a )
             const std::string& node = base.spiceOf[pr];
             aVectors.push_back( analysis == "ac" && !biasPass ? "vdb(" + node + ")" : "v(" + node + ")" );
             aLabels.push_back( "v:" + pr );
+
+            if( analysis == "ac" && !biasPass && plotOn )
+            {
+                aVectors.push_back( "vp(" + node + ")" );
+                aLabels.push_back( "ph:" + pr );
+            }
         }
 
         if( analysis != "ac" || biasPass )
@@ -2450,6 +2413,8 @@ TOOL_RESULT Simulate( IPC_CLIENT& aIpc, const json& a )
         control = "op";
     else if( analysis == "tran" )
         control = "tran " + fmt( tstep, 6 ) + " " + fmt( tstop, 6 ) + " 0 " + fmt( tstep, 6 );
+    else if( analysis == "dc" )
+        control = "dc " + sweptName + " " + fmt( d0, 6 ) + " " + fmt( d1, 6 ) + " " + fmt( dstep, 6 );
     else
         control = "ac dec " + std::to_string( ppd ) + " " + fmt( f0, 6 ) + " " + fmt( f1, 6 );
 
@@ -2568,6 +2533,9 @@ TOOL_RESULT Simulate( IPC_CLIENT& aIpc, const json& a )
         out += " " + FormatSI( tstop, "s" ) + " (step " + FormatSI( tstep, "s" ) + ")";
     else if( analysis == "ac" )
         out += " " + FormatSI( f0, "Hz" ) + " - " + FormatSI( f1, "Hz" );
+    else if( analysis == "dc" )
+        out += " " + bare( sweptNet ) + " " + FormatSI( d0, sweptCurrent ? "A" : "V" ) + " -> " + FormatSI( d1, sweptCurrent ? "A" : "V" )
+               + " (step " + FormatSI( std::fabs( dstep ), sweptCurrent ? "A" : "V" ) + ")";
 
     out += ": " + std::to_string( modelled ) + " of " + std::to_string( parts.size() ) + " part(s) modelled, "
            + std::to_string( region.nets().size() ) + " net(s); ngspice " + fmt( spent, 2 ) + " s" + ( corners ? " (3 runs: nominal, all low, all high: every R / C / L moved together, not a worst case or Monte Carlo)" : "" );
@@ -2748,6 +2716,14 @@ TOOL_RESULT Simulate( IPC_CLIENT& aIpc, const json& a )
         {
             line += mv( v->back() ) + spread( label, []( auto&, auto& y ) { return y.back(); }, "V" );
         }
+        else if( analysis == "dc" )
+        {
+            const auto [mn, mx] = std::minmax_element( v->begin(), v->end() );
+            line += mv( v->front() ) + " at " + FormatSI( x.front(), sweptCurrent ? "A" : "V" ) + " -> " + mv( v->back() ) + " at "
+                    + FormatSI( x.back(), sweptCurrent ? "A" : "V" ) + "; min " + mv( *mn ) + " at "
+                    + FormatSI( x[mn - v->begin()], sweptCurrent ? "A" : "V" ) + ", max " + mv( *mx ) + " at "
+                    + FormatSI( x[mx - v->begin()], sweptCurrent ? "A" : "V" ) + " " + sparkline( x, *v );
+        }
         else if( analysis == "tran" )
         {
             TRAN_M m = measureTran( x, *v, tstop - window, settlePct );
@@ -2833,6 +2809,13 @@ TOOL_RESULT Simulate( IPC_CLIENT& aIpc, const json& a )
                 continue;
 
             // a source's current is into its + terminal: delivering is negative
+            if( analysis == "dc" )
+            {
+                out += "\n  " + bare( s.net ) + " source: " + FormatSI( -i->front(), "A" ) + " at " + FormatSI( x.front(), sweptCurrent ? "A" : "V" )
+                       + " -> " + FormatSI( -i->back(), "A" ) + " at " + FormatSI( x.back(), sweptCurrent ? "A" : "V" ) + " " + sparkline( x, *i );
+                continue;
+            }
+
             double ia = -avgOf( *i );
             double vdc = specDc( s.spec );
             out += "\n  " + bare( s.net ) + " source: " + FormatSI( ia, "A" ) + ( vdc != 0 ? " (" + FormatSI( ia * vdc, "W" ) + ")" : "" );
@@ -2887,7 +2870,239 @@ TOOL_RESULT Simulate( IPC_CLIENT& aIpc, const json& a )
     if( showNetlist )
         out += "\nnetlist:\n" + circuit + ".control\n" + control + "\n.endc";
 
-    return TOOL_RESULT{ out + "\n", false };
+    TOOL_RESULT result{ out + "\n", false };
+
+    if( plotOn && analysis == "op" )
+    {
+        result.text += "plot: nothing to draw for op (one point)\n";
+    }
+    else if( plotOn )
+    {
+        plot::CHART chart;
+        chart.title = "simulate " + analysis;
+        chart.xUnit = analysis == "tran" ? "s" : analysis == "ac" ? "Hz" : sweptCurrent ? "A" : "V";
+        chart.logX = analysis == "ac";
+
+        // one panel: each probe (its corners faint, the same colour)
+        auto panel = [&]( const std::string& aPrefix, const std::string& aUnit, double aScale, bool aOnlyCurrents ) -> plot::PANEL
+        {
+            plot::PANEL p;
+            p.yUnit = aUnit;
+            int colour = 0;
+
+            for( size_t li = 0; li < lab.size(); ++li )
+            {
+                if( lab[li].rfind( aPrefix, 0 ) != 0 )
+                    continue;
+
+                std::string name = lab[li].substr( aPrefix.size() );
+
+                if( aPrefix == "src:" )
+                {
+                    const SRC& s = srcs[std::stoi( name )];
+                    name = bare( s.net ) + " source";
+                }
+                else if( !aOnlyCurrents )
+                {
+                    name = bare( name );
+                }
+
+                for( size_t ri = 0; ri < runs.size(); ++ri )
+                {
+                    const std::vector<double>* y = column( runs[ri], runLabels[ri], lab[li] );
+
+                    if( !y )
+                        continue;
+
+                    plot::SERIES s;
+                    s.label = ri == 0 ? name : "";
+                    s.x = runs[ri].table.cols[0];
+                    s.y = *y;
+                    s.color = colour;
+                    s.faint = ri > 0;
+
+                    for( double& v : s.y )
+                        v *= aScale;
+
+                    p.series.push_back( std::move( s ) );
+                }
+
+                colour++;
+            }
+
+            return p;
+        };
+
+        if( analysis == "ac" )
+        {
+            chart.panels.push_back( panel( "v:", "dB", 1, false ) );
+            chart.panels.push_back( panel( "ph:", "°", 57.29577951308232, false ) );
+        }
+        else
+        {
+            chart.panels.push_back( panel( "v:", "V", 1, false ) );
+            plot::PANEL src = panel( "src:", "A", -1, true );
+            plot::PANEL cur = panel( "i:", "A", 1, true );
+            int         used = 0;
+
+            for( const plot::SERIES& s : src.series )
+                used = std::max( used, s.color + 1 );
+
+            for( plot::SERIES& s : cur.series )
+                s.color += used;
+
+            src.series.insert( src.series.end(), cur.series.begin(), cur.series.end() );
+
+            if( !src.series.empty() )
+                chart.panels.push_back( std::move( src ) );
+        }
+
+        chart.panels.erase( std::remove_if( chart.panels.begin(), chart.panels.end(), []( const plot::PANEL& p ) { return p.series.empty(); } ),
+                            chart.panels.end() );
+        result.image = plot::Png( chart );
+
+        if( result.image.empty() )
+            result.text += "plot: nothing to draw\n";
+    }
+
+    return result;
+}
+
+
+std::string sim::FindNgspice()
+{
+    return findNgspice();
+}
+
+
+sim::RUN sim::RunSpice( const std::string& aExe, const std::string& aCircuit, const std::string& aAnalysis,
+                        const std::vector<std::string>& aVectors, int aTimeoutS )
+{
+    return runSpice( aExe, aCircuit, aAnalysis, aVectors, aTimeoutS, nullptr );
+}
+
+
+sim::CAP_MODEL sim::CapModel( const std::string& aValue, const std::string& aText, const std::string& aDescription, const kb::LcscHit* h,
+                              const json& aOver )
+{
+    CAP_MODEL   m;
+    double      v = 0;
+    auto        over = [&]( const char* k, double& aOut ) { return aOver.is_object() && aOver.contains( k ) && jsonSI( aOver[k], aOut ); };
+
+    if( !over( "c", m.c ) )
+    {
+        if( h && h->unit() == "F" && h->value() > 0 )
+            m.c = h->value();
+        else if( valueOf( aValue, v ) )
+            m.c = v;
+        else
+        {
+            // a value written as a part name: "CC0402_100NF_16V_10%_X7R", "C_4U7_0603", "10uF/6.3V"
+            static const std::regex rxF( R"((^|[^A-Z0-9.])(\d+(?:\.\d+)?)\s*([PNUM])F(?![A-Z]))" );
+            static const std::regex rxMid( R"((^|[^A-Z0-9.])(\d+)([PNU])(\d+)(?![A-Z0-9]))" );
+            const std::string       uv = upper( aValue );
+            std::smatch             sm;
+            const auto              scale = []( char c ) { return c == 'P' ? 1e-12 : c == 'N' ? 1e-9 : c == 'U' ? 1e-6 : 1e-3; };
+
+            if( std::regex_search( uv, sm, rxF ) )
+                m.c = std::stod( sm[2].str() ) * scale( sm[3].str()[0] );
+            else if( std::regex_search( uv, sm, rxMid ) )
+                m.c = std::stod( sm[2].str() + "." + sm[4].str() ) * scale( sm[3].str()[0] );
+        }
+    }
+
+    // the kind: the index's subcategory, else the footprint / symbol / value words
+    {
+        std::string sub = h ? upper( h->subcategory() + " " + h->description() ) : "";
+        std::string fp = upper( aText );
+
+        if( sub.find( "TANTALUM" ) != std::string::npos || fp.find( "TANTALUM" ) != std::string::npos || fp.find( "CP_TANT" ) != std::string::npos )
+            m.kind = "tantalum";
+        else if( sub.find( "POLYMER" ) != std::string::npos || sub.find( "SOLID" ) != std::string::npos )
+            m.kind = "polymer";
+        else if( sub.find( "ALUMINUM" ) != std::string::npos || sub.find( "ALUMINIUM" ) != std::string::npos
+                 || sub.find( "ELECTROLYTIC" ) != std::string::npos || fp.find( "CP_ELEC" ) != std::string::npos
+                 || fp.find( "CP_RADIAL" ) != std::string::npos || fp.find( "ELEC" ) != std::string::npos )
+            m.kind = "aluminium";
+        else
+            m.kind = "MLCC";
+    }
+
+    const BODY* b = bodyOf( ( h ? h->package() + " " : "" ) + aText );
+    m.package = b ? b->eia : ( h ? h->package() : "" );
+    m.dielectric = h ? h->dielectric() : "";
+    m.vrated = h ? h->voltage() : 0;
+
+    // "10uF 6.3V X5R" in the value
+    std::string uv = upper( aValue + " " + aDescription );
+
+    for( const char* d : { "X5R", "X7R", "X6S", "X7S", "X7T", "X8R", "Y5V", "Z5U", "C0G", "NP0" } )
+    {
+        if( m.dielectric.empty() && uv.find( d ) != std::string::npos )
+            m.dielectric = std::string( d ) == "NP0" ? "C0G" : d;
+    }
+
+    std::smatch         sm;
+    static const std::regex rxV( R"((\d+(?:\.\d+)?)\s*V\b)" );
+
+    if( m.vrated == 0 && std::regex_search( uv, sm, rxV ) )
+        m.vrated = std::stod( sm[1].str() );
+
+    std::string assumed;
+
+    if( m.kind == "MLCC" && m.dielectric.empty() )
+    {
+        // not said: C0G is what small values usually are, X5R the larger (the worse case)
+        m.dielectric = m.c <= 1e-9 ? "C0G" : "X5R";
+        assumed = "dielectric " + m.dielectric + " assumed";
+    }
+
+    if( aOver.is_object() && aOver.contains( "dc_bias" ) && aOver["dc_bias"].is_boolean() )
+        m.biasOn = aOver["dc_bias"].get<bool>();
+
+    if( m.kind != "MLCC" )
+        m.biasOn = false;
+
+    // ESL: the body's (mounting inductance, pads and vias, comes on top on the board)
+    bool eslGiven = over( "esl", m.esl );
+    bool esrGiven = over( "esr", m.esr );
+
+    if( !eslGiven )
+    {
+        if( m.kind == "MLCC" )
+            m.esl = b ? b->esl : 0.6e-9;
+        else
+            m.esl = m.kind == "aluminium" ? 3e-9 : 1.5e-9;
+    }
+
+    // ESR, typical: MLCC ~15 mΩ x (C / 1 µF)^-1/2 (100 nF ~50 mΩ, 10 µF ~5 mΩ), at least 2 mΩ;
+    // aluminium ~0.3 Ω at 100 µF falling as the root of C; tantalum ~0.5 Ω, polymer ~20 mΩ
+    if( !esrGiven )
+    {
+        const double cu = std::max( m.c, 1e-12 ) / 1e-6;
+
+        if( m.kind == "MLCC" )
+            m.esr = std::max( 0.002, 0.015 / std::sqrt( cu ) );
+        else if( m.kind == "aluminium" )
+            m.esr = std::clamp( 0.3 / std::sqrt( cu / 100 ), 0.02, 5.0 );
+        else if( m.kind == "tantalum" )
+            m.esr = std::clamp( 0.5 / std::sqrt( cu / 10 ), 0.05, 5.0 );
+        else
+            m.esr = 0.02;
+    }
+
+    m.tol = m.kind == "MLCC" ? ( m.dielectric == "C0G" ? 0.05 : 0.1 ) : 0.2;
+    m.estimated = !( esrGiven && eslGiven );
+    m.note = std::string( esrGiven ? "ESR " : "ESR ~" ) + FormatSI( m.esr, "Ω", 2 ) + ( eslGiven ? ", ESL " : ", ESL ~" )
+             + FormatSI( m.esl, "H", 2 ) + ( esrGiven && eslGiven ? "" : " (est.: typical for " + m.kind + ( m.package.empty() ? "" : " " + m.package ) + ")" )
+             + ( assumed.empty() ? "" : "; " + assumed );
+    return m;
+}
+
+
+std::optional<double> sim::VoltageFromName( const std::string& aNet )
+{
+    return voltageFromName( aNet );
 }
 
 } // namespace kicadd::mcp

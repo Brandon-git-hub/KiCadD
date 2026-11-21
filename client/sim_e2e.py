@@ -200,6 +200,29 @@ def main():
         v = num(t, r"\n  MID: ([\d.]+) V")
         check(v and abs(v - 1.0) < 1e-3, f"MID {v} V (3 V over 2k / 1k)")
 
+        print("[dc sweep, plots]")
+        err, t, imgs = mcp.tool_images("simulate", {"refs": [r3, r4], "sources": {"SIG2": 3}, "dc": {"source": "SIG2", "from": 0, "to": 3, "step": 0.1},
+                                                     "probes": ["MID"], "plot": True})
+        print("      ", "\n       ".join(t.splitlines()[-3:]))
+        m = re.search(r"\n  MID: ([-\d.]+) [µm]?V at 0 V -> ([\d.]+) V at 3 V", t)
+        check(not err and m and abs(float(m.group(2)) - 1.0) < 1e-3, f"dc sweep SIG2 0 -> 3 V: MID ends at {m and m.group(2)} V (a third)")
+        check(re.search(r"\n  SIG2 source: .* -> 1 mA at 3 V", t), "the source's current over the sweep: 1 mA at 3 V (3 kΩ)")
+        check(len(imgs) == 1 and imgs[0][:8] == b"\x89PNG\r\n\x1a\n", "plot: a PNG")
+        if imgs:
+            open(os.path.join(work, "dc.png"), "wb").write(imgs[0])
+        err, t, imgs = mcp.tool_images("simulate", {"around": [r2], "sources": {"SIG": "dc 1 ac 1"}, "ac": {"from": 10, "to": "1Meg"},
+                                                     "probes": ["OUT"], "corners": True, "plot": True})
+        check(not err and len(imgs) == 1, "ac plot (gain, phase, corners faint)")
+        if imgs:
+            open(os.path.join(work, "ac.png"), "wb").write(imgs[0])
+        err, t, imgs = mcp.tool_images("simulate", {"around": [r2], "sources": {"SIG": "pulse(0 1 0.1m 1n 1n 10m 20m)"}, "tran": {"stop": "2m", "step": "1u"},
+                                                     "probes": ["OUT", "SIG"], "plot": True})
+        check(not err and len(imgs) == 1, "tran plot")
+        if imgs:
+            open(os.path.join(work, "tran.png"), "wb").write(imgs[0])
+        err, t = sim({"refs": [r3, r4], "sources": {"SIG2": 3}, "dc": {"source": "MID", "from": 0, "to": 1}})
+        check(err and "not in sources" in t, "dc on a net that is no source: refused")
+
         print("[op-amp]")
         err, t = sim({"refs": [u3], "sources": {"AIN": "dc 2.5 ac 1"}, "ac": {"from": 1000, "to": "100Meg"}, "probes": ["AOUT"]})
         print("      ", "\n       ".join(t.splitlines()[:10]))

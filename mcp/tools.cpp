@@ -3356,10 +3356,16 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        } } );
 
     AddSchematicTools( tools, aIpc );     // M5a, sch_tools.cpp
+    tools.push_back( PdnTool( aIpc ) );           // phase 3 item 3, pdn.cpp
+    tools.push_back( ReflectionTool( aIpc ) );    // phase 3 item 4, reflect.cpp
 
     // batch: a list of the tools above in one call (a copy of the table: the list is handed
     // over to the server afterwards)
     auto table = std::make_shared<std::vector<TOOL>>( tools );
+
+    // new_project (phase 4 item 3, project.cpp) runs the tools above from the table (and batch can run it)
+    tools.push_back( NewProjectTool( table ) );
+    table->push_back( tools.back() );
 
     tools.push_back( { "batch",
                        "Run several tools in one call, in order: steps [{\"tool\": \"move_footprints\", "

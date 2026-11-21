@@ -172,6 +172,8 @@ def tests(a):
          lambda w: py + [c("search_e2e.py")] + b + d + ["--work", w, "--index", a.index_gz] + ([] if a.live else ["--no-live"])),
         ("sim", "headless", ["index_gz", "ngspice"],
          lambda w: py + [c("sim_e2e.py")] + b + k + ["--work", w, "--index", a.index_gz, "--ngspice", a.ngspice]),
+        ("si", "headless", ["ngspice"], lambda w: py + [c("si_e2e.py")] + b + d + ["--work", w, "--ngspice", a.ngspice]),
+        ("project", "headless", [], lambda w: py + [c("project_e2e.py")] + b + k + ["--work", w]),
         ("m5", "headless", ["lcsc_cache"], lambda w: py + [c("m5_e2e.py")] + b + k + ["--work", w, "--cache", a.lcsc_cache]),
         ("lcsc", "headless", ["lcsc_cache"], "lcsc"),
         ("model", "headless", ["lcsc_cache"], lambda w: py + [c("model_e2e.py")] + b + k + ["--work", w, "--cache", a.lcsc_cache]),

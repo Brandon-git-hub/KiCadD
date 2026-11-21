@@ -15,7 +15,14 @@
 
 #include "tools.h"
 
+#include <optional>
 #include <string>
+#include <vector>
+
+namespace kicadd::board
+{
+class LcscHit;
+}
 
 namespace kicadd::mcp
 {
@@ -38,6 +45,45 @@ std::string FormatSI( double aValue, const std::string& aUnit, int aDigits = 3 )
 /// layer's estimated thickness (m) and field (V/m) it comes from
 double MlccBias( const std::string& aDielectric, double aC, const std::string& aPackage, double aVdc,
                  double* aLayer = nullptr, double* aField = nullptr );
+
+/// A capacitor's model from its value, footprint / symbol text and the parts index's row (when
+/// there is one); aOver: the agent's overrides (c, esr, esl, dc_bias). Estimated values say so in
+/// note.
+struct CAP_MODEL
+{
+    double      c = 0, esr = 0, esl = 0, vrated = 0, tol = 0;
+    std::string kind, dielectric, package, note;
+    bool        biasOn = true, estimated = false;
+};
+
+CAP_MODEL CapModel( const std::string& aValue, const std::string& aText, const std::string& aDescription,
+                    const kicadd::board::LcscHit* aHit, const nlohmann::json& aOver );
+
+/// a supply's voltage from its name: "+3V3" 3.3, "VCC_1V8" 1.8, "-12V" -12
+std::optional<double> VoltageFromName( const std::string& aNet );
+
+/// ngspice's output: cols[0] the scale (time / frequency / swept value), then each vector
+struct TABLE
+{
+    std::vector<std::string>         names;
+    std::vector<std::vector<double>> cols;
+};
+
+struct RUN
+{
+    bool        ok = false;
+    std::string error;
+    TABLE       table;
+    double      seconds = 0;
+};
+
+/// ngspice: KICADD_NGSPICE, next to kicadd-mcp (ngspice/bin/), or on the PATH ("" none)
+std::string FindNgspice();
+
+/// run aCircuit (no .control / .end) with the analysis line aAnalysis ("tran 1p 20n"), reading
+/// back aVectors
+RUN RunSpice( const std::string& aExe, const std::string& aCircuit, const std::string& aAnalysis,
+              const std::vector<std::string>& aVectors, int aTimeoutS );
 
 } // namespace sim
 

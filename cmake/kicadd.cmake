@@ -66,6 +66,8 @@ set( KICADD_PCB_SRCS
     ${KICADD_DIR}/src/pcb/kicadd_route.cpp
     ${KICADD_DIR}/src/pcb/kicadd_impedance.cpp
     ${KICADD_DIR}/src/pcb/kicadd_mouth.cpp
+    ${KICADD_DIR}/src/pcb/kicadd_pdn.cpp
+    ${KICADD_DIR}/src/pcb/kicadd_topology.cpp
     ${KICADD_DIR}/src/common/kicadd_zcalc.cpp
     ${KICADD_DIR}/src/common/kicadd_libtable.cpp
     )
@@ -122,6 +124,10 @@ add_executable( kicadd-mcp
     ${KICADD_DIR}/mcp/tools.cpp
     ${KICADD_DIR}/mcp/sch_tools.cpp
     ${KICADD_DIR}/mcp/sim.cpp
+    ${KICADD_DIR}/mcp/plot.cpp
+    ${KICADD_DIR}/mcp/pdn.cpp
+    ${KICADD_DIR}/mcp/reflect.cpp
+    ${KICADD_DIR}/mcp/project.cpp
     ${KICADD_DIR}/mcp/drc.cpp
     ${KICADD_DIR}/mcp/transports.cpp
     )
@@ -133,6 +139,7 @@ target_link_libraries( kicadd-mcp PRIVATE
     Boost::boost
     Threads::Threads
     ${NNG_LIBRARY}
+    ZLIB::ZLIB
     )
 target_compile_features( kicadd-mcp PRIVATE cxx_std_20 )
 # the release this is: -DKICADD_VERSION (the tag builds pass the tag), else git describe of the

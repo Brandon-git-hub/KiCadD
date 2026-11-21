@@ -55,7 +55,10 @@ Claude Code：`claude mcp add kicadd -- C:\KiCadD\bin\kicadd-mcp.exe --stdio`（
 | 電路圖文件 | `sch_annotate`（重新編號，可以 dry run、限定圖紙或零件、設定起始號、每頁一段）、`sch_export_pdf`（所有圖紙合成一份 PDF，可點擊跳頁；在 Adobe Acrobat / Reader 點零件會跳出欄位選單，瀏覽器內建的 PDF 檢視器不支援）、`sch_render`（PNG） |
 | 立創零件 | `lcsc_fetch`（封裝、符號、3D 模型（VRML）、庫存、價格）、`lcsc_search`（依規格找料）、`lcsc_match`（批次配料號）；編輯器裡的 Place → Add LCSC Part / Symbol |
 | 自建元件 | `lib_create_symbol`、`lib_create_footprint`、`lib_register` |
-| 局部模擬 | `simulate`（ngspice，附在 Windows 壓縮檔裡）：圈選零件、圖紙或某顆零件周圍，模型依零件索引的參數產生（R、C（MLCC 依介質、尺寸、容值與實際偏壓估 DC Bias，ESR / ESL 用典型值）、L、二極體、MOSFET、LDO、Op-Amp），或用零件自己的 Sim.* 模型；量測 op、tran（平均、漣波、階躍的過衝 / 上升 / 穩定時間）、ac（增益、峰值、−3 dB）。估算值一律標明，可逐顆覆寫或掛外部 .lib |
+| 局部模擬 | `simulate`（ngspice，附在 Windows 壓縮檔裡）：圈選零件、圖紙或某顆零件周圍，模型依零件索引的參數產生（R、C（MLCC 依介質、尺寸、容值與實際偏壓估 DC Bias，ESR / ESL 用典型值）、L、二極體、MOSFET、LDO、Op-Amp），或用零件自己的 Sim.* 模型；量測 op、tran（平均、漣波、階躍的過衝 / 上升 / 穩定時間）、ac（增益、峰值、−3 dB）、dc 掃描（I-V 曲線）；`plot=true` 附 PNG 圖。估算值一律標明，可逐顆覆寫或掛外部 .lib |
+| 電源完整性 | `pdn`：電源軌在負載處的阻抗 Z(f)，電容的 ESR / ESL / DC Bias 加上板上實際的安裝電感（走線、過孔、平面），找反諧振尖峰並標出兩側的電容；給目標阻抗才列出超標頻段；可試加電容、改安裝電感 |
+| 訊號完整性 | `reflection`：依實際佈線（每段走線的 Z0 與延遲）模擬邊緣，列出每個接收端的過衝、ringback、flight time、是否單調，並建議串聯端接電阻（Z0 − 驅動阻抗，E24）及加上後的結果 |
+| 專案 | `new_project`：在伺服器上建立新專案（`.kicad_pro`、空白板子與電路圖，可指定層數、疊層、板框），不覆寫既有檔案；`open_board` 開既有專案 |
 | 電路圖到 PCB | `sync_pcb`（照 UUID 對應，重新編號的零件原地改名）、`auto_place`（依連線擺放、去耦電容靠 IC，可設分群和擺件規則；USB、RJ45、DC 插座等連接器可依板邊規則朝外伸出板框） |
 | PCB 編輯 | 查詢、移動、翻面、新增 / 刪除封裝、`pcb_set_fields`、`delete_tracks`、`board_outline`、`board_setup`（疊層，或 JLCPCB 的阻抗疊層）、`set_rules`（網路類別、JLCPCB 製程預設、依電流算線寬、依阻抗算線寬 / 差分間距）、`impedance`（各銅層的控制阻抗線寬）、`zones` |
 | 佈線（逐條） | `route`（一條線，可以指定經過點和換層位置）、`route_short`、`fanout`、`stitch_vias`、`teardrops` |
@@ -67,7 +70,7 @@ Claude Code：`claude mcp add kicadd -- C:\KiCadD\bin\kicadd-mcp.exe --stdio`（
 | 項目 | 狀態 |
 |---|---|
 | 全板自動佈線、差分對 / 等長的自動佈線（meander） | **不做。** `route` 只代替重複的手動佈線。差分對和等長之後會做成**檢查**（ROADMAP 階段二）。你可以照常用 KiCad 自己的差分對和等長工具手動佈線。 |
-| 編輯器裡的模擬視窗 | 沒有（精簡 build 不含）；Agent 用 `simulate` 跑 ngspice。PCB 的寄生（安裝電感、走線）還沒進模型（PDN 阻抗在階段三第 3 項） |
+| 編輯器裡的模擬視窗 | 沒有（精簡 build 不含）；Agent 用 `simulate` 跑 ngspice（`plot=true` 回傳圖）。`simulate` 不含 PCB 寄生；電源的安裝電感在 `pdn`，走線的傳輸線效應在 `reflection` |
 | STEP / GLB / STL 匯出 | 沒有 OpenCASCADE，3D 模型只讀 VRML（`.wrl`） |
 | ODB++ / IPC-2581 / DXF、組裝圖 | 未支援（組裝圖在階段五） |
 | 同一個圖紙檔重複使用（多實例） | 未支援（階段五） |

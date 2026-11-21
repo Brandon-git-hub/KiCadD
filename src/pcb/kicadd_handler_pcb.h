@@ -108,6 +108,12 @@ private:
     HANDLER_RESULT<kicadd::board::ImpedanceResponse>
     handleImpedance( const HANDLER_CONTEXT<kicadd::board::Impedance>& aCtx );
 
+    HANDLER_RESULT<kicadd::board::PdnGeometryResponse>
+    handlePdnGeometry( const HANDLER_CONTEXT<kicadd::board::PdnGeometry>& aCtx );
+
+    HANDLER_RESULT<kicadd::board::NetTopologyResponse>
+    handleNetTopology( const HANDLER_CONTEXT<kicadd::board::NetTopology>& aCtx );
+
     /// The layers / stackup changed (board_setup, its undo): the editor's layer lists redone.
     void setupChanged();
 

@@ -74,6 +74,7 @@
 #include <reporter.h>
 #include "pcb/kicadd_route.h"
 #include "pcb/kicadd_impedance.h"
+#include "pcb/kicadd_pdn.h"
 #include "pcb/kicadd_mouth.h"
 #include <pcb_edit_frame.h>
 #include <pcb_shape.h>
@@ -249,6 +250,8 @@ KICADD_HANDLER_PCB::KICADD_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext ) 
     registerHandler<BoardOutline, BoardOutlineResponse>( &KICADD_HANDLER_PCB::handleBoardOutline );
     registerHandler<BoardSetup, BoardSetupResponse>( &KICADD_HANDLER_PCB::handleBoardSetup );
     registerHandler<Impedance, ImpedanceResponse>( &KICADD_HANDLER_PCB::handleImpedance );
+    registerHandler<PdnGeometry, PdnGeometryResponse>( &KICADD_HANDLER_PCB::handlePdnGeometry );
+    registerHandler<NetTopology, NetTopologyResponse>( &KICADD_HANDLER_PCB::handleNetTopology );
     registerHandler<DeleteFootprints, MoveResponse>( &KICADD_HANDLER_PCB::handleDeleteFootprints );
     registerHandler<DeleteTracks, MoveResponse>( &KICADD_HANDLER_PCB::handleDeleteTracks );
     registerHandler<RouteTrack, RouteResponse>( &KICADD_HANDLER_PCB::handleRoute );
@@ -7561,6 +7564,48 @@ HANDLER_RESULT<BoardSetupResponse> KICADD_HANDLER_PCB::handleBoardSetup( const H
 
     for( const std::string& line : kicadd::setup::Describe( now ) )
         out.add_stackup( line );
+
+    return out;
+}
+
+
+HANDLER_RESULT<PdnGeometryResponse> KICADD_HANDLER_PCB::handlePdnGeometry( const HANDLER_CONTEXT<PdnGeometry>& aCtx )
+{
+    if( std::optional<ApiResponseStatus> wait = busy() )
+        return tl::unexpected( *wait );
+
+    BOARD* b = board();
+
+    if( !b )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
+
+    PdnGeometryResponse out;
+    std::string         err = kicadd::PdnGeometry( *b, aCtx.Request, out );
+
+    if( !err.empty() )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, err ) );
+
+    return out;
+}
+
+
+HANDLER_RESULT<NetTopologyResponse> KICADD_HANDLER_PCB::handleNetTopology( const HANDLER_CONTEXT<NetTopology>& aCtx )
+{
+    if( std::optional<ApiResponseStatus> wait = busy() )
+        return tl::unexpected( *wait );
+
+    BOARD* b = board();
+
+    if( !b )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
+
+    b->GetConnectivity()->FlushDeferredRatsnest();
+
+    NetTopologyResponse out;
+    std::string         err = kicadd::NetTopology( *b, aCtx.Request, out );
+
+    if( !err.empty() )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, err ) );
 
     return out;
 }

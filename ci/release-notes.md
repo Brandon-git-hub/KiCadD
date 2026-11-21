@@ -2,7 +2,7 @@
      {{UPSTREAM}} is filled from patches/UPSTREAM_BASE; build info and SHA-256 are appended. -->
 KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修剪版 Windows x64 build，加上 Agent（MCP）協同設計。
 
-> ⚠️ Beta（pre-release）。已能走完整個設計流程，功能仍會持續加入。由 GitHub Actions 自動建置；34 個端到端測試在 Linux 上全部通過（含桌面版），Windows CI 跑 smoke test 與 headless 的出廠、貼片、電路圖文件、模擬、工具、設定、undo 歷史測試；桌面版在 Windows 上只有人工試用。
+> ⚠️ Beta（pre-release）。已能走完整個設計流程，功能仍會持續加入。由 GitHub Actions 自動建置；36 個端到端測試在 Linux 上全部通過（含桌面版），Windows CI 跑 smoke test 與 headless 的出廠、貼片、電路圖文件、模擬、PDN / 反射、新專案、工具、設定、undo 歷史測試；桌面版在 Windows 上只有人工試用。
 
 ## 使用前須知
 完整的使用說明（安裝、接上 Agent、skill、存檔格式、做得到 / 做不到）：[docs/GUIDE.md](https://github.com/Brandon-git-hub/KiCadD/blob/main/docs/GUIDE.md)。
@@ -10,10 +10,38 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 - **存檔格式：** KiCadD 以 KiCad nightly（10.99）為基礎。用 KiCadD 存過的 `.kicad_pcb`、`.kicad_sch` 會寫成新格式，**KiCad 9 / 10 正式版可能打不開**。請用專案副本試用；要知道這次改了什麼，存檔前先用 `board_diff`。
 - **平台：** 只提供 Windows x64。Linux 可以自行從原始碼編譯，沒有 macOS 版。
 - **不附 KiCad 官方元件庫：** 符號和封裝請用 `lcsc_fetch`、`lcsc_match` 從 LCSC 取得，或用 `lib_create_symbol`、`lib_create_footprint` 自建，也可以 `lib_register` 專案裡現有的庫。舊專案裡已經用過的符號（例如 `Device:R`），庫沒掛也能從電路圖內嵌的副本再放。
-- **一次一個專案：** 一個服務同時只開一個專案（板子加電路圖），換專案請用 `open_board`。
+- **一次一個專案：** 一個服務同時只開一個專案（板子加電路圖），換專案請用 `open_board`，新專案用 `new_project`。
 - **目前不支援：** 差分對與等長佈線、全板自動佈線（`route` 只代替重複的手動佈線）、電路圖自動排版、組裝圖、STEP 匯出（3D 模型只有 VRML）、ODB++ / IPC-2581 / DXF、MCP resources / prompts。
 
-## 這一版（beta.8）
+## 這一版（beta.9）
+新功能：階段三（區域模擬）的剩餘項目，以及由 MCP 新建專案。工具 60 → 63 個。
+
+**新工具**
+- **`pdn`：電源軌的阻抗 Z(f)。** 在負載處計算電源軌阻抗。
+  - **模型：** 每顆去耦電容都用 ESR + ESL + C_eff。C_eff 依軌電壓估 MLCC DC Bias。安裝電感取自板上的實際佈局：焊盤到過孔的走線、到平面的過孔迴路、平面對裡到負載的距離。另外加上平面對的電容、穩壓器（`vrm`）和負載自己的過孔。
+  - **輸出：** 列出反諧振尖峰（附兩側的電容），以及各種電容的 SRF 與安裝電感的組成。給 `target` 才列出超標的頻段。
+  - **試改：** `add` 試加電容，`models` 改安裝電感或排除電容。
+  - **限制：** 平面當成集總元件，沒有腔體共振。
+- **`reflection`：反射與串聯端接。** 依實際佈線模擬一個網路的邊緣：每段走線是一條傳輸線，帶該層、該線寬的 Z0 與延遲。
+  - **量測：** 每個接收端的過衝、ringback、flight time、穩定時間，以及是否單調。
+  - **建議：** 一個串聯電阻（Z0 − 驅動阻抗，取 E24），附加上後的結果。
+  - **既有串聯電阻：** 網路上已有串聯電阻時，會到另一側找驅動端。
+  - **驅動端參數：** rise、rout、vdd、cin 請照資料表給，沒給就用假設值並註明。
+- **`new_project`：新專案。** 在伺服器上建立 `.kicad_pro`、空白的 `.kicad_pcb` 與 `.kicad_sch`，並接著開啟。
+  - **可設定：** 層數、疊層（可用 JLCPCB 的阻抗疊層）、矩形板框，最後由 KiCad 存檔。
+  - **安全：** 已有任一個檔就拒絕，不覆寫。目前的板子有未存檔修改時也拒絕，除非 `discard=true`。
+
+**`simulate` 新增**
+- **`plot=true`：** 回傳 PNG 圖。
+  - tran：波形，另一格畫電流。
+  - ac：增益與相位（log f）。
+  - dc：對掃描值作圖。
+  - `corners`：上下限畫成淡線。
+  - 圖由 KiCadD 自己畫（KiCad 的筆畫字型），不需要系統字型。
+- **`dc` 掃描：** 掃描一個電源（V）或負載（A），電源電流即 I-V 曲線。
+- **讀得懂寫成料號的值：** 例如 `CC0402_100NF_16V_10%_X7R`（`pdn` 也用同一套）。
+
+## beta.8
 修正版：把 60 個工具全部跑過一輪後回報的問題，以及 beta.7 試用時發現的問題。工具數不變（60 個）。
 
 **修正**

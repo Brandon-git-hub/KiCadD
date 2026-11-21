@@ -106,6 +106,34 @@ std::string num( double aV, const char* aFmt = "%.4g" )
 } // namespace
 
 
+bool Between( const BOARD& aBoard, PCB_LAYER_ID aA, PCB_LAYER_ID aB, double& aH, double& aEr )
+{
+    const BOARD_STACKUP                     stackup = aBoard.GetStackupOrDefault();
+    const std::vector<BOARD_STACKUP_ITEM*>& list = stackup.GetList();
+    int                                     ia = -1, ib = -1;
+
+    for( int i = 0; i < (int) list.size(); ++i )
+    {
+        if( list[i]->GetType() != BS_ITEM_TYPE_COPPER )
+            continue;
+
+        if( list[i]->GetBrdLayerId() == aA )
+            ia = i;
+
+        if( list[i]->GetBrdLayerId() == aB )
+            ib = i;
+    }
+
+    if( ia < 0 || ib < 0 )
+        return false;
+
+    DIELECTRIC d = between( list, ia, ib );
+    aH = d.h;
+    aEr = d.er > 0 ? d.er : 4.5;
+    return d.h > 0 || ia == ib;
+}
+
+
 double Mm( double aMetres )
 {
     return std::round( aMetres * 1e6 ) / 1e3;

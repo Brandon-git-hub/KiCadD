@@ -17,6 +17,7 @@ come from the cache) and, through kicadd-mcp:
 """
 
 import argparse
+import base64
 import json
 import math
 import os
@@ -72,6 +73,13 @@ class Mcp:
     def tool(self, name, args=None):
         r = self.rpc("tools/call", {"name": name, "arguments": args or {}}).get("result", {})
         return bool(r.get("isError")), "".join(c.get("text", "") for c in r.get("content", []))
+
+    def tool_images(self, name, args=None):
+        """(isError, text, [PNG bytes]) for a tool that may answer with images."""
+        r = self.rpc("tools/call", {"name": name, "arguments": args or {}}).get("result", {})
+        content = r.get("content", [])
+        imgs = [base64.b64decode(c["data"]) for c in content if c.get("type") == "image"]
+        return bool(r.get("isError")), "".join(c.get("text", "") for c in content), imgs
 
     def close(self):
         self.p.stdin.close()
