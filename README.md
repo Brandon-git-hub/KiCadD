@@ -1363,7 +1363,9 @@ ROADMAP phase 3, item 2. Three pieces, none linking ngspice:
     - An error amplifier with gain 1e4 and one pole, so the loop crosses at `loop_bw`
       (100 kHz, assumed).
     - The pass element is clamped to `[0, Vin - dropout]`.
-    - PSRR is a flat AC-coupled feed-through of the input, from the single dB number.
+    - PSRR is an AC-coupled feed-through of the input's ripple, outside the loop's own rejection:
+      the data's single dB number up to `psrr_f` (assumed loop_bw / 10), then 20 dB/dec worse down
+      to `psrr_hf` (assumed 20 dB). Both are said as assumed and can be overridden in `models`.
     - The input draws the output current plus Iq. Rout is 10 mΩ.
     - Fixed parts use Vout. Adjustable parts use a reference on FB, either the data's Vout
       when it is below 1.3 V or `vref`.

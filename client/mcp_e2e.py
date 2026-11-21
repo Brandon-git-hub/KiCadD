@@ -87,6 +87,12 @@ async def test_http_sdk(url):
     print("\n[HTTP, official SDK Client, mode=auto (discover probe -> legacy fallback)]")
     async with Client(url) as client:
         tools = await client.list_tools()
+        props = {t.name: t.input_schema.get("properties", {}) for t in tools.tools}
+        descr = lambda tool, arg: props.get(tool, {}).get(arg, {}).get("description", "")
+        check(all(descr(t, "nets").startswith("Net names") for t in ("route_short", "fanout", "teardrops", "delete_tracks", "zones"))
+              and descr("zones", "layers").startswith("Layer names") and descr("zones", "ids").startswith("Zone ids")
+              and any(descr(t, "refs").startswith("Reference designators") for t in props),
+              "nets / layers / ids described as what they are (not reference designators)")
         names = sorted(t.name for t in tools.tools)
         check(len(names) == 60 and all(n in names for n in ("simulate", "impedance", "sch_annotate", "sch_export_pdf", "silk_tidy", "board_diff", "sch_render", "stitch_vias", "teardrops", "board_render", "lcsc_match", "board_outline", "board_setup", "route", "route_short", "fanout", "sch_undo", "sch_redo", "sch_set_fields", "pcb_set_fields", "get_rules", "set_rules", "zones", "batch")) and all(n in names for n in ("delete_tracks", "sch_move", "sch_wire", "run_erc", "lib_register", "export_fab", "audit", "lcsc_search", "lib_create_symbol", "lib_create_footprint")) and "lcsc_fetch" in names and "sch_connect" in names and "auto_place" in names and "sch_add_sheet" in names, f"tools/list -> {names}")
         check(all(t.input_schema.get("type") == "object" for t in tools.tools), "every inputSchema is an object")
@@ -102,6 +108,10 @@ async def test_stdio_sdk(binary, sock):
                 init = await session.initialize()
                 check(init.protocol_version == "2025-11-25", f"negotiated protocol {init.protocol_version}")
                 check(init.server_info.name == "kicadd", "serverInfo.name == kicadd")
+                out = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=10).stdout.strip()
+                ver = out.removeprefix("kicadd-mcp ")
+                check(out.startswith("kicadd-mcp ") and ver and init.server_info.version.startswith(ver + "+t"),
+                      f"--version '{out}' is serverInfo.version's release ({init.server_info.version})")
                 await exercise(session.call_tool, "stdio")
 
 

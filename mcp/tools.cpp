@@ -380,8 +380,12 @@ std::string renderMoveResult( const kb::MoveResponse& r, bool aDetail = false )
     // the local DRC looks around the parts that moved; with none it looked at nothing
     if( r.moved().empty() && r.drc().empty() )
         s += "drc: not checked here (no part moved; run_drc checks the board)\n";
+    else if( r.on_unfilled_pour() && r.drc().empty() )
+        s += "drc: incomplete: nothing found around the moved parts, but they are on a pour that is not refilled "
+             "(checked against its old shape): refill_zones, then run_drc\n";
     else
-        s += renderDrc( r.drc(), aDetail );
+        s += ( r.on_unfilled_pour() ? "zones not refilled: the DRC below is against a pour's old shape (refill_zones, then run_drc)\n" : "" )
+             + renderDrc( r.drc(), aDetail );
 
     return s;
 }
@@ -2758,6 +2762,14 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
     const json refs = { { "type", "array" }, { "items", { { "type", "string" } } },
                         { "description", "Reference designators, e.g. [\"U5\", \"C12\"]" } };
 
+    // a list of strings with its own description (nets, layers, ids: not reference designators)
+    auto strings = []( const char* aDescription )
+    {
+        return json{ { "type", "array" }, { "items", { { "type", "string" } } }, { "description", aDescription } };
+    };
+
+    const json nets = strings( "Net names, e.g. [\"GND\", \"/USB_D+\"]" );
+
     std::vector<TOOL> tools;
 
     tools.push_back( { "board_summary",
@@ -2855,7 +2867,7 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        "[x0, y0, x1, y1] mm, anything crossing it. Locked tracks stay unless include_locked. "
                        "Zones are not touched (refill_zones afterwards). Returns the new unrouted count.",
                        schema( { { "all", { { "type", "boolean" } } },
-                                 { "nets", refs },
+                                 { "nets", nets },
                                  { "refs", refs },
                                  { "region", { { "type", "array" }, { "items", { { "type", "number" } } } } },
                                  { "include_locked", { { "type", "boolean" } } },
@@ -2897,7 +2909,7 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        "(delete_tracks or move the part). All of it is one undoable edit; dry_run reports "
                        "what would and would not route without drawing.",
                        schema( { { "refs", refs },
-                                 { "nets", refs },
+                                 { "nets", nets },
                                  { "max_length", { { "type", "number" } } },
                                  { "layer", { { "type", "string" } } },
                                  { "dry_run", { { "type", "boolean" } } },
@@ -2912,7 +2924,7 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        "joined to the zone; a net without such a zone gets a warning, not dangling vias. "
                        "refs: only these parts; layer: the zone's layer. One undoable edit; the zones are "
                        "refilled afterwards (refill=false to skip); dry_run reports without drawing.",
-                       schema( { { "nets", refs },
+                       schema( { { "nets", nets },
                                  { "refs", refs },
                                  { "layer", { { "type", "string" } } },
                                  { "dry_run", { { "type", "boolean" } } },
@@ -2949,7 +2961,7 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                                  { "vias", { { "type", "boolean" } } },
                                  { "pth", { { "type", "boolean" } } },
                                  { "smd", { { "type", "boolean" } } },
-                                 { "nets", refs },
+                                 { "nets", nets },
                                  { "refs", refs },
                                  { "dry_run", { { "type", "boolean" } } } } ),
                        [&aIpc]( const json& a ) { return teardrops( aIpc, a ); } } );
@@ -2983,7 +2995,7 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        "drc (default true) runs DRC before and after and reports the change in errors.",
                        schema( { { "preset", { { "type", "string" }, { "enum", { "jlcpcb_2layer", "jlcpcb_4layer", "jlcpcb_6layer" } } } },
                                  { "classes", { { "type", "object" } } },
-                                 { "remove_classes", refs },
+                                 { "remove_classes", strings( "Net class names to remove, e.g. [\"USB\"]" ) },
                                  { "assign", { { "type", "object" } } },
                                  { "constraints", { { "type", "object" } } },
                                  { "drc", { { "type", "boolean" } } } } ),
@@ -3001,9 +3013,9 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        "clearance, min_width (mm), priority, connection (solid / thermal / none / thermal_tht), "
                        "thermal_gap, thermal_spoke (mm). Each is one undoable edit, refilled afterwards unless "
                        "refill=false.",
-                       schema( { { "nets", refs },
-                                 { "layers", refs },
-                                 { "ids", refs },
+                       schema( { { "nets", nets },
+                                 { "layers", strings( "Layer names, e.g. [\"F.Cu\", \"In1.Cu\"]" ) },
+                                 { "ids", strings( "Zone ids from the list" ) },
                                  { "all", { { "type", "boolean" } } },
                                  { "clearance", { { "type", "number" } } },
                                  { "min_width", { { "type", "number" } } },

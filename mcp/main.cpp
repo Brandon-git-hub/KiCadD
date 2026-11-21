@@ -21,6 +21,10 @@
 
 #include <boost/asio/io_context.hpp>
 
+#ifndef KICADD_VERSION
+#define KICADD_VERSION "0.0.0-dev"
+#endif
+
 #if defined( _WIN32 )
 #include <windows.h>
 #endif
@@ -92,7 +96,8 @@ void usage()
                   "  --trust-loopback  with --token: let peers on 127.0.0.1/::1 in without it\n"
                   "                    (same machine/container, e.g. a local agent or code-server proxy)\n"
                   "  --no-web   don't serve the 2D view (/ and /ws) in --http mode\n"
-                  "  --web-root DIR  serve DIR/index.html instead of the embedded page\n",
+                  "  --web-root DIR  serve DIR/index.html instead of the embedded page\n"
+                  "  --version  print the version and exit\n",
                   desktopSocket().c_str() );
 }
 
@@ -154,6 +159,11 @@ int main( int argc, char** argv )
             http.webRoot = next();
         else if( a == "--timeout-ms" )
             timeoutMs = std::stoi( next() );
+        else if( a == "--version" || a == "-V" )
+        {
+            std::printf( "kicadd-mcp %s\n", KICADD_VERSION );
+            return 0;
+        }
         else if( a == "-h" || a == "--help" )
         {
             usage();

@@ -154,6 +154,8 @@ message MoveResponse
                                                // (undone / redone in the editor), left alone
   repeated string       removed_nets = 19;     // nets the removed footprints were on that nothing is
                                                // on any more: taken off the board (undo puts them back)
+  bool                  on_unfilled_pour = 20; // moved parts on a filled pour not refilled since: the
+                                               // local DRC checked against its old shape
 }
 
 // Remove footprints (and their pads from connectivity). Tracks and vias are left in place,

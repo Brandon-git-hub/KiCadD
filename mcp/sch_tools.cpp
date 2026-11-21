@@ -13,6 +13,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <regex>
+#include <tuple>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -232,6 +234,26 @@ std::string chipSize( const std::string& aFootprint )
                 return size;
 
             at = end;
+        }
+    }
+
+    // EasyEDA's body sizes in mm ("LED-SMD_L1.6-W0.8-R-RD", "CAP-SMD_L3.2-W1.6"): the chip size
+    // within 0.15 mm
+    static const std::regex lw( R"((?:^|[^A-Za-z])L(\d+(?:\.\d+)?)-W(\d+(?:\.\d+)?)(?![\d.]))" );
+    std::smatch             m;
+
+    if( std::regex_search( name, m, lw ) )
+    {
+        static const std::tuple<double, double, const char*> chips[] = {
+            { 0.4, 0.2, "01005" }, { 0.6, 0.3, "0201" }, { 1.0, 0.5, "0402" }, { 1.6, 0.8, "0603" }, { 2.0, 1.25, "0805" },
+            { 3.2, 1.6, "1206" },  { 3.2, 2.5, "1210" }, { 4.5, 3.2, "1812" }, { 5.0, 2.5, "2010" }, { 6.4, 3.2, "2512" }
+        };
+        const double l = std::stod( m[1].str() ), w = std::stod( m[2].str() );
+
+        for( const auto& [cl, cw, size] : chips )
+        {
+            if( std::fabs( l - cl ) <= 0.15 && std::fabs( w - cw ) <= 0.15 )
+                return size;
         }
     }
 
@@ -809,7 +831,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "Connect pins to nets, as {\"nets\": {\"GND\": [\"R1.2\", \"C1.2\"], \"VCC\": [\"U1.VDD\"]}}. "
             "Each pin gets a short wire and a net label, so pins on the same net name are connected; "
             "net \"NC\" marks pins as not connected. A pin already on another net is refused "
-            "(sch_disconnect it first). Hierarchy: a net named in ports is a port of the pins' sheet "
+            "(sch_disconnect it first); all or none: with any error nothing is connected. Hierarchy: a net named in ports is a port of the pins' sheet "
             "(a hierarchical label inside, a sheet pin of that name on the sheet's symbol: inputs on "
             "the left, the rest on the right); on the parent the sheet pin is SHEET.PIN, like a part's, "
             "e.g. {\"+5V\": [\"Power.VOUT\", \"U2.3\"]}. global uses global labels instead (every "

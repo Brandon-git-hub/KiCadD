@@ -815,6 +815,16 @@ bool SaveToProjectLibrary( const wxString& dir, const PART& aPart, SAVED& aSaved
             delete f;
         }
 
+        // nor the part's value, title or datasheet: fetching another part on the same package
+        // would rewrite the file (noise in git) for nothing about the footprint
+        const wxString package = wxString::FromUTF8( aPart.package );
+        shared->SetValue( package );
+        shared->SetLibDescription( package + wxS( ". " ) + wxString::FromUTF8( ATTRIBUTION ) );
+        shared->SetKeywords( package + wxS( " LCSC EasyEDA" ) );
+
+        if( PCB_FIELD* f = shared->GetField( FIELD_T::DATASHEET ) )
+            f->SetText( wxEmptyString );
+
         PCB_IO_KICAD_SEXPR io;
         io.FootprintSave( lib.GetPath(), shared.get() );
     }

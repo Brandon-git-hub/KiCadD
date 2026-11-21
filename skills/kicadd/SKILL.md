@@ -212,10 +212,13 @@ op-amp's GBW when missing), and parts without a model are listed as left out, th
   open. Read the `cut at the region's edge` line ("LEDA (R4 here; D1 outside)"): more `hops`,
   or `models {"R4": {"exclude": true}}`.
 - Better data than the estimate (a datasheet's ESR, a vendor model): `models {"C5": {"esr":
-  "8m", "esl": "0.5n"}, "U1": {"psrr": 55, "loop_bw": "50k"}, "U2": {"subckt": "TPS7A02",
+  "8m", "esl": "0.5n"}, "U1": {"psrr": 55, "psrr_f": "5k", "psrr_hf": 25, "loop_bw": "50k"}, "U2": {"subckt": "TPS7A02",
   "lib": "models/tps7a02.lib", "pins": ["IN", "GND", "EN", "OUT"]}}`, `exclude true` to
   leave one out. Say which numbers were estimated when you report.
 - ESL is the part's own: the board's mounting inductance (pads, vias) is not in it yet.
+- An LDO's PSRR has one number in the data (usually at 100 Hz - 1 kHz). Over frequency it is
+  assumed: flat to `psrr_f` (loop_bw / 10), then 20 dB/dec worse to `psrr_hf` (20 dB). For ripple
+  from a switcher (100 kHz - 2 MHz), read the datasheet's PSRR curve and set those two.
 
 ## A new board (outline, layers, rules, pours)
 

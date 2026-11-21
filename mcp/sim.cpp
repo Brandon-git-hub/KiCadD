@@ -1111,19 +1111,31 @@ bool emit( PART& aP, NETLIST& aN, double aScale )
         const double iq = param( aP, "iq", 50e-6 );
         const double psrr = param( aP, "psrr", 60 );
         const double fbw = param( aP, "loop_bw", 100e3 );
+        const double psrrF = param( aP, "psrr_f", fbw / 10 );
+        const double psrrHf = std::min( psrr, param( aP, "psrr_hf", 20 ) );
         const double rout = param( aP, "rout", 0.01 );
         const double gain = 1e4;   // 0.01% off Vref at DC
         const std::string nfb = adjustable ? aN.node( *fb, s.ref() ) : "kd_" + id + "_o";
         const std::string k = "kd_" + id + "_";
 
-        // error amplifier (one pole: the loop crosses at loop_bw with the feedback at 1), then the
-        // pass element: at most Vin - dropout, at least 0; PSRR as a flat feed-through of the
-        // input's ripple (AC-coupled); the input draws the output current plus Iq
-        add( "B" + id + "_e " + k + "e " + ng + " V=" + fmt( gain ) + "*(" + fmt( vref, 6 ) + "-" + vd( nfb, ng ) + ")" );
-        add( "R" + id + "_p " + k + "e " + k + "p 1k" );
-        add( "C" + id + "_p " + k + "p " + ng + " " + fmt( gain / ( 2 * PI * 1e3 * fbw ) ) );
+        // PSRR: the input's ripple (AC-coupled) on the output at the data's PSRR to psrr_f, then 20 dB / dec
+        // worse to psrr_hf: a * (1 + s/w1) / (1 + s/w2) = a * v + a * (w2/w1 - 1) * (v high-passed at w2)
+        const double a = std::pow( 10, -psrr / 20 );
+        const double ratio = std::pow( 10, ( psrr - psrrHf ) / 20 );
         add( "C" + id + "_hp " + nin + " " + k + "h 1u" );
         add( "R" + id + "_hp " + k + "h " + ng + " 1Meg" );
+        add( "C" + id + "_h2 " + k + "h " + k + "h2 1n" );
+        add( "R" + id + "_h2 " + k + "h2 " + ng + " " + fmt( 1 / ( 2 * PI * psrrF * ratio * 1e-9 ) ) );
+        add( "B" + id + "_r " + k + "r " + ng + " V=" + fmt( a ) + "*" + vd( k + "h", ng ) + "+" + fmt( a * ( ratio - 1 ) ) + "*" + vd( k + "h2", ng ) );
+
+        // error amplifier (one pole: the loop crosses at loop_bw with the feedback at 1), then the
+        // pass element: at most Vin - dropout, at least 0, plus the ripple; the amplifier does not
+        // see the ripple (it is the PSRR the loop leaves); the input draws the output current plus Iq
+        const std::string sense = adjustable ? "(" + vd( nfb, ng ) + "-" + vd( k + "r", ng ) + "*" + vd( nfb, ng ) + "/max(" + vd( k + "o", ng ) + ",1m))"
+                                             : "(" + vd( nfb, ng ) + "-" + vd( k + "r", ng ) + ")";
+        add( "B" + id + "_e " + k + "e " + ng + " V=" + fmt( gain ) + "*(" + fmt( vref, 6 ) + "-" + sense + ")" );
+        add( "R" + id + "_p " + k + "e " + k + "p 1k" );
+        add( "C" + id + "_p " + k + "p " + ng + " " + fmt( gain / ( 2 * PI * 1e3 * fbw ) ) );
 
         std::string on = "1";
 
@@ -1131,7 +1143,7 @@ bool emit( PART& aP, NETLIST& aN, double aScale )
             on = "(" + vd( aN.node( *en, s.ref() ), ng ) + ">0.9?1:0)";
 
         add( "B" + id + "_o " + k + "x " + ng + " V=" + on + "*max(0,min(" + vd( k + "p", ng ) + "," + vd( nin, ng ) + "-" + fmt( drop ) + "))+"
-             + fmt( std::pow( 10, -psrr / 20 ) ) + "*" + vd( k + "h", ng ) );
+             + vd( k + "r", ng ) );
         add( "V" + id + "_i " + k + "x " + k + "o 0" );
         add( "R" + id + "_o " + k + "o " + nout + " " + fmt( rout ) );
         add( "B" + id + "_in " + nin + " " + ng + " I=max(I(V" + id + "_i),0)+" + fmt( iq ) );
@@ -1143,7 +1155,8 @@ bool emit( PART& aP, NETLIST& aN, double aScale )
         auto src = [&]( const char* aId ) { return hasParam( aP, aId ) ? "" : " assumed"; };
         aP.notes = std::string( adjustable ? "Vref " : "Vout " ) + FormatSI( vref, "V" ) + ( adjustable ? " on " + bare( fb->net() ) : "" )
                    + ", dropout " + FormatSI( drop, "V" ) + src( "dropout" ) + ", Iq " + FormatSI( iq, "A" ) + src( "iq" ) + ", PSRR "
-                   + fmt( psrr, 3 ) + " dB" + ( hasParam( aP, "psrr" ) ? " (one number: flat over frequency)" : " assumed" ) + "; loop "
+                   + fmt( psrr, 3 ) + " dB" + ( hasParam( aP, "psrr" ) ? " (the data's one number)" : " assumed" ) + " to " + FormatSI( psrrF, "Hz" )
+                   + src( "psrr_f" ) + ", then -20 dB/dec to " + fmt( psrrHf, 3 ) + " dB" + src( "psrr_hf" ) + "; loop "
                    + FormatSI( fbw, "Hz" ) + src( "loop_bw" ) + ", Rout " + FormatSI( rout, "Ω" ) + src( "rout" )
                    + "; no current limit (Iout " + ( hasParam( aP, "iout" ) ? FormatSI( param( aP, "iout" ), "A" ) : "?" ) + ")";
         return true;
@@ -1835,7 +1848,7 @@ std::string SimulateDescription()
            "ratio (a divider, matched RCs) the ends cancel; set one part's value with models to try a mix. "
            "MLCC DC bias comes from an op run first (for tran its average over the window): right for linear "
            "circuits; a switching converter or an AC-coupled node is not at its DC point there. dc_bias false: MLCCs at their nominal C. models {ref: {c, esr, esl, r, "
-           "l, dcr, tol (%), dc_bias, vout, vref, dropout, iq, psrr, loop_bw, rout, gbw, slew, vos, rds_on, vgs_th, "
+           "l, dcr, tol (%), dc_bias, vout, vref, dropout, iq, psrr, psrr_f, psrr_hf, loop_bw, rout, gbw, slew, vos, rds_on, vgs_th, "
            "vf ... (any parameter, SI), exclude: true, or subckt + lib (a .lib / .cir path, relative to the project) "
            "+ pins (the subckt's pin order as pin numbers or names)}} override what the data gives. netlist true "
            "adds the netlist made.";
@@ -2789,7 +2802,10 @@ TOOL_RESULT Simulate( IPC_CLIENT& aIpc, const json& a )
                                 return -1.0;
                             },
                             "Hz" );
-            line += "; " + fmt( v->back(), 3 ) + " dB at " + FormatSI( x.back(), "Hz" ) + " " + sparkline( x, *v );
+            // the sweep is by decades: the line too (linear, all but the last decade fell in one bar)
+            std::vector<double> lx( x.size() );
+            std::transform( x.begin(), x.end(), lx.begin(), []( double f ) { return std::log10( std::max( f, 1e-30 ) ); } );
+            line += "; " + fmt( v->back(), 3 ) + " dB at " + FormatSI( x.back(), "Hz" ) + " " + sparkline( lx, *v ) + " (log f)";
         }
 
         out += line;

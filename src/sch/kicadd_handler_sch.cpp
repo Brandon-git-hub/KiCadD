@@ -1328,8 +1328,26 @@ void KICADD_HANDLER_SCH::removeWireRun( SCH_SCREEN* aScreen, SCH_LINE* aSeed, co
         if( aKeep && end == *aKeep )
             continue;
 
-        // what is left at the end: wire ends (a wire passing through counts twice) and pins
-        int left = aScreen->GetPin( end, nullptr, true ) || aScreen->GetSheetPin( end ) ? 1 : 0;
+        // what is left at the end: wire ends (a wire passing through counts twice) and pins; not a
+        // power symbol's own pin (it only names the net there: it goes with the wire)
+        int left = aScreen->GetSheetPin( end ) ? 1 : 0;
+
+        for( SCH_ITEM* item : aScreen->Items().Overlapping( SCH_SYMBOL_T, end ) )
+        {
+            auto* symbol = static_cast<SCH_SYMBOL*>( item );
+
+            if( symbol->IsPower() || aGone.count( symbol ) || left )
+                continue;
+
+            for( SCH_PIN* pin : symbol->GetPins( nullptr ) )
+            {
+                if( pin->GetPosition() == end )
+                {
+                    left = 1;
+                    break;
+                }
+            }
+        }
 
         for( SCH_ITEM* item : aScreen->Items().Overlapping( SCH_LINE_T, end ) )
         {
@@ -1440,6 +1458,22 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleConnect( const HAND
     if( !power.empty() )
         schematic()->Hierarchy().GetSymbols( powerRefs, SYMBOL_FILTER_POWER );
 
+    std::map<std::string, std::string> asked;   // REF.PIN -> net, in this call
+    std::vector<std::pair<SCH_SCREEN*, BOX2I>> textPlaced;   // the labels / power symbols made here
+
+    // every pin's net now, before this call changes anything (the connectivity is not current
+    // once the first wires are in)
+    std::map<std::string, std::string> netNow;
+
+    for( const SchPinNet& link : aCtx.Request.links() )
+    {
+        PIN_AT      at;
+        std::string err;
+
+        if( findPin( link.ref(), link.pin(), at, err ) )
+            netNow[link.ref() + "." + link.pin()] = pinNet( at.item, at.sheet );
+    }
+
     for( const SchPinNet& link : aCtx.Request.links() )
     {
         PIN_AT      at;
@@ -1458,8 +1492,19 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleConnect( const HAND
             continue;
         }
 
+        // the same pin twice in this call: its wire is not in the connectivity yet
+        if( auto seen = asked.find( label ); seen != asked.end() )
+        {
+            if( seen->second != link.net() )
+                out.add_errors( label + " is given for two nets: " + seen->second + " and " + link.net() );
+
+            continue;
+        }
+
+        asked[label] = link.net();
+
         bool        wantNc = link.net() == "NC";
-        std::string current = pinNet( at.item, at.sheet );
+        std::string current = netNow[label];
 
         if( wantNc )
         {
@@ -1492,33 +1537,114 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleConnect( const HAND
         {
             if( current == link.net() || current == "/" + link.net() )
                 out.set_done( out.done() + 1 );     // same net again: nothing to do
+            else if( !current.empty() )
+                out.add_errors( label + " is already on net " + current + "; sch_disconnect it first" );
             else
-                out.add_errors( label + " is already on net " + ( current.empty() ? "?" : current )
-                                + "; sch_disconnect it first" );
+                out.add_errors( label + " has a wire on it that reaches no net (a stub with no label or other pin); "
+                                "sch_disconnect it first" );
 
             continue;
         }
 
-        // Stub end: 2.54 mm out, further if that point is taken (another pin's stub, a label)
+        // Stub end: 2.54 mm out, further if that point is taken (another pin's stub, a label) or
+        // the label's text would lie over other text or a part (a neighbour's reference, a label)
+        const bool isPower = power.count( link.net() ) > 0;
+
+        auto textBox = [&]( const VECTOR2I& aEnd ) -> BOX2I
+        {
+            if( isPower )   // a power symbol: about 2.54 mm across, out from the stub's end
+            {
+                BOX2I box( aEnd + at.out * ( STUB / 2 ) - VECTOR2I( STUB / 2, STUB / 2 ), VECTOR2I( STUB, STUB ) );
+                box.Merge( aEnd );
+                return box;
+            }
+
+            SCH_LABEL probe( aEnd, wx( link.net() ) );
+            probe.SetSpinStyle( at.out.x < 0 ? SPIN_STYLE::LEFT : at.out.x > 0 ? SPIN_STYLE::RIGHT
+                                : at.out.y < 0 ? SPIN_STYLE::UP : SPIN_STYLE::BOTTOM );
+            return probe.GetBoundingBox();
+        };
+
+        auto clashes = [&]( const BOX2I& aBox )
+        {
+            BOX2I inner = aBox;
+            inner.Inflate( -schIUScale.MilsToIU( 5 ) );   // touching is fine
+
+            for( const auto& [screen, box] : textPlaced )
+            {
+                if( screen == at.screen && box.Intersects( inner ) )
+                    return true;
+            }
+
+            for( SCH_ITEM* item : at.screen->Items().Overlapping( inner ) )
+            {
+                if( item->Type() == SCH_LABEL_T || item->Type() == SCH_GLOBAL_LABEL_T || item->Type() == SCH_HIER_LABEL_T )
+                {
+                    if( item->GetBoundingBox().Intersects( inner ) )
+                        return true;
+                }
+                else if( item->Type() == SCH_SYMBOL_T )
+                {
+                    auto* sym = static_cast<SCH_SYMBOL*>( item );
+
+                    if( sym->GetBodyBoundingBox().Intersects( inner ) )
+                        return true;
+
+                    for( SCH_FIELD& field : sym->GetFields() )
+                    {
+                        if( field.IsVisible() && !field.GetText().IsEmpty()
+                            && field.GetBoundingBox().Intersects( inner ) )
+                            return true;
+                    }
+                }
+            }
+
+            return false;
+        };
+
         VECTOR2I end;
         bool     free = false;
+        std::optional<VECTOR2I> firstFree;
 
-        for( int k = 1; k <= 4 && !free; ++k )
+        for( int k = 1; k <= 6 && !free; ++k )
         {
             end = at.pos + at.out * ( STUB * k );
-            free = !occupied( at.screen, end );
+
+            // the wire must not pass another pin's end or a wire / label on its way (it would
+            // connect them): every half step out to the end
+            bool through = false;
+
+            for( int h = 1; h <= 2 * k && !through; ++h )
+                through = occupied( at.screen, at.pos + at.out * ( STUB * h / 2 ) );
+
+            if( through )
+                break;   // further out passes it too
+
+            if( !firstFree )
+                firstFree = end;
+
+            free = !clashes( textBox( end ) );
         }
 
-        if( !free )
+        if( !free && firstFree )
+        {
+            // no clear spot: the nearest free one, said
+            end = *firstFree;
+            out.add_warnings( label + ": the " + std::string( isPower ? "power symbol" : "label" ) + " " + link.net()
+                              + " overlaps other text or a part there (sch_move the part to make room)" );
+        }
+        else if( !free )
         {
             out.add_errors( label + ": no free spot for a label next to the pin" );
             continue;
         }
 
+        textPlaced.emplace_back( at.screen, textBox( end ) );
+
         auto            port = ports.find( link.net() );
         SCH_LABEL_BASE* netLabel = nullptr;
 
-        if( power.count( link.net() ) )
+        if( isPower )
         {
             // a power symbol at the stub's end: a global net, the KiCad way for supplies
             SCH_SYMBOL* sym = newPowerSymbol( link.net(), end, at.out, at.sheet, powerRefs );
@@ -1592,6 +1718,18 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleConnect( const HAND
         added++;
     }
 
+    // all or none: with an error nothing is connected, so a retry after the fix does not meet
+    // half of it already done
+    if( added && out.errors_size() > 0 )
+    {
+        commit.Revert();
+        out.add_warnings( "nothing connected (all or none): fix the error(s) and call again; " + std::to_string( added )
+                          + " other pin(s) were fine" );
+        out.set_done( 0 );
+        added = 0;
+        return out;
+    }
+
     if( added )
     {
         out.set_history_label( "connect " + std::to_string( added ) + " pin" + ( added > 1 ? "s" : "" ) );
@@ -1600,13 +1738,13 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleConnect( const HAND
         announce( wxS( "Agent: " ) + wx( out.history_label() ) );
 
         // the nets asked for: one a power symbol renames (and joins to others) is said here
-        std::set<std::string> asked;
+        std::set<std::string> askedNets;
 
         for( const SchPinNet& link : aCtx.Request.links() )
-            asked.insert( link.net() );
+            askedNets.insert( link.net() );
 
         for( const std::string& w : overruledLabels( schematic() ) )
-            for( const std::string& n : asked )
+            for( const std::string& n : askedNets )
                 if( w.rfind( "label " + n + " (", 0 ) == 0 )
                 {
                     out.add_warnings( w );

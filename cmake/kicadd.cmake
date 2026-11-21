@@ -135,6 +135,25 @@ target_link_libraries( kicadd-mcp PRIVATE
     ${NNG_LIBRARY}
     )
 target_compile_features( kicadd-mcp PRIVATE cxx_std_20 )
-# the release this is (bumped with ci/release-notes.md); MCP serverInfo.version, with a hash of the tools
-set( KICADD_VERSION "0.1.0-alpha.13" )
+# the release this is: -DKICADD_VERSION (the tag builds pass the tag), else git describe of the
+# KiCadD tree ("0.1.0-beta.7-3-g1a2b3c4"), else 0.0.0-dev; kicadd-mcp --version and MCP
+# serverInfo.version (with a hash of the tools)
+if( NOT KICADD_VERSION )
+    execute_process( COMMAND git -C "${KICADD_DIR}" describe --tags --dirty
+                     OUTPUT_VARIABLE KICADD_VERSION OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET RESULT_VARIABLE _kd_git )
+
+    if( NOT _kd_git EQUAL 0 OR NOT KICADD_VERSION )
+        execute_process( COMMAND git -C "${KICADD_DIR}" rev-parse --short HEAD
+                         OUTPUT_VARIABLE _kd_sha OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET RESULT_VARIABLE _kd_git )
+        set( KICADD_VERSION "0.0.0-dev" )
+
+        if( _kd_git EQUAL 0 AND _kd_sha )
+            set( KICADD_VERSION "0.0.0-dev+${_kd_sha}" )
+        endif()
+    endif()
+
+    string( REGEX REPLACE "^v" "" KICADD_VERSION "${KICADD_VERSION}" )
+endif()
+
+message( STATUS "KiCadD version: ${KICADD_VERSION}" )
 target_compile_definitions( kicadd-mcp PRIVATE KICADD_VERSION="${KICADD_VERSION}" )

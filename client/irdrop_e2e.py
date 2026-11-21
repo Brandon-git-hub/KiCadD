@@ -115,6 +115,9 @@ def main():
         check(any(ln.startswith("warning: +5V: 2 via(s) over 0.5 A (at 2 A): 0.522 A at (87.83, 48.83)") for ln in ir),
               "via_current 0.5 A: the two busiest +5V vias")
 
+        given = re.search(r"currents given for (\d+) of (\d+)", t)
+        check(given and int(given.group(1)) == 2 and int(given.group(1)) <= int(given.group(2)),
+              f"currents given for {given and given.group(1)} of {given and given.group(2)} (the two given, of the rails in the answer)")
         _, t = m.tool("audit", {"ir_nets": ["+5V"], "ir_loads": {"+5V": "U702:1.5,U701"}, "currents": {"+5V": 2}})
         r = row(section(t), "+5V")
         check("-> U702:1.5A, U701, 2 A" in r and drop(r) > 10, "ir_loads: U702 draws 1.5 A, U701 the rest")
@@ -173,6 +176,10 @@ def main():
         check(ir and ir[0].startswith("info: 14 rail(s) solved") and dt < 30, f"14 rails solved, the audit in {dt:.1f} s")
         check("3 supply-named net(s) with no source part, left out, the most copper first: VCC_PSPLL (8 pads, 215 mm2), MGT_0V85 (6 pads, 118 mm2), /power-supply-3/5VPG (3 pads, 17 mm2)" in ir[0],
               "nets with no source part are left out and named, the most copper first")
+        _, t = m.tool("audit", {"currents": {"VCC_PSPLL": 1}})
+        given = re.search(r"currents given for (\d+) of (\d+)", t)
+        check("currents for VCC_PSPLL not used: no source part on it" in t and given and given.group(1) == "0",
+              f"a current for VCC_PSPLL (no source part, left out): said not used, not counted ({given and given.group(0)})")
         check(row(ir, "MGT_1V8") and row(ir, "P0V85"), "FPGA rails by name (MGT_1V8, P0V85)")
         r = row(ir, "P3V3")
         check("IC40.34 (VOUT)" in r and re.search(r"mesh 0\.(1\d|2[0-4])\d* mm", r) and "loss in tracks 1%, planes 9" in r,

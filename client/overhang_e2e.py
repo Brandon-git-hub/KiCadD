@@ -128,15 +128,23 @@ def main():
         err, t = mcp.tool("board_outline", {"keep_old": True, "hole_inset": 3})
         holes = {k: v for k, v in where(mcp).items() if re.fullmatch(r"H\d+", k)}
         check(not err and len(holes) == 4, f"4 corner holes: {sorted(holes)}")
+        print("[a connector placed over the edge is not new]")
+        err, t = mcp.tool("auto_place", {"refs": ["J1"], "rules": {"edge": {"J1": "left"}}, "time_limit": 1})
+        j1 = where(mcp)["J1"]
+        check(not err and "opens over the board's left edge" in t, f"J1 placed over the left edge: {j1} " + t.replace("\n", " | ")[:300])
+        err, t = mcp.tool("auto_place", {"time_limit": 1})
+        check(where(mcp)["J1"] == j1 and not re.search(r"\bJ1\b", t.split("\n")[0]) and "J1" not in t.split("no room for")[-1][:40],
+              "auto_place without refs: the new parts placed, J1 (over the edge, its pads on the board) not taken as one: " + t.splitlines()[0][:100])
         err, t = mcp.tool("auto_place", {"refs": [], "time_limit": 1})
-        check("kept: H1, H2, H3, H4 (mounting holes: name them in refs to move them)" in t,
-              "auto_place: the holes (boxes past the edge) kept, said: "
-              + next((ln.strip() for ln in t.splitlines() if "kept:" in ln), t[:80]))
+        check({k: where(mcp)[k] for k in holes} == holes and "H1" not in t.splitlines()[0],
+              "auto_place (the new parts): the holes (on the board, their boxes past a rounded corner) are not new: left alone")
         err, t = mcp.tool("auto_place", {"all": True, "time_limit": 1})
+        check("kept: H1, H2, H3, H4 (mounting holes: name them in refs to move them)" in t,
+              "all: the holes kept, said: " + next((ln.strip() for ln in t.splitlines() if "kept:" in ln), t[:80]))
         check({k: where(mcp)[k] for k in holes} == holes, "all: True moves everything but the holes")
-        mcp.tool("undo")
-        mcp.tool("undo")
-        mcp.tool("undo")
+
+        for _ in range(5):
+            mcp.tool("undo")
 
         print("[no room]")
         err, t = mcp.tool("board_outline", {"rect": [0, 0, 12, 8]})

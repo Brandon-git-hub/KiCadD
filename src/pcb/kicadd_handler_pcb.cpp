@@ -703,6 +703,27 @@ void KICADD_HANDLER_PCB::runCommit( const std::function<std::vector<KIID>( BOARD
 
         aOut.set_drc_us( std::chrono::duration_cast<std::chrono::microseconds>(
                                  std::chrono::steady_clock::now() - d0 ).count() );
+
+        // a part moved into or out of a filled pour: the fill keeps its old shape (the local DRC
+        // checks against that), so a clean answer is not the board's
+        bool stale = false;
+
+        for( const ZONE* zone : b->Zones() )
+        {
+            if( zone->GetIsRuleArea() || !zone->IsFilled() || stale )
+                continue;
+
+            for( FOOTPRINT* fp : report )
+            {
+                if( ( zone->GetLayerSet() & fp->GetLayerSet() ).any() && zone->GetBoundingBox().Intersects( fp->GetBoundingBox() ) )
+                {
+                    stale = true;
+                    break;
+                }
+            }
+        }
+
+        aOut.set_on_unfilled_pour( stale );
     }
 }
 
@@ -5162,12 +5183,19 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
     std::vector<FOOTPRINT*> fps;
     std::map<int, int>      netIndex;
 
+    // on the board already (not a newcomer): its box inside the outline, or all its pads (a
+    // connector placed over the edge on purpose, a USB-C's shell out past it)
     auto inside = [&]( FOOTPRINT* fp )
     {
         BOX2I box = fp->GetBoundingBox( false );
-        return outline.Contains( box.GetOrigin() ) && outline.Contains( box.GetEnd() )
-               && outline.Contains( VECTOR2I( box.GetRight(), box.GetTop() ) )
-               && outline.Contains( VECTOR2I( box.GetLeft(), box.GetBottom() ) );
+
+        if( outline.Contains( box.GetOrigin() ) && outline.Contains( box.GetEnd() )
+            && outline.Contains( VECTOR2I( box.GetRight(), box.GetTop() ) )
+            && outline.Contains( VECTOR2I( box.GetLeft(), box.GetBottom() ) ) )
+            return true;
+
+        return !fp->Pads().empty()
+               && std::all_of( fp->Pads().begin(), fp->Pads().end(), [&]( PAD* p ) { return outline.Contains( p->GetPosition() ); } );
     };
 
     std::vector<wxString> back;

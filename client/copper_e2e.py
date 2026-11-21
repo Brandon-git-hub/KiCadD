@@ -86,8 +86,11 @@ try:
     check(not err and summary(m)["zones"] == base["zones"] + 1, "undo: the teardrops are gone: " + t.splitlines()[0])
     err, t = m.tool("redo")
     check(not err and summary(m)["zones"] == base["zones"] + 1 + td, "redo: back")
-    m.tool("move_footprints", {"refs": ["R16"], "dx": 1, "dy": 0})
+    err, t = m.tool("move_footprints", {"refs": ["R16"], "dx": 1, "dy": 0})
     check(summary(m)["zones"] >= base["zones"] + td - 4, "a moved part keeps its teardrops (made again)")
+    check("drc: incomplete" in t or "zones not refilled: the DRC below is against a pour's old shape" in t,
+          "R16 moved on the GND pour (not refilled): the local DRC said incomplete: "
+          + next((ln for ln in t.splitlines() if "drc" in ln.lower()), t[:80]))
     m.tool("undo")
     err, t = m.tool("teardrops", {"remove": True})
     check(not err and re.search(r"-> 0 teardrop", t) is not None and summary(m)["zones"] == base["zones"] + 1, "remove: " + t.splitlines()[0])

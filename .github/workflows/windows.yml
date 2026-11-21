@@ -230,6 +230,9 @@ jobs:
             $mode = @("-DCMAKE_C_COMPILER_LAUNCHER=sccache", "-DCMAKE_CXX_COMPILER_LAUNCHER=sccache",
                       "-DKICADD_MSVC_DEBUG_FORMAT=", "-DKICAD_USE_PCH=OFF")
           }
+          # the tag builds: the version from the tag (kicadd-mcp --version, MCP serverInfo); else
+          # cmake's git describe (a shallow checkout: 0.0.0-dev+sha)
+          if ($env:RELEASE -eq 'true') { $mode += "-DKICADD_VERSION=$("${{ github.ref_name }}".TrimStart('v'))" }
           "build mode: $(if ($env:RELEASE -eq 'true') {'release'} else {'check (sccache)'}) $mode"
           cmake -S kicad -B build -G Ninja @mode `
             -DCMAKE_BUILD_TYPE=Release `

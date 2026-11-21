@@ -119,6 +119,68 @@ def main():
         err, t = mcp.tool("sch_connect", {"nets": {"GND": [f"{c1}.2"]}, "power": ["GND"]})
         check(not err and netlist(mcp) == before, "reconnected")
 
+        print("[sch_delete takes the part's power symbols]")
+        def erc_count(check_name):
+            _, t = mcp.tool("run_erc", {})
+            return t.count(check_name)
+        unconnected = erc_count("pin_not_connected")
+        err, t = mcp.tool("sch_add_part", {"lib_id": "Device:R", "value": "47", "footprint": FP, "x": 177.8, "y": 50.8})
+        r7 = re.match(r"added (\S+) ", t).group(1)
+        err, t = mcp.tool("sch_connect", {"nets": {"+5V": [f"{r7}.1"], "GND": [f"{r7}.2"]}, "power": ["+5V", "GND"]})
+        check(not err, "connected to +5V / GND with power symbols")
+        err, t = mcp.tool("sch_delete", {"refs": [r7]})
+        check(not err and erc_count("pin_not_connected") == unconnected and "+5V" not in netlist(mcp),
+              "deleted: its power symbols went with it (no new pin_not_connected, no +5V)")
+
+        print("[sch_connect: all or none]")
+        err, t = mcp.tool("sch_add_part", {"lib_id": "Device:R", "value": "47", "footprint": FP, "x": 177.8, "y": 76.2})
+        r8 = re.match(r"added (\S+) ", t).group(1)
+        before = netlist(mcp)
+        err, t = mcp.tool("sch_connect", {"nets": {"N7": [f"{r8}.1"], "N8": [f"{c1}.1"]}})
+        check(err and f"{c1}.1 is already on net /N1" in t and "nothing connected (all or none)" in t,
+              "one pin on another net: refused, with its net: " + t.replace("\n", " | ")[:140])
+        check(netlist(mcp) == before, f"{r8}.1 not connected either")
+        err, t = mcp.tool("sch_connect", {"nets": {"N7": [f"{r8}.1"], "N9": [f"{r8}.1"]}})
+        check(err and "given for two nets: N7 and N9" in t, "a pin in two nets of one call: said")
+        mcp.tool("sch_delete", {"refs": [r8]})
+
+        print("[sch_connect: a label's text over a part]")
+        ra = re.match(r"added (\S+) ", mcp.tool("sch_add_part", {"lib_id": "Device:R", "value": "1", "x": 203.2, "y": 127, "rotation": 90})[1]).group(1)
+        rb = re.match(r"added (\S+) ", mcp.tool("sch_add_part", {"lib_id": "Device:R", "value": "2", "x": 215.9, "y": 127, "rotation": 90})[1]).group(1)
+        pa, pb = pins_of(mcp, ra), pins_of(mcp, rb)
+        right = max(pa.values(), key=lambda v: v[0])   # ra's pin facing rb
+        pin_r = next(k for k, v in pa.items() if v == right)
+        err, t = mcp.tool("sch_connect", {"nets": {"A_RATHER_LONG_NET_NAME": [f"{ra}.{pin_r}"]}})
+        check(not err and "overlaps other text or a part there" in t,
+              f"{ra}.{pin_r}'s label would run over {rb}: connected, said: " + t.replace("\n", " | ")[:150])
+        pin_l = next(k for k, v in pa.items() if v != right)
+        err, t = mcp.tool("sch_connect", {"nets": {"S": [f"{ra}.{pin_l}"]}})
+        check(not err and "overlaps" not in t, f"a short label on {ra}'s free side: no warning " + t.replace("\n", " | ")[:200])
+        mcp.tool("sch_delete", {"refs": [ra, rb]})
+
+        print("[sch_connect: a label moved out of another's way, no wire through a pin]")
+        def add(value, x, y, rot):
+            return re.match(r"added (\S+) ", mcp.tool("sch_add_part", {"lib_id": "Device:R", "value": value, "x": x, "y": y,
+                                                                        "rotation": rot})[1]).group(1)
+        rh = add("3", 203.2, 152.4, 90)
+        p1 = max(pins_of(mcp, rh).items(), key=lambda kv: kv[1][0])        # rh's right pin
+        ri = add("4", p1[1][0] + 3.81, p1[1][1] - 7.62, 0)                # its bottom pin's label would cross AA's
+        p2 = max(pins_of(mcp, ri).items(), key=lambda kv: kv[1][1])
+        err, t = mcp.tool("sch_connect", {"nets": {"AA": [f"{rh}.{p1[0]}"], "BB": [f"{ri}.{p2[0]}"]}})
+        mcp.tool("sch_save")
+        doc = open(os.path.join(proj, "blank.kicad_sch"), encoding="utf-8").read()
+        bb = re.search(r'\(label "BB"\s*\(at ([\d.-]+) ([\d.-]+)', doc)
+        check(not err and "overlaps" not in t and bb and abs(float(bb.group(2)) - (p2[1][1] + 5.08)) < 0.01,
+              f"BB's text would lie over AA's at 2.54 mm: put 5.08 mm out instead ({bb and bb.group(2)}, pin at {p2[1][1]})")
+        re_ = add("5", 203.2, 177.8, 90)
+        pe = max(pins_of(mcp, re_).items(), key=lambda kv: kv[1][0])
+        rf = add("6", pe[1][0] + 2.54 + 3.81, pe[1][1], 90)               # its left pin where re_'s stub would end
+        err, t = mcp.tool("sch_connect", {"nets": {"T": [f"{re_}.{pe[0]}"]}})
+        check(err and "no free spot" in t and "T" not in netlist(mcp) and "/T" not in netlist(mcp),
+              f"the stub's end on {rf}'s pin: refused, not run on through it (that would put {rf} on T)")
+        mcp.tool("sch_delete", {"refs": [rh, ri, re_, rf]})
+        before = netlist(mcp)
+
         print("[sch_wire]")
         err, t = mcp.tool("sch_add_part", {"lib_id": "Device:R", "value": "1k", "footprint": FP, "x": 50.8, "y": 127})
         r2 = re.match(r"added (\S+) ", t).group(1)

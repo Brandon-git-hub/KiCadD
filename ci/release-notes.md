@@ -13,7 +13,26 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 - **一次一個專案：** 一個服務同時只開一個專案（板子加電路圖），換專案請用 `open_board`。
 - **目前不支援：** 差分對與等長佈線、全板自動佈線（`route` 只代替重複的手動佈線）、電路圖自動排版、組裝圖、STEP 匯出（3D 模型只有 VRML）、ODB++ / IPC-2581 / DXF、MCP resources / prompts。
 
-## 這一版（beta.7）
+## 這一版（beta.8）
+修正版：把 60 個工具全部跑過一輪後回報的問題，以及 beta.7 試用時發現的問題。工具數不變（60 個）。
+
+**修正**
+- **`sch_delete` 留下孤兒電源符號：** 用 `sch_connect power=[...]` 接過電源的零件，刪掉後電源符號（`#PWR…`）會留在原地，ERC 報 `pin_not_connected`。現在電源符號會跟著導線一起刪掉。
+- **`sch_connect` 全有或全無：** 只要有一支腳出錯，整批都不接（以前其他腳照接，修好後重試會遇到一半已接好的狀態）。已在別的網路上的腳，錯誤訊息會寫出那個網路的名字（以前常是 `already on net ?`：同一次呼叫裡，前面接上的腳讓連線資料過期了）。同一支腳在同一次呼叫裡被指定到兩個網路，也會說明。
+- **`sch_connect` 避開文字重疊：** 標籤或電源符號會往外延伸，避開其他標籤、零件本體與位號 / 值的文字；真的沒有空位時照接並警告。延伸的導線也不會再穿過其他腳的端點（以前可能把那支腳一起接進網路）。
+- **`move_footprints` 的「drc: clean」：** 零件移到有鋪銅的地方、敷銅還沒重填時，局部 DRC 比的是舊的敷銅形狀。現在會寫「drc: incomplete」，並提示先 `refill_zones` 再 `run_drc`。
+- **`auto_place` 不再把已放好的連接器當成新零件：** 沒給 `refs` 時，只擺還沒放上板子的零件。以前凸出板邊的連接器（例如 USB-C）會被當成新零件，回報「no room for J1」。現在焊盤都在板內的零件就算已放好。
+- **`lcsc_match` 認得 EasyEDA 的尺寸寫法：** `LED-SMD_L1.6-W0.8-R-RD` 這類名稱，從長寬（mm）對應到 0603 等尺寸。
+- **`lcsc=` 不再改寫共用的封裝檔：** `lcsc.pretty/R0603.kicad_mod` 這類封裝檔由同封裝的所有零件共用，以前每取一次料就改寫值與說明，造成 git 雜訊。現在共用檔只寫封裝名稱；板上零件的值與 LCSC 料號不受影響。
+- **`simulate` 的 LDO PSRR：** 以前 ac 在 10 Hz 會得到 −149 dB：資料上的 PSRR 又被迴路增益再壓了一次。現在低頻就是資料的數字，`psrr_f`（假設 loop_bw / 10）以上每十倍頻差 20 dB，最差到 `psrr_hf`（假設 20 dB），兩者都標成假設值，可用 `models` 覆寫。
+- **`simulate ac` 的字元波形改用對數頻率：** 以前線性分格，最後一個十倍頻以前的點全擠在第一格。
+- **`audit` 的 `currents given for 2 of 1`：** 分子分母現在數同一批軌道；給了電流但沒有電源零件、被排除的軌道會另外說明。
+- **工具參數說明：** `route_short`、`fanout`、`teardrops`、`delete_tracks` 的 `nets`，以及 `zones` 的 `nets` / `layers` / `ids`，以前都寫成「Reference designators」。
+
+**新功能**
+- **`kicadd-mcp --version`：** 印出版本，例如 `kicadd-mcp 0.1.0-beta.8`。MCP 的 `serverInfo.version` 以前一直停在 `0.1.0-alpha.13`，現在由 tag 帶入。
+
+## beta.7
 修正版：本地試用 beta.5、beta.6 時回報的問題。工具數不變（60 個）。
 
 **修正**

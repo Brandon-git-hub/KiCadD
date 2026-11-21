@@ -148,7 +148,7 @@ def main():
               f"{c2} 100 nF X7R at 3.3 V keeps most of it")
         check(re.search(re.escape(c3) + r" .*@ 5 V: C_eff", t), f"{c3} at VIN's 5 V")
         check("ESR ~" in t and "(est.: typical for MLCC 0402)" in t, "ESR / ESL said estimated")
-        check(re.search(re.escape(u1) + r" AMS1117-3.3 \(C6186\): LDO, Vout 3.3 V, dropout 1.1 V, Iq 5 mA, PSRR 72 dB \(one number", t),
+        check(re.search(re.escape(u1) + r" AMS1117-3.3 \(C6186\): LDO, Vout 3.3 V, dropout 1.1 V, Iq 5 mA, PSRR 72 dB \(the data's one number\) to 10 kHz assumed, then -20 dB/dec to 20 dB assumed", t),
               "U1 from C6186's data: Vout, dropout, Iq, PSRR")
         check("loop 100 kHz assumed" in t, "the loop bandwidth said assumed")
         v = num(t, r"\n  \+3V3: ([\d.]+) V")
@@ -179,6 +179,9 @@ def main():
         f3 = re.search(r"\n  OUT: .*-3 dB at ([\d.]+ [kM]?)Hz", t)
         want = 1 / (2 * math.pi * 1e3 * 100e-9)
         check(f3 and abs(si(f3.group(1)) - want) / want < 0.02, f"RC -3 dB {f3 and f3.group(1)}Hz, 1/(2πRC) {want:.1f} Hz")
+        line = re.search(r"\n  OUT: .*? ([▁▂▃▄▅▆▇█]{32}) \(log f\)", t)
+        check(line and line.group(1).startswith("█" * 12) and line.group(1).endswith("▁"),
+              f"the line by log f: flat over the first decades (1.6 kHz of 10 Hz - 1 MHz), then down: {line and line.group(1)}")
         check(re.search(re.escape(c4) + r" 100nF C0G: 100 nF MLCC C0G", t), "C4 C0G from its value: no DC bias")
         check(f"left out (their pins open): {u2} LOADIC (no model" in t and "+3V3" not in t,
               f"{u2} on OUT is in the region but has no model: left out, said; its supply not made")
@@ -226,6 +229,13 @@ def main():
         err, t = sim({"around": [u1], "sources": {"VIN": "dc 5 ac 1"}, "loads": {"+3V3": 0.1}, "ac": {"from": 100, "to": "10Meg"}, "probes": ["+3V3"]})
         check(not err and re.search(re.escape(c1) + r" .*@ 3\.\d+ V: C_eff", t), f"ac: {c1} at the op point's 3.3 V: " +
               next((l.strip()[:120] for l in t.splitlines() if l.strip().startswith(c1 + " ")), t[:120]))
+        print("      ", "\n       ".join(ln for ln in t.splitlines() if ln.startswith("  +3V3")))
+        lo = num(t, r"\n  \+3V3: (-[\d.]+) dB at 100 Hz")
+        check(lo and abs(lo + 72) < 1, f"PSRR at 100 Hz {lo} dB: the data's 72 dB (the loop does not take it lower again)")
+        err, t = sim({"around": [u1], "sources": {"VIN": "dc 5 ac 1"}, "loads": {"+3V3": 0.1}, "ac": {"from": "100k", "to": "1Meg"},
+                      "probes": ["+3V3"], "models": {c1: {"exclude": True}, c2: {"exclude": True}}})
+        hi = num(t, r"\n  \+3V3: (-[\d.]+) dB at 100 kHz")
+        check(hi and abs(hi + 52) < 1.5, f"at 100 kHz without the output caps {hi} dB: 20 dB/dec worse from 10 kHz" + ("" if hi else " " + t.replace("\n", " | ")[:400]))
 
         print("[bad]")
         err, t = sim({})

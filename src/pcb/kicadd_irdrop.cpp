@@ -1487,10 +1487,14 @@ void CheckIrDrop( BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& aOu
 
     int guessed = 0, given = 0;
 
-    for( const RAIL& r : rails )
+    // over the rails in the answer (solved or not); the sourceless ones are only listed
+    for( const std::vector<const RAIL*>* list : { &solved, &unsolved } )
     {
-        guessed += !r.guessed.empty();
-        given += !r.perAmp;
+        for( const RAIL* r : *list )
+        {
+            guessed += !r->guessed.empty();
+            given += !r->perAmp;
+        }
     }
 
     std::string head = std::to_string( solved.size() ) + " rail(s) solved"
@@ -1507,6 +1511,23 @@ void CheckIrDrop( BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& aOu
             "module; ir_source sets them), loads: the rail's ICs, the current split per pad (ir_loads sets them); currents "
             "given for " + std::to_string( given ) + " of " + std::to_string( solved.size() + unsolved.size() )
             + " (else drops are per A: currents {net: A})";
+
+    // a current given for a rail left out (no source part): said, else it looks counted
+    {
+        std::string unused;
+
+        for( const RAIL* r : sourceless )
+        {
+            for( const auto& [wanted, a] : aReq.currents() )
+            {
+                if( a > 0 && sameNet( r->name, wanted ) )
+                    unused += ( unused.empty() ? "" : ", " ) + r->name;
+            }
+        }
+
+        if( !unused.empty() )
+            head += ". currents for " + unused + " not used: no source part on it (ir_source sets one)";
+    }
 
     int unfilled = 0;
 

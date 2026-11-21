@@ -239,6 +239,11 @@ def main():
             err, text = m.tool("undo", {})
             check(not err and "undid" in text, f"{part}: undo took it off")
 
+        print("[the shared library footprint]")
+        mod = open(os.path.join(a.project, "lcsc.pretty", "R0603.kicad_mod"), encoding="utf-8").read()
+        check("C25804" not in mod and '(property "Value" "R0603"' in mod,
+              "R0603.kicad_mod names no part (no LCSC number, value R0603): fetching another 0603 resistor leaves it as it is")
+
         print("[library table, cache, errors]")
         table = open(os.path.join(a.project, "fp-lib-table"), encoding="utf-8").read()
         check(table.count('(name "LCSC")') == 1, "LCSC row in the project fp-lib-table exactly once")
