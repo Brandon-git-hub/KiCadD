@@ -4,6 +4,10 @@ usage: python3 -I tools_e2e.py --build BUILD --demos DEMOS_DIR --work DIR
 
   * flush_ratsnest: stickhub's GND (a large net) has its ratsnest deferred while its tracks are
     deleted; flush rebuilds it and gives the full unrouted count; after undo it is 0 again
+  * tool descriptions: tools/list sends a sentence or two per tool (each under 200 characters,
+    parameters under 61, the whole list under 40k characters); tool_help gives a tool's full
+    text; a tool's first error points at tool_help, the second does not; skills/kicadd/TOOLS.md
+    is what kicadd-mcp --tool-docs prints (regenerate it when a description changes)
   * open_board: errors (no path, relative, a missing file, not a board: the old board comes
     back); unsaved changes refused unless discard=true; another project by .kicad_pcb and by
     .kicad_pro, with its schematic and rules; the agent history starts over; the same file
@@ -11,6 +15,8 @@ usage: python3 -I tools_e2e.py --build BUILD --demos DEMOS_DIR --work DIR
 """
 
 import argparse
+import json
+import subprocess
 import os
 import re
 import shutil
@@ -52,6 +58,35 @@ try:
     m.tool("undo")
     err, t = m.tool("flush_ratsnest")
     check(not err and t.strip().endswith("unconnected=0"), "after undo: routed again, unconnected=0")
+
+    print("[tool descriptions]")
+    tools = m.rpc("tools/list", {})["result"]["tools"]
+    longest = max(tools, key=lambda x: len(x["description"]))
+    check(all(len(x["description"]) < 200 for x in tools), f"each description under 200 characters (longest {longest['name']} {len(longest['description'])})")
+    size = len(json.dumps(tools, ensure_ascii=False))
+    check(size < 40000, f"tools/list {size} characters (under 40k; 67.7k before the briefs)")
+    params = []
+
+    def walk(name, s):
+        if isinstance(s, dict):
+            if isinstance(s.get("description"), str) and len(s["description"]) > 60:
+                params.append(name)
+            for v in s.values():
+                walk(name, v)
+    for x in tools:
+        walk(x["name"], x["inputSchema"])
+    check(not params, "parameter descriptions one line (60 characters): " + ", ".join(params))
+    err, t = m.tool("tool_help", {"name": "pdn"})
+    check(not err and "mounting" in t and "Arguments: " in t and len(t) > 600, "tool_help pdn: the full description")
+    err, t = m.tool("tool_help", {"name": "nope"})
+    check(err and "no tool nope" in t, "tool_help of no tool: the names")
+    err, t = m.tool("query_net", {"net": "NO_SUCH_NET"})
+    err2, t2 = m.tool("query_net", {"net": "NO_SUCH_NET"})
+    check(err and 'tool_help {"name": "query_net"}' in t and "tool_help" not in t2, "the first error points at tool_help, the next not")
+    docs = subprocess.run([kicadd_mcp, "--tool-docs"], env=env, capture_output=True, text=True, encoding="utf-8").stdout
+    have = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "skills", "kicadd", "TOOLS.md"), encoding="utf-8").read()
+    check(docs.replace("\r\n", "\n") == have.replace("\r\n", "\n") and "## pdn" in docs,
+          "skills/kicadd/TOOLS.md is up to date (kicadd-mcp --tool-docs > skills/kicadd/TOOLS.md)")
 
     print("[open_board]")
     err, t = m.tool("open_board", {})

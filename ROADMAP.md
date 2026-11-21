@@ -99,3 +99,6 @@ Beta 已能走完整個設計流程（電路圖 → 選料 → 擺件 → 規則
 1. **組裝圖匯出、多實例重複圖紙**（同一子圖紙多次實例化）。
    - **3D 截圖（2026-11-21 加入）：** 用 KiCad 自己的光線追蹤 renderer（`kicad-cli pcb render`，headless、不需 OpenGL / 螢幕，已在精簡 build 實測可用），出 PNG，可設角度、縮放、正反面。渲染的是目前未存檔的狀態（先存成暫存檔）。限制：沒有 OpenCASCADE，只顯示 VRML 模型（`lcsc_fetch` 轉的 `.wrl`），STEP 模型不會出現，報表會列出缺模型的零件。
 2. **MCP Resources / Prompts**，降低初始化上下文成本。
+   - **先做的部分（2026-11-22）：** 工具說明瘦身。`tools/list` 每個工具只留一兩句說明，參數說明各一行（`mcp/tool_docs.cpp`），從 67.7k 字元降到 32.8k（−51%）。
+   - **完整說明：** 由 `tool_help` 回傳，或看 `skills/kicadd/TOOLS.md`（`kicadd-mcp --tool-docs` 產生，`tools_e2e` 檢查它與程式一致）。
+   - **錯誤提示：** 每個工具第一次出錯時，提示可用 `tool_help`。

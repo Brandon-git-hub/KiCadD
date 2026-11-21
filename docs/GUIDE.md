@@ -38,6 +38,8 @@ Claude Code：`claude mcp add kicadd -- C:\KiCadD\bin\kicadd-mcp.exe --stdio`（
 - **Claude Desktop：** 在設定的 Skills 頁面上傳 release 附的 `kicadd-skill.zip`。
 - **其他 Agent（Cursor 等）：** 把 `SKILL.md` 的內容貼進它的規則檔或系統提示。
 
+工具清單裡每個工具的說明只有一兩句，以節省 Agent 每輪的 token。完整說明（參數細節、範例、公式、限制）在 skill 的 `TOOLS.md`，Agent 也可以呼叫 `tool_help {"name": "..."}` 取得單一工具的完整說明；工具第一次出錯時會提示這件事。
+
 ## 4. 存檔格式：10.99 的限制
 
 - KiCadD 存的 `.kicad_pcb`、`.kicad_sch` 是 **KiCad nightly（10.99）格式**，KiCad 9 / 10 正式版可能打不開。

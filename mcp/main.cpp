@@ -97,7 +97,8 @@ void usage()
                   "                    (same machine/container, e.g. a local agent or code-server proxy)\n"
                   "  --no-web   don't serve the 2D view (/ and /ws) in --http mode\n"
                   "  --web-root DIR  serve DIR/index.html instead of the embedded page\n"
-                  "  --version  print the version and exit\n",
+                  "  --version  print the version and exit\n"
+                  "  --tool-docs  print every tool's full description (Markdown) and exit\n",
                   desktopSocket().c_str() );
 }
 
@@ -159,6 +160,13 @@ int main( int argc, char** argv )
             http.webRoot = next();
         else if( a == "--timeout-ms" )
             timeoutMs = std::stoi( next() );
+        else if( a == "--tool-docs" )
+        {
+            // every tool's full description as Markdown (skills/kicadd/TOOLS.md); nothing is connected
+            IPC_CLIENT unused( "ipc:///nonexistent", 1000 );
+            std::fputs( ToolDocsMarkdown( MakeTools( unused ) ).c_str(), stdout );
+            return 0;
+        }
         else if( a == "--version" || a == "-V" )
         {
             std::printf( "kicadd-mcp %s\n", KICADD_VERSION );

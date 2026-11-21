@@ -8,6 +8,7 @@
 #define KICADD_MCP_SERVER_H
 
 #include <mutex>
+#include <set>
 #include <optional>
 #include <string>
 #include <vector>
@@ -43,6 +44,7 @@ private:
     nlohmann::json handleToolsCall( const nlohmann::json& aParams );
 
     std::vector<TOOL> m_tools;
+    std::set<std::string> m_hinted;   // tools whose first error pointed at tool_help
     std::mutex        m_callMutex;   // tool calls touch one shared board; run them one at a time
 };
 

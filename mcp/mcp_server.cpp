@@ -98,7 +98,8 @@ json MCP_SERVER::handleInitialize( const json& aParams )
                "KiCadD: a KiCad PCB held in memory on the server. Coordinates in mm, Y axis down. "
                "Footprints are addressed by reference (U5), pads by REF.PAD (U5.3). Prefer "
                "query_area / query_net over broad queries; move_footprints returns a local DRC, so "
-               "iterate with it and call flush_ratsnest / save_board when done." } };
+               "iterate with it and call flush_ratsnest / save_board when done. Tool descriptions are "
+               "short: tool_help {name} gives one tool's full description (examples, defaults, limits)." } };
 }
 
 
@@ -246,6 +247,13 @@ json MCP_SERVER::handleToolsCall( const json& aParams )
             r = { std::string( "tool failed: " ) + e.what(), true };
         }
     }
+
+    // a tool's first error in the session: where its full description is (the brief in
+    // tools/list leaves the details out)
+    if( r.isError && name != "tool_help" && !it->details.empty() && it->details != it->description
+        && m_hinted.insert( name ).second )
+        r.text += ( r.text.empty() || r.text.back() == '\n' ? "" : "\n" ) + std::string( "(tool_help {\"name\": \"" ) + name
+                  + "\"} has the full description)";
 
     json content = json::array( { { { "type", "text" }, { "text", r.text } } } );
 

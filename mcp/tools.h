@@ -35,6 +35,7 @@ struct TOOL
     std::string                                       description;
     nlohmann::json                                    inputSchema;
     std::function<TOOL_RESULT( const nlohmann::json& )> run;
+    std::string                                       details;   ///< the full description (tool_help); description is the brief
 };
 
 /// Build the tool set bound to aIpc (which must outlive the tools).
@@ -46,6 +47,15 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc );
 /// phase 3 items 3 / 4: pdn (pdn.cpp), reflection (reflect.cpp)
 TOOL PdnTool( IPC_CLIENT& aIpc );
 TOOL ReflectionTool( IPC_CLIENT& aIpc );
+
+/// tools/list sends briefs (tool_docs.cpp): each tool's registered description moves to details
+void ApplyBriefs( std::vector<TOOL>& aTools );
+
+/// tool_help: a tool's full description from aTable
+TOOL ToolHelpTool( std::shared_ptr<std::vector<TOOL>> aTable );
+
+/// every tool's brief, full description and arguments as Markdown (kicadd-mcp --tool-docs)
+std::string ToolDocsMarkdown( const std::vector<TOOL>& aTools );
 
 /// phase 4 item 3: new_project (project.cpp); it runs open_board, board_setup, board_outline,
 /// save_board and sch_save from aTable

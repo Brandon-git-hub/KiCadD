@@ -3461,6 +3461,12 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                            return { out, failed > 0 && stop };
                        } } );
 
+    // tool_help (tool_docs.cpp); then each tool's brief for tools/list, its full text kept in
+    // details, and the table batch / new_project / tool_help run from made the same
+    tools.push_back( ToolHelpTool( table ) );
+    ApplyBriefs( tools );
+    *table = tools;
+
     return tools;
 }
 

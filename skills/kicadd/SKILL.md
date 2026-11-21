@@ -10,6 +10,14 @@ desktop app that is the open Schematic / PCB Editor (the user sees every edit at
 Ctrl+Z it); headless it is a board loaded by `kicad-cli api-server`. The tool descriptions say
 what each tool does; this skill says how to use them together.
 
+## Tool descriptions
+
+The descriptions in the tool list are one or two sentences, to keep every turn cheap. The full
+text of each tool (arguments in detail, examples, defaults, formulas, limits) is in
+[TOOLS.md](TOOLS.md) next to this file, and `tool_help {"name": "auto_place"}` returns it for one
+tool. Read it before the first use of a tool with many options (audit, auto_place, simulate,
+set_rules, zones, pdn, reflection), or when a call fails: a tool's first error also points there.
+
 ## Ground rules
 
 1. **Look before you change.** Start with `board_summary` and/or `sch_summary`. Ask KiCad for
