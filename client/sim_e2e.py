@@ -101,12 +101,15 @@ def main():
         r4 = part("Device:R", "1k", 76.2, 140)
         mcp.tool("sch_set_fields", {"parts": {r3: {"Sim.Device": "R", "Sim.Params": "r=2k"}}})
         u3 = part("kicadd:OPA1", "LM358", 127, 127, lcsc="C7950")
+        r5 = part("Device:R", "1k", 101.6, 76.2)
+        d2 = part("Device:LED", "RED", 127, 76.2)
         err, t = mcp.tool("sch_connect", {"nets": {
-            "VIN": [f"{u1}.3", f"{c3}.1"], "+3V3": [f"{u1}.2", f"{c1}.1", f"{c2}.1", f"{u2}.1"],
-            "GND": [f"{u1}.1", f"{c1}.2", f"{c2}.2", f"{c3}.2", f"{u2}.2", f"{c4}.2", f"{r4}.2", f"{u3}.4"],
+            "VIN": [f"{u1}.3", f"{c3}.1"], "+3V3": [f"{u1}.2", f"{c1}.1", f"{c2}.1", f"{u2}.1", f"{r5}.1"],
+            "GND": [f"{d2}.1", f"{u1}.1", f"{c1}.2", f"{c2}.2", f"{c3}.2", f"{u2}.2", f"{c4}.2", f"{r4}.2", f"{u3}.4"],
             "SIG": [f"{r2}.1"], "OUT": [f"{r2}.2", f"{c4}.1", f"{u2}.3"],
             "SIG2": [f"{r3}.1"], "MID": [f"{r3}.2", f"{r4}.1"],
-            "+5V": [f"{u3}.8"], "AIN": [f"{u3}.3"], "AOUT": [f"{u3}.1", f"{u3}.2"]},
+            "+5V": [f"{u3}.8"], "AIN": [f"{u3}.3"], "AOUT": [f"{u3}.1", f"{u3}.2"],
+            "LEDA": [f"{r5}.2", f"{d2}.2"]},
             "power": ["GND", "+3V3", "+5V"]})
         check(not err, "wired: " + t[:60])
 
@@ -115,7 +118,9 @@ def main():
         check(err and "VIN" in t and "sources" in t, "VIN has no voltage in its name: refused, said: " + t[:100])
         err, t = sim({"around": [u1], "sources": {"VIN": 5}, "loads": {"+3V3": 0.1}})
         print("      ", t.replace("\n", "\n       ")[:1800])
-        check(not err and "4 of 4 part(s) modelled" in t, "around U1: U1 and C1-C3, not U2 (a supply only to two-pin parts)")
+        check(not err and "5 of 5 part(s) modelled" in t, "around U1: U1, C1-C3 and the LED's resistor, not U2 (a supply only to two-pin parts)")
+        check(f"cut at the region's edge (open there): LEDA ({r5} here; {d2} outside)" in t and "exclude: true" in t,
+              f"{r5}'s far end open at LEDA ({d2} not taken in): said, with what to do")
         # C1: 10 µF 0402 X5R at 3.3 V
         layer = math.sqrt(8.854e-12 * 3000 * (1.0 * 0.5 * 0.5e-9 * 0.5) / 10e-6)
         share = 1 / (1 + (3.3 / layer / 2.5e6) ** 1.5)
@@ -164,6 +169,7 @@ def main():
         rise = re.search(r"rise 10-90% ([\d.]+ [µm]?)s", t)
         check(rise and abs(si(rise.group(1)) - 2.197e-4) / 2.197e-4 < 0.03, f"RC rise {rise and rise.group(1)}s, 2.2 RC 220 µs")
         err, t = sim({"around": [r2], "sources": {"SIG": "dc 1 ac 1"}, "ac": {"from": 10, "to": "1Meg"}, "probes": ["OUT"], "corners": True})
+        check("all low, all high: every R / C / L moved together, not a worst case" in t, "corners said to be all-low / all-high")
         check("[corners " in t and "(assumed)" not in t.split(c4 + " ")[1].split("\n")[0] or "±5% (assumed)" in t,
               "corners: spread of the -3 dB point; C4's tolerance assumed (5%, C0G) and said")
 

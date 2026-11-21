@@ -1382,7 +1382,12 @@ ROADMAP phase 3, item 2. Three pieces, none linking ngspice:
   A DC bias pass comes first. For op / ac it is an op run; for tran it is the average over the
   measurement window. It gives each MLCC's DC voltage, and from that its C_eff. Then come the
   nominal run and, with `corners`, two more with every R / C / L at the ends of its tolerance.
-  The tolerance comes from the data, or is assumed and said. Each model line in the answer says
+  The tolerance comes from the data, or is assumed and said. The corners are all low / all high
+  (every part moved together), not a worst case or Monte Carlo: in a ratio the ends cancel. The
+  bias from an op run suits linear circuits; a switching converter or an AC-coupled node is not
+  at its DC point there (a tran steady state would be the way, not done). The cut line names the
+  modelled parts that end at each open net ("LEDA (R4 here; D1 outside)"), e.g. an LED's
+  resistor taken in through the supply. Each model line in the answer says
   what came from the data and what is est. / assumed. `models {ref: {...}}` overrides any value
   or parameter, or uses the agent's `.subckt` from a library file.
 

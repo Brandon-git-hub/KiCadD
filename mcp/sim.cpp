@@ -1712,8 +1712,11 @@ std::string SimulateDescription()
            "overshoot, 10-90% rise and settling (settle_pct, default 2), a sketch line; ac the gain at the "
            "lowest frequency, its peak and the -3 dB frequency; the sources' currents and power, inductors' peak "
            "and rms current (with Isat / Irated), regulators' output current. No verdicts: compare them with your "
-           "own targets. corners true: again with every R / C / L at its tolerance's low and high end (from the "
-           "data, else assumed and said). dc_bias false: MLCCs at their nominal C. models {ref: {c, esr, esl, r, "
+           "own targets. corners true: two more runs, all low and all high: every R / C / L at the same end of its "
+           "tolerance together (from the data, else assumed and said). Not a worst case or Monte Carlo: in a "
+           "ratio (a divider, matched RCs) the ends cancel; set one part's value with models to try a mix. "
+           "MLCC DC bias comes from an op run first (for tran its average over the window): right for linear "
+           "circuits; a switching converter or an AC-coupled node is not at its DC point there. dc_bias false: MLCCs at their nominal C. models {ref: {c, esr, esl, r, "
            "l, dcr, tol (%), dc_bias, vout, vref, dropout, iq, psrr, loop_bw, rout, gbw, slew, vos, rds_on, vgs_th, "
            "vf ... (any parameter, SI), exclude: true, or subckt + lib (a .lib / .cir path, relative to the project) "
            "+ pins (the subckt's pin order as pin numbers or names)}} override what the data gives. netlist true "
@@ -2406,7 +2409,7 @@ TOOL_RESULT Simulate( IPC_CLIENT& aIpc, const json& a )
         out += " " + FormatSI( f0, "Hz" ) + " - " + FormatSI( f1, "Hz" );
 
     out += ": " + std::to_string( modelled ) + " of " + std::to_string( parts.size() ) + " part(s) modelled, "
-           + std::to_string( region.nets().size() ) + " net(s); ngspice " + fmt( spent, 2 ) + " s" + ( corners ? " (3 runs: nominal, low, high)" : "" );
+           + std::to_string( region.nets().size() ) + " net(s); ngspice " + fmt( spent, 2 ) + " s" + ( corners ? " (3 runs: nominal, all low, all high: every R / C / L moved together, not a worst case or Monte Carlo)" : "" );
 
     if( !indexNote.empty() )
         out += "\nnote: " + indexNote;
@@ -2462,17 +2465,31 @@ TOOL_RESULT Simulate( IPC_CLIENT& aIpc, const json& a )
 
             if( nCut++ < 8 )
             {
-                std::string refs;
+                // which modelled parts end there (a resistor to an LED outside: its far end open)
+                std::string here, refs;
+
+                for( const PART& p : parts )
+                {
+                    if( p.kind.empty() )
+                        continue;
+
+                    bool on = std::any_of( p.sch->pins().begin(), p.sch->pins().end(), [&]( const ks::SchSimPin& pin ) { return pin.net() == n.name(); } );
+
+                    if( on )
+                        here += ( here.empty() ? "" : " " ) + p.sch->ref();
+                }
 
                 for( const std::string& r : n.outside_refs() )
                     refs += ( refs.empty() ? "" : " " ) + r;
 
-                cut += ( cut.empty() ? "" : "; " ) + bare( n.name() ) + " (" + refs + ( n.outside() > n.outside_refs_size() ? " ..." : "" ) + ")";
+                cut += ( cut.empty() ? "" : "; " ) + bare( n.name() ) + " (" + here + " here; " + refs
+                       + ( n.outside() > n.outside_refs_size() ? " ..." : "" ) + " outside)";
             }
         }
 
         if( nCut )
-            out += "\ncut at the region's edge (open there): " + cut + ( nCut > 8 ? "; " + std::to_string( nCut - 8 ) + " more" : "" );
+            out += "\ncut at the region's edge (open there): " + cut + ( nCut > 8 ? "; " + std::to_string( nCut - 8 ) + " more" : "" )
+                   + " -- more hops take them in, models {ref: {exclude: true}} leaves a dangling part out";
     }
 
     if( !leftOut.empty() )

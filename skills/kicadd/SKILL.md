@@ -201,8 +201,16 @@ op-amp's GBW when missing), and parts without a model are listed as left out, th
   min / max with when, a step's overshoot / rise / settling); `ac {from, to}` with an `ac 1`
   source (gain, peak, -3 dB). Inductor and regulator currents come with Isat / Irated / Iout
   to compare. Judge against your own targets; the tool gives no verdicts.
-- MLCCs are at their DC-biased C_eff by default (`dc_bias false`: nominal); `corners true`
-  re-runs with every R / C / L at its tolerance ends.
+- MLCCs are at their DC-biased C_eff by default (`dc_bias false`: nominal), the bias from an
+  op run first (tran: the window's average). Right for linear circuits; a switching converter
+  or an AC-coupled node is not at its DC point there, so say so or set `c` per part.
+- `corners true` is **all low / all high** (every R / C / L moved together), not a worst case
+  or Monte Carlo: in a divider or matched RCs the ends cancel. Try a mix by setting single
+  values with `models`.
+- Through a supply the region takes every two-pin part on it: all the rail's decoupling (right
+  for an LDO's stability and load steps), but also e.g. an LED's resistor whose far end is then
+  open. Read the `cut at the region's edge` line ("LEDA (R4 here; D1 outside)"): more `hops`,
+  or `models {"R4": {"exclude": true}}`.
 - Better data than the estimate (a datasheet's ESR, a vendor model): `models {"C5": {"esr":
   "8m", "esl": "0.5n"}, "U1": {"psrr": 55, "loop_bw": "50k"}, "U2": {"subckt": "TPS7A02",
   "lib": "models/tps7a02.lib", "pins": ["IN", "GND", "EN", "OUT"]}}`, `exclude true` to
