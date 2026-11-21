@@ -1378,7 +1378,7 @@ ROADMAP phase 3, item 2. Three pieces, none linking ngspice:
   and that is said. Other nets crossing the edge are open (`.option rshunt=1e9`) and listed.
   ngspice runs as a program (`-b -o log`, `wrdata` in a `.control` block, a timeout). It is
   found from `KICADD_NGSPICE`, then next to kicadd-mcp (`ngspice/bin/ngspice_con.exe` in the
-  Windows zip: the official ngspice-42 build), then the PATH.
+  Windows zip: the official ngspice-47 build), then the PATH.
   A DC bias pass comes first. For op / ac it is an op run; for tran it is the average over the
   measurement window. It gives each MLCC's DC voltage, and from that its C_eff. Then come the
   nominal run and, with `corners`, two more with every R / C / L at the ends of its tolerance.
