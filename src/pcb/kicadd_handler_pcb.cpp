@@ -2454,14 +2454,14 @@ HANDLER_RESULT<RouteResponse> KICADD_HANDLER_PCB::handleRoute( const HANDLER_CON
                 const double viaCost = l == zoneStart ? 0 : 0.5e6;   // a via costs a little
 
                 // the nearest point of the fill, then points round the start at 0.5 mm steps
-                VECTOR2I near;
-                fill.SquaredDistance( from->pos, false, &near );
+                VECTOR2I nearest;
+                fill.SquaredDistance( from->pos, false, &nearest );
 
                 if( fill.Contains( from->pos ) )
-                    near = from->pos;
+                    nearest = from->pos;
 
-                if( l == zoneStart || !from->item->HitTest( near, inset + 100000 ) )
-                    zoneSpots.push_back( { near, l, ( VECTOR2D( near ) - VECTOR2D( from->pos ) ).EuclideanNorm() + viaCost } );
+                if( l == zoneStart || !from->item->HitTest( nearest, inset + 100000 ) )
+                    zoneSpots.push_back( { nearest, l, ( VECTOR2D( nearest ) - VECTOR2D( from->pos ) ).EuclideanNorm() + viaCost } );
 
                 // a grid over 6 mm round the start (0.4 mm steps): every point inside the fill
                 fill.BuildBBoxCaches();
