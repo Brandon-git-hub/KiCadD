@@ -45,6 +45,8 @@ def si(text):
 
 
 def main():
+    # the answers have µ, ≈, Ω: a Windows console is cp1252, and -I ignores PYTHONUTF8
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser()
     ap.add_argument("--build", required=True)
     ap.add_argument("--kicad", required=True)
