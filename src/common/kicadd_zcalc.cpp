@@ -9,6 +9,7 @@
 
 #include <cmath>
 
+#include <transline_calculations/coplanar.h>
 #include <transline_calculations/coupled_microstrip.h>
 #include <transline_calculations/coupled_stripline.h>
 #include <transline_calculations/microstrip.h>
@@ -141,6 +142,74 @@ RESULT single( const LINE& aLine, double aZ0, double aWidth )
 
     out.ok = true;
     out.width = ( *r )[TCP::PHYS_WIDTH].first;
+    out.z = ( *r )[TCP::Z0].first;
+    out.delay = good( *r, TCP::UNIT_PROP_DELAY ) ? ( *r )[TCP::UNIT_PROP_DELAY].first : 0;
+    return out;
+}
+
+
+// a track with ground copper beside it on its own layer, aGround apart (CPWG: the plane below
+// too, as on an outer layer over its plane): aZ0 > 0 asks for the width, else aWidth is analysed
+RESULT coplanar( const LINE& aLine, double aZ0, double aWidth, double aGround )
+{
+    RESULT out;
+    out.error = checkLine( aLine );
+
+    if( !out.error.empty() )
+        return out;
+
+    if( !aLine.microstrip )
+    {
+        out.error = "coplanar with ground is worked out for an outer layer over its plane only";
+        return out;
+    }
+
+    if( aGround <= 0 )
+    {
+        out.error = "the gap to the ground beside the track must be above 0";
+        return out;
+    }
+
+    const bool synth = aZ0 > 0;
+    COPLANAR   cp;
+    cp.SetParameter( TCP::PHYS_WIDTH, synth ? 0.0005 : aWidth );
+    cp.SetParameter( TCP::PHYS_S, aGround );
+    cp.SetParameter( TCP::H, aLine.h );
+    cp.SetParameter( TCP::T, aLine.t );
+    cp.SetParameter( TCP::EPSILONR, aLine.er );
+    cp.SetParameter( TCP::TAND, aLine.tand );
+    cp.SetParameter( TCP::SIGMA, 1.0 / RHO );
+    cp.SetParameter( TCP::MURC, 1 );
+    cp.SetParameter( TCP::SKIN_DEPTH, skinDepth( FREQUENCY ) );
+    cp.SetParameter( TCP::EPSILON_EFF, 1.0 );
+    cp.SetParameter( TCP::Z0, synth ? aZ0 : 50 );
+    cp.SetParameter( TCP::FREQUENCY, FREQUENCY );
+    cp.SetParameter( TCP::PHYS_LEN, 10 );
+    cp.SetParameter( TCP::ANG_L, 1 );
+    cp.SetParameter( TCP::CPW_BACKMETAL, 1.0 );   // the plane below: grounded coplanar
+    setMask( cp, aLine );
+
+    if( synth )
+    {
+        cp.SetSynthesizeTarget( TCP::PHYS_WIDTH );
+        cp.Synthesize( SYNTHESIZE_OPTS::DEFAULT );
+    }
+    else
+    {
+        cp.Analyse();
+    }
+
+    RESULTS* r = synth ? &cp.GetSynthesisResults() : &cp.GetAnalysisResults();
+
+    if( !good( *r, TCP::PHYS_WIDTH ) || !good( *r, TCP::Z0 ) )
+    {
+        out.error = synth ? "no width gives that impedance with that gap to ground" : "the impedance cannot be worked out for it";
+        return out;
+    }
+
+    out.ok = true;
+    out.width = ( *r )[TCP::PHYS_WIDTH].first;
+    out.gap = aGround;
     out.z = ( *r )[TCP::Z0].first;
     out.delay = good( *r, TCP::UNIT_PROP_DELAY ) ? ( *r )[TCP::UNIT_PROP_DELAY].first : 0;
     return out;
@@ -298,6 +367,17 @@ RESULT Pair( const LINE& aLine, double aWidth, double aGap )
         return { false, "the width and the gap must be above 0" };
 
     return pair( aLine, 0, aWidth, aGap, SOLVE::NONE );
+}
+
+RESULT CpwgWidth( const LINE& aLine, double aZ0, double aGround )
+{
+    return coplanar( aLine, aZ0, 0, aGround );
+}
+
+
+RESULT Cpwg( const LINE& aLine, double aWidth, double aGround )
+{
+    return coplanar( aLine, 0, aWidth, aGround );
 }
 
 } // namespace kicadd::zcalc

@@ -121,6 +121,46 @@ json MCP_SERVER::handleToolsList() const
 namespace
 {
 
+/// A client with an old copy of a tool's schema (or a loose one) sends an object / array /
+/// boolean / number as a string: "{\"U1\": ...}", "false", "0.1". Taken as what the schema
+/// says it is when the string reads as that; otherwise left for the tool to refuse.
+void coerceArgs( const json& aSchema, json& aArgs )
+{
+    if( !aArgs.is_object() || !aSchema.is_object() || !aSchema.contains( "properties" ) )
+        return;
+
+    const json& props = aSchema["properties"];
+
+    for( auto& [key, value] : aArgs.items() )
+    {
+        if( !props.contains( key ) || !props[key].is_object() )
+            continue;
+
+        const json& p = props[key];
+        const std::string type = p.contains( "type" ) && p["type"].is_string() ? p["type"].get<std::string>() : "";
+
+        if( value.is_string() && !type.empty() && type != "string" )
+        {
+            const std::string s = value.get<std::string>();
+            json              parsed = json::parse( s, nullptr, false );
+
+            if( !parsed.is_discarded() )
+            {
+                const bool fits = ( type == "object" && parsed.is_object() ) || ( type == "array" && parsed.is_array() )
+                                  || ( type == "boolean" && parsed.is_boolean() )
+                                  || ( ( type == "number" || type == "integer" ) && parsed.is_number() );
+
+                if( fits )
+                    value = parsed;
+            }
+        }
+
+        if( value.is_object() && type == "object" )
+            coerceArgs( p, value );
+    }
+}
+
+
 /// Arguments the tool's schema does not have (an object with "properties" and no
 /// "additionalProperties"), nested objects too: "create.rect"
 void unknownArgs( const json& aSchema, const json& aArgs, const std::string& aPrefix, std::vector<std::string>& aOut )
@@ -205,6 +245,7 @@ json MCP_SERVER::handleToolsCall( const json& aParams )
         throw std::invalid_argument( "unknown tool: " + name );
 
     TOOL_RESULT r;
+    coerceArgs( it->inputSchema, args );
 
     // an argument the tool does not know is an error, not silently nothing
     std::vector<std::string> unknown;

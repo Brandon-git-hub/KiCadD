@@ -474,8 +474,9 @@ bool convert( const json& aResult, const std::string& aLcsc, PART& aPart, std::s
         return false;
     }
 
-    aPart.datasheet = str( cpara, "link" );
-
+    // The datasheet: the footprint's "link" is the part its footprint was drawn for (footprints
+    // are shared: SOT-23-6 of one part names another's page), so the symbol's own, else none
+    // here; the LCSC product page of this very number takes over below when there is one
     if( auto sym = aResult.find( "dataStr" ); sym != aResult.end() && sym->is_object() )
     {
         json symPara = sym->value( "head", json::object() ).value( "c_para", json::object() );
@@ -520,6 +521,11 @@ bool convert( const json& aResult, const std::string& aLcsc, PART& aPart, std::s
             aPart.minQty = v->get<int>();
 
         aPart.url = str( *l, "url" );
+
+        // the product page of the number asked for (it links the datasheet): better than a
+        // symbol's link, which may also be another part's
+        if( !aPart.url.empty() && str( *l, "number" ) == aLcsc )
+            aPart.datasheet = aPart.url;
     }
 
     aPart.jlcSmt = aResult.value( "SMT", false ) && aResult.value( "jlcOnSale", 0 ) != 0;

@@ -5396,6 +5396,32 @@ KICADD_HANDLER_PCB::handleSyncFromSchematic( const HANDLER_CONTEXT<SyncFromSchem
         for( auto& [id, snap] : fpsBefore )   // the ones it deleted (delete_extra)
             entry.removed.push_back( std::move( snap ) );
 
+        // a footprint swapped (update_footprints) is a new one in the old one's place: said as
+        // such, with whether it turned or moved (another footprint's anchor or orientation)
+        for( const FP_SNAPSHOT& gone : entry.removed )
+        {
+            for( const FP_SNAPSHOT& now : entry.added )
+            {
+                if( now.fp->GetReference() != gone.fp->GetReference() )
+                    continue;
+
+                std::string s = gone.fp->GetReference().ToStdString() + " " + gone.fp->GetFPID().Format().wx_str().ToStdString()
+                                + " -> " + now.fp->GetFPID().Format().wx_str().ToStdString();
+                const double turned = ( now.fp->GetOrientation() - gone.fp->GetOrientation() ).Normalize180().AsDegrees();
+                const double moved = ( VECTOR2D( now.fp->GetPosition() ) - VECTOR2D( gone.fp->GetPosition() ) ).EuclideanNorm() / 1e6;
+
+                if( std::fabs( turned ) > 0.05 || moved > 0.001 || now.fp->IsFlipped() != gone.fp->IsFlipped() )
+                {
+                    char buf[160];
+                    std::snprintf( buf, sizeof buf, " (now turned %+.0f deg, anchor moved %.2f mm%s: check its place)", turned, moved,
+                                   now.fp->IsFlipped() != gone.fp->IsFlipped() ? ", on the other side" : "" );
+                    s += buf;
+                }
+
+                out.add_swapped( s );
+            }
+        }
+
         auto netMoved = [&]( const BOARD_CONNECTED_ITEM* aItem )
         {
             auto it = netsBefore.find( aItem->m_Uuid );
@@ -5424,7 +5450,7 @@ KICADD_HANDLER_PCB::handleSyncFromSchematic( const HANDLER_CONTEXT<SyncFromSchem
         }
     }
 
-    out.set_added( updater->GetNewFootprintCount() );
+    out.set_added( std::max( 0, updater->GetNewFootprintCount() - out.swapped_size() ) );
     out.set_errors( updater->GetErrorCount() );
     out.set_warnings( updater->GetWarningCount() + ownWarnings );
     out.set_report( reporter.GetMessages().ToStdString( wxConvUTF8 ) );
@@ -7944,6 +7970,10 @@ HANDLER_RESULT<ImpedanceResponse> KICADD_HANDLER_PCB::handleImpedance( const HAN
     if( req.z_diff() > 0 && req.has_width() && req.has_gap() )
         return bad( "z_diff works out the width at gap, or the gap at width: give one of them" );
 
+    if( req.has_ground_gap() && ( req.ground_gap() <= 0 || req.z_diff() > 0 || req.has_gap() ) )
+        return bad( "ground_gap (mm, above 0) is for a single track (z, or width): coplanar with ground for pairs is not "
+                    "worked out (the ground beside a pair lowers its Zdiff a little more)" );
+
     if( req.z() <= 0 && req.z_diff() <= 0 && !req.has_width() )
         return bad( "z (a track's width for this impedance), z_diff (a pair's), or width (and gap) to have its "
                     "impedance worked out" );
@@ -7990,7 +8020,18 @@ HANDLER_RESULT<ImpedanceResponse> KICADD_HANDLER_PCB::handleImpedance( const HAN
         const double          width = req.width() * 1e-3, gap = ( req.has_gap() ? req.gap() : 0.2 ) * 1e-3;
         kicadd::zcalc::RESULT r;
 
-        if( req.z() > 0 )
+        if( req.has_ground_gap() )
+        {
+            if( !line->line.microstrip )
+            {
+                o->set_error( "coplanar with ground: an outer layer over its plane only" );
+                continue;
+            }
+
+            r = req.z() > 0 ? kicadd::zcalc::CpwgWidth( line->line, req.z(), req.ground_gap() * 1e-3 )
+                            : kicadd::zcalc::Cpwg( line->line, width, req.ground_gap() * 1e-3 );
+        }
+        else if( req.z() > 0 )
             r = kicadd::zcalc::Width( line->line, req.z() );
         else if( req.z_diff() > 0 )
             r = req.has_width() ? kicadd::zcalc::PairGap( line->line, req.z_diff(), width )

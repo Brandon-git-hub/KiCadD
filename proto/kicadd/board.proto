@@ -244,6 +244,8 @@ message SyncFromSchematicResponse
   int32  nets       = 7;
   bool   from_editor = 8;       // the netlist came from the open Schematic Editor (unsaved edits too)
   string history_label = 9;     // the agent's undo entry for it (empty: nothing changed)
+  repeated string swapped = 10; // footprints replaced (update_footprints): "J2 Lib:Old -> Lib:New ..."
+                                // (counted in added by KiCad's updater; said here instead)
 }
 
 // M5c: automatic placement (src/pcb/kicadd_autoplace.h). Moves the chosen parts inside the
@@ -908,6 +910,7 @@ message Impedance
   optional double width = 3;
   optional double gap   = 4;
   repeated string layers = 5;   // default every copper layer
+  optional double ground_gap = 6;   // mm: ground copper beside the track on its layer (CPWG; outer layers, single tracks)
 }
 
 message ImpedanceLayer

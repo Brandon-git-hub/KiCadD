@@ -303,7 +303,13 @@ TOOL_RESULT lcscMatch( IPC_CLIENT& aIpc, const json& aArgs )
         std::vector<std::string> refs;
         std::string              lcsc, line, why;   // the match, its description, or why none
         bool                     picked = false;
+        std::string              mfr, description;  // of the match, for the part's other fields
     };
+
+    // each part's fields now (the old part's Supplier / Manufacturer Part, Description, Datasheet
+    // are rewritten with the new number)
+    std::map<std::string, std::map<std::string, std::string>> fieldsOf;
+    std::map<std::string, std::string>                        oldLcsc;
 
     std::map<std::pair<std::string, std::string>, GROUP> groups;
     std::set<std::string>                                seen;
@@ -335,6 +341,9 @@ TOOL_RESULT lcscMatch( IPC_CLIENT& aIpc, const json& aArgs )
             have++;
             continue;
         }
+
+        fieldsOf[ref] = std::map<std::string, std::string>( sym.fields().begin(), sym.fields().end() );
+        oldLcsc[ref] = sym.lcsc();
 
         GROUP& g = groups[{ sym.value(), sym.footprint() }];
         g.value = sym.value();
@@ -378,7 +387,49 @@ TOOL_RESULT lcscMatch( IPC_CLIENT& aIpc, const json& aArgs )
 
         if( g.picked )
         {
-            g.line = "your pick";
+            // checked against the index: the number exists, its value and size are the group's
+            kb::LcscSearch         one;
+            kb::LcscSearchResponse lr;
+            std::string            serr;
+            one.add_lcsc( g.lcsc );
+            one.set_live( -1 );
+
+            if( !aIpc.Call( one, lr, serr ) || lr.hits_size() == 0 )
+            {
+                g.why = "pick " + g.lcsc + ": not in the parts index (" + ( serr.empty() ? "no such part in stock" : serr )
+                        + "): lcsc_search for the number";
+                g.lcsc.clear();
+                continue;
+            }
+
+            const kb::LcscHit& h = lr.hits( 0 );
+            std::string        mismatch;
+            double             want = 0;
+            std::string        first = g.value.substr( 0, g.value.find( ' ' ) );
+
+            if( h.value() > 0 && sim::ParseSI( first, want ) && want > 0 && std::fabs( h.value() / want - 1 ) > 0.01 )
+                mismatch = "its value is " + sim::FormatSI( h.value(), h.unit() ) + ", the parts' " + g.value;
+
+            for( const char* size : { "0201", "0402", "0603", "0805", "1206", "1210", "2512" } )
+            {
+                const bool inFp = g.footprint.find( size ) != std::string::npos;
+                const bool inHit = h.package().find( size ) != std::string::npos;
+
+                if( inFp && !inHit && !h.package().empty() && std::isdigit( (unsigned char) h.package()[0] ) )
+                    mismatch += std::string( mismatch.empty() ? "" : "; " ) + "its package is " + h.package() + ", the footprint " + size;
+            }
+
+            if( !mismatch.empty() )
+            {
+                g.why = "pick " + g.lcsc + " (" + h.mfr() + ") does not fit: " + mismatch + " (set the value / footprint, or pick another)";
+                g.lcsc.clear();
+                continue;
+            }
+
+            g.line = "your pick: " + std::string( h.basic() ? "BASIC" : h.preferred() ? "preferred" : "extended" ) + " " + h.mfr()
+                     + "; " + ( h.description().size() > 90 ? h.description().substr( 0, 87 ) + "..." : h.description() );
+            g.mfr = h.mfr();
+            g.description = h.description();
             matched++;
             continue;
         }
@@ -596,6 +647,8 @@ TOOL_RESULT lcscMatch( IPC_CLIENT& aIpc, const json& aArgs )
         }
 
         g.lcsc = chosen.lcsc();
+        g.mfr = chosen.mfr();
+        g.description = chosen.description();
         g.line = std::string( chosen.basic() ? "BASIC" : chosen.preferred() ? "preferred" : "extended" ) + " "
                  + chosen.mfr() + "; JLCPCB assembly stock " + std::to_string( chosen.stock() ) + " (index "
                  + r.index_date() + ")";
@@ -687,12 +740,51 @@ TOOL_RESULT lcscMatch( IPC_CLIENT& aIpc, const json& aArgs )
 
         t += " -> " + g.lcsc + " " + g.line;
 
+        int rewritten = 0;
+
         for( const std::string& r : g.refs )
         {
             ks::SchFieldEdit* e = set.add_parts();
             e->set_ref( r );
             ( *e->mutable_fields() )["LCSC"] = g.lcsc;
+
+            // the fields that still describe the part it was copied from (or the number it had)
+            const std::string old = oldLcsc[r];
+
+            for( const auto& [name, value] : fieldsOf[r] )
+            {
+                std::string low = lowerOf( name );
+                std::string next;
+                bool        touch = false;
+
+                if( low == "supplier part" || low == "lcsc part" || low == "lcsc part #" || low == "jlcpcb part" )
+                {
+                    next = g.lcsc;
+                    touch = value != next;
+                }
+                else if( low == "manufacturer part" || low == "mpn" || low == "mfr part" )
+                {
+                    next = g.mfr;
+                    touch = !g.mfr.empty() && value != next;
+                }
+                else if( !old.empty() && old != g.lcsc && value.find( old ) != std::string::npos )
+                {
+                    // a description or datasheet naming the old number: the new part's, or none
+                    next = low == "description" ? g.description : std::string();
+                    touch = true;
+                }
+
+                if( touch )
+                {
+                    ( *e->mutable_fields() )[name] = next;
+                    rewritten++;
+                }
+            }
         }
+
+        if( rewritten )
+            t += " (" + std::to_string( rewritten ) + " field(s) of the old part rewritten: Supplier / Manufacturer Part, "
+                 "a Description or Datasheet naming the old number)";
     }
 
     if( !apply )
@@ -807,6 +899,28 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
 
                 if( !r.note().empty() )
                     t += "\n  " + r.note();
+
+                // a value given that is not the LCSC part's (a symbol copied from another value, or
+                // lcsc= with another value): its LCSC / supplier fields describe the other part
+                if( !r.symbol().lcsc().empty() && !str( a, "value" ).empty() )
+                {
+                    kb::LcscSearch         one;
+                    kb::LcscSearchResponse lr;
+                    std::string            serr;
+                    one.add_lcsc( r.symbol().lcsc() );
+                    one.set_live( -1 );
+                    double            want = 0;
+                    const std::string v = str( a, "value" );
+
+                    if( aIpc.Call( one, lr, serr ) && lr.hits_size() && lr.hits( 0 ).value() > 0
+                        && sim::ParseSI( v.substr( 0, v.find( ' ' ) ), want ) && want > 0
+                        && std::fabs( lr.hits( 0 ).value() / want - 1 ) > 0.01 )
+                    {
+                        t += "\n  warning: its LCSC number " + r.symbol().lcsc() + " is " + sim::FormatSI( lr.hits( 0 ).value(), lr.hits( 0 ).unit() )
+                             + " (" + lr.hits( 0 ).mfr() + "), not " + v + ": the LCSC / supplier fields describe that part. "
+                             "lcsc_match refs=[\"" + r.symbol().ref() + "\"] replace=true apply=true finds one for " + v;
+                    }
+                }
 
                 return TOOL_RESULT{ t, false };
             } } );
@@ -1097,13 +1211,28 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
 
                 std::string t = std::string( req.dry_run() ? "dry run: " : "" ) + std::to_string( r.added() )
                                 + " footprint(s) added";
+                std::set<std::string> swappedRefs;
 
-                if( r.new_refs_size() )
+                for( const std::string& s : r.swapped() )
+                    swappedRefs.insert( s.substr( 0, s.find( ' ' ) ) );
+
+                std::string newList;
+
+                for( const std::string& ref : r.new_refs() )
                 {
-                    t += ":";
+                    if( !swappedRefs.count( ref ) )
+                        newList += " " + ref;
+                }
 
-                    for( const std::string& ref : r.new_refs() )
-                        t += " " + ref;
+                if( !newList.empty() )
+                    t += ":" + newList;
+
+                if( r.swapped_size() )
+                {
+                    t += "; " + std::to_string( r.swapped_size() ) + " footprint(s) changed:";
+
+                    for( const std::string& s : r.swapped() )
+                        t += "\n  " + s;
                 }
 
                 t += std::string( req.dry_run() ? "; board has " : "; board now " ) + std::to_string( r.footprints() )

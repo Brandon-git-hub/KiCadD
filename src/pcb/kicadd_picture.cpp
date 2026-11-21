@@ -246,6 +246,31 @@ bool RenderBoardPng( BOARD* aBoard, const kicadd::board::RenderBoard& aReq,
 
     for( const std::string& n : aReq.nets() )
     {
+        // a name, or a pattern ("USB_*", as audit takes them): every net it matches, the part
+        // after a sheet path too ("USB_D+" is "/USB/USB_D+"), case blind
+        if( n.find_first_of( "*?" ) != std::string::npos )
+        {
+            const wxString pattern = wxString::FromUTF8( n ).Upper();
+            bool           any = false;
+
+            for( NETINFO_ITEM* net : aBoard->GetNetInfo() )
+            {
+                const wxString name = net->GetNetname().Upper();
+                const wxString leaf = name.AfterLast( '/' );
+
+                if( net->GetNetCode() > 0 && ( name.Matches( pattern ) || leaf.Matches( pattern ) ) )
+                {
+                    nets.insert( net->GetNetCode() );
+                    any = true;
+                }
+            }
+
+            if( !any )
+                aOut.add_missing( "net " + n + " (no net matches)" );
+
+            continue;
+        }
+
         NETINFO_ITEM* net = aBoard->FindNet( wxString::FromUTF8( n ) );
 
         if( net && net->GetNetCode() > 0 )

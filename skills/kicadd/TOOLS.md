@@ -290,7 +290,7 @@ Arguments:
 
 Track width for a Z0 / pair for a Zdiff (or the impedance of a width) per layer, from the stackup.
 
-Controlled impedance from the board's stackup, per copper layer; changes nothing (set_rules impedance / diff_impedance writes it into a net class). A layer's reference planes are the nearest plane layers each way: zones over 40% of the board (an unpoured layer: typed power, or empty), not by name; signal layers between are passed over (their copper in H, said). An outer layer is a microstrip over its plane (with the solder mask), an inner one a stripline between two, or an embedded microstrip with a plane on one side; the note lists each layer's coverage. The planes must be poured (zones create) for it to hold. z: a track's width for this Z0 (ohm); z_diff: a pair's width at gap (mm, default 0.2), or its gap at width; neither: the impedance of width (and gap: of the pair). layers: default all. Uses KiCad's transmission line calculations (as pcb_calculator); set board_setup stackup=... first for a fab's dielectrics, and check with the fab's calculator before ordering.
+Controlled impedance from the board's stackup, per copper layer; changes nothing (set_rules impedance / diff_impedance writes it into a net class). A layer's reference planes are the nearest plane layers each way: zones over 40% of the board (an unpoured layer: typed power, or empty), not by name; signal layers between are passed over (their copper in H, said). An outer layer is a microstrip over its plane (with the solder mask), an inner one a stripline between two, or an embedded microstrip with a plane on one side; the note lists each layer's coverage. The planes must be poured (zones create) for it to hold. z: a track's width for this Z0 (ohm); z_diff: a pair's width at gap (mm, default 0.2), or its gap at width; neither: the impedance of width (and gap: of the pair). ground_gap (mm): ground copper beside a single track on an outer layer (coplanar waveguide with ground, CPWG: a 2-layer board's way to a lower Z0 at a usable width; pairs with a pour beside them are not worked out). layers: default all. Uses KiCad's transmission line calculations (as pcb_calculator); set board_setup stackup=... first for a fab's dielectrics, and check with the fab's calculator before ordering.
 
 Parameter notes:
 
@@ -299,6 +299,7 @@ Parameter notes:
 Arguments:
 
 - `gap` (number)
+- `ground_gap` (number): mm to ground copper beside it (CPWG)
 - `layers` (array): default all
 - `width` (number)
 - `z` (number)

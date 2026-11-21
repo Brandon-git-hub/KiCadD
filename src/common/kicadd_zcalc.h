@@ -53,6 +53,13 @@ RESULT PairWidth( const LINE& aLine, double aZdiff, double aGap );
 /// A pair's gap for a differential impedance at a given width.
 RESULT PairGap( const LINE& aLine, double aZdiff, double aWidth );
 
+/// The width for a Z0 with ground copper beside the track aGround away on its layer (coplanar
+/// waveguide with ground: an outer layer over its plane); gap in the result is aGround.
+RESULT CpwgWidth( const LINE& aLine, double aZ0, double aGround );
+
+/// Z0 of a track this wide with ground copper aGround beside it (CPWG).
+RESULT Cpwg( const LINE& aLine, double aWidth, double aGround );
+
 /// Z0 of a track this wide.
 RESULT Single( const LINE& aLine, double aWidth );
 

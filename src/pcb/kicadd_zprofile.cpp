@@ -932,8 +932,12 @@ void CheckImpedance( BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& 
             for( size_t k = 0; k < off.size() && k < limit; ++k )
             {
                 const OFF&  o = off[k];
-                std::string s = o.name + ": " + mm( o.p.off / 1e6, 1 ) + " mm of " + mm( o.g->len / 1e6, 1 ) + " off "
-                                + ohm( rule.value );
+                // len: the stretches measured (breakouts near the net's own pads and vias left out);
+                // off a plane there is no Z, said apart, so the numbers add up to what is seen
+                std::string s = o.name + ": " + mm( o.p.off / 1e6, 1 ) + " mm off " + ohm( rule.value ) + " of the "
+                                + mm( o.g->len / 1e6, 1 ) + " mm measured (breakouts left out"
+                                + ( o.g->offPlane > 0 ? ", " + mm( o.g->offPlane / 1e6, 1 ) + " mm of it off plane, no Z" : std::string() )
+                                + ")";
 
                 if( o.p.most )
                     s += ", the longest " + offPart( *o.g, o.p.most, o.p.mostZ );

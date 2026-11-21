@@ -9,6 +9,7 @@
 #include "ipc_client.h"
 
 #include <algorithm>
+#include <cctype>
 #include <set>
 
 #include <cmath>
@@ -1923,6 +1924,7 @@ TOOL_RESULT impedanceTool( IPC_CLIENT& aIpc, const json& aArgs )
     if( getNumber( aArgs, "z_diff", d ) ) req.set_z_diff( d );
     if( getNumber( aArgs, "width", d ) )  req.set_width( d );
     if( getNumber( aArgs, "gap", d ) )    req.set_gap( d );
+    if( getNumber( aArgs, "ground_gap", d ) ) req.set_ground_gap( d );
 
     for( const std::string& l : getStrings( aArgs, "layers" ) )
         req.add_layers( l );
@@ -1951,6 +1953,9 @@ TOOL_RESULT impedanceTool( IPC_CLIENT& aIpc, const json& aArgs )
         if( pair )
             std::snprintf( buf, sizeof( buf ), "width %.3f mm, gap %.3f mm -> %.1f ohm differential, %.1f ps/cm",
                            l.width(), l.gap(), l.z(), l.delay() );
+        else if( req.has_ground_gap() )
+            std::snprintf( buf, sizeof( buf ), "width %.3f mm, ground %.3f mm beside it -> %.1f ohm (CPWG), %.1f ps/cm",
+                           l.width(), req.ground_gap(), l.z(), l.delay() );
         else
             std::snprintf( buf, sizeof( buf ), "width %.3f mm -> %.1f ohm, %.1f ps/cm", l.width(), l.z(), l.delay() );
 
@@ -2369,8 +2374,90 @@ TOOL_RESULT lcscSearch( IPC_CLIENT& aIpc, const json& aArgs )
     if( !aIpc.Call( req, r, err ) )
         return error( err );
 
+    // several keyword words and nothing has them all: which words match nothing (with the other
+    // conditions), and the search again without them
+    std::string relaxed;
+
+    if( r.total() == 0 && !req.keyword().empty() )
+    {
+        std::vector<std::string> words, kept, dropped;
+        std::string              w;
+
+        for( char c : req.keyword() + " " )
+        {
+            if( std::isspace( (unsigned char) c ) || c == ',' )
+            {
+                if( !w.empty() )
+                    words.push_back( w );
+
+                w.clear();
+            }
+            else
+            {
+                w += c;
+            }
+        }
+
+        if( words.size() > 1 && words.size() <= 8 )
+        {
+            for( const std::string& word : words )
+            {
+                kb::LcscSearch         one = req;
+                kb::LcscSearchResponse lr;
+                std::string            e;
+                one.set_keyword( word );
+                one.set_live( -1 );
+                one.set_limit( 1 );
+
+                if( aIpc.Call( one, lr, e ) && lr.total() > 0 )
+                    kept.push_back( word );
+                else
+                    dropped.push_back( word );
+            }
+
+            std::string list;
+
+            for( const std::string& d : dropped )
+                list += ( list.empty() ? "\"" : ", \"" ) + d + "\"";
+
+            if( !dropped.empty() && !kept.empty() )
+            {
+                kb::LcscSearch again = req;
+                std::string    k;
+
+                for( const std::string& x : kept )
+                    k += ( k.empty() ? "" : " " ) + x;
+
+                again.set_keyword( k );
+                kb::LcscSearchResponse r2;
+
+                if( aIpc.Call( again, r2, err ) && r2.total() > 0 )
+                {
+                    r = r2;
+                    relaxed = "nothing has every word: " + list + " matched nothing here, so this is \"" + k + "\"";
+                }
+                else
+                {
+                    relaxed = "nothing has every word (" + list + " match nothing; the others together match nothing either)";
+                }
+            }
+            else if( !dropped.empty() )
+            {
+                relaxed = "no word matches anything here: " + list + " (keywords are matched as word prefixes in the "
+                          "part number, description and package: try a part number or a plain word)";
+            }
+            else
+            {
+                relaxed = "each word matches parts, but no part has them all: fewer words";
+            }
+        }
+    }
+
     std::string out = std::to_string( r.total() ) + " match(es) in stock at JLCPCB (parts index of " + r.index_date()
                       + ", jlcparts data)";
+
+    if( !relaxed.empty() )
+        out += "\n  " + relaxed;
 
     if( r.total() > r.hits_size() )
         out += "; the first " + std::to_string( r.hits_size() ) + ": basic, preferred, then by stock";
@@ -3155,13 +3242,17 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        "between two, or an embedded microstrip with a plane on one side; the note lists each "
                        "layer's coverage. The planes must be poured (zones create) for it to hold. z: a track's "
                        "width for this Z0 (ohm); z_diff: a pair's width at gap (mm, default 0.2), or its gap at "
-                       "width; neither: the impedance of width (and gap: of the pair). layers: default all. Uses "
+                       "width; neither: the impedance of width (and gap: of the pair). ground_gap (mm): ground "
+                       "copper beside a single track on an outer layer (coplanar waveguide with ground, CPWG: a "
+                       "2-layer board's way to a lower Z0 at a usable width; pairs with a pour beside them are not "
+                       "worked out). layers: default all. Uses "
                        "KiCad's transmission line calculations (as pcb_calculator); set board_setup stackup=... "
                        "first for a fab's dielectrics, and check with the fab's calculator before ordering.",
                        schema( { { "z", { { "type", "number" } } },
                                  { "z_diff", { { "type", "number" } } },
                                  { "width", { { "type", "number" } } },
                                  { "gap", { { "type", "number" } } },
+                                 { "ground_gap", { { "type", "number" }, { "description", "mm to ground copper beside it (CPWG)" } } },
                                  { "layers", { { "type", "array" }, { "items", { { "type", "string" } } },
                                                { "description", "copper layers, e.g. [\"F.Cu\", \"In2.Cu\"]; default all" } } } } ),
                        [&aIpc]( const json& a ) { return impedanceTool( aIpc, a ); } } );

@@ -291,9 +291,6 @@ wxString KicaddLcscSymbol( const wxString& aRequest )
 
         if( !passives.count( ref.Upper() ) && !symPins.empty() )
         {
-            static const std::set<wxString> connectors = { wxS( "J" ), wxS( "CN" ), wxS( "P" ), wxS( "USB" ), wxS( "CON" ),
-                                                           wxS( "JP" ), wxS( "H" ), wxS( "SW" ), wxS( "K" ) };
-            const bool connector = connectors.count( ref.Upper() ) > 0;
 
             static const std::regex ground( R"(^(A|D|P|S|SIG|PWR)?(GND|VSS|VEE)[A-Z]?\d*(_?\d+)?$)" );
             static const std::regex supplyIn(
@@ -316,6 +313,12 @@ wxString KicaddLcscSymbol( const wxString& aRequest )
 
             std::transform( desc.begin(), desc.end(), desc.begin(), ::toupper );
             const bool regulator = std::regex_search( desc, std::regex( R"(REGULATOR|LDO|DC-DC|BUCK|BOOST|CONVERTER|LOAD SWITCH|POWER SWITCH|DISTRIBUTION|POWER MANAGEMENT)" ) );
+
+            // a connector by its reference ("J", "USBC") or its category ("USB Connectors")
+            static const std::set<wxString> connectors = { wxS( "J" ), wxS( "CN" ), wxS( "P" ), wxS( "USB" ), wxS( "USBC" ),
+                                                           wxS( "CON" ), wxS( "CONN" ), wxS( "JP" ), wxS( "H" ), wxS( "SW" ),
+                                                           wxS( "K" ) };
+            const bool connector = connectors.count( ref.Upper() ) > 0 || desc.find( "CONNECTOR" ) != std::string::npos;
 
             auto clean = []( const wxString& aName )
             {

@@ -453,6 +453,105 @@ void CheckLengths( BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& aO
         }
     }
 
+    // ---- pair order: between two parts the pair's P and N must not swap sides (the straight
+    // lines P-P and N-N crossing means a crossing to route: a via pair, or the part turned,
+    // moved or on the other side; a part on the bottom is mirrored). Routed or not.
+    {
+        int                      checked = 0;
+        std::vector<std::string> crossed;
+        std::optional<VECTOR2I>  firstAt;
+
+        for( auto [pc, nc] : partner )
+        {
+            // per part: its P pad and its N pad (the first of each)
+            std::map<const FOOTPRINT*, std::pair<const PAD*, const PAD*>> ends;
+
+            for( FOOTPRINT* fp : aBoard.Footprints() )
+            {
+                for( PAD* pad : fp->Pads() )
+                {
+                    if( pad->GetNetCode() == pc && !ends[fp].first )
+                        ends[fp].first = pad;
+                    else if( pad->GetNetCode() == nc && !ends[fp].second )
+                        ends[fp].second = pad;
+                }
+            }
+
+            std::vector<std::pair<const FOOTPRINT*, std::pair<const PAD*, const PAD*>>> both;
+
+            for( const auto& [fp, pn] : ends )
+            {
+                if( pn.first && pn.second )
+                    both.push_back( { fp, pn } );
+            }
+
+            if( both.size() < 2 )
+                continue;
+
+            checked++;
+            std::string which;
+
+            for( size_t a = 0; a < both.size(); ++a )
+            {
+                for( size_t b = a + 1; b < both.size(); ++b )
+                {
+                    SEG ps( both[a].second.first->GetPosition(), both[b].second.first->GetPosition() );
+                    SEG ns( both[a].second.second->GetPosition(), both[b].second.second->GetPosition() );
+
+                    if( OPT_VECTOR2I x = ps.Intersect( ns ) )
+                    {
+                        auto name = [&]( const FOOTPRINT* f )
+                        {
+                            return str( f->GetReference() ) + ( f->IsFlipped() ? " (bottom)" : "" );
+                        };
+
+                        which += ( which.empty() ? "" : ", " ) + name( both[a].first ) + " - " + name( both[b].first );
+
+                        if( !firstAt )
+                            firstAt = *x;
+                    }
+                }
+            }
+
+            if( !which.empty() && crossed.size() < 12 )
+            {
+                crossed.push_back( str( aBoard.FindNet( pc )->GetNetname() ) + " / " + str( aBoard.FindNet( nc )->GetNetname() )
+                                   + ": " + which );
+            }
+            else if( !which.empty() )
+            {
+                crossed.push_back( "" );
+            }
+        }
+
+        if( checked > 0 )
+        {
+            if( crossed.empty() )
+            {
+                line( aOut, "diff_pair", "info", "pair order: P and N in the same order at both ends of all "
+                                                     + std::to_string( checked ) + " pair(s) between parts" );
+            }
+            else
+            {
+                std::string list;
+                size_t      shown = 0;
+
+                for( const std::string& c : crossed )
+                {
+                    if( !c.empty() && shown++ < 6 )
+                        list += ( list.empty() ? "" : "; " ) + c;
+                }
+
+                line( aOut, "diff_pair", "info",
+                      "pair order: " + std::to_string( crossed.size() ) + " of " + std::to_string( checked )
+                              + " pair(s) have P and N swapped between two of their parts (the straight lines P-P and "
+                                "N-N cross: a crossing to route, a via pair; or turn, move or flip a part; a part on the "
+                                "bottom is mirrored): " + list + ( crossed.size() > 6 ? "; ..." : "" ),
+                      firstAt );
+            }
+        }
+    }
+
     std::set<std::string> usedGlobs;
 
     for( const auto& [name, code] : codes )

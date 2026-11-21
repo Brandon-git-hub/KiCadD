@@ -92,6 +92,12 @@ try:
     err, t = m.tool("move_footprints", {"parts": {"C21": {"x": 150, "y": 110, "rotation": 90, "side": "top"}}})
     check("nothing to do" in t, "the same place again: nothing to do")
     m.tool("undo")
+    # a client with an old copy of the schema sends objects / booleans as strings: taken as meant
+    err, t = m.tool("move_footprints", {"parts": '{"C21": {"x": 150, "y": 110}}'})
+    check(not err and "C21" in t, "parts as a JSON string (a stale client schema): taken: " + t.splitlines()[0][:60])
+    m.tool("undo")
+    err, t = m.tool("auto_place", {"refs": ["C21"], "measure_only": "true", "silk_room": "false"})
+    check(not err, "booleans as strings: taken: " + t.splitlines()[0][:60])
     err, t = m.tool("move_footprints", {"parts": {"C21": {"x": 1}}, "dx": 1})
     check(err and "not both" in t, "parts and dx together: refused")
     err, t = m.tool("auto_place", {"refs": ["U1"], "spacing": 0, "edge": 0, "measure_only": True})
