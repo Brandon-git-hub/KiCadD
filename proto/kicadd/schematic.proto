@@ -482,3 +482,59 @@ message SchAnnotateResponse
   string          history_label = 5;
   bool            dry_run  = 6;
 }
+
+// A region of the schematic for the simulator: its parts with their pins' nets (kicadd-mcp
+// builds the models and the netlist and runs ngspice). The region: refs, or a sheet (and the
+// sheets below it), or around parts / nets, through hops parts (a hop does not pass a ground
+// or supply net). Power symbols are not parts. Returns SchSimRegionResponse
+message SchSimRegion
+{
+  repeated string refs   = 1;
+  string          sheet  = 2;
+  repeated string around = 3;   // refs or net names to start from
+  int32           hops   = 4;   // default 1
+}
+
+message SchSimPin
+{
+  string number = 1;
+  string name   = 2;
+  string net    = 3;   // the schematic's name; empty: not connected
+  string type   = 4;   // "passive", "power input", ...
+  string unit   = 5;   // "A" for a unit of a multi-unit part
+}
+
+message SchSimPart
+{
+  string ref         = 1;
+  string value       = 2;
+  string footprint   = 3;
+  string lcsc        = 4;
+  string lib_id      = 5;
+  string description = 6;   // the symbol's (and its keywords)
+  repeated SchSimPin pins = 7;
+  map<string, string> fields = 8;   // user fields (Sim.* included)
+  // the part has its own SPICE model (Sim.* fields): KiCad's lines for it, nets as in nets.spice
+  string spice_item  = 9;
+  string spice_model = 10;          // .model / .subckt lines it needs
+  string spice_error = 11;          // its model could not be read
+}
+
+message SchSimNet
+{
+  string name    = 1;
+  string spice   = 2;   // the name in the netlist
+  bool   ground  = 3;
+  bool   supply  = 4;   // a power symbol names it, or a power pin is on it
+  int32  outside = 5;   // pins of parts outside the region on it
+  repeated string outside_refs = 6;   // the first few
+}
+
+message SchSimRegionResponse
+{
+  repeated SchSimPart parts = 1;
+  repeated SchSimNet  nets  = 2;
+  repeated string     includes = 3;   // .include / .lib lines KiCad's models need
+  repeated string     notes = 4;
+  string              project_dir = 5;
+}

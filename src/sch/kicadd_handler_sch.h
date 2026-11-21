@@ -121,6 +121,9 @@ private:
     HANDLER_RESULT<kicadd::schematic::SchAnnotateResponse>
     handleAnnotate( const HANDLER_CONTEXT<kicadd::schematic::SchAnnotate>& aCtx );
 
+    HANDLER_RESULT<kicadd::schematic::SchSimRegionResponse>
+    handleSimRegion( const HANDLER_CONTEXT<kicadd::schematic::SchSimRegion>& aCtx );
+
     /// A power symbol for net @a aNet ("GND", "+3V3"): the project's power library if it has
     /// one, else made here (KiCadD ships no libraries): a ground or a supply shape.
     const LIB_SYMBOL* powerSymbol( const std::string& aNet, LIB_ID& aId );

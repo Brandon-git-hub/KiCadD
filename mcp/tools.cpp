@@ -2345,7 +2345,15 @@ TOOL_RESULT lcscSearch( IPC_CLIENT& aIpc, const json& aArgs )
     }
 
     if( r.hits().empty() )
+    {
         out += "\nnothing: loosen a condition (tolerance, voltage, basic_only, package)";
+
+        // the data gives some parameters for few or no basic / preferred parts (inductor Isat:
+        // none of them): basic_only with such a where finds nothing for that reason alone
+        if( req.basic_only() && req.where_size() > 0 )
+            out += "; basic_only with where: few basic parts have these parameters in the data (inductor Isat: none, "
+                   "SRF: few), so try without basic_only, or drop that condition (Irated is given for most)";
+    }
 
     return { out };
 }
@@ -3149,7 +3157,9 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        "slew, DCR, Isat, Vf, trr ...; the datasheet's single test condition after @). Filter "
                        "on them with where {\"rds_on\": \"<=20m\", \"vds\": \">=30\", \"vgs_th\": \"1..2.5\"}: "
                        "SI units, prefixes allowed; a part without the parameter does not match (a bad name "
-                       "lists them). Then sch_add_part lcsc=... places one.",
+                       "lists them). Inductor Isat is in the data for about half the inductors and for no "
+                       "basic / preferred one: with where i_sat leave basic_only off (or filter on i_rated). "
+                       "Then sch_add_part lcsc=... places one.",
                        schema( { { "keyword", { { "type", "string" } } },
                                  { "category", { { "type", "string" },
                                                  { "description", "resistor, capacitor, inductor, or a JLCPCB category word (\"LDO\", \"MOSFET\")" } } },

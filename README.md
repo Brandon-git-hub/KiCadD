@@ -1329,6 +1329,84 @@ so a 1k resistor on the `R0603` fetched for the 10k C25804 went into the BOM as 
 library copy is now saved without it, and `sync_pcb` clears the field on footprints whose
 symbol has no LCSC number (libraries saved before).
 
+## simulate: a region of the schematic in ngspice (2026-11-21)
+
+ROADMAP phase 3, item 2. Three pieces, none linking ngspice:
+
+- **The region** (`SchSimRegion`, `src/sch/kicadd_sch_sim.cpp`): `refs`, a `sheet` (and below),
+  or `around` parts / nets through `hops`. A hop never passes ground. Through a supply it goes
+  only to two-pin parts, so an LDO gets its capacitors and not every IC on its rail. Each part
+  comes with its pins' nets, its LCSC field and user fields. Each net comes with ground / supply
+  flags and how many pins outside the region it has. A part with its own SPICE model (`Sim.*`
+  fields) gets KiCad's lines from `NETLIST_EXPORTER_SPICE` on the whole schematic: its item
+  line, the `.model` / `.subckt` blocks it uses, and the `.include`s.
+- **The parts' data** (`LcscSearch.lcsc`): rows by LCSC number with structured fields, namely
+  subcategory, value / unit, voltage rating, dielectric, tolerance, and the params table's
+  values and conditions.
+- **The models, the netlist, the run** (`mcp/sim.cpp`, in kicadd-mcp). One model per part:
+  - **R.**
+  - **C:** C_eff + ESR + ESL in series.
+    - **MLCC DC bias.** The layer thickness follows from C per volume. For a stack,
+      `d = sqrt(eps * V_active / C)`, with half the EIA body taken as active and eps_r 3000.
+      The C left is `1 / (1 + (E / E0)^1.5)`, with E = V/d, E0 = 2.5 V/µm for X5R / X7R and
+      1 V/µm for Y5V / Z5U. Class 1 keeps 100%. This gives 0402 10 µF X5R at 3.3 V 22% (makers'
+      curves: 20-30%) and 0402 100 nF X7R at 3.3 V 90%.
+    - **ESR.** 15 mΩ·(C/1 µF)^-1/2, at least 2 mΩ. Aluminium, tantalum and polymer have their
+      own typical ESR / ESL.
+    - **ESL.** The body's, by size (0402 0.4 nH, 0603 0.6 nH...).
+  - **L:** DCR in series, and a parallel C for SRF when known. The inductor's current is sensed.
+  - **Diodes / Zeners:** IS from Vf @ If, N 1.05 for Schottky and 1.8 otherwise, TT from trr,
+    BV and RS from Vz and Zzt. Cj is not in the data, so it is left out.
+  - **MOSFETs:** level 1. VTO is Vgs(th), and KP comes from Rds(on) at its Vgs condition.
+    Ciss / Coss / Crss are fixed capacitances, plus a body diode.
+  - **LDOs:** behavioural.
+    - An error amplifier with gain 1e4 and one pole, so the loop crosses at `loop_bw`
+      (100 kHz, assumed).
+    - The pass element is clamped to `[0, Vin - dropout]`.
+    - PSRR is a flat AC-coupled feed-through of the input, from the single dB number.
+    - The input draws the output current plus Iq. Rout is 10 mΩ.
+    - Fixed parts use Vout. Adjustable parts use a reference on FB, either the data's Vout
+      when it is below 1.3 V or `vref`.
+  - **Op-amps:** behavioural, per channel, found from pin names (+IN / -IN / OUT, units).
+    - A transconductance into R‖C: 100 dB, then a pole at GBW / 1e5.
+    - The current is limited to slew·C, and a clamp stops wind-up past the rails.
+    - The output is limited to the rails: 1.2 V or 20 mV (rail to rail) from them.
+    - Vos and Ib come from the data.
+
+  Nodes are the nets' SPICE names made safe. KiCad's own item lines are rewritten onto them.
+  Sources and loads are the agent's. A supply nobody drives gets the voltage its name says,
+  and that is said. Other nets crossing the edge are open (`.option rshunt=1e9`) and listed.
+  ngspice runs as a program (`-b -o log`, `wrdata` in a `.control` block, a timeout). It is
+  found from `KICADD_NGSPICE`, then next to kicadd-mcp (`ngspice/bin/ngspice_con.exe` in the
+  Windows zip: the official ngspice-42 build), then the PATH.
+  A DC bias pass comes first. For op / ac it is an op run; for tran it is the average over the
+  measurement window. It gives each MLCC's DC voltage, and from that its C_eff. Then come the
+  nominal run and, with `corners`, two more with every R / C / L at the ends of its tolerance.
+  The tolerance comes from the data, or is assumed and said. Each model line in the answer says
+  what came from the data and what is est. / assumed. `models {ref: {...}}` overrides any value
+  or parameter, or uses the agent's `.subckt` from a library file.
+
+Measured, no verdicts:
+- **op:** the voltages.
+- **tran:** over the window (default the last 20%), the average and ripple p-p; overall
+  min / max with when. A step (moved and then settled) also gets its overshoot, 10-90% rise and
+  settling time. Each probe gets a 32-character sketch line.
+- **ac:** the gain at the lowest frequency, the peak, and the -3 dB point.
+- **Currents:** each source's current and power; inductors' rms / peak with Isat / Irated; an
+  LDO's output current with its Iout.
+
+Checked against hand arithmetic (`client/sim_e2e.py`):
+- **RC:** -3 dB at 1/(2πRC) = 1.59 kHz; rise 2.2 RC = 220 µs.
+- **Follower:** -3 dB at 997 kHz for GBW 1 MHz; DC at 2.5 V + Vos.
+- **LDO:** input current 105 mA (the 100 mA load + Iq 5 mA); C_eff as the model has it.
+- **KiCad's `demos/simulation/rectifier`:** its own models, a `.include`d 1N4148 and VSIN.
+
+Not yet:
+- The board's parasitics (mounting inductance, traces; phase 3 item 3).
+- Saturation, current limits.
+- S-parameters.
+- A waveform image (the sketch line stands in).
+
 ## New symbols and footprints: lib_create_symbol, lib_create_footprint (2026-11-11)
 
 TODO 6(i)(j). Both write to a project library named `kicadd` (`kicadd.kicad_sym`,

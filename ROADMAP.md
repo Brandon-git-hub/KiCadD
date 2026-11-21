@@ -47,7 +47,19 @@ Beta 已能走完整個設計流程（電路圖 → 選料 → 擺件 → 規則
    - **影響：** 第 1 項先做上面「可行」的參數；缺的不猜數字，標成 unknown。MLCC DC Bias / ESR 沒有資料，第 2 項的 Corner Sweep 只能做容差（`Tolerance` 84%），DC Bias 要另外決定（依介質與尺寸的通用曲線，或不做）；PDN Z(f)（第 3 項）需要 ESR / ESL，同樣受限。
 
 1. **二階電氣屬性抽取：** MOSFET（Rds(on)、Qg、Ciss/Coss/Crss、Vgs(th)）、電感（DCR、SRF）、二極體（Vf、trr、Cj）、Op-Amp / LDO（GBW、SR、Dropout、PSRR）。 ✅ 零件索引新增 `params` 表（`ci/part_params.py` 讀屬性，SI 單位，附資料表的測試條件，如 Rds(on) `@10V`、Vf `@1A`；8 類 38 個參數，76k 顆、42 萬列，壓縮後多 6 MB）與 `param_names`。`lcsc_search` 每筆列出參數，`where {"rds_on": "<=20m", "vds": ">=30", "vgs_th": "1..2.5"}` 篩選（門檻由 agent 給；缺該參數的零件不列入）；舊索引會說明要 `update=true`。Cj 與 MLCC 的 ESR / DC Bias 沒有資料，不做。測試 `client/search_e2e.py`（2026-11-21）。
-2. **區域子電路 headless 模擬（`ngspice` 外部執行檔）：** 依零件、圖紙或 N-hop 圈選子電路，自動注入邊界電源與激勵；封裝寄生查表與 MLCC DC Bias / 容差 Corner Sweep；回傳結構化量測（紋波、頻寬、過衝、穩態誤差）與輕量波形圖。
+2. **區域子電路 headless 模擬（`ngspice` 外部執行檔）：** 依零件、圖紙或 N-hop 圈選子電路，自動注入邊界電源與激勵；封裝寄生查表與 MLCC DC Bias / 容差 Corner Sweep；回傳結構化量測（紋波、頻寬、過衝、穩態誤差）與輕量波形圖。 ✅ 工具 `simulate`（2026-11-21）：
+   - **圈選：** `refs`、`sheet`，或 `around` + `hops`。不穿過地；穿過電源時只帶兩腳零件，所以 LDO 會帶到自己的電容，不會帶到整條電源軌上的 IC。
+   - **模型：** 依零件索引的參數產生 R、C、L、二極體 / Zener、MOSFET（level 1）、LDO 與 Op-Amp（行為模型）；有 `Sim.*` 的零件用 KiCad 自己的模型與 `.include`。
+   - **MLCC DC Bias（決定：做估算、一律標示、可覆寫）：** 由容值 ÷ 體積推介電層厚度，再依電場 V/d 計算 `1/(1+(E/2.5 V/µm)^1.5)`（Y5V / Z5U 用 1 V/µm，C0G 不衰減）。先跑一次 DC 求每顆電容的實際偏壓再代入。0402 10 µF X5R 在 3.3 V 剩 22%，原廠曲線約 20–30%。報表寫成 `C_eff ≈ 2.24 µF (est. DC bias: 22%, layer ~0.58 µm, 5.7 V/µm)`；`dc_bias false` 關閉。
+   - **ESR / ESL 的典型值（為第 3 項鋪路）：** MLCC 的 ESR 為 15 mΩ·(C/1 µF)^-½，下限 2 mΩ；ESL 依封裝（0402 0.4 nH…）；鋁電解、鉭質、高分子各有典型值。全部標「~ / est.」。
+   - **逐顆覆寫：** `models {ref: {...}}` 可覆寫任一參數，或掛外部 `.lib` 的 subckt。
+   - **電源與負載：** 電源由 agent 給（DC / pulse / sin / ac）；沒給的電源依網路名稱猜電壓，並註明。負載可以是電流、脈衝或電阻。
+   - **分析：** `op`、`tran`、`ac`，`corners` 用公差上下限再跑兩次（公差取自資料，沒有就假設並註明）。
+   - **量測，不下判定：** 平均、漣波、min / max、階躍的過衝 / 上升 / 穩定時間、−3 dB 點、電源電流與功率、電感電流（附 Isat / Irated）、LDO 輸出電流（附 Iout），另附一行字元波形。
+   - **沒有模型的零件：** 列出並在該處斷開。
+   - **ngspice：** Windows 壓縮檔附官方 ngspice-42（BSD）。
+   - **測試：** `client/sim_e2e.py`，與手算比對。RC 的 −3 dB 為 1/(2πRC)，上升時間 2.2RC；隨耦器 −3 dB 在 GBW；LDO 輸入電流等於負載加 Iq；另跑 KiCad 的 rectifier 範例。
+   - **未做：** PCB 寄生（安裝電感，第 3 項）、飽和與限流、S 參數、波形圖片（以字元波形代替）。
 3. **局部 PDN 交流阻抗 Z(f)：** 電容二階模型加 PCB 實際迴路電感，找反諧振尖峰（需要上兩項）。
 4. **傳輸線反射與串聯端接建議。**
 

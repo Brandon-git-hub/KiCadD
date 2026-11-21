@@ -656,6 +656,9 @@ message LcscSearch
   // diodes), id -> condition in the parameter's unit, SI prefixes allowed: "<=20m", ">=30V",
   // "1u..10u" (a range), "=3.3" (within 0.1%). A part without the parameter does not match.
   map<string, string> where = 13;
+  // these parts by number ("C25804"), whatever their stock; the other filters are not used.
+  // Hits carry the structured fields below (for the simulator's models)
+  repeated string lcsc = 14;
 }
 
 message LcscHit
@@ -674,6 +677,15 @@ message LcscHit
   bool   live_smt     = 12;  // JLCPCB can assemble it (now)
   string live_note    = 13;
   string params       = 14;  // "Vds 60 V, Rds(on) 12 mΩ @10V, ..." (what the index has of it)
+  // with LcscSearch.lcsc only:
+  string subcategory  = 15;
+  double value        = 16;  // the index's value (R, C, L), SI; 0 none
+  string unit         = 17;  // "F", "Ω", "H"
+  double voltage      = 18;  // rating, V; 0 none
+  string dielectric   = 19;  // X7R, X5R, C0G
+  map<string, double> values = 20;   // param id -> SI value (the params table)
+  map<string, string> conds  = 21;   // param id -> its test condition ("10V")
+  double tolerance    = 22;  // %, 0 none
 }
 
 message LcscSearchResponse

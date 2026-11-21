@@ -98,6 +98,9 @@ try:
         check(err and "is not a number" in t, "a bad condition is refused")
         err, t = m.tool("lcsc_search", {"value": "10k", "package": "0603", "limit": 1, "live": 0})
         check(not err and not re.search(r"^    Vds", t, re.M), "a resistor has no parameter line")
+        err, t = m.tool("lcsc_search", {"category": "inductor", "where": {"i_sat": ">=1"}, "basic_only": True, "live": -1})
+        check(not err and "few basic parts have these parameters in the data (inductor Isat: none" in t,
+              "Isat with basic_only: nothing, and why (no basic inductor has Isat in the data)")
 
     if not a.no_live:
         print("[live check]")

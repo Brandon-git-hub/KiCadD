@@ -166,6 +166,8 @@ what each tool does; this skill says how to use them together.
    "dropout": "<=300m", "iout": ">=500m"}`. A part that lacks a parameter does not match
    (inductor Isat is given for about half, SRF for a quarter; diode Cj and MLCC ESR / DC bias
    never), so drop a condition rather than conclude no part exists. A wrong name lists them.
+   **Isat is given for no basic / preferred inductor**: with `where {"i_sat": ...}` leave
+   `basic_only` off (or filter on `i_rated`, given for most, and check Isat on the hits).
 2. Use one: `sch_add_part lcsc="C25804"` (symbol + footprint saved to the project's LCSC
    library), or `lcsc_fetch` first to inspect pins and pads, or put the number on an existing
    part with `sch_set_fields {"LCSC": "C25804"}`.
@@ -181,6 +183,31 @@ what each tool does; this skill says how to use them together.
 4. No suitable LCSC part: `lib_create_footprint` (chip, sot23, soic, so, qfn, qfp, header) and
    `lib_create_symbol` (a box symbol from a pin list, `footprint` set to the new one); libraries
    already on disk: `lib_register`.
+
+## Simulate a part of the circuit (ngspice)
+
+`simulate` runs a region of the schematic headless: `around ["U1"]` (an LDO with its input and
+output capacitors: a hop passes a supply only to two-pin parts), `refs`, or `sheet`; `hops` to
+go further along signal nets. Models come from the parts' data (their LCSC field: put LCSC
+numbers on first): R, C, L, diodes, MOSFETs, LDOs and op-amps (behavioural), or a part's own
+Sim.* model. Read the `models:` lines before the results: every value not from the data is
+marked **est.** / **assumed** (MLCC C_eff from DC bias, ESR / ESL, an LDO's loop bandwidth, an
+op-amp's GBW when missing), and parts without a model are listed as left out, their nets open.
+
+- Sources: `sources {"VIN": 5}` (or `"dc 5 ac 1"`, `"pulse(...)"`, `"sin(5 0.05 100k)"`);
+  supplies not given get the voltage in their name (said). Loads: `loads {"+3V3": 0.3}`
+  (amps), a pulse for a load step, or `"10 ohm"`.
+- `analysis`: `op`; `tran {stop: "2m", step?, window?}` (average, ripple p-p over the window,
+  min / max with when, a step's overshoot / rise / settling); `ac {from, to}` with an `ac 1`
+  source (gain, peak, -3 dB). Inductor and regulator currents come with Isat / Irated / Iout
+  to compare. Judge against your own targets; the tool gives no verdicts.
+- MLCCs are at their DC-biased C_eff by default (`dc_bias false`: nominal); `corners true`
+  re-runs with every R / C / L at its tolerance ends.
+- Better data than the estimate (a datasheet's ESR, a vendor model): `models {"C5": {"esr":
+  "8m", "esl": "0.5n"}, "U1": {"psrr": 55, "loop_bw": "50k"}, "U2": {"subckt": "TPS7A02",
+  "lib": "models/tps7a02.lib", "pins": ["IN", "GND", "EN", "OUT"]}}`, `exclude true` to
+  leave one out. Say which numbers were estimated when you report.
+- ESL is the part's own: the board's mounting inductance (pads, vias) is not in it yet.
 
 ## A new board (outline, layers, rules, pours)
 

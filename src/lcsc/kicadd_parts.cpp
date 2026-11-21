@@ -575,6 +575,80 @@ bool SearchParts( const kicadd::board::LcscSearch& aReq, kicadd::board::LcscSear
     // --- the second-order parameters the index has (an index from before them: none)
     std::map<std::string, PARAM_NAME> names = paramNames( db->db );
 
+    // --- these parts by number (the simulator's models): structured, any stock, no live check
+    if( aReq.lcsc_size() > 0 )
+    {
+        STMT one;
+        STMT par;
+
+        if( sqlite3_prepare_v2( db->db,
+                                "SELECT lcsc, mfr, manufacturer, package, description, basic, preferred, stock, price, "
+                                "subcategory, value, unit, voltage, dielectric, tolerance FROM parts WHERE lcsc = ?",
+                                -1, &one.st, nullptr ) != SQLITE_OK
+            || ( !names.empty()
+                 && sqlite3_prepare_v2( db->db, "SELECT name, value, cond FROM params WHERE lcsc = ?", -1, &par.st, nullptr ) != SQLITE_OK ) )
+        {
+            aError = std::string( "parts index query: " ) + sqlite3_errmsg( db->db );
+            return false;
+        }
+
+        for( const std::string& code : aReq.lcsc() )
+        {
+            std::string digits = code;
+
+            if( !digits.empty() && ( digits[0] == 'C' || digits[0] == 'c' ) )
+                digits = digits.substr( 1 );
+
+            if( digits.empty() || digits.find_first_not_of( "0123456789" ) != std::string::npos || digits.size() > 15 )
+                continue;
+
+            const int64_t n = std::stoll( digits );
+            sqlite3_reset( one.st );
+            sqlite3_bind_int64( one.st, 1, n );
+
+            if( sqlite3_step( one.st ) != SQLITE_ROW )
+                continue;
+
+            kicadd::board::LcscHit* h = aOut.add_hits();
+            h->set_lcsc( "C" + digits );
+            h->set_mfr( text( one.st, 1 ) );
+            h->set_manufacturer( text( one.st, 2 ) );
+            h->set_package( text( one.st, 3 ) );
+            h->set_description( text( one.st, 4 ) );
+            h->set_basic( sqlite3_column_int( one.st, 5 ) != 0 );
+            h->set_preferred( sqlite3_column_int( one.st, 6 ) != 0 );
+            h->set_stock( sqlite3_column_int64( one.st, 7 ) );
+            h->set_price( sqlite3_column_type( one.st, 8 ) == SQLITE_NULL ? -1 : sqlite3_column_double( one.st, 8 ) );
+            h->set_live_stock( -1 );
+            h->set_subcategory( text( one.st, 9 ) );
+            h->set_value( sqlite3_column_double( one.st, 10 ) );
+            h->set_unit( text( one.st, 11 ) );
+            h->set_voltage( sqlite3_column_double( one.st, 12 ) );
+            h->set_dielectric( text( one.st, 13 ) );
+            h->set_tolerance( sqlite3_column_double( one.st, 14 ) );
+
+            if( par.st )
+            {
+                sqlite3_reset( par.st );
+                sqlite3_bind_int64( par.st, 1, n );
+
+                while( sqlite3_step( par.st ) == SQLITE_ROW )
+                {
+                    ( *h->mutable_values() )[text( par.st, 0 )] = sqlite3_column_double( par.st, 1 );
+
+                    if( !text( par.st, 2 ).empty() )
+                        ( *h->mutable_conds() )[text( par.st, 0 )] = text( par.st, 2 );
+                }
+
+                h->set_params( partParams( db->db, n, names ) );
+            }
+        }
+
+        aOut.set_total( aOut.hits_size() );
+        aOut.set_note( note );
+        return true;
+    }
+
     // --- the query
     std::vector<std::string> where;
     std::string              sql;

@@ -9,7 +9,8 @@ Run from anywhere; paths default to this checkout's layout:
   --kicad       KiCad's source tree (../kicad); demos are its demos/
   --work        scratch root (run/all; each test gets run/all/<name>, socket paths stay short)
   --index       an unpacked parts index (run/sr/cache/kicad/10.99/kicadd/parts.db)
-  --index-gz    the packed one (run/sr/www/parts.db.gz), for search_e2e
+  --index-gz    the packed one (run/sr/www/parts.db.gz), for search_e2e and sim_e2e (with its params)
+  --ngspice     the ngspice program, for sim_e2e ($KICADD_NGSPICE, the PATH, or run/sim/ngspice/usr/bin)
   --lcsc-cache  cached EasyEDA answers ($KICADD_LCSC_CACHE or run/lcsc-cache), for m5 / lcsc
   --venv        a Python with the MCP SDK, websockets and the generated protos (.venv/bin/python)
   --live        also the checks that need the network (search_e2e's live check)
@@ -169,6 +170,8 @@ def tests(a):
         ("match", "headless", ["index"], lambda w: py + [c("match_e2e.py")] + b + k + ["--work", w, "--index", a.index]),
         ("search", "headless", ["index_gz"],
          lambda w: py + [c("search_e2e.py")] + b + d + ["--work", w, "--index", a.index_gz] + ([] if a.live else ["--no-live"])),
+        ("sim", "headless", ["index_gz", "ngspice"],
+         lambda w: py + [c("sim_e2e.py")] + b + k + ["--work", w, "--index", a.index_gz, "--ngspice", a.ngspice]),
         ("m5", "headless", ["lcsc_cache"], lambda w: py + [c("m5_e2e.py")] + b + k + ["--work", w, "--cache", a.lcsc_cache]),
         ("lcsc", "headless", ["lcsc_cache"], "lcsc"),
         ("model", "headless", ["lcsc_cache"], lambda w: py + [c("model_e2e.py")] + b + k + ["--work", w, "--cache", a.lcsc_cache]),
@@ -190,6 +193,7 @@ def missing(a, needs):
         "index_gz": (os.path.isfile(a.index_gz), "no packed parts index at " + a.index_gz),
         "lcsc_cache": (os.path.isdir(a.lcsc_cache) and bool(os.listdir(a.lcsc_cache)), "no LCSC cache at " + a.lcsc_cache),
         "venv": (os.path.isfile(a.venv), "no venv Python at " + a.venv + " (README: Python client)"),
+        "ngspice": (os.path.isfile(a.ngspice), "no ngspice at " + a.ngspice + " (--ngspice, $KICADD_NGSPICE)"),
         "xvfb": (shutil.which("Xvfb") is not None and shutil.which("xdotool") is not None, "Xvfb / xdotool not installed"),
     }
     for n in needs:
@@ -227,6 +231,8 @@ def main():
     ap.add_argument("--work", default=os.path.join(ROOT, "run", "all"))
     ap.add_argument("--index", default=os.path.join(ROOT, "run", "sr", "cache", "kicad", "10.99", "kicadd", "parts.db"))
     ap.add_argument("--index-gz", default=os.path.join(ROOT, "run", "sr", "www", "parts.db.gz"))
+    ap.add_argument("--ngspice", default=os.environ.get("KICADD_NGSPICE") or shutil.which("ngspice")
+                    or os.path.join(ROOT, "run", "sim", "ngspice", "usr", "bin", "ngspice"))
     ap.add_argument("--lcsc-cache", default=os.environ.get("KICADD_LCSC_CACHE") or os.path.join(ROOT, "run", "lcsc-cache"))
     ap.add_argument("--venv", default=os.path.join(ROOT, ".venv", "Scripts", "python.exe") if os.name == "nt"
                     else os.path.join(ROOT, ".venv", "bin", "python"))
@@ -243,7 +249,7 @@ def main():
         stack_restart(a.restart_stack)
         return 0
 
-    for k in ("build", "kicad", "work", "index", "index_gz", "lcsc_cache", "venv"):
+    for k in ("build", "kicad", "work", "index", "index_gz", "lcsc_cache", "venv", "ngspice"):
         setattr(a, k, os.path.abspath(getattr(a, k)))
     a.demos = os.path.join(a.kicad, "demos")
 

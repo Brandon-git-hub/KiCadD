@@ -83,6 +83,7 @@ set( KICADD_SCH_SRCS
     ${KICADD_DIR}/src/sch/kicadd_sch_pdf.cpp
     ${KICADD_DIR}/src/sch/kicadd_sch_annotate.cpp
     ${KICADD_DIR}/src/sch/kicadd_sch_history.cpp
+    ${KICADD_DIR}/src/sch/kicadd_sch_sim.cpp
     ${KICADD_DIR}/src/common/kicadd_libtable.cpp
     )
 
@@ -120,6 +121,7 @@ add_executable( kicadd-mcp
     ${KICADD_DIR}/mcp/mcp_server.cpp
     ${KICADD_DIR}/mcp/tools.cpp
     ${KICADD_DIR}/mcp/sch_tools.cpp
+    ${KICADD_DIR}/mcp/sim.cpp
     ${KICADD_DIR}/mcp/drc.cpp
     ${KICADD_DIR}/mcp/transports.cpp
     )

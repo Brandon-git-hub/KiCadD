@@ -283,6 +283,12 @@ jobs:
           }
           # vcpkg runtime DLLs next to the executables
           Copy-Item vcpkg_installed/x64-windows/bin/*.dll dist/bin/ -Force
+          # ngspice (BSD) for simulate: the official Windows build, run as a program (bin/ngspice/bin/ngspice_con.exe)
+          curl.exe -fsSL --retry 4 -o "$env:RUNNER_TEMP/ngspice.7z" "https://downloads.sourceforge.net/project/ngspice/ng-spice-rework/42/ngspice-42_64.7z"
+          if ($LASTEXITCODE -ne 0) { throw "ngspice download failed" }
+          7z x -y -o"$env:RUNNER_TEMP/ngspice" "$env:RUNNER_TEMP/ngspice.7z" | Out-Null
+          Copy-Item -Recurse "$env:RUNNER_TEMP/ngspice/Spice64" dist/bin/ngspice
+          if (-not (Test-Path dist/bin/ngspice/bin/ngspice_con.exe)) { throw "no ngspice_con.exe in the ngspice archive" }
           "{0:N0} MB in dist" -f ((Get-ChildItem -Recurse -File dist | Measure-Object Length -Sum).Sum / 1MB)
       - name: Smoke test
         shell: pwsh
@@ -310,6 +316,8 @@ jobs:
           python -I kicadd/client/smd_e2e.py --build dist/bin --demos kicad/demos --work "$env:RUNNER_TEMP/smd" --index "$idx/parts.db"
           if ($LASTEXITCODE -ne 0) { $fail = 1 }
           python -I kicadd/client/sch_doc_e2e.py --build dist/bin --demos kicad/demos --work "$env:RUNNER_TEMP/schdoc"
+          if ($LASTEXITCODE -ne 0) { $fail = 1 }
+          python -I kicadd/client/sim_e2e.py --build dist/bin --kicad kicad --work "$env:RUNNER_TEMP/sim" --index "$idx/parts.db" --ngspice dist/bin/ngspice/bin/ngspice_con.exe
           if ($LASTEXITCODE -ne 0) { $fail = 1 }
           exit $fail
       - name: End-to-end (tools, setup, undo history through run_all)

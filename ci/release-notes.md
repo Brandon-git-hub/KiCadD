@@ -2,7 +2,7 @@
      {{UPSTREAM}} is filled from patches/UPSTREAM_BASE; build info and SHA-256 are appended. -->
 KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修剪版 Windows x64 build，加上 Agent（MCP）協同設計。
 
-> ⚠️ Beta（pre-release）。已能走完整個設計流程，功能仍會持續加入。由 GitHub Actions 自動建置；33 個端到端測試在 Linux 上全部通過（含桌面版），Windows CI 跑 smoke test 與 headless 的出廠、貼片、電路圖文件、工具、設定、undo 歷史測試；桌面版在 Windows 上只有人工試用。
+> ⚠️ Beta（pre-release）。已能走完整個設計流程，功能仍會持續加入。由 GitHub Actions 自動建置；34 個端到端測試在 Linux 上全部通過（含桌面版），Windows CI 跑 smoke test 與 headless 的出廠、貼片、電路圖文件、模擬、工具、設定、undo 歷史測試；桌面版在 Windows 上只有人工試用。
 
 ## 使用前須知
 完整的使用說明（安裝、接上 Agent、skill、存檔格式、做得到 / 做不到）：[docs/GUIDE.md](https://github.com/Brandon-git-hub/KiCadD/blob/main/docs/GUIDE.md)。
@@ -14,9 +14,19 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 - **目前不支援：** 差分對與等長佈線、全板自動佈線（`route` 只代替重複的手動佈線）、電路圖自動排版、組裝圖、STEP 匯出（3D 模型只有 VRML）、ODB++ / IPC-2581 / DXF、MCP resources / prompts。
 
 ## 這一版（beta.6）
-工具數不變（59 個）。
+新增 1 個工具（共 60 個）。壓縮檔裡多附了 ngspice（BSD 授權，`bin\ngspice\`）。
 
 **新功能**
+- **`simulate`：局部電路的 headless 模擬（ROADMAP 階段三第 2 項）。** 圈選範圍有三種：`refs`、`sheet`，或 `around` 某顆零件 / 網路往外 `hops` 步。電源網路只帶進兩腳零件，所以 `around ["U1"]` 會拿到 LDO 和它的輸入、輸出電容，不會把整片板子拉進來。
+  - **模型依零件的 LCSC 參數產生：** R、C、L（含 DCR、SRF）、二極體與 Zener、MOSFET（level 1，含 Ciss / Coss / Crss 與本體二極體）、LDO（Vout 或 FB 參考、Dropout、Iq、PSRR）、Op-Amp（GBW、Slew、Vos、Ib、軌到軌）。零件已有 `Sim.*` 模型就直接用 KiCad 的。
+  - **MLCC 的 DC Bias：** 依介質、封裝體積、容值和實際偏壓估算。先由「容值 ÷ 體積」推出介電層厚度，再用電場 V/d 算剩下多少容值，所以同樣是 0402，10 µF 比 0.1 µF 掉得多。報表一律寫成例如「`10 µF MLCC X5R 0402 6.3 V @ 3.3 V: C_eff ≈ 2.24 µF (est. DC bias: 22%, ...)`」。
+  - **ESR / ESL：** 用封裝與容值的典型值，標「~」與「est.」。
+  - **其他估計值：** LDO 的迴路頻寬、資料裡缺的 GBW 等也會標「assumed」。
+  - **覆寫：** `models` 逐顆覆寫任何參數，或掛外部 `.lib` 的 subckt。
+  - **電源、負載與分析：** 電源 `sources` 可給 DC、pulse、sin、ac；沒給的電源依網路名稱猜電壓（例如 +3V3），並註明。負載 `loads` 可給電流、脈衝或電阻。分析有 `op`、`tran`、`ac`，`corners` 用公差上下限再跑兩次。
+  - **量測：** 平均、漣波 p-p、min / max 與發生時間、階躍的過衝 / 10–90% 上升 / 穩定時間、−3 dB 點、電源電流與功率、電感峰值 / 有效值電流（附 Isat / Irated）、LDO 輸出電流（附 Iout），另附一行字元波形。只量測、不下判定。
+  - **沒有模型的零件：** 列為 left out，它的網路在那裡斷開，並說明。
+- **`lcsc_search`：** 用 `where` 篩 Isat 又勾 `basic_only` 時，結果會是空的（資料裡沒有任何 basic / preferred 電感填了 Isat）。現在會說明原因，並建議改用 Irated。
 - **`lcsc_search` 依電氣參數找料（ROADMAP 階段三第 1 項）：** 零件索引加入 MOSFET、LDO、Op-Amp、電感、二極體的二階參數（Rds(on)、Vgs(th)、Qg、Ciss/Coss/Crss、Dropout、Iq、PSRR、GBW、Slew、Vos、DCR、Isat、SRF、Vf、trr、Vz… 共 38 項，附資料表上的測試條件，例如 `Rds(on) 17 mΩ @10V`）。每筆結果列出這些參數；`where` 用門檻篩選，例如 `{"rds_on": "<=20m", "vds": ">=30", "vgs_th": "1..2.5"}`。缺該參數的零件不會列入：電感的 Isat 約一半有、SRF 約四分之一有，二極體的 Cj 與 MLCC 的 ESR / DC Bias 都沒有資料（填寫率見 [docs/PARAM_COVERAGE.md](https://github.com/Brandon-git-hub/KiCadD/blob/main/docs/PARAM_COVERAGE.md)）。需要新版零件索引：舊索引用 `where` 會提示 `update=true`。
 
 **變更**

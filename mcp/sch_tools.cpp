@@ -8,6 +8,7 @@
 
 #include "tools.h"
 #include "ipc_client.h"
+#include "sim.h"
 
 #include <algorithm>
 #include <chrono>
@@ -2595,6 +2596,9 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
 
                 return TOOL_RESULT{ t + "\n", false };
             } } );
+
+    aTools.push_back( { "simulate", SimulateDescription(), SimulateSchema(),
+            [&aIpc]( const json& a ) { return Simulate( aIpc, a ); } } );
 
     aTools.push_back( { "sch_annotate",
             "Number the parts (the editor's Annotate). Parts without a number (\"R?\") get the first "

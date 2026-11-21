@@ -604,6 +604,7 @@ KICADD_HANDLER_SCH::KICADD_HANDLER_SCH( std::shared_ptr<SCH_CONTEXT> aContext ) 
     registerHandler<RegisterLibrary, RegisterLibraryResponse>( &KICADD_HANDLER_SCH::handleRegisterLibrary );
     registerHandler<SchRender, SchRenderResponse>( &KICADD_HANDLER_SCH::handleRender );
     registerHandler<SchExportPdf, SchExportPdfResponse>( &KICADD_HANDLER_SCH::handleExportPdf );
+    registerHandler<SchSimRegion, SchSimRegionResponse>( &KICADD_HANDLER_SCH::handleSimRegion );
     registerHandler<SchAnnotate, SchAnnotateResponse>( &KICADD_HANDLER_SCH::handleAnnotate );
 }
 
