@@ -225,6 +225,7 @@ message SchMove
   double dx                = 5;   // or relative, mm
   double dy                = 6;
   optional int32 rotation  = 7;   // new rotation: 0, 90, 180, 270
+  bool   allow_rewire      = 8;   // a move that changes a pin's net is refused (and undone) unless set
 }
 
 message SchPoint

@@ -79,7 +79,7 @@ const std::map<std::string, std::string> BRIEFS = {
     { "sch_disconnect", "Take pins off their nets." },
     { "sch_add_sheet", "Add a hierarchical sheet (a new .kicad_sch)." },
     { "sch_delete", "Delete parts, sheets or wires from the schematic." },
-    { "sch_move", "Move / rotate a schematic part; its connections go with it." },
+    { "sch_move", "Move / rotate a schematic part; its connections go with it, and a move that would change a pin's net is refused." },
     { "sch_wire", "Draw a wire through points (for readable schematics; sch_connect needs none)." },
     { "sch_set_fields", "Change schematic parts' fields (value, footprint, LCSC, DNP ...) in one edit." },
     { "sch_annotate", "Number the parts (fill R? or renumber in position order)." },

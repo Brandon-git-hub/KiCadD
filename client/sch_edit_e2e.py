@@ -271,6 +271,50 @@ def main():
         err, t = mcp.tool("sch_part", {"ref": c1})
         check(t == before_c1, "three sch_undo: C1 as it was")
 
+        print("[sch_move / sch_add_part onto another net]")
+        start = netlist(mcp)
+        placed = []
+        for x in (228.6, 254.0):
+            err, t = mcp.tool("sch_add_part", {"lib_id": "Device:R", "value": "1k", "footprint": FP, "x": x, "y": 152.4})
+            placed.append(re.match(r"added (\S+) ", t).group(1))
+            check(not err and "placed on existing connections" not in t, "a part put down on nothing: no warning")
+        ra, rb = placed
+        mcp.tool("sch_connect", {"nets": {"NA1": [f"{ra}.1"], "NA2": [f"{ra}.2"], "NB1": [f"{rb}.1"]}})
+        dense = netlist(mcp)
+        err, t = mcp.tool("sch_move", {"ref": rb, "x": 228.6, "y": 152.4})
+        print("      ", t.splitlines()[0][:160])
+        check(err and "move refused" in t and f"{rb}.1: /NB1 ->" in t and f"{rb}.2: (none) -> /NA2" in t,
+              "a move onto another part's pins is refused, with the per-pin diff")
+        now = netlist(mcp)
+        if now != dense:
+            print("       before", sorted(dense.items()), "\n       after ", sorted(now.items()))
+        check(now == dense, "refused: the nets as before")
+        p = pins_of(mcp, rb)
+        check(abs(p["1"][0] - 254.0) < 0.01, f"refused: {rb} where it was {p['1'][:2]}")
+        err, t = mcp.tool("sch_undo")
+        check(not err and "undid: connect" in t, "the refused move is not in the history: " + t.splitlines()[0][:60])
+        mcp.tool("sch_redo")
+        err, t = mcp.tool("sch_move", {"ref": rb, "x": 228.6, "y": 152.4, "allow_rewire": True})
+        check(not err and "rewired" in t and f"{rb}.2: (none) -> /NA2" in t, "allow_rewire: done, the diff said")
+        check(netlist(mcp) != dense, "allow_rewire: the nets changed")
+        mcp.tool("sch_undo")
+        check(netlist(mcp) == dense, "undo it")
+        err, t = mcp.tool("sch_move", {"ref": rb, "dx": 25.4})
+        check(not err and "rewired" not in t and netlist(mcp) == dense, "a move onto nothing goes through")
+        err, t = mcp.tool("sch_wire", {"points": [[228.6, 148.59], [279.4, 148.59]]})
+        print("      ", " ".join(t.split())[:200])
+        check(not err and "joins named nets" in t and ("/NA1 -> /NB1" in t or "/NB1 -> /NA1" in t),
+              f"sch_wire from {ra}.1 (NA1) to {rb}.1 (NB1): warned")
+        mcp.tool("sch_undo")
+        check(netlist(mcp) == dense, "undo the wire")
+        err, t = mcp.tool("sch_add_part", {"lib_id": "Device:R", "value": "2k", "footprint": FP, "x": 228.6, "y": 152.4})
+        print("      ", " ".join(t.split())[:200])
+        check(not err and "placed on existing connections" in t and "-> /NA1" in t,
+              "sch_add_part onto another part's pins warns")
+        for _ in range(5):   # the add, the dx move, the connect, the two adds
+            mcp.tool("sch_undo")
+        check(netlist(mcp) == start, "undone: the nets as before")
+
         print("[run_erc]")
         err, t = mcp.tool("run_erc", {"warnings": True})
         print("      ", " | ".join(t.splitlines()[:3])[:200])

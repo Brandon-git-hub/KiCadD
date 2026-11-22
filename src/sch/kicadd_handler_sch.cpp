@@ -898,6 +898,104 @@ std::string KICADD_HANDLER_SCH::pinNet( SCH_ITEM* aPin, const SCH_SHEET_PATH& aS
 }
 
 
+std::map<std::string, std::string> KICADD_HANDLER_SCH::pinNets()
+{
+    std::map<std::string, std::string> out;
+
+    for( const SCH_SHEET_PATH& sheet : schematic()->Hierarchy() )
+    {
+        for( SCH_ITEM* item : sheet.LastScreen()->Items().OfType( SCH_SYMBOL_T ) )
+        {
+            auto* symbol = static_cast<SCH_SYMBOL*>( item );
+
+            if( symbol->IsPower() )
+                continue;
+
+            std::string ref = str( symbol->GetRef( &sheet ) );
+
+            // not annotated yet ("R?"): told apart by sheet and place
+            if( ref.empty() || ref.back() == '?' )
+                ref += "@" + str( sheet.PathHumanReadable() ) + std::to_string( symbol->GetPosition().x ) + ","
+                       + std::to_string( symbol->GetPosition().y );
+
+            for( SCH_PIN* pin : symbol->GetPins( &sheet ) )
+                out[ref + "." + str( pin->GetNumber() )] = pinNet( pin, sheet );
+        }
+    }
+
+    return out;
+}
+
+
+std::vector<std::string> KICADD_HANDLER_SCH::netChanges( const std::map<std::string, std::string>& aBefore,
+                                                         const std::map<std::string, std::string>& aAfter, bool aNew )
+{
+    std::vector<std::string> out;
+
+    auto shown = []( const std::string& aKey )
+    {
+        const size_t at = aKey.find( '@' );
+        const size_t dot = aKey.rfind( '.' );
+        return at == std::string::npos ? aKey : aKey.substr( 0, at ) + aKey.substr( dot );
+    };
+
+    auto net = []( const std::string& aNet ) { return aNet.empty() ? std::string( "(none)" ) : aNet; };
+
+    for( const auto& [key, now] : aAfter )
+    {
+        auto was = aBefore.find( key );
+
+        if( was == aBefore.end() )
+        {
+            if( aNew && !now.empty() )
+                out.push_back( shown( key ) + ": (new) -> " + now );
+        }
+        else if( was->second != now )
+        {
+            out.push_back( shown( key ) + ": " + net( was->second ) + " -> " + net( now ) );
+        }
+    }
+
+    for( const auto& [key, was] : aBefore )
+    {
+        if( !aAfter.count( key ) && !was.empty() )
+            out.push_back( shown( key ) + ": " + was + " -> (gone)" );
+    }
+
+    return out;
+}
+
+
+void KICADD_HANDLER_SCH::dropLastEdit( std::vector<kicadd::SCH_EDIT>&& aRedo )
+{
+    if( !m_undo.empty() )   // the caller checked that pushRecorded() recorded it
+    {
+        kicadd::SCH_EDIT   edit = std::move( m_undo.back() );
+        SchHistoryResponse ignored;
+        m_undo.pop_back();
+        applyEdit( edit, true, ignored );
+    }
+
+    m_redo = std::move( aRedo );
+    rebuildConnectivity();
+}
+
+
+// "a: x -> y; b: ..." with at most aMax listed
+static std::string listChanges( const std::vector<std::string>& aChanges, size_t aMax = 12 )
+{
+    std::string out;
+
+    for( size_t i = 0; i < aChanges.size() && i < aMax; ++i )
+        out += ( i ? "; " : "" ) + aChanges[i];
+
+    if( aChanges.size() > aMax )
+        out += "; ... " + std::to_string( aChanges.size() - aMax ) + " more";
+
+    return out;
+}
+
+
 void KICADD_HANDLER_SCH::packSymbol( SCH_SYMBOL* aSymbol, const SCH_SHEET_PATH& aSheet, bool aWithPins,
                                      SchSymbol& aOut )
 {
@@ -1264,6 +1362,14 @@ HANDLER_RESULT<SchPartResponse> KICADD_HANDLER_SCH::handleAddPart( const HANDLER
 
     symbol->AutoplaceFields( screen, AUTOPLACE_AUTO );
 
+    std::map<std::string, std::string> netsBefore;
+
+    if( req.has_x() && req.has_y() )
+    {
+        rebuildConnectivity();
+        netsBefore = pinNets();
+    }
+
     SCH_SYMBOL* placed = symbol.release();
     kicadd::KICADD_SCH_COMMIT commit( m_context->GetToolManager() );
     commit.Add( placed, screen );
@@ -1272,6 +1378,17 @@ HANDLER_RESULT<SchPartResponse> KICADD_HANDLER_SCH::handleAddPart( const HANDLER
 
     rebuildConnectivity();
     announce( wxS( "Agent: " ) + what );
+
+    // put down at x / y, its pins may land on others' pins, wires or labels
+    if( req.has_x() && req.has_y() )
+    {
+        std::vector<std::string> landed = netChanges( netsBefore, pinNets(), true );
+
+        if( !landed.empty() )
+            note += std::string( note.empty() ? "" : "; " ) + "warning: placed on existing connections, "
+                    + std::to_string( landed.size() ) + " pin net(s) set: " + listChanges( landed )
+                    + " (sch_undo, or sch_move it elsewhere, if not meant)";
+    }
 
     // nothing else checks a Footprint field until sync_pcb
     if( std::string fp = str( placed->GetField( FIELD_T::FOOTPRINT )->GetText() ); !fp.empty() )
@@ -2468,6 +2585,10 @@ HANDLER_RESULT<SchPartResponse> KICADD_HANDLER_SCH::handleMove( const HANDLER_CO
 
     rebuildConnectivity();
 
+    // KiCad connects by coordinates: a pin, stub end or label put down on someone else's wire or
+    // label joins that net without a word. Compared after the move.
+    const std::map<std::string, std::string> netsBefore = pinNets();
+
     kicadd::KICADD_SCH_COMMIT commit( m_context->GetToolManager() );
     std::string note;
     int         dragged = 0;
@@ -2684,9 +2805,33 @@ HANDLER_RESULT<SchPartResponse> KICADD_HANDLER_SCH::handleMove( const HANDLER_CO
         note += std::string( note.empty() ? "" : "; " ) + std::to_string( dragged )
                 + " wire(s) dragged along (they may now run diagonally: redraw with sch_wire)";
 
-    wxString what = wxS( "move " ) + wx( req.ref() );
-    pushRecorded( commit, what );
+    wxString                      what = wxS( "move " ) + wx( req.ref() );
+    std::vector<kicadd::SCH_EDIT> redo = std::move( m_redo );
+    m_redo.clear();
+    const bool recorded = pushRecorded( commit, what );
     rebuildConnectivity();
+
+    if( !recorded )
+        m_redo = std::move( redo );
+
+    const std::vector<std::string> rewired = netChanges( netsBefore, pinNets(), false );
+
+    if( !rewired.empty() && !req.allow_rewire() )
+    {
+        if( recorded )
+            dropLastEdit( std::move( redo ) );
+
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
+                                          "move refused (nothing changed): it would change "
+                                                  + std::to_string( rewired.size() ) + " pin net(s): "
+                                                  + listChanges( rewired )
+                                                  + ". Pick another spot, or allow_rewire=true to do it anyway" ) );
+    }
+
+    if( !rewired.empty() )
+        note += std::string( note.empty() ? "" : "; " ) + "rewired " + std::to_string( rewired.size() )
+                + " pin net(s): " + listChanges( rewired );
+
     announce( wxS( "Agent: " ) + what );
 
     SchPartResponse out;
@@ -2743,6 +2888,7 @@ HANDLER_RESULT<SchWireResponse> KICADD_HANDLER_SCH::handleWire( const HANDLER_CO
         return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "the points are all the same (on the 1.27 mm grid)" ) );
 
     rebuildConnectivity();
+    const std::map<std::string, std::string> netsBefore = pinNets();
 
     // Where existing things connect: a new segment running over one of these points is split
     // there, so it connects (KiCad connects wire ends, not wire middles).
@@ -2850,6 +2996,27 @@ HANDLER_RESULT<SchWireResponse> KICADD_HANDLER_SCH::handleWire( const HANDLER_CO
 
     std::string net = pinNet( wires.front(), *sheet );
     out.set_net( net );
+
+    // joining a pin to a net is what a wire is for; a named net losing its name to another is
+    // two nets shorted (a point on the wrong wire or label)
+    {
+        std::vector<std::string> joined;
+
+        for( const std::string& change : netChanges( netsBefore, pinNets(), false ) )
+        {
+            // "U6.3: /USB5_N -> /USB6_P": was on a named net
+            const size_t      colon = change.find( ": " );
+            const std::string was = change.substr( colon + 2, change.find( " -> " ) - colon - 2 );
+
+            if( was != "(none)" && was.rfind( "Net-(", 0 ) != 0 )
+                joined.push_back( change );
+        }
+
+        if( !joined.empty() )
+            note += std::string( note.empty() ? "" : "; " ) + "warning: the wire joins named nets, "
+                    + std::to_string( joined.size() ) + " pin(s) changed: " + listChanges( joined )
+                    + " (sch_undo if not meant)";
+    }
 
     if( !net.empty() )
     {
@@ -3770,7 +3937,7 @@ KICADD_HANDLER_SCH::handleCreateSymbol( const HANDLER_CONTEXT<SchCreateSymbol>& 
 }
 
 
-void KICADD_HANDLER_SCH::pushRecorded( kicadd::KICADD_SCH_COMMIT& aCommit, const wxString& aWhat )
+bool KICADD_HANDLER_SCH::pushRecorded( kicadd::KICADD_SCH_COMMIT& aCommit, const wxString& aWhat )
 {
     aCommit.Push( wxS( "Agent: " ) + aWhat );
 
@@ -3778,7 +3945,7 @@ void KICADD_HANDLER_SCH::pushRecorded( kicadd::KICADD_SCH_COMMIT& aCommit, const
     edit.root = schematic()->Root().m_Uuid;
 
     if( edit.changes.empty() )
-        return;
+        return false;
 
     // edits of a schematic that was closed since are no use
     if( !m_undo.empty() && m_undo.back().root != edit.root )
@@ -3790,6 +3957,8 @@ void KICADD_HANDLER_SCH::pushRecorded( kicadd::KICADD_SCH_COMMIT& aCommit, const
     // the agent's history is for its last steps, not a full record
     if( m_undo.size() > 50 )
         m_undo.erase( m_undo.begin() );
+
+    return true;
 }
 
 
@@ -3802,11 +3971,15 @@ void KICADD_HANDLER_SCH::applyEdit( const kicadd::SCH_EDIT& aEdit, bool aUndo, S
     for( const SCH_SHEET_PATH& sheet : schematic()->Hierarchy() )
         screens.insert( sheet.LastScreen() );
 
-    auto live = []( SCH_SCREEN* aScreen, const KIID& aId ) -> SCH_ITEM*
+    // taken off by this commit: no longer there for what comes after it (sch_move takes a label
+    // off and puts a copy with the same id back; undoing it removes the one and gives the other)
+    std::set<SCH_ITEM*> taking;
+
+    auto live = [&taking]( SCH_SCREEN* aScreen, const KIID& aId ) -> SCH_ITEM*
     {
         for( SCH_ITEM* item : aScreen->Items() )
         {
-            if( item->m_Uuid == aId )
+            if( item->m_Uuid == aId && !taking.count( item ) )
                 return item;
         }
 
@@ -3849,6 +4022,7 @@ void KICADD_HANDLER_SCH::applyEdit( const kicadd::SCH_EDIT& aEdit, bool aUndo, S
             {
                 sheets |= now->Type() == SCH_SHEET_T;
                 commit.Remove( now, c.screen );
+                taking.insert( now );
                 items++;
             }
         }

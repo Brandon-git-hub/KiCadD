@@ -237,6 +237,42 @@ def stickhub(a, work):
         server.stop()
 
 
+def qfn(a, work):
+    """route_short's vias not under a QFN's body; a net name not on the board refused."""
+    print("[route_short around a QFN]")
+    import tiny_board
+    from m5_e2e import binaries
+    tiny = os.path.join(work, "qfn")
+    os.makedirs(tiny)
+    ring = [(str(i + 1), at, size, "") for i, (at, size) in enumerate(
+        [((-4, -1.5), (0.8, 0.4)), ((-4, 1.5), (0.8, 0.4)), ((4, -1.5), (0.8, 0.4)), ((4, 1.5), (0.8, 0.4)),
+         ((-1.5, -4), (0.4, 0.8)), ((1.5, -4), (0.4, 0.8)), ((-1.5, 4), (0.4, 0.8)), ((1.5, 4), (0.4, 0.8))])]
+    tiny_board.write(os.path.join(tiny, "qfn.kicad_pcb"), [
+        ("U9", (100, 100), "F", ring + [("9", (0, 0), (2, 2), "GND")]),
+        ("R1", (88, 100), "F", [("1", (0, 0), (0.6, 0.6), "SIG")]),     # top
+        ("R2", (112, 100), "B", [("1", (0, 0), (0.6, 0.6), "SIG")]),    # bottom: one via on the way
+    ])
+    _, kicadd_mcp, env = binaries(a.build)
+    sock = os.path.join(work, "qfn.sock")
+    server = Server(a.build, sock, os.path.join(tiny, "qfn.kicad_pcb"), env, os.path.join(work, "qfn.log"))
+    check(server.start(), "api-server up on the QFN board")
+    mcp = Mcp([kicadd_mcp, "--socket", sock, "--stdio"], env)
+    try:
+        err, t = mcp.tool("route_short", {"nets": ["SIG"]})
+        print("      ", t.splitlines()[0][:120] if t else "")
+        err2, n = mcp.tool("query_net", {"net": "SIG"})
+        vias = [(float(x), float(y)) for x, y in re.findall(r"^VIA \S+ \[SIG\] @(-?[\d.]+),(-?[\d.]+)", n, re.M)]
+        print("       vias", vias)
+        check(not err and vias and all(abs(x - 100) > 4.4 or abs(y - 100) > 4.4 for x, y in vias),
+              "routed with a via, none under U9's body (inside its pads)")
+        err, t = mcp.tool("route_short", {"nets": ["SIGG"], "dry_run": True})
+        check(err and "no net SIGG" in t and "did you mean SIG" in t, "a net not on the board: refused, with the close names: "
+              + t.strip().splitlines()[0][:90])
+    finally:
+        mcp.close()
+        server.stop()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--build", required=True)
@@ -250,6 +286,7 @@ def main():
     os.makedirs(work)
     pic(a, work)
     stickhub(a, work)
+    qfn(a, work)
 
     print("\nRESULT:", "PASS" if not FAILS else f"FAIL ({len(FAILS)})")
     return 1 if FAILS else 0

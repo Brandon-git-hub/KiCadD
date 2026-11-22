@@ -167,6 +167,19 @@ private:
     /// Net name of a placed pin after a connectivity rebuild ("" when on no net).
     std::string pinNet( SCH_ITEM* aPin, const SCH_SHEET_PATH& aSheet );
 
+    /// Every part pin's net ("REF.PIN" -> net, "" when on none), after a connectivity rebuild:
+    /// taken before and after an edit to see what it connected or cut.
+    std::map<std::string, std::string> pinNets();
+
+    /// What changed between two pinNets(): "U6.3: (none) -> USB5_N" lines. aNew: pins that
+    /// were not there before (a part just added) are listed when they landed on a net.
+    static std::vector<std::string> netChanges( const std::map<std::string, std::string>& aBefore,
+                                                const std::map<std::string, std::string>& aAfter, bool aNew );
+
+    /// Take back the edit pushRecorded() just recorded (a refused move), leaving aRedo as the
+    /// redo list (the one pushRecorded() cleared).
+    void dropLastEdit( std::vector<kicadd::SCH_EDIT>&& aRedo );
+
     void packSymbol( SCH_SYMBOL* aSymbol, const SCH_SHEET_PATH& aSheet, bool aWithPins,
                      kicadd::schematic::SchSymbol& aOut );
 
@@ -181,8 +194,9 @@ private:
     /// Name the agent's edit in the status bar and repaint (desktop).
     void announce( const wxString& aWhat ) const;
 
-    /// Push an agent edit and record it in the agent's history (sch_undo / sch_redo).
-    void pushRecorded( kicadd::KICADD_SCH_COMMIT& aCommit, const wxString& aWhat );
+    /// Push an agent edit and record it in the agent's history (sch_undo / sch_redo); false
+    /// when it changed nothing (not recorded).
+    bool pushRecorded( kicadd::KICADD_SCH_COMMIT& aCommit, const wxString& aWhat );
 
     /// Apply a history entry backwards (undo) or forwards (redo) in a new commit.
     void applyEdit( const kicadd::SCH_EDIT& aEdit, bool aUndo, kicadd::schematic::SchHistoryResponse& aOut );

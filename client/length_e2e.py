@@ -150,6 +150,43 @@ def main():
         m.close()
         srv.stop()
 
+    # ---- a USB-C's doubled pads (A6 / B6, A7 / B7): no false pair order; move_footprints says it
+    print("[usb-c pair order]")
+    import tiny_board
+    tiny = os.path.join(work, "tiny")
+    os.makedirs(tiny)
+    two = lambda p, n: [("1", (-0.5 if p else 0.5, 0), (0.4, 0.6), "D_P"), ("2", (0.5 if p else -0.5, 0), (0.4, 0.6), "D_N")]
+    tiny_board.write(os.path.join(tiny, "tiny.kicad_pcb"), [
+        # in a row, as on a USB-C: B7 A6 A7 B6 = N P N P (the first P is A6, the first N is B7)
+        ("J1", (100, 100), "F", [("B7", (-0.75, 0), (0.3, 1), "D_N"), ("A6", (-0.25, 0), (0.3, 1), "D_P"),
+                                 ("A7", (0.25, 0), (0.3, 1), "D_N"), ("B6", (0.75, 0), (0.3, 1), "D_P")]),
+        ("U1", (100, 110), "F", two(True, False)),     # P left, N right
+        ("U3", (100, 120), "F", two(False, True)),     # P right, N left: swapped against U1
+    ])
+    _, kicadd_mcp, env = binaries(a.build)
+    sock = os.path.join(work, "tiny.sock")
+    srv = Server(a.build, sock, os.path.join(tiny, "tiny.kicad_pcb"), env, os.path.join(work, "tiny.log"))
+    check(srv.start(), "api-server up with the tiny board")
+    m = Mcp([kicadd_mcp, "--socket", sock, "--stdio"], env)
+    try:
+        _, t = m.tool("audit")
+        po = [ln for ln in section(t, "diff_pair") if "pair order" in ln]
+        print("      ", po[0][:220] if po else t[:200])
+        check(po and "1 of 1 pair(s)" in po[0] and po[0].endswith("D_P / D_N: U1 - U3"),
+              "only U1 - U3 swapped: J1's doubled pads (the pad toward each part) are not")
+        err, t = m.tool("move_footprints", {"refs": ["U3"], "rotate": 180})
+        check(not err and "pair order" not in t, "U3 turned: in order, nothing said")
+        err, t = m.tool("move_footprints", {"parts": {"U1": {"rotation": 180}}})
+        note = next((ln for ln in t.splitlines() if "pair order" in ln), "")
+        print("      ", note[:200])
+        check(not err and note.endswith("D_P / D_N: U1 - U3"),
+              "U1 turned: the move says its pair is swapped against U3 now (J1's N P N P row fits either order)")
+        _, t = m.tool("audit")
+        check("1 of 1 pair(s)" in t, "and audit agrees")
+    finally:
+        m.close()
+        srv.stop()
+
     # ---- vme-wren: a pair against its class
     print("[vme-wren]")
     srv, m = board(a, work, "vme-wren", "vme-wren.kicad_pcb")

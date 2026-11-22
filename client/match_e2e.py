@@ -34,6 +34,30 @@ def lcsc_of(mcp):
     return out
 
 
+def lcsc_library(proj):
+    """Lc:C, Device:C with the fields an LCSC symbol has (C1525, a 100 nF 0402): in the tables."""
+    text = open(os.path.join(proj, "Device.kicad_sym"), encoding="utf-8").read()
+    start = text.index('\t(symbol "C"\n')
+    depth, i = 0, start
+    while True:
+        depth += {"(": 1, ")": -1}.get(text[i], 0)
+        i += 1
+        if depth == 0 and text[i - 1] == ")":
+            break
+    sym = text[start:i]
+    hidden = '(at 0 0 0)(effects (font (size 1.27 1.27)) (hide yes))'
+    extra = "".join(f'\n\t\t(property "{k}" "{v}" {hidden})' for k, v in (
+        ("LCSC", "C1525"), ("Supplier Part", "C1525"), ("Manufacturer Part", "CL05B104KO5NNNC")))
+    sym = re.sub(r'\(property "Description" "[^"]*"', '(property "Description" "CL05B104KO5NNNC (LCSC C1525), 100nF"', sym, 1)
+    sym = sym.replace('\t\t(property "Reference"', extra.lstrip("\n") + '\n\t\t(property "Reference"', 1)
+    head = text[:text.index("\t(symbol ")]
+    open(os.path.join(proj, "Lc.kicad_sym"), "w", encoding="utf-8").write(head + sym + "\n)\n")
+    table = os.path.join(proj, "sym-lib-table")
+    t = open(table).read().rstrip()
+    assert t.endswith(")")
+    open(table, "w").write(t[:-1] + '  (lib (name "Lc")(type "KiCad")(uri "${KIPRJMOD}/Lc.kicad_sym")(options "")(descr ""))\n)\n')
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--build", required=True)
@@ -47,6 +71,7 @@ def main():
         shutil.rmtree(work)
     os.makedirs(work)
     proj = make_project(a.kicad, work)
+    lcsc_library(proj)
 
     sock = os.path.join(work, "s.sock")
     env = dict(os.environ, KICAD_RUN_FROM_BUILD_DIR="1", KICADD_LCSC_OFFLINE="1",
@@ -133,6 +158,32 @@ def main():
         err2, p = mcp.tool("sch_part", {"ref": "R1"})
         check("field(s) of the old part rewritten" in t and "Supplier Part=C1," not in p and "OLD-PART" not in p,
               "apply: Supplier / Manufacturer Part of the old part rewritten: " + next((l for l in p.splitlines() if "Supplier" in l), p[:100])[:120])
+        print("[a symbol with an LCSC number placed with another value]")
+        err, t = mcp.tool("sch_add_part", {"lib_id": "Lc:C", "ref": "C20", "value": "4.7uF", "x": 25.4, "y": 152.4})
+        check(not err and "(C1525)" in t.splitlines()[0], "Lc:C placed: " + t.splitlines()[0][:80])
+        check("warning: its LCSC number C1525 is 100 nF" in t, "the value is not the LCSC part's: warned")
+        err, t = mcp.tool("batch", {"steps": [{"tool": "sch_add_part", "args": {"lib_id": "Lc:C", "ref": "C21", "value": "4.7uF 10V X5R",
+                                                                                 "x": 38.1, "y": 152.4}},
+                                               {"tool": "sch_add_part", "args": {"lib_id": "Lc:C", "ref": "C22", "value": "100nF",
+                                                                                 "x": 50.8, "y": 152.4}}]})
+        print("       " + t.replace("\n", "\n       ")[:600])
+        check(not err and t.count("warning: its LCSC number C1525") == 1, "in a batch too (the step's warning line is kept), "
+              "and not for the 100nF one")
+        print("[sch_set_fields LCSC: the old part's fields go with it]")
+        err, t = mcp.tool("sch_set_fields", {"parts": {"C20": {"LCSC": r12}}})
+        err2, p = mcp.tool("sch_part", {"ref": "C20"})
+        fields = p.splitlines()[1] if len(p.splitlines()) > 1 else ""
+        print("       " + fields[:200])
+        check(not err and "field(s) of the old part rewritten" in t, "said: " + t.replace("\n", " ")[:120])
+        check(f"Supplier Part={r12}" in fields and "CL05B104KO5NNNC" not in fields and "C1525" not in fields,
+              "Supplier Part is the new number; Manufacturer Part and Description no longer the old part's")
+        err, t = mcp.tool("sch_set_fields", {"parts": {"C21": {"LCSC": None}}})
+        err2, p = mcp.tool("sch_part", {"ref": "C21"})
+        check(not err and "C1525" not in p and "CL05B104KO5NNNC" not in p, "LCSC removed: the old part's fields cleared too")
+        err, t = mcp.tool("sch_set_fields", {"parts": {"C22": {"LCSC": r12, "Manufacturer Part": "MINE"}}})
+        err2, p = mcp.tool("sch_part", {"ref": "C22"})
+        check("Manufacturer Part=MINE" in p and f"Supplier Part={r12}" in p, "a field set in the same call is kept")
+
         err, t = mcp.tool("lcsc_match", {"refs": ["R99"]})
         check(err and "not in the schematic: R99" in t, "an unknown ref is refused")
 

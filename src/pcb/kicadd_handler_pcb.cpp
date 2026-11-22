@@ -10,6 +10,7 @@
 #include "lcsc/kicadd_lcsc.h"
 
 #include <algorithm>
+#include <numeric>
 #include <chrono>
 #include <cstdio>
 #include <climits>
@@ -48,6 +49,7 @@
 #include <connectivity/connectivity_algo.h>
 #include <ratsnest/ratsnest_data.h>
 #include <netlist_reader/board_netlist_updater.h>
+#include "pcb/kicadd_lengths.h"
 #include "pcb/kicadd_autoplace.h"
 #include "pcb/kicadd_fab.h"
 #include "pcb/kicadd_picture.h"
@@ -1499,6 +1501,9 @@ KICADD_HANDLER_PCB::handleMoveDelta( const HANDLER_CONTEXT<MoveDelta>& aCtx )
                         },
                         wxString::FromUTF8( "Agent: " + label ), out );
 
+    if( changes )
+        notePairOrder( targets, out );
+
     if( !targets.empty() && changes )
     {
         for( const FOOTPRINT* fp : targets )
@@ -1578,6 +1583,8 @@ HANDLER_RESULT<MoveResponse> KICADD_HANDLER_PCB::movePoses( const MoveDelta& aRe
                             fp->SetPosition( to );
                         },
                         wxString::FromUTF8( "Agent: " + label ), out );
+
+    notePairOrder( targets, out );
 
     for( const FOOTPRINT* fp : targets )
         entry.after.push_back( stateOf( fp, false, true ) );
@@ -2702,6 +2709,125 @@ bool throughAll( const BOARD_CONNECTED_ITEM* aItem )
     return ( aItem->GetLayerSet() & LSET::AllCuMask() ).count() > 1;
 }
 
+
+/// Up to five of the board's net names close to aName (case, a sheet path, a typo, a prefix).
+std::string similarNets( BOARD* aBoard, const std::string& aName )
+{
+    auto key = []( std::string s )
+    {
+        s = s.substr( s.rfind( '/' ) == std::string::npos ? 0 : s.rfind( '/' ) + 1 );
+
+        for( char& c : s )
+            c = (char) std::toupper( (unsigned char) c );
+
+        return s;
+    };
+
+    auto distance = []( const std::string& a, const std::string& b )
+    {
+        std::vector<size_t> row( b.size() + 1 );
+        std::iota( row.begin(), row.end(), 0 );
+
+        for( size_t i = 1; i <= a.size(); ++i )
+        {
+            size_t diag = row[0];
+            row[0] = i;
+
+            for( size_t j = 1; j <= b.size(); ++j )
+            {
+                size_t up = row[j];
+                row[j] = std::min( { row[j] + 1, row[j - 1] + 1, diag + ( a[i - 1] != b[j - 1] ) } );
+                diag = up;
+            }
+        }
+
+        return row[b.size()];
+    };
+
+    const std::string                          want = key( aName );
+    std::vector<std::pair<size_t, std::string>> found;
+
+    for( NETINFO_ITEM* n : aBoard->GetNetInfo() )
+    {
+        if( n->GetNetCode() <= 0 )
+            continue;
+
+        const std::string name = n->GetNetname().ToStdString();
+        const std::string k = key( name );
+        size_t            d = distance( want, k );
+
+        if( d <= 2 || ( want.size() >= 3 && ( k.find( want ) != std::string::npos || want.find( k ) != std::string::npos ) ) )
+            found.push_back( { d, name } );
+    }
+
+    std::sort( found.begin(), found.end() );
+    std::string out;
+
+    for( size_t i = 0; i < found.size() && i < 5; ++i )
+        out += ( i ? ", " : "" ) + found[i].second;
+
+    return out;
+}
+
+
+/// Where a via must not go: under a multi-pin SMD IC (8 or more pads, or a pad inside the
+/// others: an exposed / thermal pad), the box of its pads.
+std::vector<BOX2I> icBodies( BOARD* aBoard )
+{
+    std::vector<BOX2I> out;
+
+    for( FOOTPRINT* fp : aBoard->Footprints() )
+    {
+        const auto& pads = fp->Pads();
+
+        if( pads.size() < 3 || std::any_of( pads.begin(), pads.end(),
+                                            []( const PAD* p ) { return p->GetAttribute() == PAD_ATTRIB::PTH; } ) )
+            continue;
+
+        bool exposed = false;
+
+        for( const PAD* p : pads )
+        {
+            BOX2I others;
+            bool  any = false;
+
+            for( const PAD* q : pads )
+            {
+                if( q != p && q->GetNumber() != p->GetNumber() )
+                {
+                    if( !any )
+                        others = BOX2I( q->GetPosition() );
+                    else
+                        others.Merge( q->GetPosition() );
+
+                    any = true;
+                }
+            }
+
+            const VECTOR2I c = p->GetPosition();
+            exposed |= any && c.x > others.GetLeft() && c.x < others.GetRight() && c.y > others.GetTop()
+                       && c.y < others.GetBottom();
+        }
+
+        if( pads.size() < 8 && !exposed )
+            continue;
+
+        BOX2I box;
+
+        for( size_t i = 0; i < pads.size(); ++i )
+        {
+            if( i == 0 )
+                box = pads[i]->GetBoundingBox();
+            else
+                box.Merge( pads[i]->GetBoundingBox() );
+        }
+
+        out.push_back( box );
+    }
+
+    return out;
+}
+
 } // namespace
 
 
@@ -2765,10 +2891,11 @@ HANDLER_RESULT<RouteResponse> KICADD_HANDLER_PCB::handleRouteShort( const HANDLE
 
         if( !net )
         {
-            RouteResult* r = out.add_results();
-            r->set_net( name );
-            r->set_error( "no such net" );
-            continue;
+            const std::string close = similarNets( b, name );
+            return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
+                                              "no net " + name + " on the board"
+                                                      + ( close.empty() ? std::string( " (board_summary lists them)" )
+                                                                        : ": did you mean " + close + "?" ) ) );
         }
 
         onlyNets.insert( net->GetNetCode() );
@@ -2787,6 +2914,7 @@ HANDLER_RESULT<RouteResponse> KICADD_HANDLER_PCB::handleRouteShort( const HANDLE
 
     std::vector<CONN>                  conns;
     std::shared_ptr<CONNECTIVITY_DATA> conn = b->GetConnectivity();
+    std::optional<std::vector<BOX2I>>  bodies;   // made when a via is first needed
 
     for( int code : nets )
     {
@@ -2937,10 +3065,26 @@ HANDLER_RESULT<RouteResponse> KICADD_HANDLER_PCB::handleRouteShort( const HANDLE
 
             const double offsets[] = { 0, 0.8e6, -0.8e6, 1.6e6, -1.6e6 };
             kicadd::route::RESULT firstFail = res;
-            int                   tries = 0;
+            int                   tries = 0, underIc = 0;
+
+            if( !bodies )
+                bodies = icBodies( b );
 
             auto tryStops = [&]( const std::vector<kicadd::route::STOP>& aStops )
             {
+                // a via under a QFN's body lands on its thermal pad or between it and the pads
+                for( const kicadd::route::STOP& st : aStops )
+                {
+                    for( const BOX2I& body : *bodies )
+                    {
+                        if( body.Contains( st.pos ) )
+                        {
+                            underIc++;
+                            return false;
+                        }
+                    }
+                }
+
                 r.toItem = c.z;
                 r.to = c.pz;
                 r.layer = la;
@@ -2997,7 +3141,9 @@ HANDLER_RESULT<RouteResponse> KICADD_HANDLER_PCB::handleRouteShort( const HANDLE
             if( !done )
             {
                 res = firstFail;
-                res.error += " (and with vias: " + std::to_string( tries ) + " spot(s) tried along the way, none fits)";
+                res.error += " (and with vias: " + std::to_string( tries ) + " spot(s) tried along the way, none fits"
+                             + ( underIc ? "; " + std::to_string( underIc ) + " under an IC's body left out" : std::string() )
+                             + ")";
             }
         }
 
@@ -4160,6 +4306,24 @@ KICADD_HANDLER_PCB::handleFetchLcsc( const HANDLER_CONTEXT<FetchLcsc>& aCtx )
     }
 
     return out;
+}
+
+
+void KICADD_HANDLER_PCB::notePairOrder( const std::vector<FOOTPRINT*>& aMoved, MoveResponse& aOut )
+{
+    if( aMoved.empty() )
+        return;
+
+    std::map<int, int> pairs = kicadd::DiffPairNets( *board() );
+
+    if( pairs.empty() )
+        return;
+
+    std::set<const FOOTPRINT*> moved( aMoved.begin(), aMoved.end() );
+    kicadd::PAIR_ORDER         order = kicadd::CheckPairOrder( *board(), pairs, &moved );
+
+    if( order.crossed > 0 )
+        aOut.add_notes( order.line );
 }
 
 
@@ -6430,6 +6594,8 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::finishAutoPlace( AUTOPLACE
                             fp->SetPosition( p.pos );
                         },
                         wxString::FromUTF8( "Agent: " + label ), *out.mutable_edit() );
+
+    notePairOrder( targets, *out.mutable_edit() );
 
     if( !targets.empty() )
     {

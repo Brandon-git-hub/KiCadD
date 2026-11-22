@@ -427,6 +427,10 @@ private:
     /// zone fills are of the other state.
     void noteStaleFills( const HISTORY_ENTRY& aEntry, kicadd::board::MoveResponse& aOut ) const;
 
+    /// After moving parts: a note when a diff pair now has P and N swapped between one of
+    /// aMoved and another of its parts (a bottom connector mirrors its pins). Nothing when fine.
+    void notePairOrder( const std::vector<FOOTPRINT*>& aMoved, kicadd::board::MoveResponse& aOut );
+
     void fillHistory( kicadd::board::HistoryResponse& aOut ) const;
 
     static constexpr size_t MAX_HISTORY = 200;

@@ -657,12 +657,13 @@ Arguments:
 
 ## sch_move
 
-Move / rotate a schematic part; its connections go with it.
+Move / rotate a schematic part; its connections go with it, and a move that would change a pin's net is refused.
 
-Move and/or rotate a placed part on the schematic: x/y (mm, the new anchor) or dx/dy, rotation 0/90/180/270. Its wire stubs, net labels, power symbols and no-connect flags go with it (re-drawn on the side each pin now faces), so its connections stay; other wires ending on its pins are dragged along. unit picks one unit of a multi-unit part (needed with x/y; dx/dy moves all units). Returns the part's pins at their new place.
+Move and/or rotate a placed part on the schematic: x/y (mm, the new anchor) or dx/dy, rotation 0/90/180/270. Its wire stubs, net labels, power symbols and no-connect flags go with it (re-drawn on the side each pin now faces), so its connections stay; other wires ending on its pins are dragged along. unit picks one unit of a multi-unit part (needed with x/y; dx/dy moves all units). A move that would change any pin's net (a pin, stub or label landing on another net) is refused and undone, with the per-pin diff, unless allow_rewire. Returns the part's pins at their new place.
 
 Arguments:
 
+- `allow_rewire` (boolean): do it even if pin nets change (default false)
 - `dx` (number)
 - `dy` (number)
 - `ref` (string)
@@ -963,7 +964,7 @@ Arguments:
 
 Run several tools in one call (repeated or routine work).
 
-Run several tools in one call, in order: steps [{"tool": "move_footprints", "args": {...}}, ...], repeated repeat times (default 1). Each step answers with its first line (show="full": everything; "last": everything of the last step only). Stops at the first error unless stop_on_error=false. At most 500 calls. For repeated or routine work (the same edit on many parts, edit-check loops); a step's answer cannot feed the next one's arguments.
+Run several tools in one call, in order: steps [{"tool": "move_footprints", "args": {...}}, ...], repeated repeat times (default 1). Each step answers with its first line and its warnings (show="full": everything; "last": everything of the last step only). Stops at the first error unless stop_on_error=false. At most 500 calls. For repeated or routine work (the same edit on many parts, edit-check loops); a step's answer cannot feed the next one's arguments.
 
 Arguments:
 

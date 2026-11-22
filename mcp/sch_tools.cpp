@@ -103,7 +103,14 @@ std::string symbolLine( const ks::SchSymbol& s )
         t += "\n  fields:";
 
         for( const auto& [k, v] : fields )
-            t += " " + k + "=" + ( v.size() > 60 ? v.substr( 0, 57 ) + "..." : v ) + ";";
+        {
+            size_t cut = 57;
+
+            while( v.size() > 60 && cut > 0 && ( (unsigned char) v[cut] & 0xC0 ) == 0x80 )
+                cut--;   // not inside a UTF-8 character ("10KΩ")
+
+            t += " " + k + "=" + ( v.size() > 60 ? v.substr( 0, cut ) + "..." : v ) + ";";
+        }
 
         t.pop_back();
     }
@@ -264,6 +271,54 @@ std::string chipSize( const std::string& aFootprint )
 
 /// lcsc_match: parts without an LCSC number, grouped by value + footprint, matched in the parts
 /// index (resistors, capacitors, inductors, ferrite beads, LEDs in chip packages)
+// A part's fields that still describe the part it was (LCSC aOld) once its LCSC number is aNew
+// ("" when cleared), into aOut: Supplier Part -> aNew, Manufacturer Part -> aMfr (cleared when
+// that is not known), a Description / Datasheet naming the old number -> aDescription / cleared.
+// aKeep: names set in the same edit, left alone. Returns how many were rewritten.
+int rewriteOldPart( const std::map<std::string, std::string>& aFields, const std::string& aOld,
+                    const std::string& aNew, const std::string& aMfr, const std::string& aDescription,
+                    google::protobuf::Map<std::string, std::string>& aOut, const std::set<std::string>& aKeep = {} )
+{
+    int n = 0;
+
+    for( const auto& [name, value] : aFields )
+    {
+        if( aKeep.count( name ) )
+            continue;
+
+        const std::string low = lowerOf( name );
+        const bool        moved = !aOld.empty() && aOld != aNew;
+        std::string       next;
+        bool              touch = false;
+
+        if( low == "supplier part" || low == "lcsc part" || low == "lcsc part #" || low == "jlcpcb part" )
+        {
+            next = aNew;
+            touch = value != next;
+        }
+        else if( low == "manufacturer part" || low == "mpn" || low == "mfr part" )
+        {
+            next = aMfr;
+            touch = value != next && ( !aMfr.empty() || moved );
+        }
+        else if( moved && value.find( aOld ) != std::string::npos )
+        {
+            // a description or datasheet naming the old number: the new part's, or none
+            next = low == "description" ? aDescription : std::string();
+            touch = true;
+        }
+
+        if( touch )
+        {
+            aOut[name] = next;
+            n++;
+        }
+    }
+
+    return n;
+}
+
+
 TOOL_RESULT lcscMatch( IPC_CLIENT& aIpc, const json& aArgs )
 {
     ks::GetSchSummary sreq;
@@ -750,37 +805,7 @@ TOOL_RESULT lcscMatch( IPC_CLIENT& aIpc, const json& aArgs )
             ( *e->mutable_fields() )["LCSC"] = g.lcsc;
 
             // the fields that still describe the part it was copied from (or the number it had)
-            const std::string old = oldLcsc[r];
-
-            for( const auto& [name, value] : fieldsOf[r] )
-            {
-                std::string low = lowerOf( name );
-                std::string next;
-                bool        touch = false;
-
-                if( low == "supplier part" || low == "lcsc part" || low == "lcsc part #" || low == "jlcpcb part" )
-                {
-                    next = g.lcsc;
-                    touch = value != next;
-                }
-                else if( low == "manufacturer part" || low == "mpn" || low == "mfr part" )
-                {
-                    next = g.mfr;
-                    touch = !g.mfr.empty() && value != next;
-                }
-                else if( !old.empty() && old != g.lcsc && value.find( old ) != std::string::npos )
-                {
-                    // a description or datasheet naming the old number: the new part's, or none
-                    next = low == "description" ? g.description : std::string();
-                    touch = true;
-                }
-
-                if( touch )
-                {
-                    ( *e->mutable_fields() )[name] = next;
-                    rewritten++;
-                }
-            }
+            rewritten += rewriteOldPart( fieldsOf[r], oldLcsc[r], g.lcsc, g.mfr, g.description, *e->mutable_fields() );
         }
 
         if( rewritten )
@@ -1724,6 +1749,9 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                 if( r.kept_current() )
                     t += "\n  force=true applies it anyway";
 
+                for( const std::string& note : r.edit().notes() )
+                    t += "\n  " + note;
+
                 if( r.moved() > 0 && ( r.track_obstacles() > 0 || r.zones() > 0 ) )
                 {
                     t += "\n  the moved parts left";
@@ -1765,18 +1793,23 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "rotation 0/90/180/270. Its wire stubs, net labels, power symbols and no-connect flags go "
             "with it (re-drawn on the side each pin now faces), so its connections stay; other wires "
             "ending on its pins are dragged along. unit picks one unit of a multi-unit part (needed "
-            "with x/y; dx/dy moves all units). Returns the part's pins at their new place.",
+            "with x/y; dx/dy moves all units). A move that would change any pin's net (a pin, stub "
+            "or label landing on another net) is refused and undone, with the per-pin diff, unless "
+            "allow_rewire. Returns the part's pins at their new place.",
             obj( { { "ref", { { "type", "string" } } },
                    { "x", { { "type", "number" } } },
                    { "y", { { "type", "number" } } },
                    { "dx", { { "type", "number" } } },
                    { "dy", { { "type", "number" } } },
                    { "rotation", { { "type", "integer" }, { "enum", { 0, 90, 180, 270 } } } },
-                   { "unit", { { "type", "integer" } } } },
+                   { "unit", { { "type", "integer" } } },
+                   { "allow_rewire", { { "type", "boolean" },
+                                       { "description", "do it even if pin nets change (default false)" } } } },
                  { "ref" } ),
             [&aIpc]( const json& a )
             {
                 ks::SchMove req;
+                req.set_allow_rewire( a.value( "allow_rewire", false ) );
                 req.set_ref( str( a, "ref" ) );
                 req.set_unit( a.value( "unit", 0 ) );
 
@@ -2734,13 +2767,70 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                 if( req.parts().empty() )
                     return fail( "give parts {ref: {field: text}} or refs [...] with set {...}" );
 
+                // a new (or no) LCSC number: the fields still naming the old part go with it, as
+                // lcsc_match does (unless set in this same call)
+                int rewritten = 0;
+
+                for( ks::SchFieldEdit& e : *req.mutable_parts() )
+                {
+                    const bool cleared = std::find( e.remove().begin(), e.remove().end(), "LCSC" ) != e.remove().end();
+
+                    if( !e.fields().count( "LCSC" ) && !cleared )
+                        continue;
+
+                    ks::SchGetPart     q;
+                    ks::SchPartResponse part;
+                    std::string        qerr;
+                    q.set_ref( e.ref() );
+
+                    if( !aIpc.Call( q, part, qerr ) )
+                        continue;   // said by the edit itself
+
+                    const std::string now = cleared ? std::string() : e.fields().at( "LCSC" );
+
+                    if( now == part.symbol().lcsc() )
+                        continue;
+
+                    std::string mfr, description;
+
+                    if( !now.empty() )
+                    {
+                        kb::LcscSearch         one;
+                        kb::LcscSearchResponse lr;
+                        std::string            serr;
+                        one.add_lcsc( now );
+                        one.set_live( -1 );
+
+                        if( aIpc.Call( one, lr, serr ) && lr.hits_size() )
+                        {
+                            mfr = lr.hits( 0 ).mfr();
+                            description = lr.hits( 0 ).description();
+                        }
+                    }
+
+                    std::set<std::string> keep( e.remove().begin(), e.remove().end() );
+
+                    for( const auto& [name, v] : e.fields() )
+                        keep.insert( name );
+
+                    std::map<std::string, std::string> fields( part.symbol().fields().begin(), part.symbol().fields().end() );
+                    rewritten += rewriteOldPart( fields, part.symbol().lcsc(), now, mfr, description,
+                                                 *e.mutable_fields(), keep );
+                }
+
                 ks::SchConnectResponse r;
                 std::string            err;
 
                 if( !aIpc.Call( req, r, err ) )
                     return fail( err );
 
-                return connectResult( r, "part(s) changed" );
+                TOOL_RESULT res = connectResult( r, "part(s) changed" );
+
+                if( rewritten && !res.isError )
+                    res.text += "\n  " + std::to_string( rewritten ) + " field(s) of the old part rewritten with the "
+                                "LCSC number (Supplier / Manufacturer Part, a Description or Datasheet naming the old one)";
+
+                return res;
             } } );
 
     aTools.push_back( { "sch_render",

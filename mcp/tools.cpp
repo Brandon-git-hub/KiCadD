@@ -3532,7 +3532,7 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
     tools.push_back( { "batch",
                        "Run several tools in one call, in order: steps [{\"tool\": \"move_footprints\", "
                        "\"args\": {...}}, ...], repeated repeat times (default 1). Each step answers with its "
-                       "first line (show=\"full\": everything; \"last\": everything of the last step only). "
+                       "first line and its warnings (show=\"full\": everything; \"last\": everything of the last step only). "
                        "Stops at the first error unless stop_on_error=false. At most 500 calls. For repeated "
                        "or routine work (the same edit on many parts, edit-check loops); a step's answer "
                        "cannot feed the next one's arguments.",
@@ -3597,7 +3597,26 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                                        text.pop_back();
 
                                    if( show != "full" )
-                                       text = text.substr( 0, text.find( '\n' ) );
+                                   {
+                                       // the first line, and any warning further down (a value that
+                                       // is not the part's, a part put down on other nets)
+                                       std::string first = text.substr( 0, text.find( '\n' ) );
+                                       size_t      at = first.size();
+
+                                       while( at < text.size() )
+                                       {
+                                           size_t      end = text.find( '\n', at + 1 );
+                                           std::string line = text.substr( at + 1, end == std::string::npos ? std::string::npos
+                                                                                                           : end - at - 1 );
+
+                                           if( line.find( "warning:" ) != std::string::npos )
+                                               first += "\n    " + line.substr( line.find_first_not_of( ' ' ) );
+
+                                           at = end == std::string::npos ? text.size() : end;
+                                       }
+
+                                       text = first;
+                                   }
 
                                    body += "[" + tag + "] " + resolved[i]->name + ( res.isError ? " ERROR: " : ": " )
                                            + text + "\n";

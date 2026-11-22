@@ -393,6 +393,159 @@ struct PAIR
 } // namespace
 
 
+std::map<int, int> DiffPairNets( BOARD& aBoard )
+{
+    std::map<std::string, int> codes;
+    std::map<int, int>         out;
+
+    for( NETINFO_ITEM* n : aBoard.GetNetInfo() )
+    {
+        if( n->GetNetCode() > 0 )
+            codes[str( n->GetNetname() )] = n->GetNetCode();
+    }
+
+    for( const auto& [name, code] : codes )
+    {
+        const std::string other = netnames::PartnerName( name );
+        auto              it = other.empty() ? codes.end() : codes.find( other );
+
+        if( it != codes.end() && !netnames::NegativeMember( name ) )
+            out[code] = it->second;
+    }
+
+    return out;
+}
+
+
+PAIR_ORDER CheckPairOrder( BOARD& aBoard, const std::map<int, int>& aPairs, const std::set<const FOOTPRINT*>* aOnly )
+{
+    // Between two parts the straight lines P-P and N-N crossing means a crossing to route: a via
+    // pair, or the part turned, moved or on the other side (a part on the bottom is mirrored).
+    // A part may have a net on more than one pad (a USB-C's A6 / B6 and A7 / B7): toward each
+    // other part, the pad of each net nearest that part's pads of the same net, the ones a track
+    // would take.
+    PAIR_ORDER               out;
+    std::vector<std::string> crossed;
+
+    auto centroid = []( const std::vector<const PAD*>& aPads )
+    {
+        VECTOR2D sum;
+
+        for( const PAD* p : aPads )
+            sum += VECTOR2D( p->GetPosition() );
+
+        return sum / (double) aPads.size();
+    };
+
+    auto nearest = []( const std::vector<const PAD*>& aPads, const VECTOR2D& aTo )
+    {
+        const PAD* best = aPads.front();
+
+        for( const PAD* p : aPads )
+        {
+            if( ( VECTOR2D( p->GetPosition() ) - aTo ).EuclideanNorm()
+                < ( VECTOR2D( best->GetPosition() ) - aTo ).EuclideanNorm() )
+                best = p;
+        }
+
+        return best->GetPosition();
+    };
+
+    for( auto [pc, nc] : aPairs )
+    {
+        struct ENDS
+        {
+            std::vector<const PAD*> p, n;
+        };
+
+        std::map<const FOOTPRINT*, ENDS> ends;
+
+        for( FOOTPRINT* fp : aBoard.Footprints() )
+        {
+            for( PAD* pad : fp->Pads() )
+            {
+                if( pad->GetNetCode() == pc )
+                    ends[fp].p.push_back( pad );
+                else if( pad->GetNetCode() == nc )
+                    ends[fp].n.push_back( pad );
+            }
+        }
+
+        std::vector<std::pair<const FOOTPRINT*, const ENDS*>> both;
+        bool                                                  mine = !aOnly;
+
+        for( const auto& [fp, e] : ends )
+        {
+            if( !e.p.empty() && !e.n.empty() )
+            {
+                both.push_back( { fp, &e } );
+                mine |= aOnly && aOnly->count( fp );
+            }
+        }
+
+        if( both.size() < 2 || !mine )
+            continue;
+
+        out.checked++;
+        std::string which;
+
+        for( size_t a = 0; a < both.size(); ++a )
+        {
+            for( size_t b = a + 1; b < both.size(); ++b )
+            {
+                if( aOnly && !aOnly->count( both[a].first ) && !aOnly->count( both[b].first ) )
+                    continue;
+
+                const ENDS& ea = *both[a].second;
+                const ENDS& eb = *both[b].second;
+                SEG         ps( nearest( ea.p, centroid( eb.p ) ), nearest( eb.p, centroid( ea.p ) ) );
+                SEG         ns( nearest( ea.n, centroid( eb.n ) ), nearest( eb.n, centroid( ea.n ) ) );
+
+                if( OPT_VECTOR2I x = ps.Intersect( ns ) )
+                {
+                    auto name = [&]( const FOOTPRINT* f )
+                    {
+                        return str( f->GetReference() ) + ( f->IsFlipped() ? " (bottom)" : "" );
+                    };
+
+                    which += ( which.empty() ? "" : ", " ) + name( both[a].first ) + " - " + name( both[b].first );
+
+                    if( !out.at )
+                        out.at = *x;
+                }
+            }
+        }
+
+        if( !which.empty() )
+            crossed.push_back( str( aBoard.FindNet( pc )->GetNetname() ) + " / " + str( aBoard.FindNet( nc )->GetNetname() )
+                               + ": " + which );
+    }
+
+    out.crossed = (int) crossed.size();
+
+    if( out.checked == 0 )
+        return out;
+
+    if( crossed.empty() )
+    {
+        out.line = "pair order: P and N in the same order at both ends of all " + std::to_string( out.checked )
+                   + " pair(s) between parts";
+        return out;
+    }
+
+    std::string list;
+
+    for( size_t i = 0; i < crossed.size() && i < 6; ++i )
+        list += ( i ? "; " : "" ) + crossed[i];
+
+    out.line = "pair order: " + std::to_string( crossed.size() ) + " of " + std::to_string( out.checked )
+               + " pair(s) have P and N swapped between two of their parts (the straight lines P-P and "
+                 "N-N cross: a crossing to route, a via pair; or turn, move or flip a part; a part on the "
+                 "bottom is mirrored): " + list + ( crossed.size() > 6 ? "; ..." : "" );
+    return out;
+}
+
+
 void CheckLengths( BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& aOut )
 {
     const size_t limit = aReq.length_limit() > 0 ? aReq.length_limit() : 10;
@@ -456,102 +609,11 @@ void CheckLengths( BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& aO
     std::string             pairOrder;   // said after the diff pair header
     std::optional<VECTOR2I> pairOrderAt;
 
-    // ---- pair order: between two parts the pair's P and N must not swap sides (the straight
-    // lines P-P and N-N crossing means a crossing to route: a via pair, or the part turned,
-    // moved or on the other side; a part on the bottom is mirrored). Routed or not.
+    // ---- pair order: between two parts the pair's P and N must not swap sides (routed or not)
     {
-        int                      checked = 0;
-        std::vector<std::string> crossed;
-        std::optional<VECTOR2I>  firstAt;
-
-        for( auto [pc, nc] : partner )
-        {
-            // per part: its P pad and its N pad (the first of each)
-            std::map<const FOOTPRINT*, std::pair<const PAD*, const PAD*>> ends;
-
-            for( FOOTPRINT* fp : aBoard.Footprints() )
-            {
-                for( PAD* pad : fp->Pads() )
-                {
-                    if( pad->GetNetCode() == pc && !ends[fp].first )
-                        ends[fp].first = pad;
-                    else if( pad->GetNetCode() == nc && !ends[fp].second )
-                        ends[fp].second = pad;
-                }
-            }
-
-            std::vector<std::pair<const FOOTPRINT*, std::pair<const PAD*, const PAD*>>> both;
-
-            for( const auto& [fp, pn] : ends )
-            {
-                if( pn.first && pn.second )
-                    both.push_back( { fp, pn } );
-            }
-
-            if( both.size() < 2 )
-                continue;
-
-            checked++;
-            std::string which;
-
-            for( size_t a = 0; a < both.size(); ++a )
-            {
-                for( size_t b = a + 1; b < both.size(); ++b )
-                {
-                    SEG ps( both[a].second.first->GetPosition(), both[b].second.first->GetPosition() );
-                    SEG ns( both[a].second.second->GetPosition(), both[b].second.second->GetPosition() );
-
-                    if( OPT_VECTOR2I x = ps.Intersect( ns ) )
-                    {
-                        auto name = [&]( const FOOTPRINT* f )
-                        {
-                            return str( f->GetReference() ) + ( f->IsFlipped() ? " (bottom)" : "" );
-                        };
-
-                        which += ( which.empty() ? "" : ", " ) + name( both[a].first ) + " - " + name( both[b].first );
-
-                        if( !firstAt )
-                            firstAt = *x;
-                    }
-                }
-            }
-
-            if( !which.empty() && crossed.size() < 12 )
-            {
-                crossed.push_back( str( aBoard.FindNet( pc )->GetNetname() ) + " / " + str( aBoard.FindNet( nc )->GetNetname() )
-                                   + ": " + which );
-            }
-            else if( !which.empty() )
-            {
-                crossed.push_back( "" );
-            }
-        }
-
-        if( checked > 0 )
-        {
-            if( crossed.empty() )
-            {
-                pairOrder = "pair order: P and N in the same order at both ends of all " + std::to_string( checked )
-                            + " pair(s) between parts";
-            }
-            else
-            {
-                std::string list;
-                size_t      shown = 0;
-
-                for( const std::string& c : crossed )
-                {
-                    if( !c.empty() && shown++ < 6 )
-                        list += ( list.empty() ? "" : "; " ) + c;
-                }
-
-                pairOrderAt = firstAt;
-                pairOrder = ( "pair order: " + std::to_string( crossed.size() ) + " of " + std::to_string( checked )
-                              + " pair(s) have P and N swapped between two of their parts (the straight lines P-P and "
-                                "N-N cross: a crossing to route, a via pair; or turn, move or flip a part; a part on the "
-                                "bottom is mirrored): " + list + ( crossed.size() > 6 ? "; ..." : "" ) );
-            }
-        }
+        PAIR_ORDER order = CheckPairOrder( aBoard, partner );
+        pairOrder = order.line;
+        pairOrderAt = order.at;
     }
 
     std::set<std::string> usedGlobs;

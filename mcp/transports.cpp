@@ -62,7 +62,7 @@ int RunStdio( MCP_SERVER& aServer )
 
         if( reply )
         {
-            std::cout << reply->dump() << '\n';
+            std::cout << reply->dump( -1, ' ', false, json::error_handler_t::replace ) << '\n';
             std::cout.flush();
         }
     }
@@ -281,7 +281,7 @@ RESPONSE handle( MCP_SERVER& aServer, const HTTP_OPTIONS& aOpt, const REQUEST& a
     if( !reply )
         return makeResponse( aReq, http::status::accepted );
 
-    RESPONSE res = makeResponse( aReq, http::status::ok, reply->dump() );
+    RESPONSE res = makeResponse( aReq, http::status::ok, reply->dump( -1, ' ', false, json::error_handler_t::replace ) );
 
     if( isInitialize )
         res.set( "Mcp-Session-Id", newSessionId() );
