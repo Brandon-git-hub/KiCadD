@@ -3176,6 +3176,13 @@ HANDLER_RESULT<RouteResponse> KICADD_HANDLER_PCB::handleRouteShort( const HANDLE
                         if( std::any_of( bodies->begin(), bodies->end(), [&]( const BOX2I& bb ) { return bb.Contains( p ); } ) )
                             continue;
 
+                        // not on the ends themselves: a via on its own pad would pass the test
+                        // (same net) but is a via-in-pad, and on the pad's centre no route at all
+                        if( ( VECTOR2D( p ) - VECTOR2D( c.pa ) ).EuclideanNorm() < 0.6e6
+                            || ( VECTOR2D( p ) - VECTOR2D( c.pz ) ).EuclideanNorm() < 0.6e6
+                            || c.a->HitTest( p, 0 ) || c.z->HitTest( p, 0 ) )
+                            continue;
+
                         if( session.ViaFits( p, c.a ) )
                             free.push_back( p );
                     }

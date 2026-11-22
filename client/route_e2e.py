@@ -323,6 +323,12 @@ def detour(a, work):
         print("       vias", vias)
         check(not err and len(vias) == 1 and not (90.5 < vias[0][0] < 109.5 and 97 < vias[0][1] < 103),
               "routed through a via beside the blocked line (none fits on it)")
+        # a via waypoint on the start pad's centre: a zero-length piece crashed the router (Run 5)
+        mcp.tool("undo")
+        err, t = mcp.tool("route", {"from": "R1.1", "to": "R2.1", "waypoints": [[88, 100, "B.Cu"]]})
+        check(err and "on the route's start" in t, "a via on the start itself: refused, no crash: " + t.splitlines()[0][:100])
+        err, t = mcp.tool("board_summary")
+        check(not err, "the server still answers")
         err, t = mcp.tool("route", {"from": "R3.1", "to": "R4.1", "layer": "F.Cu"})
         print("      ", " | ".join(t.splitlines()[:2])[:200] if t else "")
         check(not err and "not kept" not in t and "routed" in t, "route squeezed along the board edge: kept (edge measured from the line's middle)")

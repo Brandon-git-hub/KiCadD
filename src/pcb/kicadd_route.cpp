@@ -466,6 +466,24 @@ RESULT SESSION::Route( const REQUEST& aReq )
     PCB_LAYER_ID      last = layer;
     std::vector<STOP> stops = aReq.stops;
 
+    // A stop on the start, the end or the stop before: a zero-length piece, which the router
+    // does not survive (a via there crashes in VIA::PushoutForce)
+    {
+        VECTOR2I before = aReq.from;
+
+        for( const STOP& st : stops )
+        {
+            if( ( st.pos - before ).EuclideanNorm() < 10000 || ( st.pos - aReq.to ).EuclideanNorm() < 10000 )
+            {
+                out.error = "a waypoint / via at " + mm( st.pos.x ) + "," + mm( st.pos.y )
+                            + " is on the route's start, end or the waypoint before: leave it out or move it";
+                return out;
+            }
+
+            before = st.pos;
+        }
+    }
+
     for( STOP& s : stops )
     {
         if( s.otherSide )

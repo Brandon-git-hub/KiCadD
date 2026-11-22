@@ -423,6 +423,9 @@ existing copper, net class widths and vias, clearance / keepout / edge rules). Y
 to connect and where to change layer; the user routes what needs judgement (buses, diff pairs,
 length matching, dense escapes).
 
+0. Save as you go: the board lives in the server's memory until `save_board`. Save right
+   after placement and every few routing calls (and `sch_save` after schematic work), so a
+   server restart or crash loses minutes, not the whole layout.
 1. Placement first, then `fanout nets=["GND", ...]` on boards with planes or a ground pour on
    the other side: a via next to each SMD pad. Through-hole pads are skipped; a net without a
    zone on another layer is only warned about.

@@ -13,7 +13,17 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 - **一次一個專案：** 一個服務同時只開一個專案（板子加電路圖），換專案請用 `open_board`，新專案用 `new_project`。
 - **目前不支援：** 差分對與等長佈線、全板自動佈線（`route` 只代替重複的手動佈線）、電路圖自動排版、組裝圖、STEP 匯出（3D 模型只有 VRML）、ODB++ / IPC-2581 / DXF、MCP resources / prompts。
 
-## 這一版（beta.9）
+## 這一版（beta.10）
+修正版：第四輪盲測留下的 4–8 項，加上非直線的 via 搜尋。工具數不變（64 個）。
+
+- **LED / 二極體的極性：** `sch_set_fields` 改 LCSC 料號或封裝時，比對符號的 A / K 腳與新封裝的焊盤編號。依據是該料號自己的 EasyEDA 符號，KiCad 的 `LED_*` / `Diode_*` 庫則依慣例（pad 1 = K）。對不上就警告 `polarity reversed`。例如 C2286 的符號 pin 1 是 A，C779449 的 pad 1 是 K。
+- **`route` 貼著板邊：** 板邊間距改從 Edge.Cuts 線的中心量，和 KiCad 的 DRC 與路由器一致。以前多算了線寬的一半，正好貼著間距走的線會被當成違規而丟掉（「need 0.3 have 0.28」）。
+- **`route_short` 非直線的 via 搜尋：** 沿兩端直線的位置都放不下 via 時，改在兩端周圍的格點找空位（零件旁的空隙），依繞行距離由短到長試。
+- **`undo` 的未連線數：** undo / redo `set_rules` 或 `board_setup` 後，回報板子實際的未連線數（以前是 0）。
+- **`auto_place` 的面：** 有給 `back` 或 `back_decaps` 時就由它決定面。已在底面、但兩者都沒指到的 SMD 零件會回到頂面，不再留在原來那面。
+- **`lcsc_search` 關鍵字：** `16PIN`、`16-PIN`、`16POS` 也找得到型錄寫的 `16P`。`TYPE-C` 也比對 `TYPEC` 和 `Type C`。
+
+## beta.9
 新功能：階段三（區域模擬）的剩餘項目、由 MCP 新建專案，以及精簡工具說明。工具 60 → 64 個。另外依四輪子代理盲測（從規格從頭設計 7 埠 USB hub，與真人設計 StickHub 比對）修正與補強大量工具。
 
 **工具說明瘦身（每輪少約一半 token）**
