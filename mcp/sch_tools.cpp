@@ -269,6 +269,123 @@ std::string chipSize( const std::string& aFootprint )
 }
 
 
+/// A diode pin's side from its name: 'A' anode, 'K' cathode, 0 neither
+char diodeSide( const std::string& aName )
+{
+    std::string n;
+
+    for( char c : aName )
+    {
+        if( std::isalnum( static_cast<unsigned char>( c ) ) )
+            n += (char) std::toupper( static_cast<unsigned char>( c ) );
+    }
+
+    if( n == "A" || n == "AN" || n == "ANODE" )
+        return 'A';
+
+    if( n == "K" || n == "KA" || n == "CATHODE" )
+        return 'K';
+
+    return 0;
+}
+
+/// A diode / LED whose new package (LCSC number and / or footprint) has pad numbers the other way
+/// round from its symbol's A / K pins: the warning, "" when it matches or cannot be told. The
+/// package's pads by name come from the LCSC part's own symbol (its footprint is LCSC:<package>)
+/// or KiCad's convention for its LED_* / Diode_* libraries (pad 1 the cathode). aCache: per call.
+std::string polarityWarning( IPC_CLIENT& aIpc, const ks::SchSymbol& aSym, const std::string& aLcsc,
+                             const std::string& aFootprint,
+                             std::map<std::string, kb::FetchLcscResponse>& aCache )
+{
+    std::map<std::string, char> sym;
+    bool                        named = false;
+
+    for( const ks::SchPin& p : aSym.pins() )
+    {
+        sym[p.number()] = diodeSide( p.name() );
+        named |= sym[p.number()] != 0;
+    }
+
+    // "A" with "C": C is the cathode there
+    if( !named )
+    {
+        std::set<std::string> names;
+
+        for( const ks::SchPin& p : aSym.pins() )
+            names.insert( p.name() );
+
+        if( aSym.pins_size() == 2 && names == std::set<std::string>{ "A", "C" } )
+        {
+            for( const ks::SchPin& p : aSym.pins() )
+                sym[p.number()] = p.name() == "A" ? 'A' : 'K';
+
+            named = true;
+        }
+    }
+
+    if( !named || aFootprint.empty() )
+        return "";
+
+    const std::string lib = aFootprint.substr( 0, aFootprint.find( ':' ) );
+    const std::string fp = aFootprint.substr( aFootprint.find( ':' ) + 1 );
+    std::map<std::string, char> pads;
+    std::string                 source;
+
+    if( lib == "LCSC" && !aLcsc.empty() )
+    {
+        auto it = aCache.find( aLcsc );
+
+        if( it == aCache.end() )
+        {
+            kb::FetchLcsc         q;
+            kb::FetchLcscResponse r;
+            std::string           err;
+            q.set_lcsc( aLcsc );
+            q.set_no_model( true );
+
+            if( !aIpc.Call( q, r, err ) )
+                r.Clear();
+
+            it = aCache.emplace( aLcsc, r ).first;
+        }
+
+        // the LCSC number's own footprint only: another package's pads say nothing of this one
+        if( it->second.package() != fp )
+            return "";
+
+        for( const auto& [number, name] : it->second.symbol().pin_names() )
+            pads[number] = diodeSide( name );
+
+        source = "on " + aLcsc + "'s own symbol";
+    }
+    else if( lib.rfind( "LED_", 0 ) == 0 || lib.rfind( "Diode_", 0 ) == 0 )
+    {
+        pads = { { "1", 'K' }, { "2", 'A' } };
+        source = "by KiCad's " + lib + " convention";
+    }
+
+    std::string wrong;
+
+    for( const auto& [number, side] : sym )
+    {
+        auto it = pads.find( number );
+
+        if( side && it != pads.end() && it->second && it->second != side )
+        {
+            wrong += ( wrong.empty() ? "" : ", " ) + std::string( "pin " ) + number + " is " + side
+                     + " on the symbol but pad " + number + " is " + it->second;
+        }
+    }
+
+    if( wrong.empty() )
+        return "";
+
+    return aSym.ref() + ": polarity reversed: " + wrong + " (" + aFootprint + ", " + source
+           + "); it would be fitted backwards. Use the part's own symbol (sch_add_part lcsc=" + ( aLcsc.empty() ? "..." : aLcsc )
+           + " in its place) or a footprint whose pads match";
+}
+
+
 /// lcsc_match: parts without an LCSC number, grouped by value + footprint, matched in the parts
 /// index (resistors, capacitors, inductors, ferrite beads, LEDs in chip packages)
 // A part's fields that still describe the part it was (LCSC aOld) once its LCSC number is aNew
@@ -1407,7 +1524,8 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "\"sheets\" uses the schematic sheets, false none. Keeping blocks together costs some "
             "wire length (group_weight trades one for the other). Bottom side: back lists parts that "
             "may go there, back_decaps lets decoupling caps go under their IC pin (SMD only; off by "
-            "default: two-sided assembly costs more). A dense board: spacing / edge 0 are taken, and "
+            "default: two-sided assembly costs more); with either given, other SMD parts already on the "
+            "bottom come to the top (without, parts keep their side). A dense board: spacing / edge 0 are taken, and "
             "silk_room=false keeps room for the courtyards only, as DRC does (no room for references and silk "
             "outlines; silk_tidy after); "
             "a \"no room\" says the area per side. Reports wire length before/after, how mixed "
@@ -2820,11 +2938,39 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                                                  *e.mutable_fields(), keep );
                 }
 
+                // a diode / LED given another package: its pads against the symbol's A / K
+                std::vector<std::string>                     polarity;
+                std::map<std::string, kb::FetchLcscResponse> fetched;
+
+                for( const ks::SchFieldEdit& e : req.parts() )
+                {
+                    if( !e.fields().count( "LCSC" ) && !e.fields().count( "Footprint" ) )
+                        continue;
+
+                    ks::SchGetPart      q;
+                    ks::SchPartResponse part;
+                    std::string         qerr;
+                    q.set_ref( e.ref() );
+
+                    if( !aIpc.Call( q, part, qerr ) )
+                        continue;
+
+                    const std::string lcsc = e.fields().count( "LCSC" ) ? e.fields().at( "LCSC" ) : part.symbol().lcsc();
+                    const std::string fp = e.fields().count( "Footprint" ) ? e.fields().at( "Footprint" )
+                                                                           : part.symbol().footprint();
+
+                    if( std::string w = polarityWarning( aIpc, part.symbol(), lcsc, fp, fetched ); !w.empty() )
+                        polarity.push_back( w );
+                }
+
                 ks::SchConnectResponse r;
                 std::string            err;
 
                 if( !aIpc.Call( req, r, err ) )
                     return fail( err );
+
+                for( const std::string& w : polarity )
+                    r.add_warnings( w );
 
                 TOOL_RESULT res = connectResult( r, "part(s) changed" );
 

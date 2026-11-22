@@ -442,9 +442,13 @@ wxString KicaddLcscSymbol( const wxString& aRequest )
         setUserField( *sym, wxS( "Source" ), wx( jstr( req, "attribution" ) ), false );
 
         std::set<wxString> pinSet;
+        json               pinNames = json::object();
 
         for( SCH_PIN* pin : sym->GetGraphicalPins( 0, 0 ) )
+        {
             pinSet.insert( pin->GetNumber() );
+            pinNames[pin->GetNumber().ToStdString( wxConvUTF8 )] = pin->GetName().ToStdString( wxConvUTF8 );
+        }
 
         json pins = json::array();
 
@@ -456,7 +460,8 @@ wxString KicaddLcscSymbol( const wxString& aRequest )
                      { "reference", ref.ToStdString( wxConvUTF8 ) },
                      { "units", sym->GetUnitCount() },
                      { "pins", pins },
-                     { "pin_types", pinTypes } };
+                     { "pin_types", pinTypes },
+                     { "pin_names", pinNames } };
 
         io.SaveSymbol( libPath, std::move( sym ) );
         return answer( out );

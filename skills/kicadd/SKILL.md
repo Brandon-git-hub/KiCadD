@@ -205,6 +205,10 @@ set_rules, zones, pdn, reflection), or when a call fails: a tool's first error a
 2. Use one: `sch_add_part lcsc="C25804"` (symbol + footprint saved to the project's LCSC
    library), or `lcsc_fetch` first to inspect pins and pads, or put the number on an existing
    part with `sch_set_fields {"LCSC": "C25804"}`.
+   Diodes and LEDs: pad 1 is not always the same pin. EasyEDA symbols differ (C2286 has pin 1 =
+   A, C779449 pin 1 = K), and KiCad's LED_* / Diode_* footprints have pad 1 = K. Changing only
+   the LCSC number or the footprint on an existing symbol can reverse the part. `sch_set_fields`
+   warns `polarity reversed` then: place the part with its own symbol instead.
    The part's 3D model comes along (EasyEDA's, converted to `lcsc.3dshapes/<package>.wrl` and
    placed as EasyEDA places it) for the 3D viewer; `lcsc_fetch model=false` leaves it out. A
    reply line says whether there was one.
@@ -425,7 +429,8 @@ length matching, dense escapes).
 2. `route_short` with the parts (or nets) and a `max_length` (e.g. 10 mm): decoupling caps,
    pull-ups, LED resistors. `dry_run=true` first to see what would fail. It goes shortest first.
    Where one layer won't do it adds vias: one on the way for ends on different sides, over the
-   other side and back for a blocked one (`vias=false`: none). On a dense board run it per
+   other side and back for a blocked one (`vias=false`: none). Via spots are tried first along
+   the straight line, then at free spots round it (a gap beside a part). On a dense board run it per
    block (`refs` of one IC and its passives) rather than for everything at once, so the long
    ones don't take the channels the short ones need.
 3. One connection: `route from="U1.5"` (to the nearest unrouted connection) or `to="C3.1"`.

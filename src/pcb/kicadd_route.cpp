@@ -394,6 +394,26 @@ RESULT SESSION::PlaceVia( const VECTOR2I& aPos, int aNetCode, int aDiameter, int
 }
 
 
+bool SESSION::ViaFits( const VECTOR2I& aPos, BOARD_CONNECTED_ITEM* aNetItem )
+{
+    IMPL&      m = *m_impl;
+    PNS::NODE* world = m.router->GetWorld();
+    PNS::ITEM* item = aNetItem ? world->FindItemByParent( aNetItem ) : nullptr;
+
+    if( !item )
+        return false;
+
+    PNS::SIZES_SETTINGS sizes;
+    m.iface.ImportSizes( sizes, item, aNetItem->GetNet(), aPos );
+
+    PNS::VIA via( aPos,
+                  PNS_LAYER_RANGE( m.iface.GetPNSLayerFromBoardLayer( F_Cu ), m.iface.GetPNSLayerFromBoardLayer( B_Cu ) ),
+                  sizes.ViaDiameter(), sizes.ViaDrill(), aNetItem->GetNet(), VIATYPE::THROUGH );
+
+    return !world->CheckColliding( &via );
+}
+
+
 RESULT SESSION::Route( const REQUEST& aReq )
 {
     IMPL&        m = *m_impl;
@@ -743,13 +763,25 @@ void SESSION::IMPL::measure( const std::vector<PCB_TRACK*>& aNew, RESULT& aOut )
 
             if( aEdge )
             {
-                // the outline's lines, not a filled board shape's inside
+                // the outline's lines, not a filled board shape's inside; from the line's middle
+                // (width 0), as full DRC and the router measure the board edge
                 bool hit = false;
 
                 for( SHAPE* edge : static_cast<PCB_SHAPE*>( aOther )->MakeEffectiveShapes( true ) )
                 {
                     int      d = 0;
                     VECTOR2I p;
+
+                    if( aOther->GetLayer() == Edge_Cuts )
+                    {
+                        switch( edge->Type() )
+                        {
+                        case SH_SEGMENT:    static_cast<SHAPE_SEGMENT*>( edge )->SetWidth( 0 );    break;
+                        case SH_ARC:        static_cast<SHAPE_ARC*>( edge )->SetWidth( 0 );        break;
+                        case SH_LINE_CHAIN: static_cast<SHAPE_LINE_CHAIN*>( edge )->SetWidth( 0 ); break;
+                        default:                                                                   break;
+                        }
+                    }
 
                     if( a->Collide( edge, GAP_RANGE, &d, &p ) && ( !hit || d < actual ) )
                     {

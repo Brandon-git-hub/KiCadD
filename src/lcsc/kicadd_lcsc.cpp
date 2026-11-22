@@ -949,6 +949,14 @@ bool SaveSymbolToProjectLibrary( const wxString& dir, KIWAY* aKiway, const PART&
     for( const json& p : ans.value( "pins", json::array() ) )
         aSaved.pins.push_back( p.get<std::string>() );
 
+    const json pinNames = ans.value( "pin_names", json::object() );   // a named copy: items() keeps no temporary
+
+    for( const auto& [number, name] : pinNames.items() )
+    {
+        if( name.is_string() )
+            aSaved.pinNames[number] = name.get<std::string>();
+    }
+
     aSaved.registered = registerLibrary( dir, true, aSaved.note );
     return true;
 }

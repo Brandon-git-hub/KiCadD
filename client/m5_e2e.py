@@ -412,6 +412,12 @@ def main():
         kinds = re.search(r"errors: (.*)", t).group(1) if "errors:" in t else t
         check(set(re.findall(r"(\w+) \d+", kinds)) <= {"unconnected_items"},
               "DRC after placement: only unrouted connections (" + kinds[:80] + ")")
+        drcUnrouted = re.search(r"unconnected_items (\d+)", kinds)
+        mcp.tool("set_rules", {"classes": {"Pow": {"track_width": 0.4}}, "drc": False})
+        err, t = mcp.tool("undo")
+        und = re.search(r"unconnected=(\d+)", t)
+        check(not err and und and drcUnrouted and und.group(1) == drcUnrouted.group(1),
+              f"undo of set_rules: unconnected={und and und.group(1)} as DRC says ({drcUnrouted and drcUnrouted.group(1)})")
         err, t = mcp.tool("board_summary")
         outline = re.search(r"outline=([\d.]+),([\d.]+)\.\.([\d.]+),([\d.]+)mm", t)
         x0, y0, x1, y1 = (float(v) for v in outline.groups())
@@ -446,6 +452,13 @@ def main():
         kinds = re.search(r"errors: (.*)", t).group(1) if "errors:" in t else t
         check(set(re.findall(r"(\w+) \d+", kinds)) <= {"unconnected_items"},
               "DRC with parts on both sides: only unrouted (" + kinds[:80] + ")")
+        # back given: it decides the sides; the caps on the bottom from before come up
+        err, t = mcp.tool("auto_place", {"all": True, "back": ["U1"]})
+        err, q = mcp.tool("query_area", {"x": (x0 + x1) / 2, "y": (y0 + y1) / 2, "radius": 60, "kinds": ["footprint"]})
+        layers = {mm.group(1): mm.group(2) for mm in re.finditer(r"^FP (\S+) (\S+)", q, re.M)}
+        bottom2 = sorted(r for r, l in layers.items() if l.startswith("B.") or "bottom" in l.lower())
+        check(not err and not {"C1", "C2"} & set(bottom2), f"back=[U1]: C1 / C2 (not named) back on top: bottom {bottom2}")
+        mcp.tool("undo")
         mcp.tool("undo")
         err, q = mcp.tool("query_area", {"x": (x0 + x1) / 2, "y": (y0 + y1) / 2, "radius": 60, "kinds": ["footprint"]})
         check(not re.search(r"^FP \S+ (B\.|bottom)", q, re.M | re.I), "undo puts them back on the top side")
@@ -459,6 +472,30 @@ def main():
         check('"C1,C2"' in bom and '"C14663"' in bom and '"C6186"' in bom and '"C25804"' in bom,
               "BOM lines carry C6186 / C14663 (C1,C2) / C25804: " + " ".join(bom.split())[:200])
         check("R2 (1k, R0603)" in t, "the library resistor is listed as without an LCSC number")
+
+        print("[LED polarity: another package]")
+        # C2286's symbol has pin 1 = A, pin 2 = K; C779449 (0402) has pad 1 = K: the LED reversed
+        err, t = mcp.tool("sch_add_part", {"lcsc": "C2286", "x": 200, "y": 150})
+        led = re.search(r"added (\S+) ", t)
+        check(not err and led is not None, "C2286 LED placed: " + t.splitlines()[0][:80])
+        led = led.group(1) if led else "D1"
+        err, t = mcp.tool("lcsc_fetch", {"lcsc": "C779449", "model": False})
+        fp = re.search(r"(LCSC:[^\s,;)]+)", t)
+        check(not err and fp is not None, "C779449 fetched: " + (fp.group(1) if fp else t[:80]))
+        fp = fp.group(1) if fp else "LCSC:?"
+        err, t = mcp.tool("sch_set_fields", {"parts": {led: {"LCSC": "C779449", "Footprint": fp}}})
+        check(not err and "polarity reversed" in t and "pin 1 is A" in t and "C779449" in t,
+              "C779449's package on C2286's symbol: polarity warning: " + t.replace("\n", " | ")[:220])
+        err, t = mcp.tool("sch_set_fields", {"parts": {led: {"LCSC": "C2286", "Footprint": "LED_SMD:LED_0603_1608Metric"}}})
+        check(not err and "polarity reversed" in t and "LED_SMD" in t,
+              "KiCad's LED_SMD footprint (pad 1 = K) on a pin 1 = A symbol: warned: " + t.replace("\n", " | ")[:160])
+        err, t = mcp.tool("sch_add_part", {"lcsc": "C779449", "x": 220, "y": 150})
+        led2 = re.search(r"added (\S+) ", t)
+        led2 = led2.group(1) if led2 else "D2"
+        err, t = mcp.tool("sch_set_fields", {"parts": {led2: {"Footprint": "LED_SMD:LED_0402_1005Metric"}}})
+        check(not err and "polarity" not in t, "C779449 (pin 1 = K) on LED_SMD 0402: no warning: " + t[:80])
+        err, t = mcp.tool("sch_set_fields", {"parts": {led2: {"Value": "red"}}})
+        check(not err and "polarity" not in t, "a value change only: no check")
     finally:
         if mcp:
             mcp.close()

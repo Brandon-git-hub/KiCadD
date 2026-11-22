@@ -427,6 +427,7 @@ message LcscSymbol
   repeated string pins_without_pad = 7;   // symbol pins the footprint has no pad for
   repeated string pads_without_pin = 8;   // numbered footprint pads no symbol pin uses
   string pin_types  = 9;   // the pins' electrical types inferred from their names, said
+  map<string, string> pin_names = 10;   // pin number -> name (a diode's A / K: the polarity check)
 }
 
 // ---------------------------------------------------------------------------

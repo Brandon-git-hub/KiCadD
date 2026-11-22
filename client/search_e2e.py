@@ -66,6 +66,14 @@ try:
           "keyword with a word nothing has: said, searched without it")
     err, t = m.tool("lcsc_search", {"keyword": "AMS1117 3.3", "live": 0})
     check(not err and "AMS1117" in t and hits(t), "keyword AMS1117 3.3: " + (t.splitlines()[1][:80] if len(t.splitlines()) > 1 else t))
+    def total(args):
+        e, x = m.tool("lcsc_search", dict(args, live=0))
+        g = re.match(r"(\d+) match", x)
+        return int(g.group(1)) if g and not e else -1
+    n16p, n16pin = total({"keyword": "TYPE-C 16P"}), total({"keyword": "TYPE-C 16PIN"})
+    check(n16p > 0 and n16pin >= n16p, f"'16PIN' finds the catalogue's '16P' too: {n16pin} vs {n16p}")
+    check(total({"keyword": "TYPE C 16P"}) > 0 and total({"keyword": "TYPEC 16P"}) >= 0,
+          "Type-C written with a space finds parts too")
     err, t = m.tool("lcsc_search", {"value": "4k7", "package": "0402", "live": 0})
     check(not err and "4.7kΩ" in t, "4k7 means 4.7 kΩ")
     err, t = m.tool("lcsc_search", {"value": "banana", "live": 0})

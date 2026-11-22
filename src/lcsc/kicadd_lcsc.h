@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -110,6 +111,7 @@ struct SAVED_SYMBOL
     bool                     registered = false;   ///< the LCSC row was added to sym-lib-table now
     std::string              note;
     std::string              pinTypes;     ///< "pin types inferred ...: 8 power_in, ..." ("" none)
+    std::map<std::string, std::string> pinNames;   ///< pin number -> name
 };
 
 /**

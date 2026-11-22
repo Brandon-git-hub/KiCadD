@@ -88,6 +88,10 @@ public:
     /// the session when it breaks none of them.
     RESULT PlaceVia( const VECTOR2I& aPos, int aNetCode, int aDiameter, int aDrill );
 
+    /// Whether a through via of aNetItem's net (its rules' sizes) fits at aPos: the router's
+    /// copper clearances and the board edge, nothing more (a quick pre-test for via spots).
+    bool ViaFits( const VECTOR2I& aPos, BOARD_CONNECTED_ITEM* aNetItem );
+
     /// The new tracks / arcs / vias (not on the board; the caller owns them after this).
     std::vector<std::unique_ptr<PCB_TRACK>> TakeAdded();
 

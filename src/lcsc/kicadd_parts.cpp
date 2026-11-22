@@ -515,6 +515,72 @@ bool ParseValue( const std::string& aText, double& aValue, std::string& aUnit )
 }
 
 
+/// One keyword word as an FTS5 term: a prefix, with the ways the index spells it otherwise. A
+/// hyphenated word also as one word and as separate words ("TYPE-C": TYPEC, "Type C"); a pin
+/// count ("16PIN", "16-PIN", "16POS") also as the catalogue's "16P".
+static std::string keywordTerm( const std::string& aWord )
+{
+    auto quoted = []( const std::string& aText )
+    {
+        std::string q = "\"";
+
+        for( char c : aText )
+            q += c == '"' ? std::string( "\"\"" ) : std::string( 1, c );
+
+        return q + "\"";
+    };
+
+    std::vector<std::string> alt = { quoted( aWord ) + "*" };
+    std::string              up;
+
+    for( char c : aWord )
+        up += (char) std::toupper( static_cast<unsigned char>( c ) );
+
+    // 16PIN / 16-PIN / 16PINS / 16POS / 16P: "16P" (exact: 16P* would find 16PF), and the long forms
+    size_t digits = 0;
+
+    while( digits < up.size() && std::isdigit( static_cast<unsigned char>( up[digits] ) ) )
+        digits++;
+
+    if( digits > 0 && digits < up.size() )
+    {
+        std::string rest = up.substr( digits );
+
+        if( rest[0] == '-' )
+            rest = rest.substr( 1 );
+
+        if( rest == "P" || rest == "PIN" || rest == "PINS" || rest == "POS" || rest == "POSITION" || rest == "WAY" )
+        {
+            const std::string n = up.substr( 0, digits );
+            alt = { quoted( n + "P" ), quoted( n + "PIN" ) + "*", quoted( n + "POS" ) + "*", quoted( n + "-PIN" ) + "*" };
+        }
+    }
+
+    if( aWord.find( '-' ) != std::string::npos && aWord.front() != '-' && aWord.back() != '-' && alt.size() == 1 )
+    {
+        std::string joined, spaced;
+
+        for( char c : aWord )
+        {
+            joined += c == '-' ? std::string() : std::string( 1, c );
+            spaced += c == '-' ? ' ' : c;
+        }
+
+        alt.push_back( quoted( joined ) + "*" );
+        alt.push_back( quoted( spaced ) + "*" );
+    }
+
+    if( alt.size() == 1 )
+        return alt[0];
+
+    std::string t;
+
+    for( const std::string& a : alt )
+        t += ( t.empty() ? "(" : " OR " ) + a;
+
+    return t + ")";
+}
+
 bool SearchParts( const kicadd::board::LcscSearch& aReq, kicadd::board::LcscSearchResponse& aOut, std::string& aError )
 {
     std::lock_guard<std::mutex> lock( g_lock );
@@ -792,12 +858,7 @@ bool SearchParts( const kicadd::board::LcscSearch& aReq, kicadd::board::LcscSear
             {
                 if( !word.empty() )
                 {
-                    std::string q;
-
-                    for( char w : word )
-                        q += w == '"' ? std::string( "\"\"" ) : std::string( 1, w );
-
-                    match += ( match.empty() ? "" : " " ) + std::string( "\"" ) + q + "\"*";
+                    match += ( match.empty() ? "" : " AND " ) + keywordTerm( word );
                     word.clear();
                 }
             }

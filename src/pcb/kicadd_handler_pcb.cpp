@@ -3145,10 +3145,116 @@ HANDLER_RESULT<RouteResponse> KICADD_HANDLER_PCB::handleRouteShort( const HANDLE
                 }
             }
 
+            // Off the straight line: free via spots on a grid around both ends (a detour round a
+            // part, a gap between two others), the shortest way through them first. Spots
+            // spread out (one per 0.8 mm), so a blocked area costs one try, not ten.
+            int detourTries = 0;
+
+            if( !done && len > 0 )
+            {
+                SHAPE_POLY_SET outline;
+                const bool     haveOutline = b->GetBoardPolygonOutlines( outline, false ) && outline.OutlineCount() > 0;
+                BOX2I          area( c.pa, VECTOR2I( 0, 0 ) );
+                area.Merge( c.pz );
+                area.Inflate( (int) std::max( 1.5e6, 0.4 * len ) );
+
+                if( haveOutline )
+                    area = area.Intersect( outline.BBox() );
+
+                const double pitch = std::max( 0.25e6, std::sqrt( (double) area.GetWidth() * area.GetHeight() / 4000.0 ) );
+                std::vector<VECTOR2I> free;
+
+                for( double y = area.GetTop(); y <= area.GetBottom(); y += pitch )
+                {
+                    for( double x = area.GetLeft(); x <= area.GetRight(); x += pitch )
+                    {
+                        VECTOR2I p( (int) x, (int) y );
+
+                        if( haveOutline && !outline.Contains( p ) )
+                            continue;
+
+                        if( std::any_of( bodies->begin(), bodies->end(), [&]( const BOX2I& bb ) { return bb.Contains( p ); } ) )
+                            continue;
+
+                        if( session.ViaFits( p, c.a ) )
+                            free.push_back( p );
+                    }
+                }
+
+                auto dist = []( const VECTOR2I& u, const VECTOR2I& v ) { return ( VECTOR2D( u ) - VECTOR2D( v ) ).EuclideanNorm(); };
+
+                // the best few by aCost, at least 0.8 mm apart
+                auto pick = [&]( auto aCost, size_t aCount )
+                {
+                    std::vector<VECTOR2I> sorted = free, chosen;
+                    std::stable_sort( sorted.begin(), sorted.end(),
+                                      [&]( const VECTOR2I& u, const VECTOR2I& v ) { return aCost( u ) < aCost( v ); } );
+
+                    for( const VECTOR2I& p : sorted )
+                    {
+                        if( chosen.size() >= aCount )
+                            break;
+
+                        if( std::none_of( chosen.begin(), chosen.end(), [&]( const VECTOR2I& q ) { return dist( p, q ) < 0.8e6; } ) )
+                            chosen.push_back( p );
+                    }
+
+                    return chosen;
+                };
+
+                constexpr int MAX_DETOURS = 16;
+
+                if( la != lz )
+                {
+                    for( const VECTOR2I& v : pick( [&]( const VECTOR2I& p ) { return dist( c.pa, p ) + dist( p, c.pz ); },
+                                                   MAX_DETOURS ) )
+                    {
+                        detourTries++;
+
+                        if( tryStops( { { v, lz, false } } ) )
+                        {
+                            done = true;
+                            break;
+                        }
+                    }
+                }
+                else
+                {
+                    // down near one end, back up near the other
+                    std::vector<VECTOR2I> nearA = pick( [&]( const VECTOR2I& p ) { return dist( c.pa, p ) + 0.3 * dist( p, c.pz ); }, 5 );
+                    std::vector<VECTOR2I> nearZ = pick( [&]( const VECTOR2I& p ) { return dist( c.pz, p ) + 0.3 * dist( p, c.pa ); }, 5 );
+                    std::vector<std::pair<VECTOR2I, VECTOR2I>> pairs;
+
+                    for( const VECTOR2I& v1 : nearA )
+                    {
+                        for( const VECTOR2I& v2 : nearZ )
+                        {
+                            if( dist( v1, v2 ) >= 0.8e6 )
+                                pairs.emplace_back( v1, v2 );
+                        }
+                    }
+
+                    std::stable_sort( pairs.begin(), pairs.end(),
+                                      [&]( const auto& x, const auto& y )
+                                      {
+                                          return dist( c.pa, x.first ) + dist( x.first, x.second ) + dist( x.second, c.pz )
+                                                 < dist( c.pa, y.first ) + dist( y.first, y.second ) + dist( y.second, c.pz );
+                                      } );
+
+                    for( size_t i = 0; i < pairs.size() && i < (size_t) MAX_DETOURS && !done; ++i )
+                    {
+                        detourTries++;
+
+                        if( tryStops( { { pairs[i].first, other, false }, { pairs[i].second, lz, false } } ) )
+                            done = true;
+                    }
+                }
+            }
+
             if( !done )
             {
                 res = firstFail;
-                res.error += " (and with vias: " + std::to_string( tries ) + " spot(s) tried along the way, none fits"
+                res.error += " (and with vias: " + std::to_string( tries ) + " spot(s) tried along the way and round it, none fits"
                              + ( underIc ? "; " + std::to_string( underIc )
                                                    + " under an exposed-pad IC's body left out: allow_under_ic=true tries them"
                                          : std::string() )
@@ -4251,6 +4357,9 @@ KICADD_HANDLER_PCB::handleFetchLcsc( const HANDLER_CONTEXT<FetchLcsc>& aCtx )
                 s->set_registered( sym.registered );
                 s->set_pin_types( sym.pinTypes );
 
+                for( const auto& [number, name] : sym.pinNames )
+                    ( *s->mutable_pin_names() )[number] = name;
+
                 std::set<std::string> pads;
 
                 for( const PAD* pad : part.footprint->Pads() )
@@ -4389,6 +4498,8 @@ bool KICADD_HANDLER_PCB::applyHistory( const HISTORY_ENTRY& aEntry, bool aUndo, 
 
         kicadd::rules::Apply( *b, target );
         rulesChanged();
+        // no item moved, so no commit counted them: the board's count, ratsnest brought up to date
+        aOut.set_unconnected( (int) b->GetConnectivity()->GetUnconnectedCount( false ) );
         return true;
     }
 
@@ -4420,6 +4531,7 @@ bool KICADD_HANDLER_PCB::applyHistory( const HISTORY_ENTRY& aEntry, bool aUndo, 
 
         kicadd::setup::Apply( *b, target );
         setupChanged();
+        aOut.set_unconnected( (int) b->GetConnectivity()->GetUnconnectedCount( false ) );
         return true;
     }
 
@@ -5952,7 +6064,21 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
         bool smd = std::none_of( fp->Pads().begin(), fp->Pads().end(), []( PAD* p ) { return p->HasHole(); } );
         bool small = fp->Pads().size() <= 3;
 
-        if( part.movable && smd && ( backAsked || ( req.back_decaps() && small ) ) )
+        // sides asked for (back / back_decaps): a part on the bottom that neither names comes
+        // to the top, rather than staying where an earlier placement left it
+        if( part.movable && smd && part.back && ( !back.empty() || req.back_decaps() ) && !backAsked
+            && !( req.back_decaps() && small ) )
+        {
+            std::unique_ptr<FOOTPRINT> copy( static_cast<FOOTPRINT*>( fp->Clone() ) );
+            copy->Flip( copy->GetPosition(), FLIP_DIRECTION::LEFT_RIGHT );
+            part.outline.clear();
+            part.copper.clear();
+            padOffset.clear();
+            padBox.clear();
+            shapeOf( copy.get(), part.outline, part.copper, padOffset, padBox );
+            part.back = false;
+        }
+        else if( part.movable && smd && ( backAsked || ( req.back_decaps() && small ) ) )
         {
             std::unique_ptr<FOOTPRINT> copy( static_cast<FOOTPRINT*>( fp->Clone() ) );
             copy->Flip( copy->GetPosition(), FLIP_DIRECTION::LEFT_RIGHT );

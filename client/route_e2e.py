@@ -12,6 +12,8 @@ pic_programmer (2 layers, through-hole), with a keepout added across the straigh
                one edit; after a refill, DRC has nothing but unrouted connections; one undo
   fanout       through-hole pads are skipped, a net without a zone on the other side is warned
                once, with its pads
+Tiny boards: route_short's vias not under a QFN, and off the straight line when nothing fits on
+it; route through a channel along the board edge (edge clearance as DRC measures it).
 StickHub (2 layers, SMD, GND on both sides):
   fanout       GND ripped up, fanned out again: vias inside the other side's GND, DRC with
                nothing but unrouted connections, one undo
@@ -290,6 +292,47 @@ def qfn(a, work):
         server.stop()
 
 
+def detour(a, work):
+    """route_short's via off the straight line; route along the board edge keeps the edge rule."""
+    print("[route_short: a via off the straight line; route along the edge]")
+    import tiny_board
+    from m5_e2e import binaries
+    tiny = os.path.join(work, "detour")
+    os.makedirs(tiny)
+    tiny_board.write(os.path.join(tiny, "detour.kicad_pcb"), [
+        # a top-only pad over the whole straight line R1 -> R2 (and 2.5 mm each side): no via fits on it
+        ("W1", (100, 100), "F", [("1", (0, 0), (18, 5), "WALL")]),
+        ("R1", (88, 100), "F", [("1", (0, 0), (0.6, 0.6), "SIG")]),
+        ("R2", (112, 100), "B", [("1", (0, 0), (0.6, 0.6), "SIG")]),
+        # a wall across the board but for a 0.9 mm channel at the left edge (x 80): the track's
+        # only way is along the edge, at the edge clearance
+        ("W2", (109.95, 115), "F", [("1", (0, 0), (58.1, 4), "WALL")]),
+        ("R3", (82, 108), "F", [("1", (0, 0), (0.6, 0.6), "EDGE")]),
+        ("R4", (82, 122), "F", [("1", (0, 0), (0.6, 0.6), "EDGE")]),
+    ])
+    _, kicadd_mcp, env = binaries(a.build)
+    sock = os.path.join(work, "detour.sock")
+    server = Server(a.build, sock, os.path.join(tiny, "detour.kicad_pcb"), env, os.path.join(work, "detour.log"))
+    check(server.start(), "api-server up on the detour board")
+    mcp = Mcp([kicadd_mcp, "--socket", sock, "--stdio"], env)
+    try:
+        err, t = mcp.tool("route_short", {"nets": ["SIG"]})
+        print("      ", " | ".join(t.splitlines()[:3])[:200] if t else "")
+        err2, n = mcp.tool("query_net", {"net": "SIG"})
+        vias = [(float(x), float(y)) for x, y in re.findall(r"^VIA \S+ \[SIG\] @(-?[\d.]+),(-?[\d.]+)", n, re.M)]
+        print("       vias", vias)
+        check(not err and len(vias) == 1 and not (90.5 < vias[0][0] < 109.5 and 97 < vias[0][1] < 103),
+              "routed through a via beside the blocked line (none fits on it)")
+        err, t = mcp.tool("route", {"from": "R3.1", "to": "R4.1", "layer": "F.Cu"})
+        print("      ", " | ".join(t.splitlines()[:2])[:200] if t else "")
+        check(not err and "not kept" not in t and "routed" in t, "route squeezed along the board edge: kept (edge measured from the line's middle)")
+        err, t = mcp.tool("run_drc", {"include_warnings": False})
+        check("copper_edge_clearance" not in t, "DRC: no edge clearance error: " + t.splitlines()[0][:100])
+    finally:
+        mcp.close()
+        server.stop()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--build", required=True)
@@ -304,6 +347,7 @@ def main():
     pic(a, work)
     stickhub(a, work)
     qfn(a, work)
+    detour(a, work)
 
     print("\nRESULT:", "PASS" if not FAILS else f"FAIL ({len(FAILS)})")
     return 1 if FAILS else 0
