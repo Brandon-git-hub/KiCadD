@@ -2973,6 +2973,14 @@ HANDLER_RESULT<RouteResponse> KICADD_HANDLER_PCB::handleRouteShort( const HANDLE
     if( conns.size() > MAX_ROUTES )
         conns.resize( MAX_ROUTES );
 
+    // The via search (dozens of router walks per failed connection) has a time budget, so a
+    // dense board answers within the client's timeout; the connections after it are said
+    const auto t0 = std::chrono::steady_clock::now();
+    auto       overBudget = [&]()
+    {
+        return std::chrono::duration<double>( std::chrono::steady_clock::now() - t0 ).count() > 45.0;
+    };
+
     kicadd::route::SESSION session( b );
     int                    routed = 0;
 
@@ -3041,7 +3049,12 @@ HANDLER_RESULT<RouteResponse> KICADD_HANDLER_PCB::handleRouteShort( const HANDLE
         // Still not: with vias. Ends on different layers (a part on each side): one via on the
         // way; on the same layer: over the other side and back (two vias). The spots along the
         // straight line, middle first, and beside it
-        if( !done && !req.no_vias() && b->GetCopperLayerCount() >= 2 )
+        if( !done && !req.no_vias() && b->GetCopperLayerCount() >= 2 && overBudget() )
+        {
+            res.error += " (vias not tried: this call's 45 s for the via search was spent; route_short these again, "
+                         "fewer at a time)";
+        }
+        else if( !done && !req.no_vias() && b->GetCopperLayerCount() >= 2 )
         {
             auto sideOf = [&]( const BOARD_CONNECTED_ITEM* aItem, PCB_LAYER_ID aOther ) -> PCB_LAYER_ID
             {
@@ -3079,6 +3092,9 @@ HANDLER_RESULT<RouteResponse> KICADD_HANDLER_PCB::handleRouteShort( const HANDLE
 
             auto tryStops = [&]( const std::vector<kicadd::route::STOP>& aStops )
             {
+                if( overBudget() )
+                    return false;
+
                 // a via under a QFN's body lands on its thermal pad or between it and the pads
                 for( const kicadd::route::STOP& st : aStops )
                 {
@@ -3150,7 +3166,7 @@ HANDLER_RESULT<RouteResponse> KICADD_HANDLER_PCB::handleRouteShort( const HANDLE
             // spread out (one per 0.8 mm), so a blocked area costs one try, not ten.
             int detourTries = 0;
 
-            if( !done && len > 0 )
+            if( !done && len > 0 && !overBudget() )
             {
                 SHAPE_POLY_SET outline;
                 const bool     haveOutline = b->GetBoardPolygonOutlines( outline, false ) && outline.OutlineCount() > 0;

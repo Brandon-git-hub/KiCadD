@@ -18,7 +18,8 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 
 - **LED / 二極體的極性：** `sch_set_fields` 改 LCSC 料號或封裝時，比對符號的 A / K 腳與新封裝的焊盤編號。依據是該料號自己的 EasyEDA 符號，KiCad 的 `LED_*` / `Diode_*` 庫則依慣例（pad 1 = K）。對不上就警告 `polarity reversed`。例如 C2286 的符號 pin 1 是 A，C779449 的 pad 1 是 K。
 - **`route` 貼著板邊：** 板邊間距改從 Edge.Cuts 線的中心量，和 KiCad 的 DRC 與路由器一致。以前多算了線寬的一半，正好貼著間距走的線會被當成違規而丟掉（「need 0.3 have 0.28」）。
-- **`route_short` 非直線的 via 搜尋：** 沿兩端直線的位置都放不下 via 時，改在兩端周圍的格點找空位（零件旁的空隙），依繞行距離由短到長試。
+- **`route_short` 非直線的 via 搜尋：** 沿兩端直線的位置都放不下 via 時，改在兩端周圍的格點找空位（零件旁的空隙），依繞行距離由短到長試。via 搜尋每次呼叫最多 45 秒，超過後其餘連線註明「vias not tried」，避免逾時（Run 5 第一次跑時一次呼叫超過 120 秒，之後的請求全部逾時）。
+- **路由器當機：** via 或 waypoint 落在路線的起點、終點或前一個點上時，KiCad 路由器會在 `VIA::PushoutForce` 當掉（Run 5 第一次跑時發生，伺服器和未存的板子一起不見）。現在這種請求直接拒絕，格點搜尋也不再挑端點焊盤上的位置。
 - **`undo` 的未連線數：** undo / redo `set_rules` 或 `board_setup` 後，回報板子實際的未連線數（以前是 0）。
 - **`auto_place` 的面：** 有給 `back` 或 `back_decaps` 時就由它決定面。已在底面、但兩者都沒指到的 SMD 零件會回到頂面，不再留在原來那面。
 - **`lcsc_search` 關鍵字：** `16PIN`、`16-PIN`、`16POS` 也找得到型錄寫的 `16P`。`TYPE-C` 也比對 `TYPEC` 和 `Type C`。

@@ -433,7 +433,9 @@ length matching, dense escapes).
    pull-ups, LED resistors. `dry_run=true` first to see what would fail. It goes shortest first.
    Where one layer won't do it adds vias: one on the way for ends on different sides, over the
    other side and back for a blocked one (`vias=false`: none). Via spots are tried first along
-   the straight line, then at free spots round it (a gap beside a part). On a dense board run it per
+   the straight line, then at free spots round it (a gap beside a part). The via search has
+   45 s per call: on a dense board the connections after that say "vias not tried"; route
+   them again in smaller groups. On a dense board run it per
    block (`refs` of one IC and its passives) rather than for everything at once, so the long
    ones don't take the channels the short ones need.
 3. One connection: `route from="U1.5"` (to the nearest unrouted connection) or `to="C3.1"`.
