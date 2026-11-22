@@ -528,8 +528,8 @@ PAIR_ORDER CheckPairOrder( BOARD& aBoard, const std::map<int, int>& aPairs, cons
 
     if( crossed.empty() )
     {
-        out.line = "pair order: P and N in the same order at both ends of all " + std::to_string( out.checked )
-                   + " pair(s) between parts";
+        out.line = "pair order (a placement check): P and N in the same order at both ends of all "
+                   + std::to_string( out.checked ) + " pair(s) between parts";
         return out;
     }
 
@@ -538,10 +538,12 @@ PAIR_ORDER CheckPairOrder( BOARD& aBoard, const std::map<int, int>& aPairs, cons
     for( size_t i = 0; i < crossed.size() && i < 6; ++i )
         list += ( i ? "; " : "" ) + crossed[i];
 
-    out.line = "pair order: " + std::to_string( crossed.size() ) + " of " + std::to_string( out.checked )
+    out.line = "pair order (a placement check, not of the routing): " + std::to_string( crossed.size() ) + " of "
+               + std::to_string( out.checked )
                + " pair(s) have P and N swapped between two of their parts (the straight lines P-P and "
-                 "N-N cross: a crossing to route, a via pair; or turn, move or flip a part; a part on the "
-                 "bottom is mirrored): " + list + ( crossed.size() > 6 ? "; ..." : "" );
+                 "N-N between their pads cross: the routing must cross them, a via pair or a loop; or turn, "
+                 "move or flip a part; a part on the bottom is mirrored). Routed copper is not looked at: a "
+                 "pair routed across stays listed. " + list + ( crossed.size() > 6 ? "; ..." : "" );
     return out;
 }
 

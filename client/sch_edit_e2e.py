@@ -311,7 +311,24 @@ def main():
         print("      ", " ".join(t.split())[:200])
         check(not err and "placed on existing connections" in t and "-> /NA1" in t,
               "sch_add_part onto another part's pins warns")
-        for _ in range(5):   # the add, the dx move, the connect, the two adds
+        # sch_connect: two stubs of one call meeting (RX.2 down, RY.1 up, 5.08 mm apart)
+        xy = []
+        for y in (101.6, 114.3):
+            err, t = mcp.tool("sch_add_part", {"lib_id": "Device:R", "value": "1k", "footprint": FP, "x": 203.2, "y": y})
+            xy.append(re.match(r"added (\S+) ", t).group(1))
+        rx, ry = xy
+        before_meet = netlist(mcp)
+        err, t = mcp.tool("sch_connect", {"nets": {"MEET1": [f"{rx}.2"], "MEET2": [f"{ry}.1"]}})
+        print("      ", " ".join(t.split())[:200])
+        check(err and t.startswith("0 pin(s) connected") and "all or none" in t and "ended on one net" in t,
+              "sch_connect whose two stubs meet: refused (they would be one net), said why")
+        check(netlist(mcp) == before_meet, "refused: the nets as before")
+        err, t = mcp.tool("sch_connect", {"nets": {"MEET1": [f"{rx}.2"]}})
+        check(not err and t.startswith("1 pin(s) connected"), "one at a time: fine")
+        err, t = mcp.tool("sch_connect", {"nets": {"MEET2": [f"{ry}.1"]}})
+        check(err and "no free spot" in t and netlist(mcp).get("/MEET1") == {f"{rx}.2"},
+              "the second alone: no room for its label there, said (not joined to MEET1)")
+        for _ in range(8):   # the connect, the two adds; the add, the dx move, the connect, the two adds
             mcp.tool("sch_undo")
         check(netlist(mcp) == start, "undone: the nets as before")
 

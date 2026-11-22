@@ -251,6 +251,10 @@ def qfn(a, work):
         ("U9", (100, 100), "F", ring + [("9", (0, 0), (2, 2), "GND")]),
         ("R1", (88, 100), "F", [("1", (0, 0), (0.6, 0.6), "SIG")]),     # top
         ("R2", (112, 100), "B", [("1", (0, 0), (0.6, 0.6), "SIG")]),    # bottom: one via on the way
+        # an LQFP-like ring with no exposed pad: its body is free for vias
+        ("U8", (100, 118), "F", [(n, (dx, dy + 0), size, net) for n, (dx, dy), size, net in ring]),
+        ("R3", (88, 118), "F", [("1", (0, 0), (0.6, 0.6), "SIG2")]),
+        ("R4", (112, 118), "B", [("1", (0, 0), (0.6, 0.6), "SIG2")]),
     ])
     _, kicadd_mcp, env = binaries(a.build)
     sock = os.path.join(work, "qfn.sock")
@@ -265,6 +269,19 @@ def qfn(a, work):
         print("       vias", vias)
         check(not err and vias and all(abs(x - 100) > 4.4 or abs(y - 100) > 4.4 for x, y in vias),
               "routed with a via, none under U9's body (inside its pads)")
+        err, t = mcp.tool("route_short", {"nets": ["SIG2"]})
+        err2, n = mcp.tool("query_net", {"net": "SIG2"})
+        vias2 = [(float(x), float(y)) for x, y in re.findall(r"^VIA \S+ \[SIG2\] @(-?[\d.]+),(-?[\d.]+)", n, re.M)]
+        print("       SIG2 vias", vias2)
+        check(not err and vias2 and any(abs(x - 100) < 4.4 and abs(y - 118) < 4.4 for x, y in vias2),
+              "an IC with no exposed pad (an LQFP): the via may go inside its pad ring")
+        mcp.tool("undo")
+        mcp.tool("undo")
+        err, t = mcp.tool("route_short", {"nets": ["SIG"], "allow_under_ic": True})
+        err2, n = mcp.tool("query_net", {"net": "SIG"})
+        vias = [(float(x), float(y)) for x, y in re.findall(r"^VIA \S+ \[SIG\] @(-?[\d.]+),(-?[\d.]+)", n, re.M)]
+        print("       allow_under_ic vias", vias)
+        check(not err and vias, "allow_under_ic=true: routed (the spots under U9 tried too)")
         err, t = mcp.tool("route_short", {"nets": ["SIGG"], "dry_run": True})
         check(err and "no net SIGG" in t and "did you mean SIG" in t, "a net not on the board: refused, with the close names: "
               + t.strip().splitlines()[0][:90])

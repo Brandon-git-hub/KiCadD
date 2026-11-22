@@ -86,7 +86,44 @@
   - **範圍：** 若要動到 PNS 規則或路由器本身，就改放 beta.10。
 - **`route_short` 接受不存在的網路名稱**（回 `" ->  [VDD18]: not routed: no such net"`）。改成整個請求以參數錯誤拒絕，並列出相近的網路名稱。位置在 `handleRouteShort` 約 2770 行；或在 MCP 端先查。
 
+## 第四輪盲測（2026-11-22，beta.9 修正後）
+
+專案在 `run/exp/ai-hub4/`。子代理選 FE2.1（C39693，LQFP-48，放在底面），板厚 0.8 mm，差分約 115 Ω。
+
+| | Run 1 | Run 2 | Run 3 | Run 4 | 真人 |
+|---|---|---|---|---|---|
+| ERC | 0 錯 / 117 警告 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+| 未佈線 | 96 | 54 | 41 | 35 | 0 |
+| USB 差分對佈線 | 2 / 8 | 8 / 8 | 6 / 8 | 8 / 8 | 8 / 8 |
+
+仍未能從零完成：剩 35 條未佈線（GND 島 16、+3V3 4、VBUS_UP 3、VBUS_A 3、+5V 1、CC1 / CC2、LED1–6），上游 VBUS 未接到保險絲。DRC 除未連線外沒有錯誤。瓶頸是 16.5 mm 寬、雙面的擺件與逃線。
+
+**已在 beta.9 修正（第四輪回報）：**
+- `route_short` 的過孔禁區只限有散熱焊盤的 IC（QFN），LQFP 本體下可以打；新增 `allow_under_ic=true`。第四輪的「25 under an IC's body left out」就是 LQFP-48 被擋。
+- `sch_connect` 真正全有或全無：stub、標籤或電源符號落在別的腳或網路上（兩個要求的網路併成一個、沒要求的空腳被接上）就拒絕並回滾，列出腳位。第四輪一次大呼叫把 CC1、CC2、XIN、REXT 等併進 +1V8，只有警告。
+- pair order 的說明改為「擺件檢查」：比的是焊盤間的直線，不看已佈的銅；佈線後仍會列出。
+
 ## 不在這版（beta.9 之後）
+
+**第四輪回報、留到 beta.10（4–8 優先）：**
+4. **LED / 二極體換封裝時極性反轉，沒有警告（最優先）。** `sch_set_fields refs=["D9"] set={"LCSC":"C779449","Footprint":"LCSC:LED0402-RD_RED"}` 照做；符號 pin 1 是陽極，新封裝 pad 1 是陰極。至少在換二極體 / LED 的封裝或 LCSC 時比對腳名（A / K）與焊盤編號，對不上就警告（`sync_pcb` 也可以檢查）。
+5. **`route` 拒絕自己找到的路徑：** `route from=C14.1 to=Y1.1 layer=F.Cu` 回「the route would break 3 rule(s) the router does not keep … EDGE … need 0.3 have 0.28」，而不是避開板邊。路由器應把板邊間距納入搜尋，或至少在失敗時重試偏移。
+6. **`undo` 回報的未連線數錯：** undo 一次 `set_rules` 後回 `unconnected=0`，下一個呼叫是 21（ratsnest 未重算或延後的大網路沒計入）。
+7. **`auto_place` 保留原本在底面的零件：** 不在 `back` 裡、但已在底面的零件（C10、C11、C16）留在底面，落進預留的走線通道。改成照 `back` 決定，或把說明寫清楚。
+8. **`lcsc_search` 帶連字號的關鍵字：** `keyword:"TYPE-C 16PIN"` 找不到，`"TYPE-C"` 單獨可以；關鍵字的分詞要處理連字號。
+
+**第四輪其他回報：**
+- `lcsc_fetch` / `sch_add_part` 顯示的庫存（C96123、C15008 為 0）與索引（JLC 30 萬以上）不一致。
+- `sch_part` 把 no-connect 的腳顯示成「(unconnected)」，`sch_summary` 卻是 0 個未連接（與下方「顯示 no-connect」同一項）。
+- `sch_connect` 同一次呼叫裡，後面的 stub 端點不會避開前面剛放的 stub / 標籤（現在由網路比對拒絕；根本修正是選位時一併考慮本次已放的）。
+- `auto_place` 每面的禁區 / 走線通道規則、區域指定面；可佈性估計（通道寬 vs 需要的線數）。
+- `stitch_vias` 的「no free spot」說明是哪些零件擋住。
+- `lcsc_search` 的保險絲（hold current）、連接器、ESD（電容、通道數）參數。
+- 底面 QFP 在窄板上的逃線（skill 補說明；逃線輔助工具）。
+- `audit` skew 可排除 TVS 的分支。
+- `move_footprints` 給 `parts` 時要求 `refs`：重現不出來（`length_e2e` 只給 `parts` 可以），可能是子代理 client 端的舊 schema。
+
+**原有項目：**
 
 - 非直線的 via 搜尋（目前只沿兩端直線、±0.8 / 1.6 mm 偏移試 25 個點）。
 - 各工具未連線數統計對齊（`stitch_vias` / `route_short` / `audit` / `move_footprints` 的數字不同，且沒說排除了哪些網路）。

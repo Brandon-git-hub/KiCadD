@@ -394,14 +394,17 @@ From a blank project, before placing parts:
   pair each). Prefer the high-speed IC on the connectors' side, or check that the pins' order
   matches the connector before flipping it.
 - **Pair order is checked:** `audit sections=["diff_pair"]` has a "pair order" line naming the
-  pairs whose P and N swap between two parts (straight lines P-P and N-N cross), placed or
-  routed. Check it right after placing, before routing the pairs. `move_footprints` and
+  pairs whose P and N swap between two parts (straight lines P-P and N-N cross) as placed,
+  routed or not. Check it right after placing, before routing the pairs. `move_footprints` and
   `auto_place` also add a "pair order" note when the parts just moved leave a pair swapped
   (nothing when it is fine). Example: the hub IC U1 on top, a USB-A connector J2 moved to
   `"side": "bottom"`. J2 is mirrored, so its D+ and D- swap sides as U1 sees them, and the move answers
-  `note: pair order: 1 of 1 pair(s) have P and N swapped ...: USB1_P / USB1_N: U1 - J2 (bottom)`.
+  `note: pair order (a placement check, not of the routing): 1 of 1 pair(s) have P and N swapped ... USB1_P / USB1_N: U1 - J2 (bottom)`.
   Fix it before routing: put J2 back on top, turn it, move U1's side, or accept a via pair. A
   USB-C's doubled D+ / D- pads (A6 / B6, A7 / B7) fit either order, and are not reported.
+  It is a placement check only: it compares straight lines between the pads, not the copper,
+  so a pair you have routed across (a via pair, a loop) stays listed. Once the pairs are routed,
+  judge them with the diff pair rows (skew, uncoupled) and DRC, not with this line.
 - **Thin board for 2-layer impedance.** On 2 layers the plane is the whole board away. 90 Ω
   differential on 1.6 mm needs about 0.7 mm tracks, impossible at a fine-pitch IC. Either take
   a thinner board (0.8 mm: about 0.55 mm), or accept a higher Zdiff on short runs: USB 2.0

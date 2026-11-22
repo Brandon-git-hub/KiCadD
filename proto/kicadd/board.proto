@@ -1072,6 +1072,7 @@ message RouteShort
   bool            dry_run    = 5;
   bool            no_vias    = 6;   // never a via: a connection that needs one is left (default: vias
                                     // where it can't be done on one layer)
+  bool            allow_under_ic = 7;   // vias also inside an exposed-pad IC's pads (QFN): off by default
 }
 
 // Fan out SMD pads to a copper zone of their net on another layer: a short track and a via

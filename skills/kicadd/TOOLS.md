@@ -149,10 +149,11 @@ Arguments:
 
 Route the shortest unrouted connections of given parts / nets, one by one as route does, with vias where one layer won't do.
 
-Route the unrouted connections (ratsnest lines) of refs and / or nets, shortest first (the short ones have the fewest ways round, so they go first and block the least), each as route does; max_length (mm) leaves the long ones to the user. Through-hole to through-hole: F.Cu, then B.Cu if blocked, unless layer is given; when the nearest copper of the other end can't be reached (a track on the far layer), the pads and vias joined to it, nearest first. A connection that can't be done on one layer gets vias (vias=false: none): ends on different layers one via on the way, on the same layer over the other side and back, the spots along the straight line tried in turn. The failures say how far they got and what is in the way (delete_tracks or move the part). All of it is one undoable edit; dry_run reports what would and would not route without drawing.
+Route the unrouted connections (ratsnest lines) of refs and / or nets, shortest first (the short ones have the fewest ways round, so they go first and block the least), each as route does; max_length (mm) leaves the long ones to the user. Through-hole to through-hole: F.Cu, then B.Cu if blocked, unless layer is given; when the nearest copper of the other end can't be reached (a track on the far layer), the pads and vias joined to it, nearest first. A connection that can't be done on one layer gets vias (vias=false: none): ends on different layers one via on the way, on the same layer over the other side and back, the spots along the straight line tried in turn, none inside the pads of an IC with an exposed / thermal pad (a QFN: allow_under_ic=true allows it; an LQFP's body is free). The failures say how far they got and what is in the way (delete_tracks or move the part). All of it is one undoable edit; dry_run reports what would and would not route without drawing.
 
 Arguments:
 
+- `allow_under_ic` (boolean): vias under a QFN's body too (default false)
 - `detail` (boolean): list everything (default: long lists cut short)
 - `dry_run` (boolean)
 - `layer` (string)
@@ -543,7 +544,7 @@ Arguments:
 
 Connect pins to nets with a stub and a label (or power symbols, ports, no-connect); all or none.
 
-Connect pins to nets, as {"nets": {"GND": ["R1.2", "C1.2"], "VCC": ["U1.VDD"]}}. Each pin gets a short wire and a net label, so pins on the same net name are connected; net "NC" marks pins as not connected. A pin already on another net is refused (sch_disconnect it first); all or none: with any error nothing is connected. Hierarchy: a net named in ports is a port of the pins' sheet (a hierarchical label inside, a sheet pin of that name on the sheet's symbol: inputs on the left, the rest on the right); on the parent the sheet pin is SHEET.PIN, like a part's, e.g. {"+5V": ["Power.VOUT", "U2.3"]}. global uses global labels instead (every sheet sees the net by name). Nets in power get a power symbol instead of a label (GND, +3V3, VCC: global on every sheet, the usual way for supplies; ground-like names get a ground symbol).
+Connect pins to nets, as {"nets": {"GND": ["R1.2", "C1.2"], "VCC": ["U1.VDD"]}}. Each pin gets a short wire and a net label, so pins on the same net name are connected; net "NC" marks pins as not connected. A pin already on another net is refused (sch_disconnect it first); all or none: with any error nothing is connected, also when a stub, label or power symbol would land on another pin or net (two asked nets made one, a pin not asked joined): the pins are listed. Hierarchy: a net named in ports is a port of the pins' sheet (a hierarchical label inside, a sheet pin of that name on the sheet's symbol: inputs on the left, the rest on the right); on the parent the sheet pin is SHEET.PIN, like a part's, e.g. {"+5V": ["Power.VOUT", "U2.3"]}. global uses global labels instead (every sheet sees the net by name). Nets in power get a power symbol instead of a label (GND, +3V3, VCC: global on every sheet, the usual way for supplies; ground-like names get a ground symbol).
 
 Parameter notes:
 

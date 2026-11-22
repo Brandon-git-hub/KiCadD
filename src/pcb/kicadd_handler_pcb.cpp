@@ -2770,8 +2770,9 @@ std::string similarNets( BOARD* aBoard, const std::string& aName )
 }
 
 
-/// Where a via must not go: under a multi-pin SMD IC (8 or more pads, or a pad inside the
-/// others: an exposed / thermal pad), the box of its pads.
+/// Where a via must not go: under an SMD IC with an exposed / thermal pad (a pad inside the
+/// others, as a QFN's), the box of its pads: on the pad, or between it and the pad ring. An IC
+/// without one (an LQFP) has a free body: vias there are the usual escape of a back-side part.
 std::vector<BOX2I> icBodies( BOARD* aBoard )
 {
     std::vector<BOX2I> out;
@@ -2780,21 +2781,27 @@ std::vector<BOX2I> icBodies( BOARD* aBoard )
     {
         const auto& pads = fp->Pads();
 
-        if( pads.size() < 3 || std::any_of( pads.begin(), pads.end(),
-                                            []( const PAD* p ) { return p->GetAttribute() == PAD_ATTRIB::PTH; } ) )
+        if( pads.size() < 3 )
             continue;
 
         bool exposed = false;
 
         for( const PAD* p : pads )
         {
-            BOX2I others;
-            bool  any = false;
+            // the exposed pad is SMD (its thermal vias, PTH pads of the same number, are not others)
+            if( p->GetAttribute() != PAD_ATTRIB::SMD )
+                continue;
+
+            BOX2I  others;
+            bool   any = false;
+            double biggest = 0;   // of the other pads: an exposed pad is much bigger (not a BGA's inner ball)
 
             for( const PAD* q : pads )
             {
                 if( q != p && q->GetNumber() != p->GetNumber() )
                 {
+                    biggest = std::max( biggest, (double) q->GetBoundingBox().GetArea() );
+
                     if( !any )
                         others = BOX2I( q->GetPosition() );
                     else
@@ -2805,11 +2812,11 @@ std::vector<BOX2I> icBodies( BOARD* aBoard )
             }
 
             const VECTOR2I c = p->GetPosition();
-            exposed |= any && c.x > others.GetLeft() && c.x < others.GetRight() && c.y > others.GetTop()
+            exposed |= any && (double) p->GetBoundingBox().GetArea() >= 2 * biggest && c.x > others.GetLeft() && c.x < others.GetRight() && c.y > others.GetTop()
                        && c.y < others.GetBottom();
         }
 
-        if( pads.size() < 8 && !exposed )
+        if( !exposed )
             continue;
 
         BOX2I box;
@@ -3068,7 +3075,7 @@ HANDLER_RESULT<RouteResponse> KICADD_HANDLER_PCB::handleRouteShort( const HANDLE
             int                   tries = 0, underIc = 0;
 
             if( !bodies )
-                bodies = icBodies( b );
+                bodies = req.allow_under_ic() ? std::vector<BOX2I>() : icBodies( b );
 
             auto tryStops = [&]( const std::vector<kicadd::route::STOP>& aStops )
             {
@@ -3142,7 +3149,9 @@ HANDLER_RESULT<RouteResponse> KICADD_HANDLER_PCB::handleRouteShort( const HANDLE
             {
                 res = firstFail;
                 res.error += " (and with vias: " + std::to_string( tries ) + " spot(s) tried along the way, none fits"
-                             + ( underIc ? "; " + std::to_string( underIc ) + " under an IC's body left out" : std::string() )
+                             + ( underIc ? "; " + std::to_string( underIc )
+                                                   + " under an exposed-pad IC's body left out: allow_under_ic=true tries them"
+                                         : std::string() )
                              + ")";
             }
         }

@@ -69,7 +69,7 @@ def main():
         err, t = m.tool("audit")
         dp = section(t, "diff_pair")
         print("      ", dp[0][:200] if dp else t[:200])
-        check(not err and len(dp) == 2 and dp[1].startswith("info: pair order: ") and not section(t, "length"),
+        check(not err and len(dp) == 2 and dp[1].startswith("info: pair order (a placement check") and not section(t, "length"),
               "by default the diff_pair header and the pair order line, no length section")
         check(dp and dp[0].startswith("info: 18 routed diff pair(s) (14 not routed yet): worst skew 6.28 mm (/CM5/USB2P.D_P/N (pair))")
               and "No verdicts" in dp[0] and "The worst skew: /CM5/USB2P.D_P/N (pair): 16.23 / 22.51 mm" in dp[0],

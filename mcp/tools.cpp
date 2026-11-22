@@ -855,6 +855,7 @@ TOOL_RESULT routeShort( IPC_CLIENT& aIpc, const json& aArgs )
     req.set_layer( aArgs.value( "layer", std::string() ) );
     req.set_dry_run( aArgs.value( "dry_run", false ) );
     req.set_no_vias( !aArgs.value( "vias", true ) );
+    req.set_allow_under_ic( aArgs.value( "allow_under_ic", false ) );
 
     kb::RouteResponse r;
     std::string       err;
@@ -3062,7 +3063,8 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        "layer), the pads and vias joined to it, nearest first. "
                        "A connection that can't be done on one layer gets vias (vias=false: none): ends on "
                        "different layers one via on the way, on the same layer over the other side and back, "
-                       "the spots along the straight line tried in turn. The failures say how far they got and what is in the way "
+                       "the spots along the straight line tried in turn, none inside the pads of an IC with an exposed / thermal "
+                       "pad (a QFN: allow_under_ic=true allows it; an LQFP's body is free). The failures say how far they got and what is in the way "
                        "(delete_tracks or move the part). All of it is one undoable edit; dry_run reports "
                        "what would and would not route without drawing.",
                        schema( { { "refs", refs },
@@ -3071,6 +3073,7 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                                  { "layer", { { "type", "string" } } },
                                  { "dry_run", { { "type", "boolean" } } },
                                  { "vias", { { "type", "boolean" }, { "description", "default true" } } },
+                                 { "allow_under_ic", { { "type", "boolean" }, { "description", "vias under a QFN's body too (default false)" } } },
                                  { "detail", DETAIL_PROP } } ),
                        [&aIpc]( const json& a ) { return routeShort( aIpc, a ); } } );
 

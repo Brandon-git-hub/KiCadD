@@ -1576,6 +1576,7 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleConnect( const HAND
         schematic()->Hierarchy().GetSymbols( powerRefs, SYMBOL_FILTER_POWER );
 
     std::map<std::string, std::string> asked;   // REF.PIN -> net, in this call
+    const std::map<std::string, std::string> netsBefore = pinNets();   // to see what it joined
     std::vector<std::pair<SCH_SCREEN*, BOX2I>> textPlaced;   // the labels / power symbols made here
 
     // every pin's net now, before this call changes anything (the connectivity is not current
@@ -1850,8 +1851,95 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleConnect( const HAND
     if( added )
     {
         out.set_history_label( "connect " + std::to_string( added ) + " pin" + ( added > 1 ? "s" : "" ) );
-        pushRecorded( commit, wx( out.history_label() ) );
+        std::vector<kicadd::SCH_EDIT> redo = std::move( m_redo );
+        m_redo.clear();
+        const bool recorded = pushRecorded( commit, wx( out.history_label() ) );
         rebuildConnectivity();
+
+        if( !recorded )
+            m_redo = std::move( redo );
+
+        // All or none, also for what the stubs and symbols touched: a stub end, label or power
+        // symbol put down on a neighbour's pin or wire joins it without a word. Refused, undone.
+        const std::map<std::string, std::string> netsAfter = pinNets();
+        std::vector<std::string>                 wrong;
+
+        auto last = []( const std::string& aNet )
+        {
+            return aNet.substr( aNet.rfind( '/' ) == std::string::npos ? 0 : aNet.rfind( '/' ) + 1 );
+        };
+
+        auto shown = []( const std::string& aNet ) { return aNet.empty() ? std::string( "(none)" ) : aNet; };
+
+        std::map<std::string, std::string> netOfAsked;   // the net each asked name ended on
+        std::map<std::string, std::vector<std::string>> touched;   // "GND -> +1V8": pins not asked
+
+        for( const auto& [key, now] : netsAfter )
+        {
+            auto        was = netsBefore.find( key );
+            std::string before = was == netsBefore.end() ? std::string() : was->second;
+            auto        ask = asked.find( key );
+
+            if( ask != asked.end() && ask->second == "NC" )
+            {
+                continue;   // a no-connect flag
+            }
+            else if( ask != asked.end() )
+            {
+                // a port's net may take the parent's name; others are named as asked
+                if( !ports.count( ask->second ) && last( now ) != ask->second )
+                    wrong.push_back( key + ": asked " + ask->second + ", on " + shown( now ) );
+
+                // a local label is a net per sheet: "/A/N1" and "/B/N1" are two, as asked
+                const std::string scope = now.substr( 0, now.size() - last( now ).size() );
+                auto [it, fresh] = netOfAsked.emplace( scope + ask->second, now );
+
+                if( !fresh && it->second != now )
+                    wrong.push_back( key + ": " + ask->second + " is on two nets (" + it->second + ", " + shown( now ) + ")" );
+            }
+            else if( now != before && before.empty() )
+            {
+                // a pin not asked for, on no net before, is one a stub, label or symbol landed on.
+                // (One already on a net may be renamed by what was asked: a sheet pin, a power
+                // symbol's pin; two asked nets made one are caught above.)
+                touched[shown( before ) + " -> " + shown( now )].push_back( key );
+            }
+        }
+
+        for( const auto& [change, pins] : touched )
+        {
+            std::string some;
+
+            for( size_t i = 0; i < pins.size() && i < 4; ++i )
+                some += ( i ? " " : "" ) + pins[i];
+
+            wrong.push_back( change + " for " + std::to_string( pins.size() ) + " pin(s) not asked (" + some
+                             + ( pins.size() > 4 ? " ..." : "" ) + ")" );
+        }
+
+        std::map<std::string, std::string> askedOfNet;
+
+        for( const auto& [name, net] : netOfAsked )
+        {
+            auto [it, fresh] = askedOfNet.emplace( net, name );
+
+            if( !fresh && !net.empty() )
+                wrong.push_back( last( name ) + " and " + last( it->second ) + " ended on one net, " + net );
+        }
+
+        if( !wrong.empty() )
+        {
+            if( recorded )
+                dropLastEdit( std::move( redo ) );
+
+            out.add_errors( "nothing connected (all or none): the stubs, labels or power symbols would join other "
+                            "nets: " + listChanges( wrong, 8 )
+                            + ". Move the parts apart (sch_move) or connect fewer pins at a time" );
+            out.set_done( 0 );
+            out.clear_history_label();
+            return out;
+        }
+
         announce( wxS( "Agent: " ) + wx( out.history_label() ) );
 
         // the nets asked for: one a power symbol renames (and joins to others) is said here
