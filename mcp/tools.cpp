@@ -685,6 +685,11 @@ std::string renderRoute( const kb::RouteResult& r, bool aDryRun )
     if( r.min_gap() >= 0 )
         s += ", min gap " + mm( r.min_gap() ) + " to " + r.gap_to();
 
+    // only with waypoints: without them going round things is what a route does
+    if( r.stray() > 0 && viaStops )
+        s += "; it leaves the way through the waypoints by " + mm( r.stray() ) + " mm at " + pt( r.stray_at() )
+             + " (round something in the way; strict=true refuses that)";
+
     return s + "\n";
 }
 
@@ -702,6 +707,7 @@ TOOL_RESULT routeTrack( IPC_CLIENT& aIpc, const json& aArgs )
 
     req.set_layer( aArgs.value( "layer", std::string() ) );
     req.set_dry_run( aArgs.value( "dry_run", false ) );
+    req.set_strict( aArgs.value( "strict", false ) );
 
     if( double w = 0; getNumber( aArgs, "width", w ) )
         req.set_width( std::llround( w * 1e6 ) );
@@ -3042,7 +3048,8 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        "layer; via: [x, y] is short for one via to the other side (the end's layer). layer: "
                        "where to start (default: the start pad's / the end's / F.Cu); width in mm. Reports "
                        "length vs the straight line, segments, vias and the narrowest gap; when blocked, how "
-                       "far it got and what is in the way. One undoable edit; dry_run reports without "
+                       "far it got and what is in the way, and how far it leaves the box between two waypoints "
+                       "(strict=true refuses that). One undoable edit; dry_run reports without "
                        "drawing. Mm, Y down.",
                        schema( { { "from", { { "description", "\"U1.5\" or [x, y] (a point inside a pad: the track leaves the pad there, not at its centre)" } } },
                                  { "to", { { "description", "\"C3.1\", [x, y], or \"zone\" (the net's pour); omit: ratsnest" } } },
@@ -3050,7 +3057,8 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                                  { "via", { { "type", "array" }, { "items", { { "type", "number" } } } } },
                                  { "layer", { { "type", "string" } } },
                                  { "width", { { "type", "number" } } },
-                                 { "dry_run", { { "type", "boolean" } } } },
+                                 { "dry_run", { { "type", "boolean" } } },
+                                 { "strict", { { "type", "boolean" }, { "description", "refuse a route that strays off the waypoints" } } } },
                                { "from" } ),
                        [&aIpc]( const json& a ) { return routeTrack( aIpc, a ); } } );
 

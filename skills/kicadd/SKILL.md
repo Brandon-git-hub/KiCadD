@@ -440,7 +440,10 @@ length matching, dense escapes).
    ones don't take the channels the short ones need.
 3. One connection: `route from="U1.5"` (to the nearest unrouted connection) or `to="C3.1"`.
    Steer it with `waypoints: [[x, y], ...]`; change layer with `[x, y, "B.Cu"]` among them, or
-   `via: [x, y]`. Pick via spots yourself (`query_area` around the point).
+   `via: [x, y]`. Pick via spots yourself (`query_area` around the point). Between two
+   waypoints the router may still go round something; the reply says how far it leaves the
+   box between them ("leaves the way through the waypoints by ..."), and `strict=true` refuses
+   such a route instead.
 4. Read the numbers: length vs the straight line (above ~1.5x it detours), segments, vias, the
    narrowest gap. A failure says how far it got and what is in the way: `delete_tracks` that,
    move a part, or give waypoints round it. Between close pads (a solder jumper, fine pitch)

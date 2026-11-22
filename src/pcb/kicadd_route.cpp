@@ -708,6 +708,130 @@ RESULT SESSION::Route( const REQUEST& aReq )
                        return true;
                    } );
 
+    // Near-zero pieces (< 10 um: the router's rounding next to a waypoint or a pad, e.g.
+    // 107.4999,105.0001 -> 107.5,105): out, and the track next to them moved onto the point
+    // kept. The request's own points (ends, waypoints) are the ones kept.
+    {
+        constexpr int         TINY = 10000;
+        std::vector<VECTOR2I> keep = { aReq.from, aReq.to };
+
+        for( const STOP& st : stops )
+            keep.push_back( st.pos );
+
+        auto kept = [&]( const VECTOR2I& p ) { return std::find( keep.begin(), keep.end(), p ) != keep.end(); };
+
+        auto touching = [&]( const VECTOR2I& p, const PCB_TRACK* aSkip )
+        {
+            std::vector<PCB_TRACK*> at;
+
+            for( PCB_TRACK* o : mine )
+            {
+                if( o == aSkip )
+                    continue;
+
+                if( o->Type() == PCB_VIA_T ? o->GetPosition() == p : ( o->GetStart() == p || o->GetEnd() == p ) )
+                    at.push_back( o );
+            }
+
+            return at;
+        };
+
+        for( bool again = true; again; )
+        {
+            again = false;
+
+            for( PCB_TRACK* t : mine )
+            {
+                if( t->Type() != PCB_TRACE_T || t->GetLength() >= TINY )
+                    continue;
+
+                // the point to give up: not one of the request's, joined to one other segment only
+                VECTOR2I drop = t->GetEnd(), stay = t->GetStart();
+
+                if( kept( drop ) && !kept( stay ) )
+                    std::swap( drop, stay );
+
+                std::vector<PCB_TRACK*> other = touching( drop, t );
+
+                if( kept( drop ) || other.size() != 1 || other[0]->Type() != PCB_TRACE_T
+                    || other[0]->GetLayer() != t->GetLayer() )
+                {
+                    std::swap( drop, stay );
+                    other = touching( drop, t );
+
+                    if( kept( drop ) || other.size() != 1 || other[0]->Type() != PCB_TRACE_T
+                        || other[0]->GetLayer() != t->GetLayer() )
+                        continue;
+                }
+
+                if( other[0]->GetStart() == drop )
+                    other[0]->SetStart( stay );
+                else
+                    other[0]->SetEnd( stay );
+
+                if( PNS::ITEM* item = router.GetWorld()->FindItemByParent( t ) )
+                    router.GetWorld()->Remove( item );
+
+                std::erase( mine, t );
+                std::erase_if( m.iface.added, [&]( const std::unique_ptr<PCB_TRACK>& a ) { return a.get() == t; } );
+                again = true;
+                break;
+            }
+        }
+    }
+
+    // How far the track goes outside the box between two consecutive points of its path (an
+    // obstacle gone round between waypoints): said, and refused when strict. Inside the end
+    // items (a pad's breakout) does not count.
+    {
+        std::vector<VECTOR2I> path = { aReq.from };
+
+        for( const STOP& st : stops )
+            path.push_back( st.pos );
+
+        path.push_back( aReq.to );
+
+        auto outside = [&]( const VECTOR2I& p )
+        {
+            double best = -1;
+
+            for( size_t i = 0; i + 1 < path.size(); ++i )
+            {
+                BOX2I box( path[i], VECTOR2I( 0, 0 ) );
+                box.Merge( path[i + 1] );
+                double dx = std::max( { (double) box.GetLeft() - p.x, 0.0, (double) p.x - box.GetRight() } );
+                double dy = std::max( { (double) box.GetTop() - p.y, 0.0, (double) p.y - box.GetBottom() } );
+                double d = std::hypot( dx, dy );
+
+                if( best < 0 || d < best )
+                    best = d;
+            }
+
+            return best;
+        };
+
+        for( PCB_TRACK* t : mine )
+        {
+            for( const VECTOR2I& p : { t->GetStart(), t->GetEnd() } )
+            {
+                if( ( aReq.fromItem && aReq.fromItem->HitTest( p, 0 ) ) || ( aReq.toItem && aReq.toItem->HitTest( p, 0 ) ) )
+                    continue;
+
+                if( double d = outside( p ); d > out.stray )
+                {
+                    out.stray = (long long) d;
+                    out.strayAt = p;
+                }
+            }
+        }
+
+        if( out.stray < 50000 )   // 0.05 mm: rounding and 45-degree corners, not a detour
+        {
+            out.stray = 0;
+            out.strayAt.reset();
+        }
+    }
+
     for( PCB_TRACK* t : mine )
     {
         if( t->Type() == PCB_VIA_T )
@@ -723,9 +847,12 @@ RESULT SESSION::Route( const REQUEST& aReq )
 
     m.measure( mine, out );
 
-    // A rule the router does not keep (hole to hole, copper on a cut-out): take the route out of
-    // the session again, so it is neither drawn nor in the way of the next ones
-    if( !out.drc.empty() )
+    // A rule the router does not keep (hole to hole, copper on a cut-out), or a strict route
+    // that strays: take the route out of the session again, so it is neither drawn nor in the
+    // way of the next ones
+    const bool strayed = aReq.strict && out.stray > 0;
+
+    if( !out.drc.empty() || strayed )
     {
         for( PCB_TRACK* t : mine )
         {
@@ -736,8 +863,15 @@ RESULT SESSION::Route( const REQUEST& aReq )
         }
 
         out.ok = false;
-        out.error = "the route would break " + std::to_string( out.drc.size() ) + " rule(s) the router does not keep "
-                    "(e.g. hole to hole); not kept";
+
+        if( !out.drc.empty() )
+            out.error = "the route would break " + std::to_string( out.drc.size() ) + " rule(s) the router does not keep "
+                        "(e.g. hole to hole); not kept";
+        else
+            out.error = "strict: the route leaves the way through the waypoints by " + mm( out.stray ) + " mm at "
+                        + mm( out.strayAt->x ) + "," + mm( out.strayAt->y )
+                        + " (round something in the way); not kept: a waypoint there, or clear the way";
+
         return out;
     }
 

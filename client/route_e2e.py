@@ -20,6 +20,7 @@ StickHub (2 layers, SMD, GND on both sides):
 """
 
 import argparse
+import math
 import os
 import re
 import shutil
@@ -192,6 +193,10 @@ def pic(a, work):
               "routed: " + t.split("\n")[0])
         check(all("in the way" in ln or "no unrouted" in ln for ln in t.split("not routed:\n")[-1].split("\n")[:3]
                   if ln.startswith("  ") and "not routed" in ln), "the failures say what is in the way")
+        err, q = mcp.tool("query_area", {"x": 150, "y": 90, "radius": 500, "kinds": ["track"], "limit": 5000})
+        segs = [tuple(map(float, g)) for g in re.findall(r"^TRK \S+ \S+ \S+ (-?[\d.]+),(-?[\d.]+)>(-?[\d.]+),(-?[\d.]+)", q, re.M)]
+        tiny = [g for g in segs if math.dist(g[:2], g[2:]) < 0.01]
+        check(segs and not tiny, f"no near-zero track pieces (< 10 um) among {len(segs)}: {tiny[:3]}")
         mcp.tool("refill_zones")
         err, t = mcp.tool("run_drc")
         kinds = drc_kinds(t)
@@ -304,6 +309,10 @@ def detour(a, work):
         ("W1", (100, 100), "F", [("1", (0, 0), (18, 5), "WALL")]),
         ("R1", (88, 100), "F", [("1", (0, 0), (0.6, 0.6), "SIG")]),
         ("R2", (112, 100), "B", [("1", (0, 0), (0.6, 0.6), "SIG")]),
+        # a pad of another net on the straight leg between two waypoints (R5 -> R6)
+        ("R5", (90, 125), "F", [("1", (0, 0), (0.6, 0.6), "LEG")]),
+        ("R6", (100, 125), "F", [("1", (0, 0), (0.6, 0.6), "LEG")]),
+        ("R7", (95, 124), "F", [("1", (0, 0), (1.0, 0.6), "WALL")]),
         # a wall across the board but for a 0.9 mm channel at the left edge (x 80): the track's
         # only way is along the edge, at the edge clearance
         ("W2", (109.95, 115), "F", [("1", (0, 0), (58.1, 4), "WALL")]),
@@ -329,6 +338,16 @@ def detour(a, work):
         check(err and "on the route's start" in t, "a via on the start itself: refused, no crash: " + t.splitlines()[0][:100])
         err, t = mcp.tool("board_summary")
         check(not err, "the server still answers")
+        leg = {"from": "R5.1", "to": "R6.1", "waypoints": [[93, 124], [97, 124]]}
+        err, t = mcp.tool("route", dict(leg, strict=True))
+        check(err and "strict: the route leaves the way through the waypoints by" in t,
+              "strict: a route round a pad between two waypoints is refused: " + t.splitlines()[0][:120])
+        err, t = mcp.tool("route", leg)
+        st = re.search(r"leaves the way through the waypoints by ([\d.]+) mm at", t)
+        check(not err and st and 0.3 < float(st.group(1)) < 1.0, "without strict: routed, the detour said: "
+              + (st.group(0) if st else t.splitlines()[0][:120]))
+        err, t = mcp.tool("route", {"from": "R1.1", "to": "R2.1", "waypoints": [[92, 101], [98, 101]], "dry_run": True})
+        check("leaves the way" not in t, "a route that keeps to its waypoints says nothing of it")
         err, t = mcp.tool("route", {"from": "R3.1", "to": "R4.1", "layer": "F.Cu"})
         print("      ", " | ".join(t.splitlines()[:2])[:200] if t else "")
         check(not err and "not kept" not in t and "routed" in t, "route squeezed along the board edge: kept (edge measured from the line's middle)")

@@ -48,6 +48,7 @@ struct REQUEST
     PCB_LAYER_ID          layer = UNDEFINED_LAYER;   ///< undefined: chosen from the ends
     int                   width = 0;                 ///< 0: the net class's / rules' width
     PCB_LAYER_ID          endViaTo = UNDEFINED_LAYER;   ///< end in a via down to this layer (fanout)
+    bool                  strict = false;   ///< refuse a route that strays off the box between its points
 };
 
 
@@ -70,6 +71,8 @@ struct RESULT
     std::optional<VECTOR2I> blockedAt;   ///< where the route meets it
     std::optional<VECTOR2I> blockerAt;   ///< the item's own position (a pad's centre, a track's start)
     std::vector<board::DrcViolation> drc;   ///< clearance / edge violations of the new tracks
+    long long               stray = 0;   ///< nm outside the box between two consecutive points of the path
+    std::optional<VECTOR2I> strayAt;     ///< where
 };
 
 

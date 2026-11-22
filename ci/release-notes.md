@@ -14,12 +14,14 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 - **目前不支援：** 差分對與等長佈線、全板自動佈線（`route` 只代替重複的手動佈線）、電路圖自動排版、組裝圖、STEP 匯出（3D 模型只有 VRML）、ODB++ / IPC-2581 / DXF、MCP resources / prompts。
 
 ## 這一版（beta.10）
-修正版：第四輪盲測留下的 4–8 項，加上非直線的 via 搜尋。工具數不變（64 個）。
+修正版：第四輪盲測留下的 4–8 項、非直線的 via 搜尋，以及第五輪盲測發現的路由器當機、`route_short` 逾時與 `route` 的兩個問題。工具數不變（64 個）。
 
 - **LED / 二極體的極性：** `sch_set_fields` 改 LCSC 料號或封裝時，比對符號的 A / K 腳與新封裝的焊盤編號。依據是該料號自己的 EasyEDA 符號，KiCad 的 `LED_*` / `Diode_*` 庫則依慣例（pad 1 = K）。對不上就警告 `polarity reversed`。例如 C2286 的符號 pin 1 是 A，C779449 的 pad 1 是 K。
 - **`route` 貼著板邊：** 板邊間距改從 Edge.Cuts 線的中心量，和 KiCad 的 DRC 與路由器一致。以前多算了線寬的一半，正好貼著間距走的線會被當成違規而丟掉（「need 0.3 have 0.28」）。
 - **`route_short` 非直線的 via 搜尋：** 沿兩端直線的位置都放不下 via 時，改在兩端周圍的格點找空位（零件旁的空隙），依繞行距離由短到長試。via 搜尋每次呼叫最多 45 秒，超過後其餘連線註明「vias not tried」，避免逾時（Run 5 第一次跑時一次呼叫超過 120 秒，之後的請求全部逾時）。
 - **路由器當機：** via 或 waypoint 落在路線的起點、終點或前一個點上時，KiCad 路由器會在 `VIA::PushoutForce` 當掉（Run 5 第一次跑時發生，伺服器和未存的板子一起不見）。現在這種請求直接拒絕，格點搜尋也不再挑端點焊盤上的位置。
+- **`route` 的微小線段：** 路由器在 waypoint 或焊盤旁留下的 0.1–5 µm 線段（四捨五入的殘餘）現在會刪除，並把相鄰線段接到保留的點上。
+- **`route` 在 waypoint 之間繞行：** 兩個 waypoint 之間繞過障礙、超出兩點圍成的方框時，回應會說繞出多遠、在哪裡。以前沒有提示，下一條線常撞上它。`strict=true` 時直接拒絕這種路線。
 - **`undo` 的未連線數：** undo / redo `set_rules` 或 `board_setup` 後，回報板子實際的未連線數（以前是 0）。
 - **`auto_place` 的面：** 有給 `back` 或 `back_decaps` 時就由它決定面。已在底面、但兩者都沒指到的 SMD 零件會回到頂面，不再留在原來那面。
 - **`lcsc_search` 關鍵字：** `16PIN`、`16-PIN`、`16POS` 也找得到型錄寫的 `16P`。`TYPE-C` 也比對 `TYPEC` 和 `Type C`。

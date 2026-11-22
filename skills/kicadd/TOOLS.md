@@ -129,7 +129,7 @@ Arguments:
 
 Draw one connection like the interactive router (to a pad, a point, or the net's pour). Not an autorouter.
 
-Draw one connection the way the interactive router does (45-degree tracks around obstacles; existing copper is never moved; the net class's width and via, the clearance, keepout and edge rules). Not an autorouter: say what to connect. from: a pad "U1.5" or a point [x, y] on the net's pad / track / via (inside a pad: the track leaves the pad there, for a way out between close pads); to: likewise, or any point (a free end), or "zone": the net's own pour, its nearest filled copper (on the start's layer, else with a via down to the nearest layer that has it: a pad to a VBUS / GND pour); without to: the nearest unrouted connection of from. waypoints: [[x, y], ...] to pass through, [x, y, "B.Cu"] puts a via there and goes on on that layer; via: [x, y] is short for one via to the other side (the end's layer). layer: where to start (default: the start pad's / the end's / F.Cu); width in mm. Reports length vs the straight line, segments, vias and the narrowest gap; when blocked, how far it got and what is in the way. One undoable edit; dry_run reports without drawing. Mm, Y down.
+Draw one connection the way the interactive router does (45-degree tracks around obstacles; existing copper is never moved; the net class's width and via, the clearance, keepout and edge rules). Not an autorouter: say what to connect. from: a pad "U1.5" or a point [x, y] on the net's pad / track / via (inside a pad: the track leaves the pad there, for a way out between close pads); to: likewise, or any point (a free end), or "zone": the net's own pour, its nearest filled copper (on the start's layer, else with a via down to the nearest layer that has it: a pad to a VBUS / GND pour); without to: the nearest unrouted connection of from. waypoints: [[x, y], ...] to pass through, [x, y, "B.Cu"] puts a via there and goes on on that layer; via: [x, y] is short for one via to the other side (the end's layer). layer: where to start (default: the start pad's / the end's / F.Cu); width in mm. Reports length vs the straight line, segments, vias and the narrowest gap; when blocked, how far it got and what is in the way, and how far it leaves the box between two waypoints (strict=true refuses that). One undoable edit; dry_run reports without drawing. Mm, Y down.
 
 Parameter notes:
 
@@ -140,6 +140,7 @@ Arguments:
 - `dry_run` (boolean)
 - `from`: "U1.5" or [x, y]
 - `layer` (string)
+- `strict` (boolean): refuse a route that strays off the waypoints
 - `to`: "C3.1", [x, y], or "zone" (the net's pour); omit: ratsnest
 - `via` (array)
 - `waypoints` (array)

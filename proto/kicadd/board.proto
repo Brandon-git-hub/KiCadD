@@ -1026,6 +1026,7 @@ message RouteTrack
   string             layer   = 4;   // empty: the start's (SMD pad, track), else the end's, else F.Cu
   int64              width   = 5;   // nm; 0: the net class / rules
   bool               dry_run = 6;
+  bool               strict  = 7;   // refuse a route that leaves the box between two points of its path
 }
 
 message RouteResult
@@ -1048,6 +1049,8 @@ message RouteResult
   Point  blocked_at = 17;   // where the route meets it
   int64  ends       = 18;   // nm, from -> to in one straight line (direct: through the stops)
   Point  blocker_at = 19;   // the item in the way: its own position (a pad's centre)
+  int64  stray      = 20;   // nm the track goes outside the box between two points of its path (0: not)
+  Point  stray_at   = 21;   // where it goes furthest
 }
 
 message RouteResponse

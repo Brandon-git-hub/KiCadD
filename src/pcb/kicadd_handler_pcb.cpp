@@ -2329,6 +2329,13 @@ void fillResult( RouteResult& aOut, const kicadd::route::RESULT& aRes )
     aOut.set_min_gap( aRes.minGap );
     aOut.set_gap_to( aRes.gapTo );
     aOut.set_blocked_by( aRes.blockedBy );
+    aOut.set_stray( aRes.stray );
+
+    if( aRes.strayAt )
+    {
+        aOut.mutable_stray_at()->set_x( aRes.strayAt->x );
+        aOut.mutable_stray_at()->set_y( aRes.strayAt->y );
+    }
 
     if( aRes.reached )
     {
@@ -2409,6 +2416,7 @@ HANDLER_RESULT<RouteResponse> KICADD_HANDLER_PCB::handleRoute( const HANDLER_CON
     };
 
     kicadd::route::REQUEST r;
+    r.strict = req.strict();
 
     if( !layerOf( req.layer(), r.layer ) )
         return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, err ) );
