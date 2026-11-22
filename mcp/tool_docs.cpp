@@ -53,7 +53,7 @@ const std::map<std::string, std::string> BRIEFS = {
     // placement and routing
     { "auto_place", "Place parts inside the outline near what they connect to, with optional rules (edges, regions, groups), undoable." },
     { "route", "Draw one connection like the interactive router (to a pad, a point, or the net's pour). Not an autorouter." },
-    { "route_short", "Route the shortest unrouted connections of given parts / nets, one by one as route does." },
+    { "route_short", "Route the shortest unrouted connections of given parts / nets, one by one as route does, with vias where one layer won't do." },
     { "fanout", "Short track + via from SMD pads to a pour of the same net on another layer (GND / power fan-out)." },
     { "stitch_vias", "Stitching vias on a grid over a net's pours (default GND), plus one per unconnected island." },
     { "teardrops", "Add or remove KiCad teardrops on vias and pads." },

@@ -76,13 +76,13 @@ def main():
         x = imp(t)
         check("warning: z_target *HDMI* (50 ohm +/-10%, 1 mm off allowed): 4 net(s) judged, 2 off" in x,
               "z_target: HDMI's DDC 2 of 4 off 50 ohm")
-        check("warning: /CM5/HDMI_PI.SDA: 11.8 mm of 13.6 off 50 ohm, the longest 11.8 mm at 56.9 ohm (B.Cu 0.13 mm) "
-              "at (96.58, 68.91)" in x, "the row: how much off, at what, where")
-        check(any(ln.startswith("warning: /CM5/HDMI_PI.SCL: 1.1 mm of 12.6 off 50 ohm") and ln.endswith("; main 53 ohm (B.Cu 0.15 mm)")
+        check("warning: /CM5/HDMI_PI.SDA: 11.8 mm off 50 ohm of the 13.6 mm measured (breakouts left out), the longest 11.8 mm "
+              "at 56.9 ohm (B.Cu 0.13 mm) at (96.58, 68.91)" in x, "the row: how much off of what was measured, at what, where")
+        check(any(ln.startswith("warning: /CM5/HDMI_PI.SCL: 1.1 mm off 50 ohm of the 12.6 mm measured") and ln.endswith("; main 53 ohm (B.Cu 0.15 mm)")
                   for ln in x), "its main Z when that is not the off one")
         check("warning: z_diff_target *ETH* (100 ohm +/-10%, 1 mm off allowed): 4 pair(s) judged, 4 off" in x
-              and any(ln.startswith("warning: /CM5/ETH_PI.TRD2_P/N (pair): 36.8 mm of 36.8 off 100 ohm, the longest 35.1 mm "
-                                    "at 112.6 ohm (B.Cu 0.13 mm gap 0.25)") for ln in x),
+              and any(ln.startswith("warning: /CM5/ETH_PI.TRD2_P/N (pair): 36.8 mm off 100 ohm of the 36.8 mm measured "
+                                    "(breakouts left out), the longest 35.1 mm at 112.6 ohm (B.Cu 0.13 mm gap 0.25)") for ln in x),
               "z_diff_target: the Ethernet pairs at 112.6 ohm, all off 100")
 
         _, t = m.tool("audit", dict(QUIET, z_diff_target={"*ETH*": 100}, z_tolerance=15))

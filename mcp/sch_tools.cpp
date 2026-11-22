@@ -9,6 +9,7 @@
 #include "tools.h"
 #include "ipc_client.h"
 #include "sim.h"
+#include "drc.h"
 
 #include <algorithm>
 #include <chrono>
@@ -1982,7 +1983,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "there; the nets that vary most from their own main Z. Header only by default; rows with "
             "z_limit n or z_nets [globs]. Targets: z_target {glob: ohm} (Z0 of nets), z_diff_target "
             "{glob: ohm} (Zdiff of pairs), z_tolerance (%, default 10), z_off_mm (default 1). "
-            "Run run_erc and run_drc too.",
+            "Run run_erc and run_drc too. sections [\"drc\", \"unrouted\", \"impedance\", ...] gives only those (the header line always; drc: a full DRC's counts, unrouted: the unrouted connections per net), e.g. while routing.",
             obj( { { "max_decap_mm", { { "type", "number" } } },
                    { "currents", { { "type", "object" }, { "description", "net -> A" } } },
                    { "voltages", { { "type", "object" }, { "description", "net -> V" } } },
@@ -2018,7 +2019,9 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                    { "z_tolerance", { { "type", "number" }, { "description", "percent (default 10)" } } },
                    { "z_off_mm", { { "type", "number" }, { "description", "mm off target allowed (default 1)" } } },
                    { "z_nets", { { "type", "array" }, { "items", { { "type", "string" } } } } },
-                   { "z_limit", { { "type", "integer" } } } } ),
+                   { "z_limit", { { "type", "integer" } } },
+                   { "sections", { { "type", "array" }, { "items", { { "type", "string" } } },
+                                   { "description", "only these, e.g. [\"drc\", \"unrouted\", \"impedance\"]" } } } } ),
             [&aIpc]( const json& a )
             {
                 kicadd::board::BoardAudit boardReq;
@@ -2380,8 +2383,40 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                 else
                     t += "; no board (" + boardErr + "): schematic checks only";
 
-                for( const char* cat : { "decoupling", "power", "esd", "net", "current", "voltage", "silk", "testpoint", "plane", "return_via", "diff_pair", "length", "ir_drop", "crosstalk", "impedance" } )
+                // sections: only these (the header line always); drc / unrouted: a full DRC's
+                // counts and the nets most left unrouted (the routing phase's three questions)
+                std::set<std::string> only;
+
+                for( const json& s : a.value( "sections", json::array() ) )
                 {
+                    if( s.is_string() )
+                        only.insert( s.get<std::string>() );
+                }
+
+                static const std::vector<std::string> CATS = { "decoupling", "power", "esd", "net", "current", "voltage",
+                                                               "silk", "testpoint", "plane", "return_via", "diff_pair",
+                                                               "length", "ir_drop", "crosstalk", "impedance" };
+
+                for( const std::string& s : only )
+                {
+                    if( s != "drc" && s != "unrouted" && std::find( CATS.begin(), CATS.end(), s ) == CATS.end() )
+                    {
+                        std::string names = "drc, unrouted";
+
+                        for( const std::string& c : CATS )
+                            names += ", " + c;
+
+                        return TOOL_RESULT{ "sections: no section " + s + "; they are: " + names, true };
+                    }
+                }
+
+                for( const std::string& catName : CATS )
+                {
+                    const char* cat = catName.c_str();
+
+                    if( !only.empty() && !only.count( catName ) )
+                        continue;
+
                     std::string extra = std::string( cat ) == "decoupling" ? far : "";
 
                     if( byCat.count( cat ) || !extra.empty() )
@@ -2391,7 +2426,63 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                              "the glyphs judged, not their boxes)";
                 }
 
-                if( !nearest.empty() )
+                if( haveBoard && ( only.count( "drc" ) || only.count( "unrouted" ) ) )
+                {
+                    DRC_REPORT  drc;
+                    std::string drcErr;
+
+                    if( !RunFullDrc( aIpc, drc, drcErr ) )
+                    {
+                        t += "\ndrc: not run (" + drcErr + ")";
+                    }
+                    else
+                    {
+                        if( only.count( "drc" ) )
+                        {
+                            int         e = 0, w = 0;
+                            std::string types;
+
+                            for( const auto& [k, n] : drc.errors )
+                            {
+                                e += n;
+                                types += ( types.empty() ? "" : ", " ) + k + " " + std::to_string( n );
+                            }
+
+                            for( const auto& [k, n] : drc.warnings )
+                                w += n;
+
+                            t += "\ndrc:\n  " + std::to_string( e ) + " error(s)" + ( types.empty() ? "" : " (" + types + ")" ) + ", "
+                                 + std::to_string( w ) + " warning(s) (run_drc lists them; zones as filled: refill_zones first)";
+                        }
+
+                        if( only.count( "unrouted" ) )
+                        {
+                            std::map<std::string, int> perNet;
+                            int                        total = 0;
+
+                            for( const DRC_ENTRY& en : drc.entries )
+                            {
+                                if( en.type == "unconnected_items" )
+                                {
+                                    perNet[en.netA.empty() ? en.netB : en.netA]++;
+                                    total++;
+                                }
+                            }
+
+                            std::vector<std::pair<std::string, int>> rows( perNet.begin(), perNet.end() );
+                            std::sort( rows.begin(), rows.end(), []( const auto& x, const auto& y ) { return x.second > y.second; } );
+                            std::string list;
+
+                            for( size_t i = 0; i < rows.size() && i < 12; ++i )
+                                list += ( list.empty() ? "" : ", " ) + rows[i].first + " " + std::to_string( rows[i].second );
+
+                            t += "\nunrouted:\n  " + std::to_string( total ) + " connection(s) on " + std::to_string( rows.size() )
+                                 + " net(s)" + ( list.empty() ? "" : ": " + list + ( rows.size() > 12 ? ", ..." : "" ) );
+                        }
+                    }
+                }
+
+                if( !nearest.empty() && ( only.empty() || only.count( "decoupling" ) ) )
                 {
                     double worst = 0;
 
@@ -2401,7 +2492,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                     t += "\non the board: " + std::to_string( nearest.size() ) + " IC power pin(s) measured, farthest "
                          "decoupling cap " + num( worst ) + " mm";
                 }
-                else if( r.decaps_size() > 0 )
+                else if( r.decaps_size() > 0 && ( only.empty() || only.count( "decoupling" ) ) )
                 {
                     t += "\nnot on a board yet (sync_pcb) or no board open: cap distances not measured";
                 }

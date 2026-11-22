@@ -1070,6 +1070,8 @@ message RouteShort
   int64           max_length = 3;   // nm, straight-line length of the connection; 0: any
   string          layer      = 4;
   bool            dry_run    = 5;
+  bool            no_vias    = 6;   // never a via: a connection that needs one is left (default: vias
+                                    // where it can't be done on one layer)
 }
 
 // Fan out SMD pads to a copper zone of their net on another layer: a short track and a via

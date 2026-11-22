@@ -99,6 +99,14 @@ def main():
         # on the 4-layer alpha: a capacitor GND / VCC, GND as a plane on In1.Cu, VCC as a pour on
         # F.Cu beside the part: GND reaches its plane through a via, VCC its pour on its own layer
         err, t = m.tool("open_board", {"path": files[".kicad_pro"], "discard": True})
+        m.tool("sch_add_part", {"lib_id": "power:PWR_FLAG", "x": 101.6, "y": 50.8})
+        m.tool("sch_connect", {"nets": {"VBUF": ["#FLG01.1", "U1.1"]}})
+        err, t = m.tool("sch_move", {"ref": "#FLG01", "x": 127, "y": 76.2})
+        err2, e = m.tool("run_erc", {"warnings": True})
+        check(not err and "-> /VBUF" in t and "label_dangling" not in e,
+              "sch_move of a PWR_FLAG: its stub and label go with it, still on VBUF: " + t.splitlines()[-1].strip()[:70])
+        m.tool("sch_save", {})
+
         err, t = m.tool("lib_create_footprint", {"kind": "chip", "size": "0603", "prefix": "C"})
         fp = re.search(r"(kicadd:[\w.-]+)", t)
         check(not err and fp, "a 0603 footprint made: " + t.splitlines()[0][:80])
@@ -114,6 +122,14 @@ def main():
         err, t = m.tool("route", {"from": "C1.2", "to": "zone"})
         print("      ", t.strip().splitlines()[0][:160])
         check(not err and "pour F.Cu" in t and "0 via(s)" in t, "C1.2 (VCC) to its pour on F.Cu: no via")
+        err, t = m.tool("add_footprint", {"footprint": fp.group(1) if fp else "", "ref": "C2", "x": 112, "y": 135, "back": True,
+                                          "nets": {"1": "SIG", "2": "VCC2"}})
+        m.tool("add_footprint", {"footprint": fp.group(1) if fp else "", "ref": "C3", "x": 150, "y": 135, "nets": {"1": "SIG", "2": "VCC3"}})
+        err, t = m.tool("route_short", {"nets": ["SIG"], "dry_run": True, "vias": False})
+        err2, t2 = m.tool("route_short", {"nets": ["SIG"], "dry_run": True})
+        check("0 would be routed" in t and "1 would be routed" in t2 and "1 via(s)" in t2,
+              "route_short: C2 (bottom) to C3 (top): no route without vias, one via with them: " + t2.splitlines()[0][:70])
+        m.tool("delete_footprints", {"refs": ["C2", "C3"]})
         m.tool("refill_zones", {})
         err, t = m.tool("run_drc", {})
         check("unconnected_items" not in t, "after a refill both are connected: " + t.splitlines()[0][:80])

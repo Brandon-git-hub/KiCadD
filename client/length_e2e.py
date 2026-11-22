@@ -69,14 +69,15 @@ def main():
         err, t = m.tool("audit")
         dp = section(t, "diff_pair")
         print("      ", dp[0][:200] if dp else t[:200])
-        check(not err and len(dp) == 1 and not section(t, "length"), "by default one diff_pair line, no length section")
+        check(not err and len(dp) == 2 and dp[1].startswith("info: pair order: ") and not section(t, "length"),
+              "by default the diff_pair header and the pair order line, no length section")
         check(dp and dp[0].startswith("info: 18 routed diff pair(s) (14 not routed yet): worst skew 6.28 mm (/CM5/USB2P.D_P/N (pair))")
               and "No verdicts" in dp[0] and "The worst skew: /CM5/USB2P.D_P/N (pair): 16.23 / 22.51 mm" in dp[0],
               "the header: 18 pairs, the worst skew (USB2P, 6.28 mm) with its row")
 
         _, t = m.tool("audit", {"length_limit": 30})
         dp = section(t, "diff_pair")
-        check(len(dp) == 19 and not warnings(dp), "length_limit: a row per pair, no verdicts")
+        check(len(dp) == 20 and not warnings(dp), "length_limit: a row per pair (with the pair order line), no verdicts")
         d0 = [ln for ln in dp if ln.startswith("info: /CM5/DPHY0_P.D0_P/N (pair): 35.52 / 35.51 mm, skew 0.01 mm;")]
         check(d0 and "gap 0.25" in d0[0] and "(target 0.25, class 100ohm)" in d0[0] and "uncoupled 0 mm" in d0[0]
               and "vias 1 / 1" in d0[0], "a row: both lengths, skew, the gap against the class's 0.25, uncoupled, vias")

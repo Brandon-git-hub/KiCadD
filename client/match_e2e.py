@@ -124,6 +124,15 @@ def main():
 
         err, t = mcp.tool("lcsc_match", {"refs": ["R1", "R6"], "replace": True, "live": False})
         check(not err and t.startswith("1 group(s)") and "R1 R6 (10k" in t, "refs + replace: R1 and R6 (one group) matched again: " + t.splitlines()[0])
+        print("[pick checked, the old part's fields]")
+        err, t = mcp.tool("lcsc_match", {"refs": ["R1"], "replace": True, "live": False, "pick": {"R1": "C1525"}})
+        check("does not fit" in t and "its value is" in t, "a pick of another value (a 100 nF cap for 10k): not taken: "
+              + next((l.strip() for l in t.splitlines() if "does not fit" in l), t.splitlines()[0])[:120])
+        mcp.tool("sch_set_fields", {"parts": {"R1": {"Supplier Part": "C1", "Manufacturer Part": "OLD-PART"}}})
+        err, t = mcp.tool("lcsc_match", {"refs": ["R1"], "replace": True, "live": False, "apply": True})
+        err2, p = mcp.tool("sch_part", {"ref": "R1"})
+        check("field(s) of the old part rewritten" in t and "Supplier Part=C1," not in p and "OLD-PART" not in p,
+              "apply: Supplier / Manufacturer Part of the old part rewritten: " + next((l for l in p.splitlines() if "Supplier" in l), p[:100])[:120])
         err, t = mcp.tool("lcsc_match", {"refs": ["R99"]})
         check(err and "not in the schematic: R99" in t, "an unknown ref is refused")
 

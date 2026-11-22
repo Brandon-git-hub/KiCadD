@@ -94,6 +94,41 @@ Beta 已能走完整個設計流程（電路圖 → 選料 → 擺件 → 規則
    - **關閉：** 有未存檔修改就拒絕，除非 `discard=true`（附 board_diff）。
    - **安全：** 只啟動 kicadd-mcp 同目錄的 KiCadD 執行檔，不接受任意命令。HTTP 模式預設關閉這兩項，要 `--allow-launch` 才開。
 
+## 盲測（2026-11-22）
+
+由子代理只依產品規格（7 埠 USB 2.0 hub、16.5 × 40 mm、兩層、JLCPCB）、只用 MCP 工具與 skill 從頭設計，再與真人設計（KiCad demo 的 StickHub）比較，找出工具與 skill 的缺口。
+
+| | 第一輪 | 第二輪（修正後） | 真人 |
+|---|---|---|---|
+| ERC | 0 錯 / 117 警告 | 0 / 0 | 0 / 0 |
+| USB 差分對佈線 | 2 / 8 | 8 / 8 | 8 / 8 |
+| 未佈線 | 96 | 54 | 0 |
+
+**第一輪後修正：**
+- `delete_tracks` 的篩選改為交集。
+- `board_render` 的 back 視角。
+- `query_area` 回傳零件本身。
+- DRC 標示正確的層。
+- `move_footprints` 支援絕對位置。
+- `auto_place`：`spacing` / `edge` 給 0 會照用；新增 `silk_room=false`；分面積的 no room 說明。
+- `route` 可接到鋪銅。
+- LCSC 符號的腳位型別推定。
+- `lcsc_search` 的 live 檢查預設降為 1 筆。
+- skill 補上雙面板 / 差分對順序 / 兩層板 90 Ω 的建議。
+
+**第二輪後修正：**
+- 參數型別容錯。
+- `lcsc_match` 檢查 pick，並改寫舊零件欄位。
+- 關鍵字放寬。
+- CPWG 阻抗計算。
+- 差分對順序檢查（pair order）。
+- `audit sections`（含 drc / unrouted）。
+- `route` 的 `[x, y]` 目標依層選銅。
+- `route_short` 自動打過孔。
+- JST SH 類連接器的開口方向判斷。
+- `sync_pcb` 換封裝的回報。
+- `sch_move` 移動 power flag 時留下標籤：重現不出來（dx 與絕對座標的移動都會帶走 stub 和標籤），已加上回歸測試。
+
 ## 階段五：製造與生態延伸
 
 1. **組裝圖匯出、多實例重複圖紙**（同一子圖紙多次實例化）。

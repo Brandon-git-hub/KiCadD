@@ -854,6 +854,7 @@ TOOL_RESULT routeShort( IPC_CLIENT& aIpc, const json& aArgs )
 
     req.set_layer( aArgs.value( "layer", std::string() ) );
     req.set_dry_run( aArgs.value( "dry_run", false ) );
+    req.set_no_vias( !aArgs.value( "vias", true ) );
 
     kb::RouteResponse r;
     std::string       err;
@@ -3059,7 +3060,9 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                        "Through-hole to through-hole: F.Cu, then B.Cu if blocked, unless layer is given; "
                        "when the nearest copper of the other end can't be reached (a track on the far "
                        "layer), the pads and vias joined to it, nearest first. "
-                       "No vias are added. The failures say how far they got and what is in the way "
+                       "A connection that can't be done on one layer gets vias (vias=false: none): ends on "
+                       "different layers one via on the way, on the same layer over the other side and back, "
+                       "the spots along the straight line tried in turn. The failures say how far they got and what is in the way "
                        "(delete_tracks or move the part). All of it is one undoable edit; dry_run reports "
                        "what would and would not route without drawing.",
                        schema( { { "refs", refs },
@@ -3067,6 +3070,7 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
                                  { "max_length", { { "type", "number" } } },
                                  { "layer", { { "type", "string" } } },
                                  { "dry_run", { { "type", "boolean" } } },
+                                 { "vias", { { "type", "boolean" }, { "description", "default true" } } },
                                  { "detail", DETAIL_PROP } } ),
                        [&aIpc]( const json& a ) { return routeShort( aIpc, a ); } } );
 

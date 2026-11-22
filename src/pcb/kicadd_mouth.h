@@ -31,6 +31,7 @@ struct MOUTH
     int         edgeLine = 0;     ///< nm from the anchor towards side: where the board edge goes
     int         front = 0;        ///< nm from the anchor towards side: the courtyard's far end
     bool        marked = false;   ///< from the footprint's own edge line
+    bool        byPads = false;   ///< from its pads: signal pins at the back, mounting pads at the mouth
     std::string error;            ///< found but unusable (pads past the edge line)
 };
 

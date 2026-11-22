@@ -255,10 +255,28 @@ def main():
             line = next((ln for ln in text.splitlines() if "pin types inferred" in ln), "")
             check(not err and all(w in line for w in want) and (part != "C2765186" or "connector" in line),
                   f"{part}: " + (line.strip() or text.strip()[:120]))
+        if os.path.isfile(os.path.join(a.cache, "C165948.json")):
+            err, text = m.tool("lcsc_fetch", {"lcsc": "C165948"})
+            line = next((ln for ln in text.splitlines() if "pin types inferred" in ln), "")
+            check("power_in" not in line and "connector" in line, "C165948 (USB-C, reference USBC): a connector, all passive: " + line.strip()[:90])
+            symtext = open(os.path.join(a.project, "lcsc.kicad_sym"), encoding="utf-8").read()
+            blk = symtext[symtext.find('(symbol "TYPE-C-31-M-12"'):][:3000]
+            check("C165948.html" in blk, "its datasheet: the LCSC page of C165948 itself (not the shared footprint's link)")
         sym = open(os.path.join(a.project, "lcsc.kicad_sym"), encoding="utf-8").read()
         block = sym[sym.find('(symbol "AMS1117-3.3"'):]
         check(re.search(r'\(pin power_out [^\n]*\n[^\n]*\n\s*\(name "VOUT', block) or 'power_out' in block[:20000],
               "AMS1117: VOUT power_out in the library")
+
+        if os.path.isfile(os.path.join(a.cache, "C160404.json")):
+            # JST SH: flush with its pads, signal pins at the back, mounting pads at the mouth
+            err, text = m.tool("add_footprint", {"lcsc": "C160404", "ref": "J99", "x": 120, "y": 90})
+            err, text = m.tool("auto_place", {"refs": ["J99"], "rules": {"edge": {"J99": "left"}}, "force": True,
+                                              "silk_room": False})
+            edge = next((ln for ln in text.splitlines() if "edge: J99" in ln), "")
+            check("opens over the board's left edge" in edge and "taken from its pads" in edge,
+                  "JST SH (C160404) with an edge rule: its mouth from its pads, over the left edge: " + edge.strip()[:100])
+            m.tool("undo", {})
+            m.tool("undo", {})
 
         print("[library table, cache, errors]")
         table = open(os.path.join(a.project, "fp-lib-table"), encoding="utf-8").read()

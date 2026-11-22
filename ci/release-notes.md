@@ -14,7 +14,7 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 - **目前不支援：** 差分對與等長佈線、全板自動佈線（`route` 只代替重複的手動佈線）、電路圖自動排版、組裝圖、STEP 匯出（3D 模型只有 VRML）、ODB++ / IPC-2581 / DXF、MCP resources / prompts。
 
 ## 這一版（beta.9）
-新功能：階段三（區域模擬）的剩餘項目、由 MCP 新建專案，以及精簡工具說明。工具 60 → 64 個。
+新功能：階段三（區域模擬）的剩餘項目、由 MCP 新建專案，以及精簡工具說明。工具 60 → 64 個。另外依兩輪子代理盲測（從規格從頭設計 7 埠 USB hub，與真人設計 StickHub 比對）修正與補強大量工具。
 
 **工具說明瘦身（每輪少約一半 token）**
 - **精簡清單：** 工具清單（`tools/list`）裡每個工具只留一兩句說明，參數說明各一行，整份從約 6.8 萬字元降到約 3.3 萬，減少 51%。
@@ -59,6 +59,29 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
   - 兩層板做 90 Ω 的取捨。
   - 大電路圖要分圖紙。
   - JST 類外接埠的 ESD 要自行確認。
+
+**第二輪盲測後的修正與新增**
+- **工具參數容錯：** 字串型的物件 / 布林 / 數字參數會依 schema 轉型（client 持有舊版工具清單時也能用新參數）。
+- **`lcsc_match`：**
+  - `pick` 會比對索引中的值與封裝，不符就不採用並說明。
+  - 套用時一併改寫舊零件的 Supplier Part / Manufacturer Part，以及提到舊料號的 Description / Datasheet。
+- **`sch_add_part`：** 給的值與 LCSC 料號的值不同時警告。
+- **`lcsc_search`：** 多個關鍵字找不到時，指出哪個字沒有任何結果，並去掉它重找。
+- **`impedance ground_gap`：** 單線共面波導接地（CPWG），用 KiCad 的 COPLANAR 計算；差分對旁鋪地不計算並說明。
+- **`audit` 差分對的 pair order：** 指出 P / N 在兩顆零件間交換的差分對，例如底面 IC 鏡像造成的交叉，未佈線的也檢查。
+- **`audit sections`：** 只輸出指定段落，另有 `drc`（全板 DRC 分類計數）與 `unrouted`（各網路未佈線數）。
+- **`route` 帶 `[x, y]` 目標：** 優先接在 `layer` 指定層上的銅（途中有換層時不限）。
+- **`route_short` 自動打過孔（預設開，`vias=false` 關）：**
+  - 兩端在不同層時，途中打一個過孔。
+  - 同層但一層走不通時，繞到另一層再回來（兩個過孔）。
+  - 沿直線依序嘗試多個位置。
+- **`auto_place` 邊緣規則：** 接線用連接器（JST SH 等，訊號腳在後、固定腳在前）依焊盤判斷開口方向。
+- **`sync_pcb`：** 換封裝時回報為「changed」並註明轉向 / 位移，不再算成新增。
+- **`audit` 阻抗列：** 寫明量測長度，並說明 breakout 與離開平面的部分不計。
+- **LCSC：**
+  - Datasheet 取該料號自己的產品頁，不再沿用共用封裝的連結。
+  - 連接器也依分類判斷（如 USB-C 的參考名 USBC），腳位全為 passive。
+- **`board_render nets`：** 可用萬用字元（`USB_*`）。
 
 **`simulate` 新增**
 - **`plot=true`：** 回傳 PNG 圖。

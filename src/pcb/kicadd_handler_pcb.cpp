@@ -2204,7 +2204,7 @@ struct ROUTE_END
 
 
 std::optional<ROUTE_END> resolveEnd( BOARD* aBoard, const RouteEnd& aEnd, PCB_LAYER_ID aLayer, int aNet,
-                                     bool aFreeOk, std::string& aError )
+                                     bool aFreeOk, std::string& aError, PCB_LAYER_ID aPrefer = UNDEFINED_LAYER )
 {
     ROUTE_END out;
 
@@ -2249,6 +2249,10 @@ std::optional<ROUTE_END> resolveEnd( BOARD* aBoard, const RouteEnd& aEnd, PCB_LA
 
         if( aLayer != UNDEFINED_LAYER && !aItem->IsOnLayer( aLayer ) )
             return;
+
+        // the layer the route arrives on first (a track there over one on the other side)
+        if( aPrefer != UNDEFINED_LAYER && !aItem->IsOnLayer( aPrefer ) )
+            aRank += 10;
 
         if( aRank < bestRank && aItem->HitTest( out.pos, 0 ) )
         {
@@ -2516,7 +2520,13 @@ HANDLER_RESULT<RouteResponse> KICADD_HANDLER_PCB::handleRoute( const HANDLER_CON
     }
     else if( req.has_to() && ( !req.to().pad().empty() || req.to().has_pos() ) )
     {
-        to = resolveEnd( b, req.to(), UNDEFINED_LAYER, from->item->GetNetCode(), true, err );
+        // the layer the route is on when it gets there: the one asked for, unless a waypoint
+        // changes layer on the way
+        const bool   layerChange = std::any_of( req.stops().begin(), req.stops().end(),
+                                                []( const RouteStop& s ) { return !s.via_to().empty(); } );
+        PCB_LAYER_ID prefer = layerChange ? UNDEFINED_LAYER : r.layer;
+
+        to = resolveEnd( b, req.to(), UNDEFINED_LAYER, from->item->GetNetCode(), true, err, prefer );
 
         if( !to )
             return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "to: " + err ) );
@@ -2879,12 +2889,115 @@ HANDLER_RESULT<RouteResponse> KICADD_HANDLER_PCB::handleRouteShort( const HANDLE
 
         // Not to the nearest copper of the other side (a track on the far layer, say): the
         // other pads and vias it is joined to, nearest first, may be reachable on another layer
-        if( !attempt( c.z, c.pz ) )
+        bool done = attempt( c.z, c.pz );
+
+        if( !done )
         {
             for( BOARD_CONNECTED_ITEM* alt : alternatives( *conn, c.z, c.a, c.pa ) )
             {
                 if( attempt( alt, alt->GetPosition() ) )
+                {
+                    done = true;
                     break;
+                }
+            }
+        }
+
+        // Still not: with vias. Ends on different layers (a part on each side): one via on the
+        // way; on the same layer: over the other side and back (two vias). The spots along the
+        // straight line, middle first, and beside it
+        if( !done && !req.no_vias() && b->GetCopperLayerCount() >= 2 )
+        {
+            auto sideOf = [&]( const BOARD_CONNECTED_ITEM* aItem, PCB_LAYER_ID aOther ) -> PCB_LAYER_ID
+            {
+                if( throughAll( aItem ) )
+                    return aOther != UNDEFINED_LAYER ? aOther : F_Cu;
+
+                if( aItem->Type() == PCB_PAD_T )
+                    return aItem->IsOnLayer( F_Cu ) ? F_Cu : aItem->IsOnLayer( B_Cu ) ? B_Cu : aItem->GetLayer();
+
+                return aItem->GetLayer();
+            };
+
+            PCB_LAYER_ID lz = sideOf( c.z, UNDEFINED_LAYER );
+            PCB_LAYER_ID la = sideOf( c.a, lz );
+
+            if( throughAll( c.z ) )
+                lz = la;
+
+            const PCB_LAYER_ID other = la == F_Cu ? B_Cu : F_Cu;
+            const VECTOR2D     d = VECTOR2D( c.pz - c.pa );
+            const double       len = d.EuclideanNorm();
+            const VECTOR2D     across = len > 0 ? VECTOR2D( -d.y / len, d.x / len ) : VECTOR2D( 0, 1 );
+
+            auto spot = [&]( double aT, double aOff )
+            {
+                return VECTOR2I( VECTOR2D( c.pa ) + d * aT + across * aOff );
+            };
+
+            const double offsets[] = { 0, 0.8e6, -0.8e6, 1.6e6, -1.6e6 };
+            kicadd::route::RESULT firstFail = res;
+            int                   tries = 0;
+
+            auto tryStops = [&]( const std::vector<kicadd::route::STOP>& aStops )
+            {
+                r.toItem = c.z;
+                r.to = c.pz;
+                r.layer = la;
+                r.stops = aStops;
+                tries++;
+                kicadd::route::RESULT a = session.Route( r );
+                r.stops.clear();
+
+                if( a.ok )
+                {
+                    res = a;
+                    zItem = c.z;
+                    zPos = c.pz;
+                    return true;
+                }
+
+                return false;
+            };
+
+            if( la != lz )
+            {
+                for( double t : { 0.5, 0.3, 0.7, 0.15, 0.85 } )
+                {
+                    for( double off : offsets )
+                    {
+                        if( !done && tryStops( { { spot( t, off ), lz, false } } ) )
+                            done = true;
+                    }
+                }
+            }
+            else
+            {
+                for( double off1 : offsets )
+                {
+                    for( double off2 : offsets )
+                    {
+                        if( !done && std::fabs( off1 - off2 ) < 1e5
+                            && tryStops( { { spot( 0.15, off1 ), other, false }, { spot( 0.85, off2 ), lz, false } } ) )
+                            done = true;
+                    }
+                }
+
+                for( double off1 : offsets )
+                {
+                    for( double off2 : offsets )
+                    {
+                        if( !done && std::fabs( off1 - off2 ) >= 1e5
+                            && tryStops( { { spot( 0.15, off1 ), other, false }, { spot( 0.85, off2 ), lz, false } } ) )
+                            done = true;
+                    }
+                }
+            }
+
+            if( !done )
+            {
+                res = firstFail;
+                res.error += " (and with vias: " + std::to_string( tries ) + " spot(s) tried along the way, none fits)";
             }
         }
 
@@ -5396,14 +5509,31 @@ KICADD_HANDLER_PCB::handleSyncFromSchematic( const HANDLER_CONTEXT<SyncFromSchem
         for( auto& [id, snap] : fpsBefore )   // the ones it deleted (delete_extra)
             entry.removed.push_back( std::move( snap ) );
 
-        // a footprint swapped (update_footprints) is a new one in the old one's place: said as
-        // such, with whether it turned or moved (another footprint's anchor or orientation)
+        // a footprint swapped (update_footprints): a new one in the old one's place (a new
+        // UUID: removed + added) or the same one with another library footprint (replaced);
+        // said as such, with whether it turned or moved (another anchor or orientation)
+        std::vector<std::pair<const FP_SNAPSHOT*, const FP_SNAPSHOT*>> swaps;
+
         for( const FP_SNAPSHOT& gone : entry.removed )
         {
             for( const FP_SNAPSHOT& now : entry.added )
             {
-                if( now.fp->GetReference() != gone.fp->GetReference() )
-                    continue;
+                if( now.fp->GetReference() == gone.fp->GetReference() )
+                    swaps.emplace_back( &gone, &now );
+            }
+        }
+
+        for( const auto& [was, is] : entry.replaced )
+        {
+            if( was.fp->GetFPID() != is.fp->GetFPID() )
+                swaps.emplace_back( &was, &is );
+        }
+
+        for( const auto& [goneP, nowP] : swaps )
+        {
+            const FP_SNAPSHOT& gone = *goneP;
+            const FP_SNAPSHOT& now = *nowP;
+            {
 
                 std::string s = gone.fp->GetReference().ToStdString() + " " + gone.fp->GetFPID().Format().wx_str().ToStdString()
                                 + " -> " + now.fp->GetFPID().Format().wx_str().ToStdString();
@@ -5862,6 +5992,10 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
                 std::snprintf( buf, sizeof( buf ), "%.2f mm over it (the footprint's PCB Edge line)", over );
             else if( given )
                 std::snprintf( buf, sizeof( buf ), "%.2f mm over it (overhang given)", over );
+            else if( m.byPads )
+                std::snprintf( buf, sizeof( buf ), "its courtyard flush with it (the mouth taken from its pads: signal "
+                                                   "pins at the back, mounting pads at the front; check the datasheet; "
+                                                   "overhang=<mm> to go further)" );
             else
                 std::snprintf( buf, sizeof( buf ), "its courtyard flush with it (no edge line in the footprint; "
                                                    "overhang=<mm> to go further)" );

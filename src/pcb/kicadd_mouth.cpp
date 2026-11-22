@@ -8,6 +8,7 @@
 #include "pcb/kicadd_mouth.h"
 
 #include <algorithm>
+#include <map>
 #include <cmath>
 #include <vector>
 
@@ -194,10 +195,60 @@ MOUTH Find( const FOOTPRINT& aFp, std::optional<double> aOverhang )
                 second = std::max( second, reach[s] );
         }
 
-        if( reach[best] < 1.5 * MM || reach[best] < 2 * second )
-            return out;
+        if( reach[best] >= 1.5 * MM && reach[best] >= 2 * second )
+        {
+            out.side = best;
+        }
+        else
+        {
+            // a wire-to-board socket flush with its pads (JST SH / GH, Molex PicoBlade): its
+            // signal pins in a row at the back, larger mounting pads (MP) towards the mouth.
+            // The mouth: from the signal pads' centre towards the mounting pads'
+            std::map<long long, std::vector<VECTOR2D>> bySize;   // pad area (um^2) -> centres
 
-        out.side = best;
+            for( const ::PAD* pad : aFp.Pads() )
+            {
+                const BOX2I b = pad->GetBoundingBox();
+                bySize[(long long) std::llround( (double) b.GetWidth() / 1e3 * (double) b.GetHeight() / 1e3 / 100 )].push_back(
+                        VECTOR2D( toLocal( pad->GetPosition() ) ) );
+            }
+
+            auto signal = std::max_element( bySize.begin(), bySize.end(),
+                                            []( const auto& x, const auto& y ) { return x.second.size() < y.second.size(); } );
+
+            if( bySize.size() < 2 || signal->second.size() < 2 )
+                return out;
+
+            VECTOR2D sig( 0, 0 ), mech( 0, 0 );
+            int      nMech = 0;
+
+            for( const VECTOR2D& c : signal->second )
+                sig += c;
+
+            for( const auto& [area, centres] : bySize )
+            {
+                if( area <= signal->first )   // the mounting pads are the larger ones
+                    continue;
+
+                for( const VECTOR2D& c : centres )
+                {
+                    mech += c;
+                    nMech++;
+                }
+            }
+
+            if( nMech == 0 )
+                return out;
+
+            const VECTOR2D dir = mech / (double) nMech - sig / (double) signal->second.size();
+
+            if( dir.EuclideanNorm() < 1.0 * MM )
+                return out;
+
+            out.side = std::abs( dir.x ) > std::abs( dir.y ) ? ( dir.x > 0 ? EDGE_RIGHT : EDGE_LEFT )
+                                                             : ( dir.y > 0 ? EDGE_BOTTOM : EDGE_TOP );
+            out.byPads = true;
+        }
     }
 
     out.front = along( *crt, out.side );

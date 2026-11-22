@@ -31,7 +31,7 @@ def widths(t):
     """{layer: (width, gap, z)} from the impedance tool's lines."""
     out = {}
     for ln in t.splitlines():
-        m = re.match(r"(\S+\.Cu): width ([\d.]+) mm(?:, gap ([\d.]+) mm)? -> ([\d.]+) ohm", ln)
+        m = re.match(r"(\S+\.Cu): width ([\d.]+) mm(?:, gap ([\d.]+) mm)?(?:, ground [\d.]+ mm beside it)? -> ([\d.]+) ohm", ln)
         if m:
             out[m.group(1)] = (float(m.group(2)), float(m.group(3) or 0), float(m.group(4)))
     return out
@@ -105,6 +105,17 @@ def main():
         err, t = mcp.tool("impedance", {"width": p[0], "gap": 0.2, "layers": ["F.Cu"]})
         check(not err and abs(widths(t).get("F.Cu", (0, 0, 0))[2] - 90) < 0.5, "the pair back: ~90 ohm")
 
+        err, t = mcp.tool("impedance", {"z": 50, "ground_gap": 0.15, "layers": ["F.Cu"]})
+        c = widths(t).get("F.Cu", (0, 0, 0))
+        check(not err and "(CPWG)" in t and 0 < c[0] < f[0] and abs(c[2] - 50) < 0.5,
+              f"CPWG 50 ohm with ground 0.15 mm beside: narrower than the microstrip's {f[0]} mm: {c[0]} mm")
+        err, t = mcp.tool("impedance", {"width": f[0], "ground_gap": 0.15, "layers": ["F.Cu"]})
+        cz = widths(t).get("F.Cu", (0, 0, 0))[2]
+        check(not err and 0 < cz < 50, f"the microstrip's width with ground beside it: lower, {cz} ohm")
+        err, t = mcp.tool("impedance", {"z": 50, "ground_gap": 0.15, "layers": ["In1.Cu"]})
+        check("outer layer" in t, "CPWG on an inner layer: said")
+        err, t = mcp.tool("impedance", {"z_diff": 90, "ground_gap": 0.15})
+        check(err and "pairs is not" in t, "a pair with ground_gap: refused, said why")
         err, t = mcp.tool("impedance", {"z": 50, "z_diff": 90})
         check(err and "one at a time" in t, "z and z_diff together: refused")
         err, t = mcp.tool("impedance", {})

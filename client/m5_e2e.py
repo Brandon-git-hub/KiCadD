@@ -385,6 +385,21 @@ def main():
         err, t = mcp.tool("sync_pcb")
         check(not err and t.startswith("0 footprint(s) added"), "a second sync adds nothing")
 
+        print("[sync_pcb: a footprint changed]")
+        err, t = mcp.tool("sch_summary")
+        fps = re.findall(r"^(\S+) .*?\[(\S+?)\] @", t, re.M)
+        r06 = [ref for ref, fp in fps if fp == "LCSC:R0603"]
+        other = next((fp for ref, fp in fps if fp.startswith("LCSC:") and fp != "LCSC:R0603" and not ref.startswith("U")), None)
+        if r06 and other:
+            mcp.tool("sch_set_fields", {"parts": {r06[0]: {"Footprint": other}}})
+            err, t = mcp.tool("sync_pcb", {"update_footprints": True})
+            check(not err and t.startswith("0 footprint(s) added") and "1 footprint(s) changed" in t and r06[0] + " LCSC:R0603 -> " + other in t,
+                  "a footprint swap is said as changed, not added: " + t.replace("\n", " | ")[:160])
+            mcp.tool("undo")
+            mcp.tool("sch_undo")
+        else:
+            check(False, f"two LCSC footprints to swap between: {fps}")
+
         print("[M5c: auto_place]")
         err, t = mcp.tool("auto_place")
         frontPin = re.search(r"tied to an IC pin ([\d.]+) mm", t)

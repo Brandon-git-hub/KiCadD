@@ -453,6 +453,9 @@ void CheckLengths( BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& aO
         }
     }
 
+    std::string             pairOrder;   // said after the diff pair header
+    std::optional<VECTOR2I> pairOrderAt;
+
     // ---- pair order: between two parts the pair's P and N must not swap sides (the straight
     // lines P-P and N-N crossing means a crossing to route: a via pair, or the part turned,
     // moved or on the other side; a part on the bottom is mirrored). Routed or not.
@@ -528,8 +531,8 @@ void CheckLengths( BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& aO
         {
             if( crossed.empty() )
             {
-                line( aOut, "diff_pair", "info", "pair order: P and N in the same order at both ends of all "
-                                                     + std::to_string( checked ) + " pair(s) between parts" );
+                pairOrder = "pair order: P and N in the same order at both ends of all " + std::to_string( checked )
+                            + " pair(s) between parts";
             }
             else
             {
@@ -542,12 +545,11 @@ void CheckLengths( BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& aO
                         list += ( list.empty() ? "" : "; " ) + c;
                 }
 
-                line( aOut, "diff_pair", "info",
-                      "pair order: " + std::to_string( crossed.size() ) + " of " + std::to_string( checked )
+                pairOrderAt = firstAt;
+                pairOrder = ( "pair order: " + std::to_string( crossed.size() ) + " of " + std::to_string( checked )
                               + " pair(s) have P and N swapped between two of their parts (the straight lines P-P and "
                                 "N-N cross: a crossing to route, a via pair; or turn, move or flip a part; a part on the "
-                                "bottom is mirrored): " + list + ( crossed.size() > 6 ? "; ..." : "" ),
-                      firstAt );
+                                "bottom is mirrored): " + list + ( crossed.size() > 6 ? "; ..." : "" ) );
             }
         }
     }
@@ -888,6 +890,9 @@ void CheckLengths( BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& aO
         }
 
         line( aOut, "diff_pair", "info", head );
+
+        if( !pairOrder.empty() )
+            line( aOut, "diff_pair", "info", pairOrder, pairOrderAt );
 
         if( !judging && rows )
         {

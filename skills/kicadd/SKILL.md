@@ -10,6 +10,12 @@ desktop app that is the open Schematic / PCB Editor (the user sees every edit at
 Ctrl+Z it); headless it is a board loaded by `kicad-cli api-server`. The tool descriptions say
 what each tool does; this skill says how to use them together.
 
+## While routing: the short audit
+
+`audit sections=["drc", "unrouted", "impedance"]` (any of the section names) answers only
+those: a full DRC's counts by type, the unrouted connections per net, the impedance line.
+Use it in the route / check loop instead of the whole audit.
+
 ## Tool descriptions
 
 The descriptions in the tool list are one or two sentences, to keep every turn cheap. The full
@@ -387,11 +393,15 @@ From a blank project, before placing parts:
   opposite order to a connector on F.Cu, so every D+/D- pair between them must cross (a via
   pair each). Prefer the high-speed IC on the connectors' side, or check that the pins' order
   matches the connector before flipping it.
+- **Pair order is checked:** `audit sections=["diff_pair"]` has a "pair order" line naming the
+  pairs whose P and N swap between two parts (straight lines P-P and N-N cross), placed or
+  routed. Check it right after placing, before routing the pairs.
 - **Thin board for 2-layer impedance.** On 2 layers the plane is the whole board away. 90 Ω
   differential on 1.6 mm needs about 0.7 mm tracks, impossible at a fine-pitch IC. Either take
   a thinner board (0.8 mm: about 0.55 mm), or accept a higher Zdiff on short runs: USB 2.0
   tolerates about 110-130 Ω over a few cm, and hand designs on 2 layers often run there. Say
-  which you chose.
+  which you chose. `impedance z=50 ground_gap=0.15` gives a single track's width with ground
+  poured beside it (coplanar waveguide with ground, CPWG): narrower than the plain microstrip.
 
 ## Routing (the repetitive part, not an autorouter)
 
@@ -405,6 +415,10 @@ length matching, dense escapes).
    zone on another layer is only warned about.
 2. `route_short` with the parts (or nets) and a `max_length` (e.g. 10 mm): decoupling caps,
    pull-ups, LED resistors. `dry_run=true` first to see what would fail. It goes shortest first.
+   Where one layer won't do it adds vias: one on the way for ends on different sides, over the
+   other side and back for a blocked one (`vias=false`: none). On a dense board run it per
+   block (`refs` of one IC and its passives) rather than for everything at once, so the long
+   ones don't take the channels the short ones need.
 3. One connection: `route from="U1.5"` (to the nearest unrouted connection) or `to="C3.1"`.
    Steer it with `waypoints: [[x, y], ...]`; change layer with `[x, y, "B.Cu"]` among them, or
    `via: [x, y]`. Pick via spots yourself (`query_area` around the point).

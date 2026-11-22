@@ -77,6 +77,8 @@ try:
     check(not err and t.splitlines()[1].startswith("FP U1 B.Cu @"), "query_area ref=U1: U1 itself first (B.Cu, its position)")
     err, t = m.tool("board_render", {"layers": ["back"]})
     check(not err and "B.Silkscreen" in t and "F.Silkscreen" not in t, "board_render layers [back]: the bottom's silkscreen")
+    err, t = m.tool("board_render", {"nets": ["/U*D+"], "size": 400})
+    check(not err and "not found" not in t, "board_render nets with a pattern (/U*D+): " + t.splitlines()[0][:70])
     err, t = m.tool("board_render", {"layers": ["front", "back"]})
     check(err and "one view at a time" in t, "front and back together: refused")
     m.tool("delete_tracks", {"nets": ["/U2D-"]})
@@ -113,6 +115,16 @@ try:
           "route to zone: J3.1 tries the +5V pour on B.Cu (under U1 there is little room: " + t.strip()[-60:] + ")")
     err, t = m.tool("route", {"from": "R7.2", "to": "zone", "dry_run": True})
     check(err and ("no filled pour" in t or "already in its pour" in t), "route to zone of a net without one / in it: said: " + t.strip()[:90])
+
+    print("[route_short vias, audit sections]")
+    m.tool("delete_tracks", {"nets": ["/U2D-"]})
+    err, t = m.tool("audit", {"sections": ["drc", "unrouted"]})
+    secs = [ln for ln in t.splitlines() if not ln.startswith("  ")]
+    check(not err and secs[1:] == ["drc:", "unrouted:"] and re.search(r"unrouted:\n  \d+ connection\(s\) on \d+ net\(s\): /U2D- ", t),
+          "audit sections drc + unrouted: only those, the unrouted per net: " + " | ".join(secs))
+    err, t = m.tool("audit", {"sections": ["nope"]})
+    check(err and "no section nope" in t, "an unknown section: refused with the names")
+    m.tool("undo")
 
     print("[tool descriptions]")
     tools = m.rpc("tools/list", {})["result"]["tools"]
