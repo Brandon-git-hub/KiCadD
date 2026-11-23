@@ -1,6 +1,7 @@
 """export_fab on pic_programmer (headless): the Gerbers and drill files are the same as
 `kicad-cli pcb export gerbers / drill` writes, the zip holds them, BOM / CPL in JLCPCB's columns,
-and an unsaved move shows in the CPL (the board in memory, not the file).
+and an unsaved move shows in the CPL (the board in memory, not the file); export_assembly
+writes the assembly drawing (a page per side with parts, DNP crossed out).
 
 usage: python3 -I fab_e2e.py --build BUILD --demos DEMOS_DIR --work DIR
 
@@ -337,6 +338,27 @@ try:
     check(not err and t.startswith("undid: silk tidy"), "undo: " + t.splitlines()[0])
     err, t = m.tool("silk_tidy", {"dry_run": True})
     check(t.splitlines()[1:] == plan.splitlines()[1:], "after undo: the texts are back where they were")
+
+    print("[export_assembly]")
+    def pages(path):
+        return len(re.findall(rb"/Type\s*/Page(?![s\w])", open(path, "rb").read()))
+    err, t = m.tool("export_assembly")
+    print("      ", t.strip())
+    f = os.path.join(work, "p", "fab", "pic_programmer-assembly.pdf")
+    nb = re.search(r"(\d+) on the bottom", t)
+    nd = re.search(r"(\d+) DNP", t)
+    nb, nd = int(nb.group(1)) if nb else -1, int(nd.group(1)) if nd else 0
+    check(not err and os.path.isfile(f) and open(f, "rb").read(5) == b"%PDF-" and pages(f) == (2 if nb > 0 else 1),
+          f"a PDF in <project>/fab, a page per side with parts ({pages(f) if os.path.isfile(f) else 0} pages, {nb} on the bottom)")
+    m.tool("move_footprints", {"refs": ["R1"], "flip": True})
+    m.tool("pcb_set_fields", {"parts": {"R3": {"dnp": True}}})
+    err, t = m.tool("export_assembly", {"path": "asm.pdf", "values": True})
+    print("      ", t.strip())
+    f2 = os.path.join(work, "p", "asm.pdf")
+    check(not err and os.path.isfile(f2) and pages(f2) == 2 and f", {nb + 1} on the bottom" in t,
+          "R1 flipped: one more on the bottom page; path relative to the project")
+    check(f"{nd + 1} DNP crossed out" in t, "R3 set DNP: crossed out too")
+    m.tool("undo"); m.tool("undo")
     m.close()
 finally:
     srv.stop()

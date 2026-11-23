@@ -265,6 +265,7 @@ KICADD_HANDLER_PCB::KICADD_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext ) 
     registerHandler<ExportFab, ExportFabResponse>( &KICADD_HANDLER_PCB::handleExportFab );
     registerHandler<RenderBoard, RenderBoardResponse>( &KICADD_HANDLER_PCB::handleRenderBoard );
     registerHandler<Render3D, Render3DResponse>( &KICADD_HANDLER_PCB::handleRender3D );
+    registerHandler<ExportAssembly, ExportAssemblyResponse>( &KICADD_HANDLER_PCB::handleExportAssembly );
     registerHandler<BoardAudit, BoardAuditResponse>( &KICADD_HANDLER_PCB::handleBoardAudit );
     registerHandler<BoardDiff, BoardDiffResponse>( &KICADD_HANDLER_PCB::handleBoardDiff );
     registerHandler<SilkTidy, SilkTidyResponse>( &KICADD_HANDLER_PCB::handleSilkTidy );

@@ -1469,3 +1469,25 @@ message Render3DResponse
   int32  with_model = 5;   // footprints whose model is drawn
   repeated Render3DMissing missing = 6;
 }
+
+
+// ---------------------------------------------------------------------------------------------
+// The assembly drawing (phase 5 item 1a): a PDF, the top and (when parts are there) the bottom
+// seen from below; the Fab layer, with outlines / pin 1 / references drawn where it has none.
+
+message ExportAssembly
+{
+  string dir    = 1;   // default <project>/fab
+  string path   = 2;   // the file itself (over dir); relative: the project folder
+  bool   values = 3;   // the values too (the Fab layer's value text)
+}
+
+message ExportAssemblyResponse
+{
+  string file  = 1;
+  int32  pages = 2;
+  int32  front = 3;   // parts on each side
+  int32  back  = 4;
+  int32  dnp   = 5;   // crossed out
+  int32  drawn = 6;   // parts with no Fab outline: drawn from their courtyard
+}

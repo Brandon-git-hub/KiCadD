@@ -3508,6 +3508,41 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                                  { "path", { { "type", "string" } } } } ),
                        [&aIpc]( const json& a ) { return boardRender3d( aIpc, a ); } } );
 
+    tools.push_back( { "export_assembly",
+                       "Write the assembly drawing (PDF) from the board as it is now: a page for the top and, when "
+                       "parts are on the bottom, one for the bottom seen from below, each with the title block and "
+                       "scaled to the page. KiCad's plot of the Fab layer (outlines, reference text, pads sketched) and "
+                       "the outline; parts with no Fab drawing (LCSC / EasyEDA footprints) get their outline, pin 1 and "
+                       "reference from the courtyard; DNP parts are crossed out. values=true adds the values. dir "
+                       "defaults to <project>/fab (<board>-assembly.pdf), path names the file.",
+                       schema( { { "dir", { { "type", "string" } } },
+                                 { "path", { { "type", "string" } } },
+                                 { "values", { { "type", "boolean" } } } } ),
+                       [&aIpc]( const json& a ) -> TOOL_RESULT
+                       {
+                           kb::ExportAssembly req;
+                           req.set_dir( a.value( "dir", std::string() ) );
+                           req.set_path( a.value( "path", std::string() ) );
+                           req.set_values( a.value( "values", false ) );
+                           kb::ExportAssemblyResponse r;
+                           std::string                err;
+
+                           if( !aIpc.Call( req, r, err ) )
+                               return { err, true };
+
+                           std::string t = "assembly drawing " + r.file() + ": " + std::to_string( r.pages() ) + " page(s); "
+                                           + std::to_string( r.front() ) + " part(s) on top, " + std::to_string( r.back() )
+                                           + " on the bottom";
+
+                           if( r.drawn() )
+                               t += "; " + std::to_string( r.drawn() ) + " without a Fab outline drawn from their courtyard";
+
+                           if( r.dnp() )
+                               t += "; " + std::to_string( r.dnp() ) + " DNP crossed out";
+
+                           return { t + "\n", false };
+                       } } );
+
     tools.push_back( { "export_fab",
                        "Write the fabrication files for JLCPCB from the board as it is now (unsaved edits "
                        "included): Gerbers (Protel extensions, X2, job file) and Excellon drill (mm) zipped "
