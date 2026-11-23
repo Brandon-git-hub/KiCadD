@@ -111,6 +111,7 @@ struct SPAN
 {
     double   len = 0;   // nm
     VECTOR2D where;
+    double   apart = HUGE_VAL;   // nm: a pair's uncoupled state, the nearest its partner comes (HUGE: none on the layer)
 };
 
 /// A net, or a diff pair as one.
@@ -123,6 +124,7 @@ struct GROUP
     std::map<STATE, SPAN>    spans;
     double                   len = 0;      // nm (a pair: its members' mean)
     double                   offPlane = 0; // nm
+    double                   uncoupled = 0; // nm a pair runs with its members too far apart to couple (its mean)
 };
 
 /// A group's Z over its length, against a reference Z (a target, or its own main one).
@@ -497,6 +499,8 @@ void CheckImpedance( BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& 
                         st.below = below;
                         st.widthUm = (int) std::lround( s.w / 1000 );
 
+                        double gap = HUGE_VAL;
+
                         if( partner )
                         {
                             double d = HUGE_VAL;
@@ -504,7 +508,7 @@ void CheckImpedance( BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& 
                             for( const SEGP& o : *partner )
                                 d = std::min( d, segDist( mid, o ) - o.w / 2 );
 
-                            const double gap = d - s.w / 2;
+                            gap = d - s.w / 2;
 
                             if( gap > 0 && gap < uncoupled )
                                 st.gapUm = 5 * (int) std::lround( gap / 5000 );
@@ -518,6 +522,14 @@ void CheckImpedance( BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& 
                         sp.len += dl;
                         g.len += dl;
 
+                        if( g.pair && st.gapUm < 0 )
+                        {
+                            g.uncoupled += dl;
+
+                            if( gap > 0 )
+                                sp.apart = std::min( sp.apart, gap );
+                        }
+
                         if( st.above == UNDEFINED_LAYER && st.below == UNDEFINED_LAYER )
                             g.offPlane += dl;
                     }
@@ -529,6 +541,7 @@ void CheckImpedance( BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& 
         {
             g.len /= 2;
             g.offPlane /= 2;
+            g.uncoupled /= 2;
         }
     }
 
@@ -629,12 +642,25 @@ void CheckImpedance( BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& 
     };
 
     // a state in words: the layer and width (and gap), and its copper where it is not the layer's planes
-    auto describeState = [&]( const STATE& st ) -> std::string
+    auto describeState = [&]( const GROUP& g, const STATE& st ) -> std::string
     {
         std::string s = lname( st.layer ) + " " + mm( st.widthUm / 1000.0, 3 ) + " mm";
 
         if( st.gapUm > 0 )
+        {
             s += " gap " + mm( st.gapUm / 1000.0, 3 );
+        }
+        else if( g.pair )
+        {
+            // too far from its partner to couple: Zdiff is twice Z0 there, not the pair's
+            auto         sp = g.spans.find( st );
+            const double apart = sp != g.spans.end() ? sp->second.apart : HUGE_VAL;
+            const double reach = std::max( 4.0 * hNm[st.layer], 0.5e6 );
+
+            s += apart < HUGE_VAL ? ", uncoupled: its partner " + mm( apart / 1e6, 2 ) + " mm away (over "
+                                            + mm( reach / 1e6, 2 ) + " mm: 2 x Z0)"
+                                  : ", uncoupled: its partner not on " + lname( st.layer ) + " there (2 x Z0)";
+        }
 
         const auto& n = nominal[st.layer];
 
@@ -665,7 +691,7 @@ void CheckImpedance( BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& 
     {
         const SPAN&  sp = spanOf( g, st );
         const double l = g.pair ? sp.len / 2 : sp.len;
-        return mm( l / 1e6, 1 ) + " mm at " + ohm( z ) + " (" + describeState( *st ) + ") at " + at( sp.where );
+        return mm( l / 1e6, 1 ) + " mm at " + ohm( z ) + " (" + describeState( g, *st ) + ") at " + at( sp.where );
     };
 
     // ---- the agent's globs
@@ -738,7 +764,7 @@ void CheckImpedance( BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& 
     auto describeRow = [&]( const ROW& r ) -> std::string
     {
         std::string s = r.g->name + ": " + mm( r.g->len / 1e6, 1 ) + " mm, main " + ( r.g->pair ? "Zdiff " : "Z0 " )
-                        + ( r.p.main ? ohm( r.p.mainZ ) + " (" + describeState( *r.p.main ) + ")" : "none (off plane)" );
+                        + ( r.p.main ? ohm( r.p.mainZ ) + " (" + describeState( *r.g, *r.p.main ) + ")" : "none (off plane)" );
 
         if( r.p.most )
         {
@@ -750,6 +776,9 @@ void CheckImpedance( BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& 
 
         if( r.g->offPlane > 0.1e6 )
             s += "; " + mm( r.g->offPlane / 1e6, 1 ) + " mm off plane";
+
+        if( r.g->uncoupled > 0.1e6 )
+            s += "; " + mm( r.g->uncoupled / 1e6, 1 ) + " mm uncoupled";
 
         return s;
     };
@@ -800,6 +829,39 @@ void CheckImpedance( BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& 
             first = most;
             head += ", the most: " + describeRow( *most );
         }
+    }
+
+ // each profiled layer's reference planes (impedance / set_rules use the same ones)
+    {
+        std::set<PCB_LAYER_ID> used;
+
+        for( const auto& [net, layers] : segsOf )
+            for( const auto& [l, list] : layers )
+                used.insert( l );
+
+        std::string refs;
+
+        for( PCB_LAYER_ID l : stack )
+        {
+            auto n = nominal.find( l );
+
+            if( !used.count( l ) || n == nominal.end() )
+                continue;
+
+            std::string over;
+
+            for( PCB_LAYER_ID p : { n->second.first, n->second.second } )
+                if( p != UNDEFINED_LAYER )
+                    over += ( over.empty() ? "" : " and " ) + lname( p );
+
+            refs += ( refs.empty() ? "" : ", " ) + lname( l ) + ( n->second.first != UNDEFINED_LAYER
+                                                                         && n->second.second != UNDEFINED_LAYER
+                                                                         ? " between " : " over " )
+                    + over;
+        }
+
+        if( !refs.empty() )
+            head += ". Reference planes (as impedance / set_rules): " + refs;
     }
 
     if( offPlaneNets )
@@ -946,7 +1008,11 @@ void CheckImpedance( BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& 
                     s += ", the furthest " + offPart( *o.g, o.p.worst, o.p.worstZ );
 
                 if( o.p.main && o.p.main != o.p.most )
-                    s += "; main " + ohm( o.p.mainZ ) + " (" + describeState( *o.p.main ) + ")";
+                    s += "; main " + ohm( o.p.mainZ ) + " (" + describeState( *o.g, *o.p.main ) + ")";
+
+                if( o.g->uncoupled >= offMm * 1e6 )
+                    s += "; " + mm( o.g->uncoupled / 1e6, 1 )
+                         + " mm uncoupled (its members too far apart): run them side by side at the class's gap";
 
                 line( aOut, "warning", s, o.p.most ? std::optional<VECTOR2D>( spanOf( *o.g, o.p.most ).where ) : std::nullopt );
             }

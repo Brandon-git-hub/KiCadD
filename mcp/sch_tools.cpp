@@ -1093,7 +1093,8 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "net \"NC\" marks pins as not connected. A pin already on another net is refused "
             "(sch_disconnect it first); all or none: with any error nothing is connected, also when a "
             "stub, label or power symbol would land on another pin or net (two asked nets made one, a "
-            "pin not asked joined): the pins are listed. Hierarchy: a net named in ports is a port of the pins' sheet "
+            "pin not asked joined): the pins are listed. partial=true connects what fits and lists only "
+            "the pins at fault (a big batch is not lost to one clash; one undo step per batch that went). Hierarchy: a net named in ports is a port of the pins' sheet "
             "(a hierarchical label inside, a sheet pin of that name on the sheet's symbol: inputs on "
             "the left, the rest on the right); on the parent the sheet pin is SHEET.PIN, like a part's, "
             "e.g. {\"+5V\": [\"Power.VOUT\", \"U2.3\"]}. global uses global labels instead (every "
@@ -1104,6 +1105,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                                { "additionalProperties", pinList },
                                { "description", "net name -> pins" } } },
                    { "global", { { "type", "boolean" } } },
+                   { "partial", { { "type", "boolean" }, { "description", "connect what fits, list the pins at fault (default: all or none)" } } },
                    { "ports", { { "type", "array" }, { "items", { { "type", "string" } } },
                                 { "description", "nets that are ports of their sheet: \"VOUT\" or \"VOUT:output\" "
                                                  "(input, output, bidirectional, tri_state, passive)" } } },
@@ -1114,6 +1116,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             {
                 ks::SchConnect req;
                 req.set_global( a.value( "global", false ) );
+                req.set_partial( a.value( "partial", false ) );
 
                 for( const json& p : a.value( "power", json::array() ) )
                     if( p.is_string() )
@@ -1526,13 +1529,14 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "together: from groups, else the parts' Block field (sch_add_part block); groups "
             "\"sheets\" uses the schematic sheets, false none. Keeping blocks together costs some "
             "wire length (group_weight trades one for the other). Bottom side: back lists parts that "
-            "may go there, back_decaps lets decoupling caps go under their IC pin (SMD only; off by "
+            "may go there, back_decaps lets decoupling caps (C*) go under their IC pin (SMD only; off by "
             "default: two-sided assembly costs more); with either given, other SMD parts already on the "
             "bottom come to the top (without, parts keep their side). A dense board: spacing / edge 0 are taken, and "
             "silk_room=false keeps room for the courtyards only, as DRC does (no room for references and silk "
             "outlines; silk_tidy after); "
             "a \"no room\" says the area per side. Reports wire length before/after, how mixed "
             "the blocks are and how far the small passives (decaps, pull-ups) are from their IC pin. "
+            "A fine-pitch IC (QFN / QFP / BGA) keeps a ring past its pads free for its escape (escape_room). "
             "Existing tracks and vias are obstacles: on a routed board fewer parts find room, so "
             "place before routing (right after sync_pcb), or delete_tracks first. Runs beside "
             "the editor (it stays responsive); if the board is changed meanwhile nothing is moved. "
@@ -1566,6 +1570,10 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                    { "track_room", { { "type", "number" },
                                      { "description", "mm a pad keeps from existing tracks / vias beyond clearance "
                                                       "(default one track + clearance; 0 none)" } } },
+                   { "escape_room", { { "type", "number" },
+                                      { "description", "mm kept free past a fine-pitch IC's pads (QFN / QFP / BGA, "
+                                                       "0.65 mm pitch or less) for its escape (default 2 pitches + a "
+                                                       "track; 0 none)" } } },
                    { "keepout", { { "type", "array" },
                                   { "description", "areas no part may go: [[x0, y0, x1, y1], ...] or "
                                                    "[{\"area\": [...], \"side\": \"top\"|\"bottom\"|\"both\"}]" } } },
@@ -1578,7 +1586,8 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                                   "to open over that edge, the footprint's own \"PCB Edge\" line on the edge "
                                   "(else its front flush with it); {\"J1\": {\"side\": \"left\", "
                                   "\"overhang\": 1}} puts its front 1 mm past the edge, \"inside\": true keeps "
-                                  "it inside like any part; region: "
+                                  "it inside like any part, \"along\": true its long side along the edge (a pin "
+                                  "header's row parallel to it; inside the board); region: "
                                   "{\"U1\": [x0, y0, x1, y1]} (mm, the courtyard inside); rotation: "
                                   "{\"J1\": 90}; near: [{\"refs\": [\"Y1\", \"U1\"], \"max\": 5}] (mm "
                                   "between the centres of their pads). edge/region/rotation are hard, near is reported when "
@@ -1674,9 +1683,9 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                         if( side.is_object() )
                         {
                             for( const auto& [k, v] : side.items() )
-                                if( k != "side" && k != "overhang" && k != "inside" )
+                                if( k != "side" && k != "overhang" && k != "inside" && k != "along" )
                                     return fail( "edge rule " + ref + ": unknown key \"" + k
-                                                 + "\"; the keys are side, overhang, inside" );
+                                                 + "\"; the keys are side, overhang, inside, along" );
 
                             if( !side.contains( "side" ) || !side["side"].is_string() )
                                 return fail( "edge rule " + ref + ": {\"side\": \"left\"|\"right\"|\"top\"|\"bottom\"|\"any\", ...}" );
@@ -1692,6 +1701,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                             }
 
                             r->set_inside( side.value( "inside", false ) );
+                            r->set_along( side.value( "along", false ) );
                         }
                         else
                         {
@@ -1766,6 +1776,14 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                         return TOOL_RESULT{ "track_room: mm, 0 or more", true };
 
                     req.set_track_room( (int64_t) std::llround( a["track_room"].get<double>() * 1e6 ) );
+                }
+
+                if( a.contains( "escape_room" ) )
+                {
+                    if( !a["escape_room"].is_number() || a["escape_room"].get<double>() < 0 )
+                        return TOOL_RESULT{ "escape_room: mm, 0 or more", true };
+
+                    req.set_escape_room( (int64_t) std::llround( a["escape_room"].get<double>() * 1e6 ) );
                 }
 
                 if( a.contains( "keepout" ) )
@@ -1929,6 +1947,16 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
 
                 for( const std::string& n : r.edge_notes() )
                     t += "\n  edge: " + n;
+
+                if( r.escape_rooms_size() && r.moved() > 0 )
+                {
+                    t += "\n  escape room kept free past the pads of";
+
+                    for( int k = 0; k < r.escape_rooms_size(); ++k )
+                        t += std::string( k ? "," : "" ) + " " + r.escape_rooms( k );
+
+                    t += " (escape_room=0: none)";
+                }
 
                 // among existing tracks: how much room the placed pads have to be wired
                 if( r.track_obstacles() > 0 && r.moved() > 0 )

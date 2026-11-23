@@ -57,6 +57,7 @@
 #include <json_common.h>
 
 #include <algorithm>
+#include <functional>
 #include <map>
 #include <set>
 
@@ -1578,6 +1579,93 @@ int KICADD_HANDLER_SCH::disconnectPin( const PIN_AT& aPin, SCH_COMMIT& aCommit )
 
 HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleConnect( const HANDLER_CONTEXT<SchConnect>& aCtx )
 {
+    const SchConnect& req = aCtx.Request;
+
+    if( !req.partial() || req.links_size() < 2 )
+        return connectAll( req );
+
+    // partial: all of it if it goes; else each half on its own, down to single pins, so what
+    // fits is connected (one undo step per batch that went) and only the pins at fault are said
+    SchConnectResponse out;
+    int                batches = 0;
+    std::vector<std::string> failed;
+
+    std::function<bool( int, int )> attempt = [&]( int aFrom, int aTo ) -> bool
+    {
+        SchConnect part = req;
+        part.clear_links();
+        part.set_partial( false );
+
+        for( int i = aFrom; i < aTo; ++i )
+            *part.add_links() = req.links( i );
+
+        HANDLER_RESULT<SchConnectResponse> r = connectAll( part );
+
+        if( !r )
+        {
+            if( aTo - aFrom == 1 )
+            {
+                failed.push_back( req.links( aFrom ).ref() + "." + req.links( aFrom ).pin() + ": "
+                                  + r.error().error_message() );
+                return true;
+            }
+
+            return false;   // the request itself is bad (a port's direction ...): said once
+        }
+
+        if( r->errors_size() == 0 )
+        {
+            out.set_done( out.done() + r->done() );
+            batches += r->done() > 0;
+
+            for( const std::string& w : r->warnings() )
+                out.add_warnings( w );
+
+            return true;
+        }
+
+        if( aTo - aFrom == 1 )
+        {
+            const std::string pin = req.links( aFrom ).ref() + "." + req.links( aFrom ).pin();
+
+            for( std::string e : r->errors() )
+            {
+                // one pin: "nothing connected (all or none)" is that pin only
+                if( e.rfind( "nothing connected (all or none): ", 0 ) == 0 )
+                    e = pin + ": " + e.substr( 34 );
+
+                failed.push_back( e );
+            }
+
+            return true;
+        }
+
+        const int mid = ( aFrom + aTo ) / 2;
+        return attempt( aFrom, mid ) && attempt( mid, aTo );
+    };
+
+    if( !attempt( 0, req.links_size() ) )
+        return connectAll( req );   // its error, as without partial
+
+    for( const std::string& f : failed )
+        out.add_errors( f );
+
+    if( out.done() > 0 )
+        out.set_history_label( "connect " + std::to_string( out.done() ) + " pin(s) in " + std::to_string( batches )
+                               + " edit(s)" );
+
+    if( !failed.empty() )
+        out.add_warnings( "partial: " + std::to_string( out.done() ) + " connected, " + std::to_string( failed.size() )
+                          + " not (the errors); "
+                          + ( batches > 1 ? "undo takes them back one edit at a time (" + std::to_string( batches ) + " edits)"
+                                          : std::string( "one undo takes them back" ) ) );
+
+    return out;
+}
+
+
+HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::connectAll( const SchConnect& aReq )
+{
     if( !schematic() )
         return tl::unexpected( makeError( ApiStatusCode::AS_UNHANDLED, "no schematic open" ) );
 
@@ -1593,7 +1681,7 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleConnect( const HAND
     // ports: "VOUT" or "VOUT:output"
     std::map<std::string, LABEL_FLAG_SHAPE> ports;
 
-    for( const std::string& port : aCtx.Request.ports() )
+    for( const std::string& port : aReq.ports() )
     {
         size_t           colon = port.find( ':' );
         std::string      name = port.substr( 0, colon );
@@ -1608,7 +1696,7 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleConnect( const HAND
     }
 
     std::set<SCH_SHEET*> modifiedSheets;
-    std::set<std::string> power( aCtx.Request.power().begin(), aCtx.Request.power().end() );
+    std::set<std::string> power( aReq.power().begin(), aReq.power().end() );
     SCH_REFERENCE_LIST    powerRefs;
 
     if( power.count( "PWR_FLAG" ) )
@@ -1649,7 +1737,7 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleConnect( const HAND
     // once the first wires are in)
     std::map<std::string, std::string> netNow;
 
-    for( const SchPinNet& link : aCtx.Request.links() )
+    for( const SchPinNet& link : aReq.links() )
     {
         PIN_AT      at;
         std::string err;
@@ -1658,7 +1746,7 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleConnect( const HAND
             netNow[link.ref() + "." + link.pin()] = pinNet( at.item, at.sheet );
     }
 
-    for( const SchPinNet& link : aCtx.Request.links() )
+    for( const SchPinNet& link : aReq.links() )
     {
         PIN_AT      at;
         std::string err;
@@ -1891,7 +1979,7 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleConnect( const HAND
             hier->SetShape( port->second );
             netLabel = hier;
         }
-        else if( aCtx.Request.global() )
+        else if( aReq.global() )
         {
             netLabel = new SCH_GLOBALLABEL( end, wx( link.net() ) );
         }
@@ -2047,7 +2135,7 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleConnect( const HAND
         // the nets asked for: one a power symbol renames (and joins to others) is said here
         std::set<std::string> askedNets;
 
-        for( const SchPinNet& link : aCtx.Request.links() )
+        for( const SchPinNet& link : aReq.links() )
             askedNets.insert( link.net() );
 
         for( const std::string& w : overruledLabels( schematic() ) )

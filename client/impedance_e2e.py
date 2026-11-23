@@ -15,6 +15,10 @@ Blank project (m5_e2e's), no parts:
   planes          a GND zone on In1.Cu: F.Cu's plane is no longer said to be missing; a small zone
                   on In2.Cu makes it a signal layer (planes by their copper): B.Cu over In1.Cu
                   across it, H with In2's copper; the note lists each layer's coverage
+  pair in audit   (S2's 90 vs 108 ohm) with In1 GND poured: set_rules names F.Cu's plane; a pair
+                  routed at the class's width / gap measures impedance's Zdiff in audit, one with
+                  its members 2 mm apart is "uncoupled: its partner 1.68 mm away" at 2 x Z0; the
+                  header names the reference planes; z_diff_target says why the split one is off
 """
 
 import argparse
@@ -174,6 +178,54 @@ def main():
         lines = {ln.split(":")[0]: ln for ln in t.splitlines()}
         check("no copper zone" not in lines.get("F.Cu", "x"), "F.Cu's plane is poured now")
         check("In2.Cu has no copper zone yet" in lines.get("In1.Cu", ""), "In1.Cu still lacks In2.Cu")
+
+        # beta.13 S2: audit and impedance / set_rules on the same pair (one plane model). A pair
+        # routed at the class's width and gap measures the class's Zdiff; one whose members run
+        # apart is said to be uncoupled (2 x Z0, the 108 ohm S2 saw), not a different plane
+        print("[pair in audit]")
+        for ref, x, y, net in (("R11", 110, 110, "USB_D_P"), ("R12", 110, 112.5, "USB_D_N"),
+                               ("R13", 110, 122, "USB2_P"), ("R14", 110, 126, "USB2_N")):
+            mcp.tool("add_footprint", {"footprint": name.group(1) if name else "kicadd:R_0805", "ref": ref,
+                                       "x": x, "y": y, "nets": {"1": "VCC", "2": net}})
+        err, t = mcp.tool("set_rules", {"classes": {"USB": {"diff_impedance": 90, "diff_pair_gap": 0.15, "clearance": 0.15}},
+                                        "assign": {"USB*": "USB"}})
+        m = re.search(r"USB on F\.Cu \(microstrip over In1\.Cu, 0\.2104 mm[^)]*\): pairs ([\d.]+) mm wide, 0\.150 mm apart", t)
+        check(not err and m, "set_rules names F.Cu's reference plane, In1.Cu: " + (t.splitlines()[1][:120] if t else ""))
+        pw = float(m.group(1)) if m else 0.325
+        _, t = mcp.tool("impedance", {"width": pw, "gap": 0.15, "layers": ["F.Cu"]})
+        zi = widths(t).get("F.Cu", (0, 0, 0))[2]
+        _, t = mcp.tool("impedance", {"width": pw, "layers": ["F.Cu"]})
+        z0 = widths(t).get("F.Cu", (0, 0, 0))[2]
+        # USB_D at the class's gap from its pads on; USB2 2 mm apart (centre to centre)
+        y2 = 110 + pw + 0.15
+        r1 = mcp.tool("route", {"from": "R11.2", "to": [150, 110]})
+        r2 = mcp.tool("route", {"from": "R12.2", "waypoints": [[112, 112.5], [112 + 112.5 - y2, y2]], "to": [150, y2]})
+        r3 = mcp.tool("route", {"from": "R13.2", "to": [150, 122]})
+        r4 = mcp.tool("route", {"from": "R14.2", "waypoints": [[112, 126], [114, 124]], "to": [150, 124]})
+        check(not any(r[0] or "not routed" in r[1] for r in (r1, r2, r3, r4)),
+              "the pairs routed: " + " | ".join(r[1].splitlines()[0][:70] for r in (r1, r2, r3, r4)))
+        err, t = mcp.tool("audit", {"sections": ["impedance"], "z_limit": 10, "ir_nets": ["NO_RAIL"]})
+        rows = [ln.strip() for ln in t.splitlines() if "(pair)" in ln and ln.strip().startswith("info: ")]
+        print("      ", "\n        ".join(r[:260] for r in rows))
+        d = next((r for r in rows if r.startswith("info: USB_D_P/N (pair)")), "")
+        md = re.search(r"main Zdiff ([\d.]+) ohm \(F\.Cu ([\d.]+) mm gap 0\.15\)", d)
+        check(md and abs(float(md.group(1)) - zi) < 1.0,
+              f"the coupled pair: audit's Zdiff {md and md.group(1)} = impedance's {zi} for {pw} / 0.15 mm")
+        u = next((r for r in rows if r.startswith("info: USB2_P/N (pair)")), "")
+        mu = re.search(r"main Zdiff ([\d.]+) ohm \(F\.Cu [\d.]+ mm, uncoupled: its partner ([\d.]+) mm away \(over 0\.84 mm: 2 x Z0\)\)", u)
+        check(mu and abs(float(mu.group(1)) - 2 * z0) < 1.0 and abs(float(mu.group(2)) - (2 - pw)) < 0.02
+              and re.search(r"; [\d.]+ mm uncoupled", u),
+              f"the split pair: uncoupled, its partner {mu and mu.group(2)} mm away, 2 x Z0 = {mu and mu.group(1)} ({2 * z0:.1f})")
+        check("Reference planes (as impedance / set_rules): F.Cu over In1.Cu" in t, "the header names F.Cu's reference plane")
+        err, t = mcp.tool("audit", {"sections": ["impedance"], "z_diff_target": {"USB*": 90}, "z_off_mm": 3,
+                                    "ir_nets": ["NO_RAIL"]})
+        w2 = next((ln for ln in t.splitlines() if "USB2_P/N (pair):" in ln and "warning" in ln), "")
+        check("mm uncoupled (its members too far apart): run them side by side at the class's gap" in w2
+              and "z_diff_target USB* (90 ohm +/-10%, 3 mm off allowed): 2 pair(s) judged, 1 off" in t
+              and not any("USB_D_P/N (pair):" in ln and "warning" in ln for ln in t.splitlines()),
+              "z_diff_target 90: the coupled pair within, the split one off with why")
+        mcp.tool("delete_tracks", {"nets": ["USB_D_P", "USB_D_N", "USB2_P", "USB2_N"]})
+        mcp.tool("delete_footprints", {"refs": ["R11", "R12", "R13", "R14"]})
 
         # a plane by its copper, not its neighbour: In2.Cu with a small zone only is a signal layer,
         # so B.Cu's plane is In1.Cu across it (H: the core, In2's copper and the 7628 under B.Cu)

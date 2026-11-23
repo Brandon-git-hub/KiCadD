@@ -142,6 +142,17 @@ def main():
         check(netlist(mcp) == before, f"{r8}.1 not connected either")
         err, t = mcp.tool("sch_connect", {"nets": {"N7": [f"{r8}.1"], "N9": [f"{r8}.1"]}})
         check(err and "given for two nets: N7 and N9" in t, "a pin in two nets of one call: said")
+        # partial: what fits is connected, only the pin at fault said (S1 / S2 lost 30-70 pins to one)
+        err, t = mcp.tool("sch_connect", {"nets": {"N7": [f"{r8}.1"], "N8": [f"{c1}.1"], "N10": [f"{r8}.2"]}, "partial": True})
+        print("      ", t.replace("\n", " | ")[:220])
+        nl = netlist(mcp)
+        check(not err and t.startswith("2 pin(s) connected") and f"error: {c1}.1 is already on net /N1" in t
+              and "partial: 2 connected, 1 not" in t and nl.get("/N7") == {f"{r8}.1"} and nl.get("/N10") == {f"{r8}.2"},
+              f"partial: {r8}.1 / {r8}.2 connected, {c1}.1 (on /N1) said and left")
+        check("undo takes them back one edit at a time (2 edits)" in t, "the undo steps said")
+        mcp.tool("sch_undo")
+        mcp.tool("sch_undo")
+        check(netlist(mcp) == before, "two undos: as before")
         mcp.tool("sch_delete", {"refs": [r8]})
 
         print("[sch_connect: a label's text over a part]")

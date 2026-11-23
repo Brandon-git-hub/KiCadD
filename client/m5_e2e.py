@@ -108,6 +108,33 @@ def top_level_blocks(text):
     return out
 
 
+def png_pixels(data):
+    """(width, height, rows of (r, g, b, a)) of an 8-bit RGBA / RGB PNG (what cairo writes)."""
+    import struct, zlib
+    assert data[:8] == b"\x89PNG\r\n\x1a\n"
+    pos, idat, w = 8, b"", 0
+    while pos < len(data):
+        n, kind = struct.unpack(">I4s", data[pos:pos + 8]); body = data[pos + 8:pos + 8 + n]; pos += 12 + n
+        if kind == b"IHDR":
+            w, h, depth, ctype = struct.unpack(">IIBB", body[:10])
+        elif kind == b"IDAT":
+            idat += body
+    bpp = 4 if ctype == 6 else 3
+    raw, rows, prev, stride = zlib.decompress(idat), [], bytearray(w * bpp), w * bpp
+    for y in range(h):
+        f, line = raw[y * (stride + 1)], bytearray(raw[y * (stride + 1) + 1:(y + 1) * (stride + 1)])
+        for i in range(stride):
+            a = line[i - bpp] if i >= bpp else 0; b = prev[i]; c = prev[i - bpp] if i >= bpp else 0
+            if f == 1: line[i] = (line[i] + a) & 255
+            elif f == 2: line[i] = (line[i] + b) & 255
+            elif f == 3: line[i] = (line[i] + (a + b) // 2) & 255
+            elif f == 4:
+                pa, pb, pc = abs(b - c), abs(a - c), abs(a + b - 2 * c)
+                line[i] = (line[i] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 255
+        rows.append([tuple(line[i:i + bpp]) for i in range(0, stride, bpp)]); prev = line
+    return w, h, rows
+
+
 def make_project(kicad, work):
     demo = os.path.join(kicad, "demos", "pic_programmer")
     proj = os.path.join(work, "proj")

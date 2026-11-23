@@ -247,7 +247,14 @@ CompactItem describePad( const PAD* aPad )
     // any other angle gives its bounding box
     PCB_LAYER_ID sizeLayer = cu.count() ? cu.Seq().front() : F_Cu;
     VECTOR2I     sz = aPad->GetSize( sizeLayer );
-    if( aPad->GetOrientation().IsCardinal() )
+
+    // a custom shape (a USB-C's A4B9): its anchor's size says nothing; its copper's box does
+    if( aPad->GetShape( sizeLayer ) == PAD_SHAPE::CUSTOM )
+    {
+        const BOX2I bb = aPad->GetBoundingBox( sizeLayer );
+        sz = VECTOR2I( bb.GetWidth(), bb.GetHeight() );
+    }
+    else if( aPad->GetOrientation().IsCardinal() )
     {
         if( aPad->GetOrientation().IsCardinal90() )
             std::swap( sz.x, sz.y );
@@ -2430,6 +2437,7 @@ void fillResult( RouteResult& aOut, const kicadd::route::RESULT& aRes )
     aOut.set_layer( aRes.layer );
     aOut.set_width( aRes.width );
     aOut.set_width_from( aRes.widthFrom );
+    aOut.set_neck( aRes.neck );
     aOut.set_length( aRes.length );
     aOut.set_direct( aRes.direct );
     aOut.set_ends( aRes.ends );
@@ -2487,6 +2495,147 @@ std::vector<BOARD_CONNECTED_ITEM*> alternatives( CONNECTIVITY_DATA& aConn, BOARD
         out.push_back( alt[i].second );
 
     return out;
+}
+
+/// A track narrower than its class's out of a pad between close neighbours (a fine-pitch IC's
+/// pin): the widest that leaves it, its width across plus twice the gap to the nearest other-net
+/// pad of its footprint beside it less the clearance (a gap of exactly the clearance is enough),
+/// and the point past the pad's end, towards aToward, where the class's width fits again.
+/// width 0: no neck needed (the class's fits, no neighbour), or none would leave it.
+struct NECK
+{
+    int      width = 0;
+    int      full = 0;   // the class's width, after the neck
+    VECTOR2I exit;
+    double   reach = 0;  // nm from the pad's centre to exit
+    std::string pad;
+    std::string cls;     // "netclass 'Power'"
+};
+
+NECK neckOf( BOARD* aBoard, const BOARD_CONNECTED_ITEM* aItem, const VECTOR2I& aToward )
+{
+    NECK out;
+
+    if( !aItem || aItem->Type() != PCB_PAD_T )
+        return out;
+
+    const PAD*       pad = static_cast<const PAD*>( aItem );
+    const FOOTPRINT* fp = pad->GetParentFootprint();
+
+    if( !fp || pad->GetAttribute() != PAD_ATTRIB::SMD )
+        return out;
+
+    const BOARD_DESIGN_SETTINGS& bds = aBoard->GetDesignSettings();
+    const NETCLASS*              nc = pad->GetEffectiveNetClass();
+    const int full = nc && nc->HasTrackWidth() ? nc->GetTrackWidth() : bds.GetCurrentTrackWidth();
+    int       clr = std::max( nc && nc->HasClearance() ? nc->GetClearance() : 0, bds.m_MinClearance );
+
+    // its long axis (a QFN's pin points in and out along it) and its width across
+    const BOX2I  box = pad->GetBoundingBox();
+    const bool   alongX = box.GetWidth() >= box.GetHeight();
+    const double across = alongX ? box.GetHeight() : box.GetWidth();
+    const double len = alongX ? box.GetWidth() : box.GetHeight();
+
+    if( full <= across )
+        return out;
+
+    const PCB_LAYER_ID           layer = pad->GetPrincipalLayer();
+    const std::shared_ptr<SHAPE> mine = pad->GetEffectiveShape( layer );
+    double                       gap = HUGE_VAL;
+
+    for( const PAD* q : fp->Pads() )
+    {
+        if( q == pad || ( q->GetNetCode() > 0 && q->GetNetCode() == pad->GetNetCode() ) || !q->IsOnLayer( layer ) )
+            continue;
+
+        // beside it (across its axis), within reach
+        const VECTOR2I d = q->GetPosition() - pad->GetPosition();
+
+        if( std::abs( alongX ? d.x : d.y ) > len / 2 || std::abs( alongX ? d.y : d.x ) > full + across + 2 * clr )
+            continue;
+
+        int actual = 0;
+
+        if( mine->Collide( q->GetEffectiveShape( layer ).get(), (int) ( full + clr ), &actual ) )
+        {
+            gap = std::min( gap, (double) actual );
+
+            if( const NETCLASS* qc = q->GetEffectiveNetClass(); qc && qc->HasClearance() )
+                clr = std::max( clr, qc->GetClearance() );
+        }
+    }
+
+    if( gap == HUGE_VAL )
+        return out;
+
+    // the widest that fits, to 10 um (a gap of exactly the clearance passes)
+    const int widest = (int) std::floor( ( across + 2 * ( gap - clr ) ) / 10000.0 ) * 10000;
+
+    if( widest >= full || widest < std::max( bds.m_TrackMinWidth, 10000 ) )
+        return out;
+
+    // out past the pad's end on the side of aToward (else away from the part's middle)
+    VECTOR2D axis = alongX ? VECTOR2D( 1, 0 ) : VECTOR2D( 0, 1 );
+    double   side = ( VECTOR2D( aToward ) - VECTOR2D( pad->GetPosition() ) ).Dot( axis );
+
+    if( std::abs( side ) < 1000 )
+        side = ( VECTOR2D( pad->GetPosition() ) - VECTOR2D( fp->GetPosition() ) ).Dot( axis );
+
+    out.width = widest;
+    out.full = full;
+    out.reach = len / 2 + clr + full / 2.0 + 20000;
+    out.exit = pad->GetPosition() + VECTOR2I( KiROUND( axis.x * out.reach * ( side < 0 ? -1 : 1 ) ),
+                                              KiROUND( axis.y * out.reach * ( side < 0 ? -1 : 1 ) ) );
+    out.pad = fp->GetReference().ToStdString() + "." + pad->GetNumber().ToStdString();
+    out.cls = nc ? "netclass '" + nc->GetName().ToStdString() + "'" : "the board's track width";
+    return out;
+}
+
+
+/// Necks a request (its width not asked) out of its start pad and into its end pad where the
+/// class's width does not fit between their neighbours; the note for the result.
+std::string applyNecks( BOARD* aBoard, kicadd::route::REQUEST& aReq, bool aEnd = true, std::string* aClass = nullptr )
+{
+    if( aReq.width > 0 )
+        return "";
+
+    std::string note;
+    const VECTOR2I firstAim = aReq.stops.empty() ? aReq.to : aReq.stops.front().pos;
+    NECK           a = neckOf( aBoard, aReq.fromItem, firstAim );
+
+    if( a.width > 0 )
+    {
+        aReq.width = a.width;
+
+        // a waypoint nearer than the neck's end: the class width from there
+        if( !aReq.stops.empty() && ( VECTOR2D( aReq.stops.front().pos ) - VECTOR2D( aReq.from ) ).EuclideanNorm() <= a.reach + 100000 )
+            aReq.stops.front().widthAfter = a.full;
+        else if( ( VECTOR2D( aReq.to ) - VECTOR2D( aReq.from ) ).EuclideanNorm() > a.reach + 100000 )
+            aReq.stops.insert( aReq.stops.begin(), kicadd::route::STOP{ a.exit, UNDEFINED_LAYER, false, a.full } );
+
+        char buf[64];
+        std::snprintf( buf, sizeof( buf ), "%.2f mm out of ", a.width / 1e6 );
+        note = buf + a.pad;
+
+        if( aClass )
+            *aClass = a.cls;
+    }
+
+    if( aEnd && aReq.toItem )
+    {
+        const VECTOR2I lastAim = aReq.stops.empty() ? aReq.from : aReq.stops.back().pos;
+        NECK           z = neckOf( aBoard, aReq.toItem, lastAim );
+
+        if( z.width > 0 && ( VECTOR2D( aReq.to ) - VECTOR2D( lastAim ) ).EuclideanNorm() > z.reach + 100000 )
+        {
+            aReq.stops.push_back( kicadd::route::STOP{ z.exit, UNDEFINED_LAYER, false, z.width } );
+            char buf[64];
+            std::snprintf( buf, sizeof( buf ), "%.2f mm into ", z.width / 1e6 );
+            note += ( note.empty() ? "" : ", " ) + std::string( buf ) + z.pad;
+        }
+    }
+
+    return note;
 }
 
 } // namespace
@@ -2548,6 +2697,27 @@ HANDLER_RESULT<RouteResponse> KICADD_HANDLER_PCB::handleRoute( const HANDLER_CON
 
     std::vector<ZONE_SPOT> zoneSpots;
     PCB_LAYER_ID           zoneStart = UNDEFINED_LAYER;
+    PCB_LAYER_ID           endInVia = UNDEFINED_LAYER;   // to zone: the last stop's via is the way into the pour
+    bool                   viaOnly = false;              // ... and it is on the start: just that via
+
+    // the layer a route starting on aStart is on after stops [0, aCount): "other" as the router
+    // takes it with no end item (the other outer layer)
+    auto layerAfter = [&]( PCB_LAYER_ID aStart, int aCount )
+    {
+        PCB_LAYER_ID l = aStart;
+
+        for( int i = 0; i < aCount && i < req.stops_size(); ++i )
+        {
+            const std::string& v = req.stops( i ).via_to();
+
+            if( v == "other" )
+                l = l == F_Cu ? B_Cu : F_Cu;
+            else if( !v.empty() && b->GetLayerID( wxString::FromUTF8( v ) ) >= 0 )
+                l = ToLAYER_ID( b->GetLayerID( wxString::FromUTF8( v ) ) );
+        }
+
+        return l;
+    };
 
     if( req.has_to() && req.to().zone() )
     {
@@ -2622,6 +2792,44 @@ HANDLER_RESULT<RouteResponse> KICADD_HANDLER_PCB::handleRoute( const HANDLER_CON
         if( inIt )
             std::erase_if( zoneSpots, [&]( const ZONE_SPOT& z ) { return z.layer == zoneStart; } );
 
+        // the last stop a via, the net's pour there on a layer it goes to (the one named; "other":
+        // any but the one the route is on, a through via reaches them all): the route ends in that
+        // via, not in a via there and another one further on
+        if( req.stops_size() > 0 && !req.stops( req.stops_size() - 1 ).via_to().empty() )
+        {
+            const RouteStop&   last = req.stops( req.stops_size() - 1 );
+            const VECTOR2I     at( last.pos().x(), last.pos().y() );
+            const PCB_LAYER_ID before = layerAfter( zoneStart, req.stops_size() - 1 );
+            const int          named = last.via_to() == "other" ? -1 : b->GetLayerID( wxString::FromUTF8( last.via_to() ) );
+
+            for( ZONE* z : b->Zones() )
+            {
+                if( z->GetIsRuleArea() || z->GetNetCode() != net || endInVia != UNDEFINED_LAYER )
+                    continue;
+
+                for( PCB_LAYER_ID l : z->GetLayerSet().CuStack() )
+                {
+                    if( l == before || ( named >= 0 && l != named ) || !z->HasFilledPolysForLayer( l ) )
+                        continue;
+
+                    SHAPE_POLY_SET fill = z->GetFilledPolysList( l )->CloneDropTriangulation();
+                    fill.Inflate( -inset, CORNER_STRATEGY::ROUND_ALL_CORNERS, ARC_LOW_DEF );
+
+                    if( fill.OutlineCount() && fill.Contains( at ) )
+                    {
+                        endInVia = l;
+                        break;
+                    }
+                }
+            }
+
+            if( endInVia != UNDEFINED_LAYER )
+            {
+                zoneSpots = { { at, endInVia, 0 } };
+                viaOnly = req.stops_size() == 1 && ( at - from->pos ).EuclideanNorm() < 10000;
+            }
+        }
+
         // the last layer change asked for decides where the route arrives: the pour there
         // (a pour spot on another layer read as "-> pour F.Cu ... F.Cu -> B.Cu")
         for( int i = req.stops_size() - 1; i >= 0; --i )
@@ -2643,6 +2851,10 @@ HANDLER_RESULT<RouteResponse> KICADD_HANDLER_PCB::handleRoute( const HANDLER_CON
             return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
                                               "to zone: " + from->item->GetNetname().ToStdString( wxConvUTF8 )
                                               + " has no filled pour (zones create, then refill_zones)" ) );
+
+        // the via asked for is where it goes in: no other spots
+        if( endInVia != UNDEFINED_LAYER )
+            zoneSpots.resize( 1 );
 
         std::stable_sort( zoneSpots.begin(), zoneSpots.end(), []( const ZONE_SPOT& x, const ZONE_SPOT& y ) { return x.cost < y.cost; } );
 
@@ -2720,6 +2932,10 @@ HANDLER_RESULT<RouteResponse> KICADD_HANDLER_PCB::handleRoute( const HANDLER_CON
 
     for( const RouteStop& st : req.stops() )
     {
+        // the last via, when the route ends in it (to zone): the end itself
+        if( endInVia != UNDEFINED_LAYER && &st == &req.stops( req.stops_size() - 1 ) )
+            break;
+
         kicadd::route::STOP stop;
         stop.pos = VECTOR2I( st.pos().x(), st.pos().y() );
 
@@ -2731,26 +2947,52 @@ HANDLER_RESULT<RouteResponse> KICADD_HANDLER_PCB::handleRoute( const HANDLER_CON
         r.stops.push_back( stop );
     }
 
+    // the class's width not fitting out of / into a fine-pitch pad: a neck there (width not asked)
+    const kicadd::route::REQUEST plain = r;
+    std::string                  neckClass;
+    const std::string            neck = viaOnly ? std::string() : applyNecks( b, r, true, &neckClass );
+
     RouteResponse                 out;
     kicadd::route::SESSION        session( b );
     kicadd::route::RESULT         res;
 
-    if( !zoneSpots.empty() )
+    if( viaOnly )
+    {
+        // a via on the start point (a track's end, a spot in a pad's copper): only that via
+        const NETINFO_ITEM* ni = from->item->GetNet();
+        const NETCLASS*     nc = ni ? ni->GetNetClass() : nullptr;
+        const BOARD_DESIGN_SETTINGS& bds = b->GetDesignSettings();
+        const int dia = nc && nc->HasViaDiameter() ? nc->GetViaDiameter() : bds.GetCurrentViaSize();
+        const int drill = nc && nc->HasViaDrill() ? nc->GetViaDrill() : bds.GetCurrentViaDrill();
+
+        res = session.PlaceVia( from->pos, from->item->GetNetCode(), dia, drill );
+        res.layer = LSET::Name( zoneStart ).ToStdString() + " -> " + LSET::Name( endInVia ).ToStdString();
+
+        if( !res.ok )
+            res.error = "no room for a via at " + ptText( from->pos ) + ": " + res.error;
+
+        to = ROUTE_END{ nullptr, from->pos, "via into the pour " + LSET::Name( endInVia ).ToStdString() + " @" + ptText( from->pos ) };
+    }
+    else if( !zoneSpots.empty() )
     {
         // each spot in turn until one is reached; the first failure is the one said
         std::optional<kicadd::route::RESULT> firstFail;
+        const PCB_LAYER_ID arrive = layerAfter( zoneStart, (int) r.stops.size() );
 
         for( const ZONE_SPOT& spot : zoneSpots )
         {
             r.to = spot.pos;
             r.toItem = nullptr;
             r.layer = zoneStart;
-            r.endViaTo = spot.layer != zoneStart ? spot.layer : UNDEFINED_LAYER;
+            // a via at the end only to a layer the route is not on by then (a waypoint's via may
+            // have taken it there)
+            r.endViaTo = spot.layer != arrive ? spot.layer : UNDEFINED_LAYER;
             res = session.Route( r );
 
             if( res.ok )
             {
-                to = ROUTE_END{ nullptr, spot.pos, "pour " + LSET::Name( spot.layer ).ToStdString() + " @" + ptText( spot.pos ) };
+                to = ROUTE_END{ nullptr, spot.pos, ( endInVia != UNDEFINED_LAYER ? "via into the pour " : "pour " )
+                                                           + LSET::Name( spot.layer ).ToStdString() + " @" + ptText( spot.pos ) };
                 break;
             }
 
@@ -2773,12 +3015,14 @@ HANDLER_RESULT<RouteResponse> KICADD_HANDLER_PCB::handleRoute( const HANDLER_CON
     // vias joined to it may be
     const bool autoTo = !( req.has_to() && ( !req.to().pad().empty() || req.to().has_pos() || req.to().zone() ) );
 
-    if( !res.ok && autoTo && to->item && r.stops.empty() )
+    if( !res.ok && autoTo && to->item && plain.stops.empty() )
     {
         for( BOARD_CONNECTED_ITEM* alt : alternatives( *b->GetConnectivity(), to->item, from->item, from->pos ) )
         {
+            r = plain;
             r.toItem = alt;
             r.to = alt->GetPosition();
+            applyNecks( b, r );
             kicadd::route::RESULT attempt = session.Route( r );
 
             if( attempt.ok )
@@ -2794,6 +3038,14 @@ HANDLER_RESULT<RouteResponse> KICADD_HANDLER_PCB::handleRoute( const HANDLER_CON
     }
 
     RouteResult*                  rr = out.add_results();
+
+    if( res.ok && !neck.empty() )
+    {
+        res.neck = neck;
+
+        if( res.widthFrom == "asked" )
+            res.widthFrom = neckClass.empty() ? "netclass" : neckClass;
+    }
 
     rr->set_from( from->name );
     rr->set_to( to->name );
@@ -3084,8 +3336,9 @@ std::optional<std::string> viaSpots( BOARD* aBoard, const VECTOR2I& aCenter, int
         if( haveOutline && !outline.Contains( p ) )
             continue;
 
-        if( std::any_of( bodies.begin(), bodies.end(), [&]( const BOX2I& bb ) { return bb.Contains( p ); } ) )
-            continue;
+        // between an exposed-pad IC's pads (its pad ring, off the pads): allowed, the usual way in
+        // for a fine-pitch QFN's power pins; said, as it sits under the part's body
+        const bool ring = std::any_of( bodies.begin(), bodies.end(), [&]( const BOX2I& bb ) { return bb.Contains( p ); } );
 
         if( std::any_of( pads.begin(), pads.end(),
                          [&]( const PAD* pad )
@@ -3104,6 +3357,7 @@ std::optional<std::string> viaSpots( BOARD* aBoard, const VECTOR2I& aCenter, int
         chosen.push_back( p );
         setPoint( aOut.add_via_spots(), p );
         aOut.add_via_dist( (int64_t) d );
+        aOut.add_via_in_ring( ring );
     }
 
     aOut.set_via_free( free );
@@ -3328,6 +3582,23 @@ HANDLER_RESULT<RouteResponse> KICADD_HANDLER_PCB::handleRouteShort( const HANDLE
     kicadd::route::SESSION session( b );
     int                    routed = 0;
 
+    // a fine-pitch pad at either end: necked there when its class's width does not fit
+    auto routeNecked = [&]( const kicadd::route::REQUEST& aReq )
+    {
+        kicadd::route::REQUEST q = aReq;
+        std::string            cls;
+        const std::string      n = applyNecks( b, q, true, &cls );
+        kicadd::route::RESULT  a = session.Route( q );
+
+        if( a.ok && !n.empty() )
+        {
+            a.neck = n;
+            a.widthFrom = cls.empty() ? "netclass" : cls;
+        }
+
+        return a;
+    };
+
     for( const CONN& c : conns )
     {
         kicadd::route::REQUEST r;
@@ -3358,7 +3629,7 @@ HANDLER_RESULT<RouteResponse> KICADD_HANDLER_PCB::handleRouteShort( const HANDLE
             for( PCB_LAYER_ID l : layersFor( aEnd ) )
             {
                 r.layer = l;
-                kicadd::route::RESULT a = session.Route( r );
+                kicadd::route::RESULT a = routeNecked( r );
 
                 if( a.ok || res.error.empty() )
                     res = a;
@@ -3457,7 +3728,7 @@ HANDLER_RESULT<RouteResponse> KICADD_HANDLER_PCB::handleRouteShort( const HANDLE
                 r.layer = la;
                 r.stops = aStops;
                 tries++;
-                kicadd::route::RESULT a = session.Route( r );
+                kicadd::route::RESULT a = routeNecked( r );
                 r.stops.clear();
 
                 if( a.ok )
@@ -3843,7 +4114,15 @@ HANDLER_RESULT<FanoutResponse> KICADD_HANDLER_PCB::handleFanout( const HANDLER_C
                     r.to = at;
                     r.layer = padLayer;
                     r.endViaTo = *here;
+                    std::string cls;
+                    const std::string n = applyNecks( b, r, false, &cls );
                     res = session.Route( r );
+
+                    if( res.ok && !n.empty() )
+                    {
+                        res.neck = n;
+                        res.widthFrom = cls;
+                    }
 
                     if( first.error.empty() && !first.ok )
                         first = res;
@@ -3965,7 +4244,23 @@ HANDLER_RESULT<StitchViasResponse> KICADD_HANDLER_PCB::handleStitchVias( const H
         out.add_layers( LSET::Name( l ).ToStdString() );
     }
 
-    if( copper.size() < 2 )
+    // poured on one layer only (an inner +3V3 plane): a via there joins that plane to what
+    // reaches it on the other layers (a track, a pad's stub), so only where asked (area)
+    const bool areaGiven = req.has_area_min() && req.has_area_max();
+    const bool oneLayer = copper.size() == 1 && !unfilled;
+
+    if( oneLayer && !areaGiven )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
+                netName.ToStdString() + " has filled copper only on " + LSET::Name( copper.begin()->first ).ToStdString()
+                + ": a via in it joins nothing else. Give area [x0, y0, x1, y1] where its tracks or pads will reach "
+                  "the vias (an inner plane; or route {from: pad, to: \"zone\"}: a pad's own via into it), or pour "
+                  "another layer (zones create {\"net\": \"" + netName.ToStdString() + "\"} pours F.Cu and B.Cu)" ) );
+
+    if( oneLayer )
+        out.add_notes( netName.ToStdString() + " is poured on " + LSET::Name( copper.begin()->first ).ToStdString()
+                       + " only: the vias join it to the net's tracks / pads that reach them (route to them)" );
+
+    if( copper.size() < 2 && !oneLayer )
     {
         std::string have;
 
@@ -4175,7 +4470,7 @@ HANDLER_RESULT<StitchViasResponse> KICADD_HANDLER_PCB::handleStitchVias( const H
             VECTOR2I p( (int) x, (int) y );
             out.set_grid_points( out.grid_points() + 1 );
 
-            if( layersAt( p ) < 2 )
+            if( layersAt( p ) < ( oneLayer ? 1 : 2 ) )
                 continue;
 
             out.set_in_copper( out.in_copper() + 1 );
@@ -4188,7 +4483,7 @@ HANDLER_RESULT<StitchViasResponse> KICADD_HANDLER_PCB::handleStitchVias( const H
     }
 
     // --- islands: copper of the net with no via or through-hole of it in it
-    if( !req.no_islands() )
+    if( !req.no_islands() && !oneLayer )
     {
         const double minArea = std::pow( pcbIUScale.mmToIU( 2 ), 2 );   // 4 mm²: room for a via
         std::vector<std::string> left;
@@ -4695,6 +4990,9 @@ KICADD_HANDLER_PCB::handleFetchLcsc( const HANDLER_CONTEXT<FetchLcsc>& aCtx )
     if( !kicadd::lcsc::FetchPart( aCtx.Request.lcsc(), aCtx.Request.refresh(), part, err, !aCtx.Request.no_model() ) )
         return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, err ) );
 
+    for( const auto& [pin, type] : aCtx.Request.pin_types() )
+        part.pinTypeSet[pin] = type;
+
     FetchLcscResponse out;
     out.set_model( part.modelNote );
     out.set_lcsc( part.lcsc );
@@ -4747,6 +5045,18 @@ KICADD_HANDLER_PCB::handleFetchLcsc( const HANDLER_CONTEXT<FetchLcsc>& aCtx )
                     ( *s->mutable_pin_names() )[number] = name;
 
                 std::set<std::string> pads;
+
+                // a shell's pads with no number: numbered as its pin, the footprint saved again
+                bool        renumbered = false;
+                std::string shell = kicadd::lcsc::NumberUnnumberedPads( part, sym.pins, aCtx.Request.unnumbered_pads(),
+                                                                         renumbered );
+                kicadd::lcsc::SAVED again;
+
+                if( renumbered && !kicadd::lcsc::SaveToProjectLibrary( b, part, again, err ) )
+                    shell += " (the footprint could not be saved again: " + err + ")";
+
+                if( !shell.empty() )
+                    note += ( note.empty() ? "" : "; " ) + shell;
 
                 for( const PAD* pad : part.footprint->Pads() )
                 {
@@ -6454,7 +6764,19 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
         bool backAsked = std::any_of( back.begin(), back.end(),
                                   [&]( const wxString& g ) { return fp->GetReference().Matches( g ); } );
         bool smd = std::none_of( fp->Pads().begin(), fp->Pads().end(), []( PAD* p ) { return p->HasHole(); } );
-        bool small = fp->Pads().size() <= 3;
+        // back_decaps: a capacitor (reference C<n>) of 2-3 pads; a button, a pull resistor or an
+        // LED at an IC pin stays on top
+        wxString letters;
+
+        for( wxUniChar c : fp->GetReference() )
+        {
+            if( !wxIsalpha( c ) )
+                break;
+
+            letters += c;
+        }
+
+        bool small = fp->Pads().size() <= 3 && letters.Upper() == wxS( "C" );
 
         // sides asked for (back / back_decaps): a part on the bottom that neither names comes
         // to the top, rather than staying where an earlier placement left it
@@ -6644,8 +6966,9 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
         for( int i : hit )
         {
             parts[i].edgeSide = side->second;
+            parts[i].along = r.along();
 
-            if( r.inside() )
+            if( r.inside() || r.along() )
                 continue;
 
             // a connector: its opening over the edge
@@ -6883,6 +7206,37 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
 
         opt.trackRoom = req.has_track_room() ? (int) std::max<int64_t>( 0, req.track_room() ) : width + gap;
         out.set_track_room( opt.trackRoom );
+
+        // a fine-pitch IC (QFN / QFP / BGA: 16+ SMD pads, 0.65 mm pitch or less) keeps a ring
+        // past its pads for its escape: 2 pitches and a track, so the decaps and their vias
+        // leave the pins' way out free
+        for( size_t i = 0; i < parts.size() && !( req.has_escape_room() && req.escape_room() <= 0 ); ++i )
+        {
+            std::vector<VECTOR2I> centres;
+
+            for( const PAD* pad : fps[i]->Pads() )
+                if( pad->GetAttribute() == PAD_ATTRIB::SMD )
+                    centres.push_back( pad->GetPosition() );
+
+            if( centres.size() < 16 )
+                continue;
+
+            double pitch = HUGE_VAL;
+
+            for( size_t m = 0; m < centres.size(); ++m )
+                for( size_t n = m + 1; n < centres.size(); ++n )
+                    if( double d = ( VECTOR2D( centres[m] ) - VECTOR2D( centres[n] ) ).EuclideanNorm(); d > 1000 )
+                        pitch = std::min( pitch, d );
+
+            if( pitch > 0.65e6 )
+                continue;
+
+            parts[i].escape = req.has_escape_room() ? (int) req.escape_room() : (int) std::lround( 2 * pitch ) + width;
+            char buf[96];
+            std::snprintf( buf, sizeof( buf ), "%s %.2f mm (%.2f mm pitch)", parts[i].ref.c_str(),
+                           parts[i].escape / 1e6, pitch / 1e6 );
+            out.add_escape_rooms( buf );
+        }
     }
 
     for( const PlaceKeepout& k : req.keepouts() )
@@ -7293,6 +7647,34 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::finishAutoPlace( AUTOPLACE
 
     for( const std::string& v : res.violations )
         out.add_rule_violations( v );
+
+    // an edge rule's part kept inside: the edge it ended at and which way it lies there
+    const BOX2I board = aJob.outline.BBox();
+
+    for( const ap::PART& p : parts )
+    {
+        if( p.edgeSide < 0 || p.outline.empty() || unplaced.count( p.ref ) || aJob.overhang.count( p.ref ) || !p.movable )
+            continue;
+
+        BOX2I box( p.outline[0], VECTOR2I( 0, 0 ) );
+
+        for( const VECTOR2I& v : p.outline )
+            box.Merge( v );
+
+        const bool   odd = p.rot & 1;
+        const double w = odd ? box.GetHeight() : box.GetWidth(), h = odd ? box.GetWidth() : box.GetHeight();
+        const double d[4] = { (double) p.pos.x - board.GetLeft(), (double) board.GetRight() - p.pos.x,
+                              (double) p.pos.y - board.GetTop(), (double) board.GetBottom() - p.pos.y };
+        const int    at = p.edgeSide < ap::EDGE_ANY ? p.edgeSide : (int) ( std::min_element( d, d + 4 ) - d );
+        static const char* names[4] = { "left", "right", "top", "bottom" };
+        const bool   vertical = at == ap::EDGE_LEFT || at == ap::EDGE_RIGHT;
+        std::string  lie = std::abs( w - h ) < 1000 ? "square"
+                           : ( vertical == ( h > w ) ) ? "its long side along it"
+                                                       : "its long side across it (along=true turns it parallel)";
+
+        out.add_edge_notes( p.ref + ": at the board's " + names[at] + " edge, rotation " + std::to_string( p.rot * 90 )
+                            + ", " + lie );
+    }
 
     for( const ap::PART& p : parts )
     {
@@ -8431,6 +8813,12 @@ HANDLER_RESULT<BoardOutlineResponse> KICADD_HANDLER_PCB::handleBoardOutline( con
 
         if( 2 * in >= box.GetWidth() || 2 * in >= box.GetHeight() )
             return bad( "hole_inset: the board is too small for holes that far in" );
+
+        // to the centre: a hole_inset of half the diameter or less leaves no board beside it
+        if( in <= d / 2 )
+            return bad( "hole_inset is to the holes' centres (" + mm4( in / 1e6 ) + " mm in): a "
+                        + mm4( d / 1e6 ) + " mm hole needs more than " + mm4( d / 2e6 )
+                        + " (3 for M3 leaves 1.4 mm of board beside it)" );
 
         for( const VECTOR2I& c : { VECTOR2I( box.GetLeft() + in, box.GetTop() + in ), VECTOR2I( box.GetRight() - in, box.GetTop() + in ),
                                    VECTOR2I( box.GetRight() - in, box.GetBottom() - in ), VECTOR2I( box.GetLeft() + in, box.GetBottom() - in ) } )

@@ -1,6 +1,6 @@
 # 交接：beta.13 的工作清單（2026-11-24）
 
-> **狀態（2026-11-24）：** v0.1.0-beta.12 已打 tag 並發布（pre-release）。origin/main 在 87015f0，本機領先（本文件的 commit）。
+> **狀態（2026-11-24）：** v0.1.0-beta.12 已打 tag 並發布（pre-release）。階段 1 完成，在本機 commit，等使用者確認後開始階段 2。
 
 beta.12 已發布（NEXT_beta10 第一優先 1–10 項、盲測 S1 的修正）。這份清單合併三個來源：
 - 盲測 S2（四層 RP2040 板）的回報；
@@ -45,6 +45,21 @@ beta.12 已發布（NEXT_beta10 第一優先 1–10 項、盲測 S1 的修正）
 3. 推 annotated tag `v0.1.0-beta.13`。
 
 使用者已同意 CI 綠燈後直接推 tag。不過自動模式的權限檢查可能會擋下推 tag：被擋時，請使用者自己推。
+
+## 階段 1 的結果（2026-11-24，本機 commit，尚未推送）
+
+- **第 1 項（90 vs 108 Ω）：** 兩邊的平面模型本來就相同（`impedance::Line` / `LineOver`，都是「microstrip over In1.Cu, 0.2104 mm」）。差別在 S2 的走線：USB_D_P 與 USB_D_N 在 R3 與 U4 之間相距 1.3–1.9 mm，沒有耦合，`audit` 正確地取 2 × Z0（2 × 54 ≈ 108 Ω），但訊息沒有說「uncoupled」，看起來像平面不同。
+  - 修正：`audit impedance` 對沒耦合的線段寫「uncoupled: its partner 1.32 mm away (over 0.84 mm: 2 x Z0)」，每組差分對列出沒耦合的長度，z_diff_target 的警告說明原因；標頭列出每層的參考平面（與 impedance / set_rules 同一套）。
+  - 測試：`impedance_e2e` [pair in audit]：同一組 0.324 / 0.15 mm 線對，`audit` 量到的 Zdiff 等於 `impedance` 算的；分開 2 mm 的線對標為 uncoupled。
+- **第 2 項：** `route to=zone` 的最後一個 via waypoint 在鋪銅上時，只打那一顆過孔（S2 是兩顆、繞 2 倍路）；起點就在 via 上時只放過孔；`query_area via_net` 列出 QFN 焊盤環內的位置（標 `*`）；`stitch_vias` 可處理只鋪一層的網路（要給 area）。
+- **第 3 項：** `auto_place` 在細腳距 IC（16 支以上 SMD 腳、腳距 ≤ 0.65 mm）焊盤外留 2 腳距 + 1 線寬的逃線環（`escape_room`，0 關閉）。
+- **第 4 項：** `route` / `route_short` / `fanout` 從細腳距焊盤出發（或進入）時，class 線寬放不下就先縮到放得下的最大寬度再加寬（「necked to 0.30 mm out of U1.10」）；間隙剛好等於 clearance 會接受（已有測試）。
+- **第 5 項：** EasyEDA 標成 bidirectional 的電源腳依名稱改成 power_in（VREG_VOUT 等輸出為 power_out），回應列出改了哪些腳。
+- **第 6 項：** `query_area` 的 custom 形狀焊盤用 bbox（A4B9 0.6x1.3）。
+- **第 7 項：** `back_decaps` 只翻電容（C*）。
+- **第 8 項：** edge 規則 `along: true` 與每個邊緣零件的方向；`sch_connect partial=true`（對半重試，只列出有問題的腳）；`lcsc_fetch pin_types={...}`；沒有編號的外殼焊盤（`unnumbered_pads`）；`run_drc` 的 starved thermal 建議；`board_render` 畫出 NPTH 孔的外框（原因：孔用背景色畫，沒有鋪銅時看不見）；`hole_inset` 量到孔中心，寫進說明，太小會拒絕。
+- **新測試：** `escape_e2e`（第 2、3、4、7 項與 starved thermal），run_all 變成 41 個。
+- **新發現（尚未處理）：** `set_rules` 先依名稱 pattern 指定 class、之後才用 `add_footprint` 加入的零件，從它的焊盤起線時寬度是板子最小值（0.09 mm，「board setup constraints」），不是 class 的寬度；同一個網路從另一個零件起線卻正確。sync_pcb 的流程（S2）沒有這個問題。先用 `add_footprint` 再 `set_rules` 就正常。
 
 ## 盲測 S2 的結果
 

@@ -35,6 +35,7 @@ struct STOP
     VECTOR2I     pos;
     PCB_LAYER_ID viaTo = UNDEFINED_LAYER;   ///< a via here, then on this layer; undefined: a waypoint
     bool         otherSide = false;         ///< a via here, then on the end's layer / the other outer layer
+    int          widthAfter = 0;            ///< from here on this track width (a neck out of / into a fine-pitch pad), 0: as before
 };
 
 
@@ -74,6 +75,7 @@ struct RESULT
     std::vector<board::DrcViolation> drc;   ///< clearance / edge violations of the new tracks
     long long               stray = 0;   ///< nm outside the box between two consecutive points of the path
     std::optional<VECTOR2I> strayAt;     ///< where
+    std::string             neck;        ///< the caller's: a narrower stretch out of / into a pad, said
 };
 
 

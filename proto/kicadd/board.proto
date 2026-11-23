@@ -107,13 +107,14 @@ message QueryResponse
   int32                total     = 2;  // total matches before limit was applied
   bool                 truncated = 3;
   // QueryRadius with via_net: free via spots (no clash with other-net copper on any layer or the
-  // board edge, off pads, not under an exposed-pad IC), nearest first, at least a via apart
+  // board edge, off pads; between an exposed-pad IC's pads too, marked), nearest first, at least a via apart
   repeated Point       via_spots    = 4;
   repeated int64       via_dist     = 5;   // nm from the centre, per spot
   int64                via_diameter = 6;
   int64                via_drill    = 7;
   int32                via_free     = 8;   // unused (spots are tested nearest first, the search stops at limit)
   int32                via_tested   = 9;   // grid points tested by the router
+  repeated bool        via_in_ring  = 10;  // per spot: inside an exposed-pad IC's pad ring (under its body)
 }
 
 // Relative move/rotate/flip of footprints, addressed by reference designator.
@@ -312,6 +313,11 @@ message AutoPlace
   // Areas no part may go (courtyards out), e.g. a channel kept for routing: side top / bottom /
   // both (default both)
   repeated PlaceKeepout keepouts = 23;
+
+  // Room kept free round a fine-pitch IC's pads (QFN / QFP / BGA: 16+ SMD pads at 0.65 mm pitch
+  // or less) for its escape, nm past the pads: no other part's courtyard there on its side.
+  // Unset: 2 pitches + the default class's track width; 0: none.
+  optional int64 escape_room = 24;
 }
 
 message PlaceKeepout
@@ -337,6 +343,7 @@ message EdgeRule
   // found (the courtyard not well past its pads on one side) stays inside.
   optional double overhang = 3;
   bool inside = 4;     // stay inside the board like any part, opening or not
+  bool along = 5;      // its long side along the edge (a pin header's row parallel to it)
 }
 
 message RegionRule
@@ -403,6 +410,7 @@ message AutoPlaceResponse
   repeated string tight_pads = 30;
   int32  tight_count = 31;         // placed pads with less than one track's room
   int32  tracks_left = 32;         // tracks / vias that were on the moved parts' pads: left where they were
+  repeated string escape_rooms = 33; // the fine-pitch ICs kept an escape ring: "U1 0.75 mm (0.4 mm pitch)"
 }
 
 message FetchLcsc
@@ -410,6 +418,12 @@ message FetchLcsc
   string lcsc    = 1;      // "C8734"
   bool   refresh = 2;      // ask the network even when cached
   bool   no_model = 3;     // leave out the 3D model (one more request the first time)
+  // Pin types to set on the symbol, by pin number or name ("VREG_VOUT": "power_out", "12":
+  // "input"; every pin of that name): after the ones inferred from the names
+  map<string, string> pin_types = 4;
+  // Copper pads with no number (a USB-C's shell): number them as this pin of the symbol
+  // (default: the symbol's one pin with no pad, if there is just one)
+  string unnumbered_pads = 5;
 }
 
 message LcscPad
@@ -996,7 +1010,7 @@ message BoardOutline
   OutlineShape          outline = 1;
   repeated OutlineShape cutouts = 2;
   repeated MountingHole holes   = 3;
-  double hole_inset   = 4;    // > 0: holes at the 4 corners, this far in from the outline (mm)
+  double hole_inset   = 4;    // > 0: holes at the 4 corners, their centres this far in from the outline's box along x and y (mm)
   double hole_diameter = 5;   // with hole_inset (default 3.2, M3)
   bool   keep_old     = 6;    // keep the Edge.Cuts there are (add to them)
 }
@@ -1092,6 +1106,7 @@ message RouteResult
   int64  stray      = 20;   // nm the track goes outside the box between two points of its path (0: not)
   Point  stray_at   = 21;   // where it goes furthest
   string width_from = 22;   // where the width came from: "netclass 'Power'", "board minimum track width", "asked"
+  string neck       = 23;   // a narrower stretch out of / into a fine-pitch pad: "0.3 mm out of U1.10"
 }
 
 message RouteResponse

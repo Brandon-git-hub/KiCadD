@@ -57,6 +57,7 @@ struct PART
     bool             back = false;    ///< on the bottom side: shares no room with the top's parts...
     bool             tht = false;     ///< ... except through-hole parts: their pads go through both sides
     int              holeGap = 0;     ///< its holes' own clearance (pad / footprint override), nm
+    int              escape = 0;      ///< a fine-pitch IC: nm past its pads' box no other part's courtyard takes (its side)
 
     /// May go to the other side: its shape there (mirrored), same frame and pad order as above
     bool                  canFlip = false;
@@ -67,6 +68,7 @@ struct PART
     bool  hasRegion = false;  ///< its courtyard inside region
     BOX2I region;
     int   fixedRot = -1;      ///< only this rotation (quarter turns), -1 free
+    bool  along = false;      ///< with edgeSide: its courtyard's long side along that edge (a pin header)
 
     /// A connector over the board edge (with edgeSide): its opening (EDGE_LEFT .. EDGE_BOTTOM at
     /// rotation 0) faces that edge and the board edge runs edgeLine from the anchor that way;

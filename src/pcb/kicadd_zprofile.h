@@ -7,7 +7,9 @@
  * pour on a signal layer between lies under the track, that pour is its plane there (the return
  * current takes the nearest copper), and where a plane has a gap the next copper past it is. With
  * no copper on either side the spot is off plane (no Z: the plane check says where). A diff pair
- * takes its Zdiff at the gap to its partner there (every 0.25 mm; uncoupled: twice Z0). The
+ * takes its Zdiff at the gap to its partner there (every 0.25 mm; uncoupled: twice Z0, said as
+ * "uncoupled" with how far its partner is, and counted per pair). The header names each layer's
+ * reference planes, the ones the impedance tool and set_rules use. The
  * arithmetic is kicadd_zcalc's (KiCad's transmission line calculations). Vias and pads are not in
  * it, nor coplanar ground on the track's own layer.
  *

@@ -267,6 +267,41 @@ def main():
             line = next((ln for ln in text.splitlines() if "pin types inferred" in ln), "")
             check("13 power_in" in line and "2 power_out" in line and "VD_PLL" in line and "PWR_FLAG" in line
                   and "VS_PLL" not in line, "C39693 (FE2.1): VD33, VD18, VD_PLL power_in: " + line.strip()[:160])
+        if os.path.isfile(os.path.join(a.cache, "C2040.json")):
+            # RP2040 (blind run S2): EasyEDA types its supplies bidirectional, so audit's decoupling
+            # check skipped it and ir_drop found no +1V1 source; by their names they are supplies,
+            # VREG_VOUT the one output; the GPIOs stay bidirectional
+            err, text = m.tool("lcsc_fetch", {"lcsc": "C2040"})
+            line = next((ln for ln in text.splitlines() if "typed bidirectional" in ln), "")
+            check(not err and "IOVDD x6 power_in" in line and "DVDD x2 power_in" in line and "USB_VDD power_in" in line
+                  and "ADC_AVDD power_in" in line and "VREG_IN power_in" in line and "VREG_VOUT power_out" in line
+                  and "GPIO" not in line, "C2040 (RP2040): its bidirectional supply pins typed by name: " + line.strip()[:200])
+            symtext = open(os.path.join(a.project, "lcsc.kicad_sym"), encoding="utf-8").read()
+            blk = symtext[symtext.find('(symbol "RP2040"'):]
+            blk = blk[:blk.find('\n\t(symbol "', 10) if '\n\t(symbol "' in blk[10:] else len(blk)]
+            pins = re.findall(r'\(pin (\w+) \w+[\s\S]*?\(name "([^"]+)"', blk)
+            kinds = {n: k for k, n in pins}
+            check(kinds.get("IOVDD") == "power_in" and kinds.get("VREG_VOUT") == "power_out"
+                  and kinds.get("GPIO0") == "bidirectional", f"in the library: IOVDD {kinds.get('IOVDD')}, VREG_VOUT "
+                  f"{kinds.get('VREG_VOUT')}, GPIO0 {kinds.get('GPIO0')}")
+            # pin_types: the agent's own, by name or number, over the inferred ones
+            err, text = m.tool("lcsc_fetch", {"lcsc": "C2040", "pin_types": {"GPIO0": "input", "26": "output"}})
+            line = next((ln for ln in text.splitlines() if "set as asked" in ln), "")
+            symtext = open(os.path.join(a.project, "lcsc.kicad_sym"), encoding="utf-8").read()
+            blk = symtext[symtext.find('(symbol "RP2040"'):]
+            pins, nums = {}, {}   # the first of each: RP2040's own (other symbols follow)
+            for k, n in re.findall(r'\(pin (\w+) \w+[\s\S]*?\(name "([^"]+)"', blk[:200000]):
+                pins.setdefault(n, k)
+            for k, n in re.findall(r'\(pin (\w+) \w+[\s\S]*?\(number "([^"]+)"', blk[:200000]):
+                nums.setdefault(n, k)
+            check(not err and "GPIO0 input" in line and "26 output" in line and "keep their copy" in line
+                  and pins.get("GPIO0") == "input" and nums.get("26") == "output",
+                  f"pin_types GPIO0 / pin 26: set in the library ({pins.get('GPIO0')}, {nums.get('26')}): " + line.strip()[:120])
+            err, text = m.tool("lcsc_fetch", {"lcsc": "C2040", "pin_types": {"NOPE": "input"}})
+            check("no pin numbered or named NOPE" in text, "a pin it lacks: said")
+            err, text = m.tool("lcsc_fetch", {"lcsc": "C2040", "pin_types": {"GPIO0": "sideways"}})
+            check(err or "a type is input" in text, "a type that is none: said")
+            m.tool("lcsc_fetch", {"lcsc": "C2040"})
         if os.path.isfile(os.path.join(a.cache, "C165948.json")):
             err, text = m.tool("lcsc_fetch", {"lcsc": "C165948"})
             line = next((ln for ln in text.splitlines() if "pin types inferred" in ln), "")
@@ -274,6 +309,42 @@ def main():
             symtext = open(os.path.join(a.project, "lcsc.kicad_sym"), encoding="utf-8").read()
             blk = symtext[symtext.find('(symbol "TYPE-C-31-M-12"'):][:3000]
             check("C165948.html" in blk, "its datasheet: the LCSC page of C165948 itself (not the shared footprint's link)")
+            # its A4B9 / A1B12 pads are custom shapes: query_area gives their copper's box, not 0x0
+            m.tool("add_footprint", {"lcsc": "C165948", "ref": "J98", "x": 50, "y": 50})
+            err, text = m.tool("query_area", {"ref": "J98", "radius": 6, "kinds": ["pad"]})
+            pads = re.findall(r"^PAD J98\.(\S+) .* ([\d.]+)x([\d.]+)(?: ~[\d.]+)?$", text or "", re.M)
+            a4 = next(((w, h) for n, w, h in pads if n == "A4B9"), None)
+            check(pads and not any(float(w) == 0 or float(h) == 0 for _, w, h in pads) and a4 and float(a4[0]) > 0.3,
+                  f"query_area: no pad 0x0 ({len(pads)} pads), A4B9 {a4 and 'x'.join(a4)} mm")
+            m.tool("undo", {})
+            # copper pads with no number (C456012's shell): copies of C165948 with its shell pads'
+            # numbers taken out, as fake parts in the cache
+            fakes = {"C99000001": ("2",), "C99000002": ("1", "2", "3", "4")}
+            made = []
+            for fake, blank in fakes.items():
+                raw = open(os.path.join(a.cache, "C165948.json"), encoding="utf-8").read().replace("C165948", fake)
+                fp = open(os.path.join(a.cache, "C165948.footprint.json"), encoding="utf-8").read()
+                for n in blank:   # the footprint is in both answers
+                    fp = re.sub(r"(PAD~OVAL~[^~]*~[^~]*~[^~]*~[^~]*~11~~)" + n + "~", r"\1~", fp)
+                    raw = re.sub(r"(PAD~OVAL~[^~]*~[^~]*~[^~]*~[^~]*~11~~)" + n + "~", r"\1~", raw)
+                for name, text in ((fake + ".json", raw), (fake + ".footprint.json", fp)):
+                    open(os.path.join(a.cache, name), "w", encoding="utf-8").write(text)
+                    made.append(os.path.join(a.cache, name))
+            try:
+                err, text = m.tool("lcsc_fetch", {"lcsc": "C99000001"})
+                check(not err and "1 copper pad(s) with no number (a shell or tab) numbered 2, the symbol's one pin with no pad" in text
+                      and "without a pad" not in text, "one shell pad with no number: numbered as the one pin with no pad (2)")
+                err, text = m.tool("lcsc_fetch", {"lcsc": "C99000002"})
+                check(not err and "4 copper pad(s) with no number" in text and "unnumbered_pads=<pin> numbers them" in text
+                      and "pins with no pad: 1, 2, 3, 4" in text, "four, and four pins with no pad: said, how to number them")
+                err, text = m.tool("lcsc_fetch", {"lcsc": "C99000002", "unnumbered_pads": "1"})
+                mod = open(os.path.join(a.project, "lcsc.pretty", re.search(r"saved as LCSC:(\S+) ", text).group(1) + ".kicad_mod"),
+                           encoding="utf-8").read() if re.search(r"saved as LCSC:(\S+) ", text) else ""
+                check(not err and "4 copper pad(s) with no number (a shell or tab) numbered 1 as asked" in text
+                      and mod.count('(pad "1"') == 4 and '(pad "" thru_hole' not in mod and '(pad "" smd' not in mod, "unnumbered_pads 1: all four numbered 1 in the saved footprint")
+            finally:
+                for f in made:
+                    os.remove(f)
         sym = open(os.path.join(a.project, "lcsc.kicad_sym"), encoding="utf-8").read()
         block = sym[sym.find('(symbol "AMS1117-3.3"'):]
         check(re.search(r'\(pin power_out [^\n]*\n[^\n]*\n\s*\(name "VOUT', block) or 'power_out' in block[:20000],

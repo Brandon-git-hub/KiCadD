@@ -38,6 +38,7 @@ inline constexpr const char* ATTRIBUTION =
 
 struct PART
 {
+    std::map<std::string, std::string> pinTypeSet;   ///< the agent's pin types for the symbol (number or name -> type)
     std::string                lcsc;          ///< "C8734"
     std::string                title;         ///< part name, e.g. "STM32F103C8T6"
     std::string                value;         ///< a passive's value ("10k", "100nF"), as the symbol has it
@@ -144,6 +145,13 @@ bool FetchAndSave( const wxString& aProjectDir, KIWAY* aKiway, const std::string
 
 /// One line for a status bar: "C8734 STM32F103C8T6: LCSC stock 10693, US$2.398, JLC Extended Part (2026-11-09)"
 std::string Summary( const PART& aPart );
+
+/// Copper pads the data left with no number (a USB-C's shell, a tab): they would be on no net.
+/// Numbered aBind (a pin number of the symbol), else the symbol's one pin that has no pad (its
+/// shell / EH pin); with none or several such pins they stay as they are. The note ("" when none);
+/// aChanged: pads were numbered (save the footprint again).
+std::string NumberUnnumberedPads( PART& aPart, const std::vector<std::string>& aSymbolPins, const std::string& aBind,
+                                  bool& aChanged );
 
 /// "; agrees with the parts index (jlcparts <date>, ...): JLC stock N, extended" or "; differs from
 /// ...": what lcsc_search's index holds for the part next to EasyEDA's answer; "" without one.

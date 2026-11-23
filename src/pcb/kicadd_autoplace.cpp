@@ -246,6 +246,7 @@ public:
                 p.canFlip = false;
 
             m_maxHoleGap = std::max( m_maxHoleGap, p.holeGap );
+            m_maxEscape = std::max( m_maxEscape, p.escape );
         }
 
         bucketRebuild();
@@ -1067,7 +1068,7 @@ private:
         const int   holeGap = std::max( m_opt.spacing, m_opt.holeClearance );
 
         BOX2I reach = b;
-        reach.Inflate( std::max( holeGap, m_maxHoleGap ) );     // neighbours' holes
+        reach.Inflate( std::max( { holeGap, m_maxHoleGap, m_maxEscape } ) );   // neighbours' holes, escape rings
 
         bool clear = true;
 
@@ -1084,6 +1085,24 @@ private:
             {
                 clear = false;
                 return false;
+            }
+
+            // a fine-pitch IC's escape ring (its pads' box grown by escape): no courtyard in it
+            if( q.back == p.back && ( p.escape > 0 || q.escape > 0 ) )
+            {
+                auto ring = [&]( int aIc, const VECTOR2I& aPos, int aRot )
+                {
+                    BOX2I r = cuAt( aIc, aPos, aRot );
+                    r.Inflate( m_parts[aIc].escape );
+                    return r;
+                };
+
+                if( ( p.escape > 0 && ring( i, aPos, aRot ).Intersects( qBox ) )
+                    || ( q.escape > 0 && ring( j, q.pos, q.rot ).Intersects( boxAt( i, aPos, aRot ) ) ) )
+                {
+                    clear = false;
+                    return false;
+                }
             }
 
             if( !q.tht && !p.tht )
@@ -1198,10 +1217,25 @@ private:
             const int d[4] = { b.GetLeft() - m_area.GetLeft(), m_area.GetRight() - b.GetRight(),
                                b.GetTop() - m_area.GetTop(), m_area.GetBottom() - b.GetBottom() };
 
-            if( p.edgeSide == EDGE_ANY )
-                return *std::min_element( d, d + 4 ) <= tol;
+            // along: its long side parallel to the edge it is at (left / right: taller than wide)
+            auto alongOk = [&]( int aSide )
+            {
+                if( !p.along || b.GetWidth() == b.GetHeight() )
+                    return true;
 
-            return d[p.edgeSide] <= tol;
+                return ( aSide == EDGE_LEFT || aSide == EDGE_RIGHT ) == ( b.GetHeight() > b.GetWidth() );
+            };
+
+            if( p.edgeSide == EDGE_ANY )
+            {
+                for( int s = 0; s < 4; ++s )
+                    if( d[s] <= tol && alongOk( s ) )
+                        return true;
+
+                return false;
+            }
+
+            return d[p.edgeSide] <= tol && alongOk( p.edgeSide );
         }
 
         return true;
@@ -1793,6 +1827,7 @@ private:
     mutable std::vector<unsigned>                 m_stamp;
     mutable unsigned                              m_stampNow = 0;
     int                                           m_maxHoleGap = 0;
+    int                                           m_maxEscape = 0;
     std::vector<std::vector<int>>                 m_members;    ///< per block
     std::vector<std::vector<int>>                 m_nearOf;     ///< near rules a part is in
     bool                                          m_soft = false;

@@ -445,6 +445,41 @@ bool RenderBoardPng( BOARD* aBoard, const kicadd::board::RenderBoard& aReq,
         }
     }
 
+    // a hole with no copper (an NPTH mounting hole) is cut through the board like its edge: its
+    // outline in the Edge.Cuts colour, or with no pour under it, it would be background on
+    // background and not seen at all
+    if( layers.Contains( Edge_Cuts ) )
+    {
+        plotter.SetColor( rgba( 230, 230, 220 ) );
+
+        for( FOOTPRINT* fp : aBoard->Footprints() )
+        {
+            for( PAD* p : fp->Pads() )
+            {
+                if( !p->HasHole() || ( p->GetAttribute() != PAD_ATTRIB::NPTH && ( p->GetLayerSet() & layers & LSET::AllCuMask() ).any() ) )
+                    continue;
+
+                std::shared_ptr<SHAPE_SEGMENT> hole = p->GetEffectiveHoleShape();
+
+                if( !hole )
+                    continue;
+
+                SHAPE_POLY_SET poly;
+                hole->TransformToPolygon( poly, aBoard->GetDesignSettings().m_MaxError, ERROR_INSIDE );
+
+                if( poly.OutlineCount() )
+                {
+                    std::vector<VECTOR2I> pts = poly.COutline( 0 ).CPoints();
+
+                    if( !pts.empty() )
+                        pts.push_back( pts.front() );
+
+                    plotter.PlotPoly( pts, FILL_T::NO_FILL, std::max( 2 * px, 50000 ), nullptr );
+                }
+            }
+        }
+    }
+
     // text that reads the right way round in a mirrored picture too
     auto text = [&]( const VECTOR2I& aPos, const wxString& aText, int aPx, const COLOR4D& aColor,
                      GR_TEXT_H_ALIGN_T aH = GR_TEXT_H_ALIGN_LEFT, GR_TEXT_V_ALIGN_T aV = GR_TEXT_V_ALIGN_TOP )

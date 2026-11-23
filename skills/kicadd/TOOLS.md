@@ -12,7 +12,7 @@ Counts, layer count and board outline of the open PCB. Units: mm. KiCad's Y axis
 
 Items near a part or a point, nearest first (pads with their size). Use instead of dumping the board; via_net finds free via spots.
 
-Items near a footprint (ref: the part itself first, then what is around it) or a point (x,y), nearest first. Lines: KIND handle [net] layer @x,y (pads are REF.PADNUM WxH, the copper as placed; tracks start>end wWIDTH; ~DIST from the centre). via_net=NET lists free via spots instead. Use this instead of dumping the board.
+Items near a footprint (ref: the part itself first, then what is around it) or a point (x,y), nearest first. Lines: KIND handle [net] layer @x,y (pads are REF.PADNUM WxH, the copper as placed; tracks start>end wWIDTH; ~DIST from the centre). via_net=NET lists free via spots instead (off pads; in a QFN's pad ring too, marked *). Use this instead of dumping the board.
 
 Parameter notes:
 
@@ -66,13 +66,15 @@ Arguments:
 
 Get an LCSC part's footprint, symbol and 3D model into the project libraries, with stock and price.
 
-Get the footprint and schematic symbol of an LCSC part (e.g. C8734) from the JLCEDA/EasyEDA Official Library: converted to KiCad, saved to the project library LCSC (lcsc.pretty + lcsc.kicad_sym, added to fp-lib-table and sym-lib-table; the symbol's Footprint field points at the footprint), cached for offline use. Returns both lib_ids, size, pad numbers/positions and any pin/pad mismatch. Its 3D model (EasyEDA's, converted to VRML in lcsc.3dshapes/, placed as EasyEDA places it) comes along for the 3D viewer unless model=false. add_footprint with lcsc does this by itself.
+Get the footprint and schematic symbol of an LCSC part (e.g. C8734) from the JLCEDA/EasyEDA Official Library: converted to KiCad, saved to the project library LCSC (lcsc.pretty + lcsc.kicad_sym, added to fp-lib-table and sym-lib-table; the symbol's Footprint field points at the footprint), cached for offline use. Returns both lib_ids, size, pad numbers/positions and any pin/pad mismatch. Its 3D model (EasyEDA's, converted to VRML in lcsc.3dshapes/, placed as EasyEDA places it) comes along for the 3D viewer unless model=false. add_footprint with lcsc does this by itself. Pin types: unspecified ones from their names, supplies the data typed bidirectional too (said); pin_types {pin number or name: type} sets others (input, output, bidirectional, tri_state, passive, power_in, power_out, open_collector, no_connect ...) in the library symbol. Copper pads with no number (a USB-C shell) take the symbol's one pin with no pad (EH), or unnumbered_pads=<pin>; said.
 
 Arguments:
 
 - `lcsc` (string): LCSC part number, e.g. C8734
 - `model` (boolean): the 3D model too (default true)
+- `pin_types` (object): set pin types: {"VREG_VOUT": "power_out", "12": "input"}
 - `refresh` (boolean): Fetch again even if cached
+- `unnumbered_pads` (string): number shell pads with no number as this pin
 
 ## add_footprint
 
@@ -131,7 +133,7 @@ Arguments:
 
 Draw one connection like the interactive router (to a pad, a point, or the net's pour). Not an autorouter.
 
-Draw one connection the way the interactive router does (45-degree tracks around obstacles; existing copper is never moved; the net class's width and via, the clearance, keepout and edge rules). Not an autorouter: say what to connect. from: a pad "U1.5" or a point [x, y] on the net's pad / track / via (inside a pad: the track leaves the pad there, for a way out between close pads); to: likewise, or any point (a free end), or "zone": the net's own pour, its nearest filled copper (on the start's layer, else with a via down to the nearest layer that has it: a pad to a VBUS / GND pour); without to: the nearest unrouted connection of from. waypoints: [[x, y], ...] to pass through, [x, y, "B.Cu"] puts a via there and goes on on that layer; via: [x, y] is short for one via to the other side (the end's layer). layer: where to start (default: the start pad's / the end's / F.Cu); width in mm. Reports length vs the straight line, segments, vias and the narrowest gap; when blocked, how far it got and what is in the way, and how far it leaves the box between two waypoints (strict=true refuses that). One undoable edit; dry_run reports without drawing. Mm, Y down.
+Draw one connection the way the interactive router does (45-degree tracks around obstacles; existing copper is never moved; the net class's width and via, the clearance, keepout and edge rules). Not an autorouter: say what to connect. from: a pad "U1.5" or a point [x, y] on the net's pad / track / via (inside a pad: the track leaves the pad there, for a way out between close pads); to: likewise, or any point (a free end), or "zone": the net's own pour, its nearest filled copper (on the start's layer, else with a via down to the nearest layer that has it: a pad to a VBUS / GND pour); without to: the nearest unrouted connection of from. waypoints: [[x, y], ...] to pass through, [x, y, "B.Cu"] puts a via there and goes on on that layer; via: [x, y] is short for one via to the other side (the end's layer); to "zone" with the last via over the net's pour (on its layer; via: any layer): the route ends in that one via (on the start point: only the via). layer: where to start (default: the start pad's / the end's / F.Cu); width in mm. Reports length vs the straight line, segments, vias and the narrowest gap; when blocked, how far it got and what is in the way, and how far it leaves the box between two waypoints (strict=true refuses that). One undoable edit; dry_run reports without drawing. Mm, Y down.
 
 Parameter notes:
 
@@ -184,7 +186,7 @@ Arguments:
 
 Stitching vias on a grid over a net's pours (default GND), plus one per unconnected island.
 
-Stitching vias for a net's pours (default GND): through vias on a grid (spacing, default 5 mm; area [x0, y0, x1, y1] mm, default the whole pour), each inside the net's filled copper on two or more layers, clear of pads, tracks, holes, the edge and rule areas, and outside the parts' courtyards (under_parts=true allows them there). Then one via in each island of the net's copper that has none (islands=false skips it). Net class via size. The zones are refilled before and after; one undoable edit; dry_run counts without adding.
+Stitching vias for a net's pours (default GND): through vias on a grid (spacing, default 5 mm; area [x0, y0, x1, y1] mm, default the whole pour), each inside the net's filled copper on two or more layers (a net poured on one layer only, an inner plane: inside it, area required), clear of pads, tracks, holes, the edge and rule areas, and outside the parts' courtyards (under_parts=true allows them there). Then one via in each island of the net's copper that has none (islands=false skips it). Net class via size. The zones are refilled before and after; one undoable edit; dry_run counts without adding.
 
 Arguments:
 
@@ -264,7 +266,7 @@ Arguments:
 
 Draw the board outline (rect / circle), cut-outs and mounting holes, as one undoable edit.
 
-Draw the board outline on Edge.Cuts (the old board-level Edge.Cuts shapes are replaced unless keep_old): rect [x0, y0, x1, y1] with corner_radius, or circle [cx, cy, diameter] (mm, Y down). cutouts: [{rect, corner_radius} | {circle}] inside it. Mounting holes: hole_inset (mm from the corners, 4 holes of hole_diameter, default 3.2 = M3) and / or holes [[x, y, d], {x, y, diameter, plated, net}]: NPTH, or plated with a ring (e.g. to GND); they become footprints H1, H2 ... out of the BOM and the CPL; one where a part already has a hole is left out. Reports the size, area, the parts now outside or on a cut-out, and warns of holes on parts or tracks and of tracks a cut-out or the outline cuts. One undoable edit. Then zones create for a pour.
+Draw the board outline on Edge.Cuts (the old board-level Edge.Cuts shapes are replaced unless keep_old): rect [x0, y0, x1, y1] with corner_radius, or circle [cx, cy, diameter] (mm, Y down). cutouts: [{rect, corner_radius} | {circle}] inside it. Mounting holes: hole_inset (4 holes of hole_diameter, default 3.2 = M3, each centre hole_inset mm in from the outline's corner along x and along y: its box's corner, a rounded corner's too; the hole's edge is half its diameter nearer the edge) and / or holes [[x, y, d], {x, y, diameter, plated, net}]: NPTH, or plated with a ring (e.g. to GND); they become footprints H1, H2 ... out of the BOM and the CPL; one where a part already has a hole is left out. Reports the size, area, the parts now outside or on a cut-out, and warns of holes on parts or tracks and of tracks a cut-out or the outline cuts. One undoable edit. Then zones create for a pour.
 
 Arguments:
 
@@ -579,10 +581,11 @@ Arguments:
 
 Connect pins to nets with a stub and a label (or power symbols, ports, no-connect); all or none.
 
-Connect pins to nets, as {"nets": {"GND": ["R1.2", "C1.2"], "VCC": ["U1.VDD"]}}. Each pin gets a short wire and a net label, so pins on the same net name are connected; net "NC" marks pins as not connected. A pin already on another net is refused (sch_disconnect it first); all or none: with any error nothing is connected, also when a stub, label or power symbol would land on another pin or net (two asked nets made one, a pin not asked joined): the pins are listed. Hierarchy: a net named in ports is a port of the pins' sheet (a hierarchical label inside, a sheet pin of that name on the sheet's symbol: inputs on the left, the rest on the right); on the parent the sheet pin is SHEET.PIN, like a part's, e.g. {"+5V": ["Power.VOUT", "U2.3"]}. global uses global labels instead (every sheet sees the net by name). Nets in power get a power symbol instead of a label (GND, +3V3, VCC: global on every sheet, the usual way for supplies; ground-like names get a ground symbol).
+Connect pins to nets, as {"nets": {"GND": ["R1.2", "C1.2"], "VCC": ["U1.VDD"]}}. Each pin gets a short wire and a net label, so pins on the same net name are connected; net "NC" marks pins as not connected. A pin already on another net is refused (sch_disconnect it first); all or none: with any error nothing is connected, also when a stub, label or power symbol would land on another pin or net (two asked nets made one, a pin not asked joined): the pins are listed. partial=true connects what fits and lists only the pins at fault (a big batch is not lost to one clash; one undo step per batch that went). Hierarchy: a net named in ports is a port of the pins' sheet (a hierarchical label inside, a sheet pin of that name on the sheet's symbol: inputs on the left, the rest on the right); on the parent the sheet pin is SHEET.PIN, like a part's, e.g. {"+5V": ["Power.VOUT", "U2.3"]}. global uses global labels instead (every sheet sees the net by name). Nets in power get a power symbol instead of a label (GND, +3V3, VCC: global on every sheet, the usual way for supplies; ground-like names get a ground symbol).
 
 Parameter notes:
 
+- partial: connect what fits, list the pins at fault (default: all or none)
 - ports: nets that are ports of their sheet: "VOUT" or "VOUT:output" (input, output, bidirectional, tri_state, passive)
 - power: nets connected with a power symbol, e.g. ["GND", "+3V3"]
 
@@ -590,6 +593,7 @@ Arguments:
 
 - `global` (boolean)
 - `nets` (object): net name -> pins
+- `partial` (boolean): connect what fits, list the pins at fault
 - `ports` (array): nets that are sheet ports: "VOUT" or "VOUT:output"
 - `power` (array): nets drawn as power symbols
 
@@ -659,18 +663,19 @@ Arguments:
 
 Place parts inside the outline near what they connect to, with optional rules (edges, regions, groups), undoable.
 
-Place parts automatically inside the board outline: each part goes near what it connects to (decoupling caps and pull-ups next to their IC pin), courtyards kept apart, rotations tried, as one undoable edit. Default: the parts outside the board (new from sync_pcb); refs for chosen parts, all for every unlocked part; fixed keeps parts where they are (place connectors first, then lock or fix them). Mounting holes (board_outline's H1..., MountingHole footprints) stay unless refs names them. Functional blocks are kept together: from groups, else the parts' Block field (sch_add_part block); groups "sheets" uses the schematic sheets, false none. Keeping blocks together costs some wire length (group_weight trades one for the other). Bottom side: back lists parts that may go there, back_decaps lets decoupling caps go under their IC pin (SMD only; off by default: two-sided assembly costs more); with either given, other SMD parts already on the bottom come to the top (without, parts keep their side). A dense board: spacing / edge 0 are taken, and silk_room=false keeps room for the courtyards only, as DRC does (no room for references and silk outlines; silk_tidy after); a "no room" says the area per side. Reports wire length before/after, how mixed the blocks are and how far the small passives (decaps, pull-ups) are from their IC pin. Existing tracks and vias are obstacles: on a routed board fewer parts find room, so place before routing (right after sync_pcb), or delete_tracks first. Runs beside the editor (it stays responsive); if the board is changed meanwhile nothing is moved. When every part is already placed (no overlaps, no rules), a result that is not better than the current placement is not applied (force applies it anyway). Moving parts leaves the board's tracks behind and copper zones in their old shape: refill_zones before run_drc.
+Place parts automatically inside the board outline: each part goes near what it connects to (decoupling caps and pull-ups next to their IC pin), courtyards kept apart, rotations tried, as one undoable edit. Default: the parts outside the board (new from sync_pcb); refs for chosen parts, all for every unlocked part; fixed keeps parts where they are (place connectors first, then lock or fix them). Mounting holes (board_outline's H1..., MountingHole footprints) stay unless refs names them. Functional blocks are kept together: from groups, else the parts' Block field (sch_add_part block); groups "sheets" uses the schematic sheets, false none. Keeping blocks together costs some wire length (group_weight trades one for the other). Bottom side: back lists parts that may go there, back_decaps lets decoupling caps (C*) go under their IC pin (SMD only; off by default: two-sided assembly costs more); with either given, other SMD parts already on the bottom come to the top (without, parts keep their side). A dense board: spacing / edge 0 are taken, and silk_room=false keeps room for the courtyards only, as DRC does (no room for references and silk outlines; silk_tidy after); a "no room" says the area per side. Reports wire length before/after, how mixed the blocks are and how far the small passives (decaps, pull-ups) are from their IC pin. A fine-pitch IC (QFN / QFP / BGA) keeps a ring past its pads free for its escape (escape_room). Existing tracks and vias are obstacles: on a routed board fewer parts find room, so place before routing (right after sync_pcb), or delete_tracks first. Runs beside the editor (it stays responsive); if the board is changed meanwhile nothing is moved. When every part is already placed (no overlaps, no rules), a result that is not better than the current placement is not applied (force applies it anyway). Moving parts leaves the board's tracks behind and copper zones in their old shape: refill_zones before run_drc.
 
 Parameter notes:
 
 - back: parts that may go to the bottom side, e.g. ["C*", "R12"]
 - back_decaps: decoupling caps may go to the bottom, under their IC pin
+- escape_room: mm kept free past a fine-pitch IC's pads (QFN / QFP / BGA, 0.65 mm pitch or less) for its escape (default 2 pitches + a track; 0 none)
 - force: apply the result even when the current placement is better
 - group_weight: pull to the block's centre, 1 = like a two-pin net (default 3)
 - groups: {"LDO": ["U2", "C3"], ...} blocks to keep together, "sheets", or false: no blocks
 - keepout: areas no part may go: [[x0, y0, x1, y1], ...] or [{"area": [...], "side": "top"|"bottom"|"both"}]
 - measure_only: move nothing, report the numbers for the parts as they are
-- rules: placement rules; refs may be patterns ("J*"). edge: {"J1": "left"} (left/right/top/bottom/any: the courtyard at that board edge); a connector (USB, RJ45, DC jack: its courtyard well past its pads on one side) is turned to open over that edge, the footprint's own "PCB Edge" line on the edge (else its front flush with it); {"J1": {"side": "left", "overhang": 1}} puts its front 1 mm past the edge, "inside": true keeps it inside like any part; region: {"U1": [x0, y0, x1, y1]} (mm, the courtyard inside); rotation: {"J1": 90}; near: [{"refs": ["Y1", "U1"], "max": 5}] (mm between the centres of their pads). edge/region/rotation are hard, near is reported when it can't be met
+- rules: placement rules; refs may be patterns ("J*"). edge: {"J1": "left"} (left/right/top/bottom/any: the courtyard at that board edge); a connector (USB, RJ45, DC jack: its courtyard well past its pads on one side) is turned to open over that edge, the footprint's own "PCB Edge" line on the edge (else its front flush with it); {"J1": {"side": "left", "overhang": 1}} puts its front 1 mm past the edge, "inside": true keeps it inside like any part, "along": true its long side along the edge (a pin header's row parallel to it; inside the board); region: {"U1": [x0, y0, x1, y1]} (mm, the courtyard inside); rotation: {"J1": 90}; near: [{"refs": ["Y1", "U1"], "max": 5}] (mm between the centres of their pads). edge/region/rotation are hard, near is reported when it can't be met
 - time_limit: seconds for improving the wire length after every part has a legal spot (default 10, -1 no limit); the placement is legal either way
 - track_room: mm a pad keeps from existing tracks / vias beyond clearance (default one track + clearance; 0 none)
 
@@ -681,6 +686,7 @@ Arguments:
 - `back_decaps` (boolean): decoupling caps may go under their IC
 - `detail` (boolean): list everything (default: long lists cut short)
 - `edge` (number): courtyard to board edge, mm (default 0.5)
+- `escape_room` (number): mm kept free past fine-pitch IC pads for the escape (0 none)
 - `fixed` (array)
 - `force` (boolean): apply even when worse than now
 - `group_weight` (number): pull to the block's centre (default 3)

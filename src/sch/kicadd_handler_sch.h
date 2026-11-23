@@ -73,6 +73,9 @@ private:
     HANDLER_RESULT<kicadd::schematic::SchConnectResponse>
     handleConnect( const HANDLER_CONTEXT<kicadd::schematic::SchConnect>& aCtx );
 
+    /// One sch_connect, all or none (handleConnect's body; partial calls it on halves).
+    HANDLER_RESULT<kicadd::schematic::SchConnectResponse> connectAll( const kicadd::schematic::SchConnect& aReq );
+
     HANDLER_RESULT<kicadd::schematic::SchConnectResponse>
     handleDisconnect( const HANDLER_CONTEXT<kicadd::schematic::SchDisconnect>& aCtx );
 

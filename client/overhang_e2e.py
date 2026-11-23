@@ -10,6 +10,10 @@ Blank project (m5_e2e's), a 60 x 40 mm outline, KiCad's library footprints:
   J4 RJ12 Amphenol 54601          top     turned 180: its front (17.27) on y = 0
   J5 USB-C HRO                    left, inside=true: kept inside like any part
   R1 0805                         left    no opening: inside, edge 0.5 mm as before
+  J6 1x8 pin header               top / left along=true: its row along the edge; the note says
+                                  where it ended and how it lies (across: said)
+  hole_inset                      to the holes' centres: 3 mm in from each corner; 1.5 refused;
+                                  board_render outlines them (no pour round them)
   refusals / notes: a rotation rule turning J1 away from its edge; an overhang that would put
   J3's pads past the edge (kept inside, said); undo
   no room: a 12 x 8 mm board says it is too small, and which parts can't fit it in any rotation
@@ -22,7 +26,7 @@ import shutil
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from m5_e2e import FAILS, Mcp, Server, binaries, check, make_project  # noqa: E402
+from m5_e2e import FAILS, Mcp, Server, binaries, check, make_project, png_pixels  # noqa: E402
 
 PARTS = (("J1", "Connector_USB:USB_C_Receptacle_CNCTech_C-ARA1-AK51X"),
          ("J2", "Connector_USB:USB_C_Receptacle_HRO_TYPE-C-31-M-12"),
@@ -81,7 +85,9 @@ def main():
         check("J2: opens over the board's right edge, its courtyard flush with it" in t, "J2: flush")
         check("J3: opens over the board's bottom edge, 2.00 mm over it (overhang given)" in t, "J3: 2 mm given")
         check("J4: opens over the board's top edge" in t, "J4: top")
-        check("J5:" not in t and "R1:" not in t, "J5 (inside=true) and R1 (no opening): no edge note")
+        check("J5: opens" not in t and "R1: opens" not in t and "J5: at the board's left edge, rotation" in t
+              and "R1: at the board's left edge, rotation" in t,
+              "J5 (inside=true) and R1 (no opening): not over the edge; the edge they are at and how they lie")
 
         w = where(mcp)
         print("       ", w)
@@ -115,6 +121,26 @@ def main():
         x, y, r = where(mcp).get("J3", (0, 0, 0))
         check(y + 12.5 <= 40, f"J3 inside: front at y {y + 12.5:.2f}")
 
+        print("[along the edge]")
+        # a pin header: along=true lays its row along the edge it goes to; the note says how it lies
+        hdr = "Connector_PinHeader_2.54mm:PinHeader_1x08_P2.54mm_Vertical"
+        err, t = mcp.tool("add_footprint", {"footprint": hdr, "ref": "J6", "x": 90, "y": 20})
+        check(not err, "J6 a 1x8 pin header, off the board")
+        for side, horiz in (("top", True), ("left", False)):
+            err, t = mcp.tool("auto_place", {"refs": ["J6"], "rules": {"edge": {"J6": {"side": side, "along": True}}},
+                                             "time_limit": 1})
+            note = next((ln.strip() for ln in t.splitlines() if "edge: J6" in ln), "")
+            x, y, r = where(mcp).get("J6", (0, 0, 0))
+            # its row runs along y at rotation 0 (vertical): horizontal at 90 / 270
+            check(not err and f"J6: at the board's {side} edge" in note and "its long side along it" in note
+                  and (r in (90, 270)) == horiz, f"along {side}: rotation {r:g}, {note}")
+            mcp.tool("undo")
+        err, t = mcp.tool("auto_place", {"refs": ["J6"], "rules": {"edge": {"J6": "top"}, "rotation": {"J6": 0}}, "time_limit": 1})
+        note = next((ln.strip() for ln in t.splitlines() if "edge: J6" in ln), "")
+        check("its long side across it (along=true turns it parallel)" in note, "turned across the top edge: said, " + note)
+        mcp.tool("undo")
+        mcp.tool("undo")
+
         print("[misplaced rules refused]")
         err, t = mcp.tool("auto_place", {"rules": {"J2": {"side": "left", "overhang": 1}}})
         check(err and 'unknown key "J2"' in t and '{"edge": {"J2": ...}}' in t,
@@ -128,6 +154,15 @@ def main():
         err, t = mcp.tool("board_outline", {"keep_old": True, "hole_inset": 3})
         holes = {k: v for k, v in where(mcp).items() if re.fullmatch(r"H\d+", k)}
         check(not err and len(holes) == 4, f"4 corner holes: {sorted(holes)}")
+        check(sorted((round(x, 3), round(y, 3)) for x, y, _ in holes.values()) == [(3, 3), (3, 37), (57, 3), (57, 37)],
+              f"hole_inset 3: the centres 3 mm in from the 60 x 40 outline's corners: {sorted(holes.values())}")
+        # board_render draws them (an NPTH hole with no pour round it was background on background)
+        err, t, imgs = mcp.tool_images("board_render", {"area": [1, 1, 5, 5]})
+        w, h, rows = png_pixels(imgs[0]) if imgs else (0, 0, [])
+        ring = sum(1 for row in rows for p in row if p[0] >= 215 and p[1] >= 215 and 200 <= p[2] <= 230 and p[0] - p[2] >= 3)
+        check(not err and ring > 50, f"board_render: H1's outline drawn ({ring} px in the Edge.Cuts colour round it, no pour)")
+        err, t = mcp.tool("board_outline", {"keep_old": True, "hole_inset": 1.5})
+        check(err and "to the holes' centres" in t, "hole_inset 1.5 with M3 (the hole over the edge): refused, said: " + t[:100])
         print("[a connector placed over the edge is not new]")
         err, t = mcp.tool("auto_place", {"refs": ["J1"], "rules": {"edge": {"J1": "left"}}, "time_limit": 1})
         j1 = where(mcp)["J1"]

@@ -932,6 +932,9 @@ bool SaveSymbolToProjectLibrary( const wxString& dir, KIWAY* aKiway, const PART&
                  { "keywords", aPart.lcsc + " " + aPart.title + " LCSC EasyEDA" },
                  { "attribution", ATTRIBUTION } };
 
+    if( !aPart.pinTypeSet.empty() )
+        req["pin_types_set"] = aPart.pinTypeSet;
+
     json ans = json::parse( ( *service )( wxString::FromUTF8( req.dump() ) ).ToStdString( wxConvUTF8 ),
                             nullptr, false );
 
@@ -991,7 +994,82 @@ bool FetchAndSave( const wxString& aProjectDir, KIWAY* aKiway, const std::string
     err.clear();
     aOut.symbolSaved = SaveSymbolToProjectLibrary( aProjectDir, aKiway, aOut.part, aOut.symbol, err );
     addNote( aOut.symbolSaved ? aOut.symbol.note : "symbol not saved: " + err );
+
+    if( aOut.symbolSaved )
+    {
+        bool renumbered = false;
+        addNote( NumberUnnumberedPads( aOut.part, aOut.symbol.pins, "", renumbered ) );
+
+        if( renumbered )
+            aOut.footprintSaved = SaveToProjectLibrary( aProjectDir, aOut.part, aOut.footprint, err );
+    }
     return true;
+}
+
+
+std::string NumberUnnumberedPads( PART& aPart, const std::vector<std::string>& aSymbolPins, const std::string& aBind,
+                                  bool& aChanged )
+{
+    aChanged = false;
+
+    if( !aPart.footprint )
+        return "";
+
+    std::vector<PAD*>     bare;
+    std::set<std::string> numbered;
+
+    for( PAD* pad : aPart.footprint->Pads() )
+    {
+        if( pad->GetAttribute() == PAD_ATTRIB::NPTH || ( pad->GetLayerSet() & LSET::AllCuMask() ).none() )
+            continue;
+
+        if( pad->GetNumber().IsEmpty() )
+            bare.push_back( pad );
+        else
+            numbered.insert( pad->GetNumber().ToStdString( wxConvUTF8 ) );
+    }
+
+    if( bare.empty() )
+        return aBind.empty() ? "" : "unnumbered_pads " + aBind + ": every copper pad has a number already";
+
+    std::vector<std::string> padless;
+
+    for( const std::string& p : aSymbolPins )
+        if( !numbered.count( p ) )
+            padless.push_back( p );
+
+    std::string list;
+
+    for( const std::string& p : padless )
+        list += ( list.empty() ? "" : ", " ) + p;
+
+    std::string bind = aBind;
+    const bool  asked = !bind.empty();
+
+    if( asked && std::find( aSymbolPins.begin(), aSymbolPins.end(), bind ) == aSymbolPins.end() )
+        return std::to_string( bare.size() ) + " copper pad(s) with no number: unnumbered_pads " + bind
+               + " is no pin of the symbol" + ( list.empty() ? "" : " (its pins with no pad: " + list + ")" );
+
+    if( !asked && padless.size() == 1 )
+        bind = padless[0];
+
+    const std::string n = std::to_string( bare.size() );
+
+    if( bind.empty() )
+    {
+        char at[48];
+        std::snprintf( at, sizeof( at ), " (one at %.2f, %.2f mm)", bare[0]->GetPosition().x / 1e6, bare[0]->GetPosition().y / 1e6 );
+        return n + " copper pad(s) with no number" + at + ", a shell or tab: on no net as they are; "
+               + ( padless.empty() ? std::string( "the symbol has no pin for them" )
+                                   : "unnumbered_pads=<pin> numbers them (the symbol's pins with no pad: " + list + ")" );
+    }
+
+    for( PAD* pad : bare )
+        pad->SetNumber( wxString::FromUTF8( bind ) );
+
+    aChanged = true;
+    return n + " copper pad(s) with no number (a shell or tab) numbered " + bind
+           + ( asked ? " as asked" : ", the symbol's one pin with no pad" ) + ": they join its net";
 }
 
 

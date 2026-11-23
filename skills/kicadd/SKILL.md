@@ -161,7 +161,11 @@ jobs.
    `z_target {"*RF*": 50}` (`z_tolerance` %, default 10; `z_off_mm`, default 1 mm, the length
    allowed off). A layer change to a layer the class width does not fit, a neck, a pour under
    it on the layer between show as stretches off, with where. Fix with `set_rules` widths per
-   layer (`impedance_layer`) or by routing; tracks off plane have no Z (see `plane`).
+   layer (`impedance_layer`) or by routing; tracks off plane have no Z (see `plane`). The header
+   names each layer's reference planes, the same ones `impedance` / `set_rules` use. A pair
+   whose members run too far apart to couple is "uncoupled: its partner 1.3 mm away" at 2 x Z0
+   (a 90 ohm class reads ~108 ohm there): that is the routing, not the plane; run the two side
+   by side at the class's gap.
 8. `run_erc` (`warnings=true` for the full list) and, on a board, `refill_zones` then
    `run_drc`. Narrow with `types` / `refs`; the type counts are the whole board, the filter line
    says what matches.
@@ -179,6 +183,9 @@ jobs.
   the reply: it names the footprint and warns when it is missing.
 - Connections: `sch_connect` (stubs + net labels; `power: ["GND", "+3V3"]` for power symbols;
   `NC` for no-connect) is the reliable way. `sch_wire` draws real wires for readability.
+  It is all or none; on a big batch `partial=true` connects what fits and lists only the pins
+  at fault (one undo step per batch that went). A local label's net is `/NAME` on the board
+  (sheet path + name): use that in `set_rules` assign patterns and `audit` globs.
 - Change: `sch_move`, `sch_set_fields` (values, footprints, LCSC numbers, DNP, BOM flags; many
   parts at once with `refs` + `set`), `sch_disconnect`, `sch_delete` (parts, `wires` by a point
   on them, `dangling=true` for wires hanging off nothing).
@@ -220,6 +227,13 @@ jobs.
    The part's 3D model comes along (EasyEDA's, converted to `lcsc.3dshapes/<package>.wrl` and
    placed as EasyEDA places it) for the 3D viewer; `lcsc_fetch model=false` leaves it out. A
    reply line says whether there was one.
+   Pin types: EasyEDA leaves many unspecified or types an IC's supplies bidirectional (RP2040's
+   IOVDD / DVDD / VREG_*); both are typed from their names (power_in, a regulator output
+   power_out) and listed, so decoupling checks, `ir_drop` and ERC see them. Anything else:
+   `lcsc_fetch pin_types={"RUN": "input", "26": "output"}` (by name or number) sets it in the
+   library symbol; a symbol already placed keeps its copy (`sch_delete`, `sch_add_part` again).
+   Copper pads with no number (a USB-C's shell) take the symbol's one pin with no pad (EH);
+   otherwise the reply says so and `unnumbered_pads=<pin>` numbers them.
 3. Many parts at once: `lcsc_match` (dry run) groups the parts without an LCSC number by value
    and footprint and picks one for each group of resistors, capacitors, inductors, ferrite
    beads (FB) and LEDs (colour in the value) in chip packages. Check the choices (capacitor
@@ -400,6 +414,14 @@ From a blank project, before placing parts:
    "overhang": 1}}` puts the front 1 mm past the edge; `"inside": true` keeps it inside. The
    reply's `edge:` lines say which way each went and why; check flush ones against the
    connector's datasheet (the enclosure decides the real overhang).
+   A pin header at an edge: `{"J2": {"side": "top", "along": true}}` lays its row along that
+   edge (no need to guess a `rotation`: at 0 a KiCad 1xN header's row runs up and down, along
+   a left / right edge). Every edge-ruled part gets an `edge:` line with the edge it ended at,
+   its rotation and whether its long side runs along it.
+   A fine-pitch IC (QFN / QFP / BGA, 0.65 mm pitch or less) keeps a ring of 2 pitches + a track
+   past its pads free of other courtyards (the reply's "escape room" line), so decaps and their
+   vias don't block its escape; `escape_room` (mm) changes it, 0 turns it off. `back_decaps`
+   turns only capacitors (C*) under their pin; a button or resistor at an IC pin stays on top.
 3. On a board that is already placed or routed, `auto_place` keeps the current placement when
    the new one is not better (`force=true` applies it anyway). Tracks are obstacles: rip up
    with `delete_tracks` first if the parts should really move. Among tracks, each pad keeps
@@ -441,6 +463,8 @@ From a blank project, before placing parts:
   point ("routed: crosses at x,y"); a pair routed round with no crossing (a U-turn escape out of
   the pin row and back in) is named apart as going round, not swapped. Judge routed pairs with
   the diff pair rows (skew, uncoupled) and DRC.
+- **USB-C's two rows.** The A and B rows swap D+ / D- under the connector: pair order does not
+  report it (either order fits), but routing still takes a via pair to cross.
 - **Thin board for 2-layer impedance.** On 2 layers the plane is the whole board away. 90 Ω
   differential on 1.6 mm needs about 0.7 mm tracks, impossible at a fine-pitch IC. Either take
   a thinner board (0.8 mm: about 0.55 mm), or accept a higher Zdiff on short runs: USB 2.0
@@ -501,6 +525,18 @@ length matching, dense escapes).
    with a starved thermal (DRC `starved_thermal`, too few spokes reach copper): give
    `waypoints: [[x, y, "B.Cu"]]` and it goes through a via to the pour on that layer, or route a
    short track from the pad into the pour on its own layer.
+   With a via waypoint over the pour (`[x, y, "In2.Cu"]`, or `via: [x, y]`: any layer the
+   pour is on) the route ends in that one via ("via into the pour In2.Cu"); `from: [x, y]` on a
+   stub's end with `via` at the same point places just the via. `run_drc` gives both ways out of
+   a `starved_thermal` with the pad and net filled in. `stitch_vias` on a net poured on one layer
+   only (an inner +3V3 plane) needs `area` (where its tracks or pads will reach the vias).
+8. Fine-pitch escape (QFN 0.4 mm): a class width wider than fits out of a pin (0.2 mm pad, 0.4
+   pitch, 0.15 clearance: 0.3 mm at most) is necked by `route` / `route_short` / `fanout` to the
+   widest that fits for the pad's length, then widened ("necked to 0.30 mm out of U1.10"); a gap
+   of exactly the clearance passes. A `width` you give is kept as given. Power pins: a short stub
+   out of the pin, then a via, often in the pad ring between the pins and the exposed pad
+   (`query_area via_net` lists such spots, marked `*`); a smaller via helps (JLC: 0.45 / 0.2 mm,
+   `set_rules` via_diameter / via_drill).
 7. Rip-up: `delete_tracks` filters narrow each other (`nets: ["GND"], region: [...]` deletes
    only GND inside the box). The reply lists what went, per net: check it before going on
    (`undo` brings it back).

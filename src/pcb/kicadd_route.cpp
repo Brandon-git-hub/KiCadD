@@ -660,6 +660,15 @@ RESULT SESSION::Route( const REQUEST& aReq )
             if( router.Placer()->CurrentStart() != s.pos )
                 return fail( s.pos, s.pos, curLayer, "the route to " + mm( s.pos.x ) + "," + mm( s.pos.y ) + " collides" );
         }
+
+        // a neck ends (or starts) here: the width from here on
+        if( s.widthAfter > 0 )
+        {
+            sizes.SetTrackWidth( s.widthAfter );
+            sizes.SetTrackWidthIsExplicit( true );
+            router.UpdateSizes( sizes );
+            out.width = std::max( out.width, s.widthAfter );
+        }
     }
 
     router.Move( aReq.to, endItem );

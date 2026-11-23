@@ -110,6 +110,8 @@ const std::map<std::string, std::string> PARAM_BRIEFS = {
     { "*.detail", "list everything (default: long lists cut short)" },
     { "query_area.kinds", "default footprint, pad, track, arc, via" },
     { "auto_place.track_room", "mm pads keep from existing tracks beyond clearance" },
+    { "sch_connect.partial", "connect what fits, list the pins at fault" },
+    { "auto_place.escape_room", "mm kept free past fine-pitch IC pads for the escape (0 none)" },
     { "auto_place.keepout", "areas no part may go, [[x0, y0, x1, y1], ...]" },
     { "query_area.via_net", "free through-via spots of this net instead of items" },
     { "move_footprints.flip", "to the other side (mirrored)" },

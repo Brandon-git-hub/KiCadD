@@ -305,7 +305,9 @@ wxString KicaddLcscSymbol( const wxString& aRequest )
             static const std::regex  internalRail( R"((^|[^0-9])(18|1V8|12|1V2|11|1V1|09|0V9)([^0-9]|$)|PLL|CORE)" );
             static const std::regex regOut( R"(^(V?OUT\d?|VO\d?)$)" );
             static const std::regex ownRegOut(
-                    R"(^(V(DD|CC|D)?\d+V?\d*|\d+V\d*|REG)_?O(UT)?$)" );   // VD33_O, VDD18_OUT, 3V3_OUT, REGOUT
+                    R"(^(V(DD|CC|D)?\d+V?\d*|\d+V\d*|REG)_?O(UT)?$|^VREG_?V?OUT\d?$)" );   // VD33_O, VDD18_OUT, 3V3_OUT, REGOUT, VREG_VOUT
+            // a block's supply: USB_VDD, ADC_AVDD, PLL_VDDA; an on-chip regulator's input: VREG_IN, VREG_VIN
+            static const std::regex supplyIn3( R"(^[A-Z][A-Z0-9]*_(A|D|IO)?V(DD|CC)[A-Z0-9]*$|^VREG_?V?(IN|DD)\d?$)" );
 
             // the part's category is in the EasyEDA answer's tags ("Linear Voltage Regulators (LDO)")
             std::string desc = jstr( req, "description" ) + " " + jstr( req, "keywords" );
@@ -350,10 +352,16 @@ wxString KicaddLcscSymbol( const wxString& aRequest )
             std::map<std::string, int> count;
             std::vector<std::string>   internal;   // power_in pins that may be the IC's own rails
             std::vector<std::string>   outNames, sharedOut;   // power_out names; their repeats left passive
+            std::map<std::string, std::pair<std::string, int>> retyped;   // bidirectional by the data, a supply by name
 
             for( SCH_PIN* pin : symPins )
             {
-                if( pin->GetType() != ELECTRICAL_PINTYPE::PT_UNSPECIFIED )
+                // unspecified: typed by its name; bidirectional (EasyEDA's default for an IC's
+                // pins, RP2040's IOVDD / DVDD / VREG_*): only a supply's name changes it, so the
+                // decoupling check, ir_drop and ERC see it
+                const bool bidi = pin->GetType() == ELECTRICAL_PINTYPE::PT_BIDI;
+
+                if( pin->GetType() != ELECTRICAL_PINTYPE::PT_UNSPECIFIED && !bidi )
                     continue;
 
                 const std::string  n = clean( pin->GetName() );
@@ -381,7 +389,7 @@ wxString KicaddLcscSymbol( const wxString& aRequest )
 
                 if( !connector )
                 {
-                    if( anyMatch( ground ) || anyMatch( supplyIn ) || anyMatch( supplyIn2 )
+                    if( anyMatch( ground ) || anyMatch( supplyIn ) || anyMatch( supplyIn2 ) || anyMatch( supplyIn3 )
                         || ( regulator && n == "IN" ) )
                     {
                         t = ELECTRICAL_PINTYPE::PT_POWER_IN;
@@ -410,6 +418,18 @@ wxString KicaddLcscSymbol( const wxString& aRequest )
                     }
                 }
 
+                if( bidi )
+                {
+                    if( t == ELECTRICAL_PINTYPE::PT_PASSIVE )
+                        continue;   // not a supply: as the data has it
+
+                    auto& r = retyped[n];
+                    r.first = t == ELECTRICAL_PINTYPE::PT_POWER_IN ? "power_in" : "power_out";
+                    r.second++;
+                    pin->SetType( t );
+                    continue;
+                }
+
                 pin->SetType( t );
                 count[t == ELECTRICAL_PINTYPE::PT_POWER_IN    ? "power_in"
                       : t == ELECTRICAL_PINTYPE::PT_POWER_OUT ? "power_out"
@@ -422,6 +442,18 @@ wxString KicaddLcscSymbol( const wxString& aRequest )
             if( !pinTypes.empty() )
                 pinTypes = "pin types inferred from their names (the data left them unspecified): " + pinTypes
                            + ( connector ? " (a connector: all passive)" : "" );
+
+            if( !retyped.empty() )
+            {
+                std::string names;
+
+                for( const auto& [n, r] : retyped )
+                    names += ( names.empty() ? "" : ", " ) + n + ( r.second > 1 ? " x" + std::to_string( r.second ) : "" )
+                             + " " + r.first;
+
+                pinTypes += std::string( pinTypes.empty() ? "" : "; " )
+                            + "supply pins the data typed bidirectional, typed by their names: " + names;
+            }
 
             if( !sharedOut.empty() )
             {
@@ -444,6 +476,51 @@ wxString KicaddLcscSymbol( const wxString& aRequest )
                 pinTypes += "; " + names + " typed power_in: if the IC makes that rail itself (only a "
                             "capacitor on it), put a PWR_FLAG on its net for ERC";
             }
+        }
+
+        // the agent's own pin types (lcsc_fetch pin_types), by number or name, over the inferred ones
+        if( req.contains( "pin_types_set" ) && req["pin_types_set"].is_object() )
+        {
+            static const std::map<std::string, ELECTRICAL_PINTYPE> kinds = {
+                { "input", ELECTRICAL_PINTYPE::PT_INPUT },           { "output", ELECTRICAL_PINTYPE::PT_OUTPUT },
+                { "bidirectional", ELECTRICAL_PINTYPE::PT_BIDI },    { "tri_state", ELECTRICAL_PINTYPE::PT_TRISTATE },
+                { "passive", ELECTRICAL_PINTYPE::PT_PASSIVE },       { "free", ELECTRICAL_PINTYPE::PT_NIC },
+                { "unspecified", ELECTRICAL_PINTYPE::PT_UNSPECIFIED }, { "power_in", ELECTRICAL_PINTYPE::PT_POWER_IN },
+                { "power_out", ELECTRICAL_PINTYPE::PT_POWER_OUT },   { "open_collector", ELECTRICAL_PINTYPE::PT_OPENCOLLECTOR },
+                { "open_emitter", ELECTRICAL_PINTYPE::PT_OPENEMITTER }, { "no_connect", ELECTRICAL_PINTYPE::PT_NC } };
+            std::string set, missing;
+
+            for( const auto& [key, type] : req["pin_types_set"].items() )
+            {
+                auto kind = type.is_string() ? kinds.find( type.get<std::string>() ) : kinds.end();
+
+                if( kind == kinds.end() )
+                    return fail( "pin_types " + key + ": a type is input, output, bidirectional, tri_state, passive, "
+                                 "free, unspecified, power_in, power_out, open_collector, open_emitter or no_connect" );
+
+                int n = 0;
+
+                for( SCH_PIN* pin : sym->GetGraphicalPins( 0, 0 ) )
+                {
+                    if( pin->GetNumber().ToStdString( wxConvUTF8 ) == key
+                        || pin->GetName().Upper().ToStdString( wxConvUTF8 ) == wxString::FromUTF8( key ).Upper().ToStdString( wxConvUTF8 ) )
+                    {
+                        pin->SetType( kind->second );
+                        n++;
+                    }
+                }
+
+                if( n )
+                    set += ( set.empty() ? "" : ", " ) + key + ( n > 1 ? " x" + std::to_string( n ) : "" ) + " " + kind->first;
+                else
+                    missing += ( missing.empty() ? "" : ", " ) + key;
+            }
+
+            if( !missing.empty() )
+                return fail( "pin_types: no pin numbered or named " + missing + " on " + name.ToStdString( wxConvUTF8 ) );
+
+            pinTypes += std::string( pinTypes.empty() ? "" : "; " ) + "pin types set as asked: " + set
+                        + " (symbols already on the schematic keep their copy: sch_delete and sch_add_part them again)";
         }
 
         // A different part may already use this name in the library: keep both.

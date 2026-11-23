@@ -525,7 +525,7 @@ TOOL_RESULT queryArea( IPC_CLIENT& aIpc, const json& aArgs )
                     + ": " + std::to_string( r.via_spots_size() ) + " spot(s)";
 
     if( r.via_spots_size() == 0 && r.via_tested() == 0 )
-        return { s + ": the circle is off the board, or all on pads / under an exposed-pad IC\n" };
+        return { s + ": the circle is off the board, or all on pads\n" };
 
     if( r.via_spots_size() == 0 )
         return { s + ", none free within " + mm( req.radius() ) + " mm (" + std::to_string( r.via_tested() )
@@ -533,9 +533,18 @@ TOOL_RESULT queryArea( IPC_CLIENT& aIpc, const json& aArgs )
                    "Try a larger radius.\n" };
 
     s += ", nearest first:\n";
+    int ring = 0;
 
     for( int i = 0; i < r.via_spots_size(); ++i )
-        s += ( i ? " " : "" ) + std::string( "@" ) + pt( r.via_spots( i ) ) + "~" + mm( r.via_dist( i ) );
+    {
+        const bool in = i < r.via_in_ring_size() && r.via_in_ring( i );
+        s += ( i ? " " : "" ) + std::string( "@" ) + pt( r.via_spots( i ) ) + "~" + mm( r.via_dist( i ) ) + ( in ? "*" : "" );
+        ring += in;
+    }
+
+    if( ring )
+        s += "\n*: inside an exposed-pad IC's pad ring (under its body, off its pads): a via there wants tenting "
+             "(the fab's default), and leaves less room for the escape";
 
     return { s + "\n" };
 }
@@ -726,6 +735,18 @@ std::string renderRoute( const kb::RouteResult& r, bool aDryRun )
         return s + "\n";
     }
 
+    // only a via (on the start point): no track
+    if( r.segments() == 0 && r.vias() > 0 && r.length() == 0 )
+    {
+        s += std::string( aDryRun ? "would place" : "placed" ) + " " + std::to_string( r.vias() ) + " via(s), "
+             + r.layer();
+
+        if( r.min_gap() >= 0 )
+            s += ", min gap " + mm( r.min_gap() ) + " to " + r.gap_to();
+
+        return s + "\n";
+    }
+
     // against the straight line from end to end; with waypoints, against the path through them too
     const bool viaStops = r.ends() > 0 && r.direct() > r.ends() + 1000;
     const std::string straight = ratio( r.length(), r.ends() > 0 ? r.ends() : r.direct() );
@@ -736,7 +757,8 @@ std::string renderRoute( const kb::RouteResult& r, bool aDryRun )
                                                           + ")" )
          + ", " + std::to_string( r.segments() ) + " segment(s), "
          + std::to_string( r.vias() ) + " via(s), width " + mm( r.width() )
-         + ( r.width_from().empty() || r.width_from() == "asked" ? std::string() : " (" + r.width_from() + ")" );
+         + ( r.width_from().empty() || r.width_from() == "asked" ? std::string() : " (" + r.width_from() + ")" )
+         + ( r.neck().empty() ? std::string() : ", necked to " + r.neck() );
 
     if( r.min_gap() >= 0 )
         s += ", min gap " + mm( r.min_gap() ) + " to " + r.gap_to();
@@ -1083,7 +1105,7 @@ TOOL_RESULT stitchVias( IPC_CLIENT& aIpc, const json& aArgs )
                     + mmText( r.via_diameter() / 1e6 ) + "/" + mmText( r.via_drill() / 1e6 ) + " mm joining "
                     + layers + "\n";
     s += "grid: " + std::to_string( r.grid_points() ) + " point(s), " + std::to_string( r.in_copper() )
-         + " inside the net's copper on 2+ layers; " + std::to_string( r.near_existing() )
+         + ( r.layers_size() == 1 ? " inside the net's copper; " : " inside the net's copper on 2+ layers; " ) + std::to_string( r.near_existing() )
          + " left out (a via or hole of the net near), " + std::to_string( r.blocked() )
          + " blocked (pads, tracks, parts, clearance)\n";
 
@@ -1273,6 +1295,23 @@ TOOL_RESULT lcscFetch( IPC_CLIENT& aIpc, const json& aArgs )
     req.set_lcsc( aArgs["lcsc"].get<std::string>() );
     req.set_refresh( aArgs.contains( "refresh" ) && aArgs["refresh"].is_boolean() && aArgs["refresh"].get<bool>() );
     req.set_no_model( aArgs.contains( "model" ) && aArgs["model"].is_boolean() && !aArgs["model"].get<bool>() );
+
+    if( aArgs.contains( "unnumbered_pads" ) && aArgs["unnumbered_pads"].is_string() )
+        req.set_unnumbered_pads( aArgs["unnumbered_pads"].get<std::string>() );
+
+    if( aArgs.contains( "pin_types" ) )
+    {
+        if( !aArgs["pin_types"].is_object() )
+            return error( "pin_types: {\"pin number or name\": \"power_in\", ...}" );
+
+        for( const auto& [pin, type] : aArgs["pin_types"].items() )
+        {
+            if( !type.is_string() )
+                return error( "pin_types " + pin + ": a type name, e.g. \"power_in\"" );
+
+            ( *req.mutable_pin_types() )[pin] = type.get<std::string>();
+        }
+    }
 
     kb::FetchLcscResponse r;
     std::string           err;
@@ -2379,6 +2418,28 @@ TOOL_RESULT runDrc( IPC_CLIENT& aIpc, const json& aArgs )
     if( matching > shown )
         s += "... " + std::to_string( matching - shown ) + " more (raise limit or filter by types/refs)\n";
 
+    // a starved thermal: the two ways out, with the first one's pad and net
+    for( const DRC_ENTRY& e : report.entries )
+    {
+        if( e.type != "starved_thermal" )
+            continue;
+
+        const int    n = ( report.errors.count( e.type ) ? report.errors.at( e.type ) : 0 )
+                         + ( report.warnings.count( e.type ) ? report.warnings.at( e.type ) : 0 );
+        const bool   pad = e.a.find( '.' ) != std::string::npos;
+        const std::string who = pad ? e.a : e.b.find( '.' ) != std::string::npos ? e.b : std::string( "the pad" );
+        const std::string net = !e.netA.empty() ? e.netA : e.netB.empty() ? std::string( "its net" ) : e.netB;
+        const std::string ref = who.substr( 0, who.find( '.' ) );
+
+        s += "starved_thermal (" + std::to_string( n ) + "): a pad's thermal relief has fewer spokes than its pour "
+             "asks (something blocks one). Either change the pour: zones {\"nets\": [\"" + net
+             + "\"], \"connection\": \"solid\"} (or a smaller thermal_gap / wider thermal_spoke), then refill; or a "
+             "spoke by hand: route {\"from\": \"" + who + "\", \"to\": [x, y]} to a point in the pour past the relief "
+             "gap (a track counts as a spoke), or a via into another layer's pour: route {\"from\": \"" + who
+             + "\", \"to\": \"zone\", \"waypoints\": [[x, y, \"In1.Cu\"]]}\n";
+        break;
+    }
+
     return { s };
 }
 
@@ -3115,7 +3176,7 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
     tools.push_back( { "query_area",
                        "Items near a footprint (ref: the part itself first, then what is around it) or a point (x,y), nearest first. Lines: KIND handle [net] "
                        "layer @x,y (pads are REF.PADNUM WxH, the copper as placed; tracks start>end wWIDTH; ~DIST from the centre). "
-                       "via_net=NET lists free via spots instead. "
+                       "via_net=NET lists free via spots instead (off pads; in a QFN's pad ring too, marked *). "
                        "Use this instead of dumping the board.",
                        schema( { { "ref", { { "type", "string" }, { "description", "Centre on this footprint" } } },
                                  { "x", { { "type", "number" }, { "description", "Centre X, mm" } } },
@@ -3166,10 +3227,18 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                        "offline use. Returns both lib_ids, size, pad numbers/positions and any pin/pad "
                        "mismatch. Its 3D model (EasyEDA's, converted to VRML in lcsc.3dshapes/, placed as "
                        "EasyEDA places it) comes along for the 3D viewer unless model=false. add_footprint "
-                       "with lcsc does this by itself.",
+                       "with lcsc does this by itself. Pin types: unspecified ones from their names, supplies the data "
+                       "typed bidirectional too (said); pin_types {pin number or name: type} sets others (input, "
+                       "output, bidirectional, tri_state, passive, power_in, power_out, open_collector, no_connect ...) "
+                       "in the library symbol. Copper pads with no number (a USB-C shell) take the symbol's one pin with "
+                       "no pad (EH), or unnumbered_pads=<pin>; said.",
                        schema( { { "lcsc", { { "type", "string" }, { "description", "LCSC part number, e.g. C8734" } } },
                                  { "refresh", { { "type", "boolean" }, { "description", "Fetch again even if cached" } } },
-                                 { "model", { { "type", "boolean" }, { "description", "the 3D model too (default true)" } } } },
+                                 { "model", { { "type", "boolean" }, { "description", "the 3D model too (default true)" } } },
+                                 { "unnumbered_pads", { { "type", "string" },
+                                                        { "description", "number shell pads with no number as this pin" } } },
+                                 { "pin_types", { { "type", "object" },
+                                                  { "description", "set pin types: {\"VREG_VOUT\": \"power_out\", \"12\": \"input\"}" } } } },
                                { "lcsc" } ),
                        [&aIpc]( const json& a ) { return lcscFetch( aIpc, a ); } } );
 
@@ -3227,7 +3296,9 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                        "else with a via down to the nearest layer that has it: a pad to a VBUS / GND pour); without to: "
                        "the nearest unrouted connection of from. waypoints: "
                        "[[x, y], ...] to pass through, [x, y, \"B.Cu\"] puts a via there and goes on on that "
-                       "layer; via: [x, y] is short for one via to the other side (the end's layer). layer: "
+                       "layer; via: [x, y] is short for one via to the other side (the end's layer); to \"zone\" with "
+                       "the last via over the net's pour (on its layer; via: any layer): the route ends in that one via "
+                       "(on the start point: only the via). layer: "
                        "where to start (default: the start pad's / the end's / F.Cu); width in mm. Reports "
                        "length vs the straight line, segments, vias and the narrowest gap; when blocked, how "
                        "far it got and what is in the way, and how far it leaves the box between two waypoints "
@@ -3287,7 +3358,8 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
     tools.push_back( { "stitch_vias",
                        "Stitching vias for a net's pours (default GND): through vias on a grid (spacing, "
                        "default 5 mm; area [x0, y0, x1, y1] mm, default the whole pour), each inside the net's "
-                       "filled copper on two or more layers, clear of pads, tracks, holes, the edge and rule "
+                       "filled copper on two or more layers (a net poured on one layer only, an inner plane: inside it, "
+                       "area required), clear of pads, tracks, holes, the edge and rule "
                        "areas, and outside the parts' courtyards (under_parts=true allows them there). Then "
                        "one via in each island of the net's copper that has none (islands=false skips it). "
                        "Net class via size. The zones are refilled before and after; one undoable edit; "
@@ -3398,7 +3470,9 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                        "Draw the board outline on Edge.Cuts (the old board-level Edge.Cuts shapes are "
                        "replaced unless keep_old): rect [x0, y0, x1, y1] with corner_radius, or circle [cx, cy, "
                        "diameter] (mm, Y down). cutouts: [{rect, corner_radius} | {circle}] inside it. Mounting "
-                       "holes: hole_inset (mm from the corners, 4 holes of hole_diameter, default 3.2 = M3) and / or "
+                       "holes: hole_inset (4 holes of hole_diameter, default 3.2 = M3, each centre hole_inset mm in from the "
+                       "outline's corner along x and along y: its box's corner, a rounded corner's too; the hole's edge "
+                       "is half its diameter nearer the edge) and / or "
                        "holes [[x, y, d], {x, y, diameter, plated, net}]: NPTH, or plated with a ring (e.g. to GND); "
                        "they become footprints H1, H2 ... out of the BOM and the CPL; one where a part already has "
                        "a hole is left out. Reports the size, area, the parts now outside or on a cut-out, and "

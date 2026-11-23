@@ -159,6 +159,9 @@ message SchConnect
   // and a sheet pin of the same name on the sheet's symbol on the parent ("VOUT" or
   // "VOUT:output"; directions input, output, bidirectional, tri_state, passive)
   repeated string ports = 3;
+  // Connect what fits: the pins at fault (a stub that would join another net, a pin already on
+  // one) are said and left out, the rest connected (all or none by default)
+  bool partial = 5;
 }
 
 // Take the stub/label/no-connect off pins (net ignored).
