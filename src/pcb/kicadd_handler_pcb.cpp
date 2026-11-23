@@ -6784,10 +6784,13 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
             return m;
         };
 
+        int obstacleNet = -1;   // the placer's index of the net of what is added now (tracks)
+
         auto add = [&]( const BOX2I& aBox, int aSides )
         {
             opt.obstacles.push_back( aBox );
             opt.obstacleLayers.push_back( aSides );
+            opt.obstacleNet.push_back( obstacleNet );
         };
 
         for( BOARD_ITEM* item : b->Drawings() )
@@ -6824,6 +6827,9 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
 
         for( PCB_TRACK* track : b->Tracks() )
         {
+            auto ni = netIndex.find( track->GetNetCode() );
+            obstacleNet = ni != netIndex.end() && track->GetNetCode() > 0 ? ni->second : -1;
+
             // a via goes through every layer between its ends: count it on all sides
             if( track->Type() == PCB_VIA_T )
             {
@@ -6852,6 +6858,8 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
                 addLine( track->GetStart(), track->GetEnd(), half, side );
             }
         }
+
+        obstacleNet = -1;
 
         for( ZONE* zone : b->Zones() )
         {
@@ -6896,6 +6904,7 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
 
         opt.obstacles.push_back( box );
         opt.obstacleLayers.push_back( side | ap::OBST_BODY );
+        opt.obstacleNet.push_back( -1 );
     }
 
     // Pads must keep the hole clearance from the holes of through-hole parts, on both sides

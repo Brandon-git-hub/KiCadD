@@ -122,6 +122,9 @@ struct OPTIONS
     /// Extra room a pad keeps from track / via obstacles (OBST_PADS), nm: one track and its
     /// clearance, so a part does not land in a channel it can sit in but not be wired from
     int trackRoom = 0;
+    /// Per obstacle (or empty): the net index of a track / via, -1 none. A pad of that net keeps
+    /// only the clearance from it, not trackRoom (its own track is where its wire goes)
+    std::vector<int> obstacleNet;
 
     /// Decoupling caps (two pads, one on ground, tied to an IC pin) may go to the back too,
     /// under the pin (when they have canFlip shapes)

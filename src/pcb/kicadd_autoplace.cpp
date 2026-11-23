@@ -1043,10 +1043,16 @@ private:
                 // rows of an IC's pins doesn't keep the IC out). With trackRoom, a pad also keeps
                 // room for one more track beside it: a part dropped into a channel narrower than
                 // that could be placed but not connected
-                for( BOX2I pb : m_work[i].padBox[at( me, aRot )] )
+                const int  obstNet = m_opt.obstacleNet.size() == m_opt.obstacles.size() ? m_opt.obstacleNet[k] : -1;
+                const auto& boxes = m_work[i].padBox[at( me, aRot )];
+
+                for( size_t n = 0; n < boxes.size(); ++n )
                 {
+                    BOX2I pb = boxes[n];
                     pb.Move( aPos );
-                    pb.Inflate( m_opt.trackRoom );
+
+                    if( obstNet < 0 || n >= me.pads.size() || me.pads[n].net != obstNet )
+                        pb.Inflate( m_opt.trackRoom );
 
                     if( pb.Intersects( m_opt.obstacles[k] ) )
                         return false;
