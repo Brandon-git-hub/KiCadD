@@ -1435,3 +1435,37 @@ message SetCopilotPaused
   bool   paused = 1;
   string who    = 2;   // for the log: "a web viewer"
 }
+
+
+// ---------------------------------------------------------------------------------------------
+// A 3D picture of the board in memory (phase 5 item 1c): KiCad's raytracer, as kicad-cli pcb render.
+
+message Render3D
+{
+  string side        = 1;   // top (default), bottom, front, back, left, right
+  double rot_x       = 2;   // degrees, after the side's view
+  double rot_y       = 3;
+  double rot_z       = 4;
+  double zoom        = 5;   // default 1
+  int32  width       = 6;   // pixels (default 1200 x 900, 64..3000)
+  int32  height      = 7;
+  string quality     = 8;   // basic (default) or high (reflections, shadows, textures: slower)
+  bool   floor       = 9;   // a floor and shadows
+  bool   perspective = 10;
+}
+
+message Render3DMissing
+{
+  string ref = 1;
+  string why = 2;   // "no 3D model", "model file not found (...)", "STEP / IGES model ..."
+}
+
+message Render3DResponse
+{
+  bytes  png        = 1;
+  int32  width      = 2;
+  int32  height     = 3;
+  double seconds    = 4;
+  int32  with_model = 5;   // footprints whose model is drawn
+  repeated Render3DMissing missing = 6;
+}

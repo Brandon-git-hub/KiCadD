@@ -40,6 +40,7 @@ const std::map<std::string, std::string> BRIEFS = {
     { "board_diff", "What changed since the board was saved (or against another .kicad_pcb). Use before save_board." },
     { "board_render", "PNG of the board (layers, zoom to parts or nets, marks): to see silkscreen, crowding, routing." },
     { "open_board", "Open another .kicad_pcb / .kicad_pro on the server (headless only); refused with unsaved changes unless discard." },
+    { "board_render_3d", "A 3D picture (PNG) of the board from KiCad's raytracer: any side or angle; lists the parts without a model." },
     { "launch_kicad", "Start KiCad (headless server, or the desktop PCB editor) on this kicadd-mcp's socket; refused while one answers." },
     { "close_kicad", "Stop the KiCad launch_kicad started; refused with unsaved board / schematic changes unless discard." },
     { "new_project", "Make a new project (.kicad_pro, empty board and schematic) on the server and open it; never writes over files." },

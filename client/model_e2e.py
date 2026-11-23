@@ -15,6 +15,8 @@ VRML frame: 2.54 mm units, y up):
   C20917   SOT-23 whose c_origin is not in the footprint's frame: centred on the footprint anyway
   C8734    its OBJ not cached (offline): no model, said; the footprint references none
   model=false: no model; add_footprint lcsc=: the board's footprint has the model, saved
+  board_render_3d: KiCad's raytracer draws the board in memory with the VRML models; the part
+           without one is listed; bottom side, tilted; path saves the PNG
 """
 
 import argparse
@@ -129,6 +131,30 @@ def main():
         mcp.tool("save_board")
         board = open(pcb, encoding="utf-8").read()
         check('(model "${KIPRJMOD}/lcsc.3dshapes/SOT-223-3_L6.5-W3.4-P2.30-LS7.0-BR.wrl"' in board, "the saved board's U1 has the model")
+
+        print("[board_render_3d]")
+        mcp.tool("board_outline", {"rect": [90, 90, 130, 115]})
+        mcp.tool("add_footprint", {"lcsc": "C165948", "ref": "J1", "x": 115, "y": 100})
+        mcp.tool("add_footprint", {"lcsc": "C8734", "ref": "U2", "x": 105, "y": 105})   # no model (offline)
+        err, t, imgs = mcp.tool_images("board_render_3d", {"width": 800, "height": 600, "path": "render3d.png"})
+        print("      ", "\n       ".join(t.splitlines()))
+        check(not err and imgs and imgs[0][:8] == b"\x89PNG\r\n\x1a\n", "a PNG of the board in memory")
+        check(re.search(r"\b[78]\d\d x [56]\d\d px", t) and "2 part(s) with a model drawn" in t, "U1 and J1 drawn with their VRML models")
+        check("no 3D model: 1 (U2)" in t, "U2 listed: no model")
+        check(os.path.isfile(os.path.join(proj, "render3d.png")), "path= saves it in the project folder")
+        # a lit board: not one colour (the raytracer drew something)
+        try:
+            import zlib, struct
+            png = imgs[0]
+            idat = b"".join(png[i + 8:i + 8 + struct.unpack(">I", png[i:i + 4])[0]]
+                            for i in range(8, len(png)) if png[i + 4:i + 8] == b"IDAT")
+            check(len(set(zlib.decompress(idat)[::97])) > 20, "the picture has content (many distinct bytes)")
+        except Exception as e:
+            check(False, f"the picture decodes ({e})")
+        err, t, imgs = mcp.tool_images("board_render_3d", {"side": "bottom", "rot_x": 30, "zoom": 1.5, "width": 400, "height": 300})
+        check(not err and imgs and re.search(r"3D bottom, \d+ x \d+ px", t), "bottom side, tilted, zoomed")
+        err, t = mcp.tool("board_render_3d", {"side": "under"})
+        check(err and "side:" in t, "an unknown side is refused")
     finally:
         mcp.close()
         server.stop()

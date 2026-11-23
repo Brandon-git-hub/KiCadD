@@ -2765,6 +2765,85 @@ TOOL_RESULT exportFab( IPC_CLIENT& aIpc, const json& aArgs )
 } // namespace
 
 
+static TOOL_RESULT boardRender3d( IPC_CLIENT& aIpc, const json& a )
+{
+    kb::Render3D req;
+    double       v = 0;
+    req.set_side( a.value( "side", std::string() ) );
+    req.set_quality( a.value( "quality", std::string() ) );
+    req.set_floor( a.value( "floor", false ) );
+    req.set_perspective( a.value( "perspective", false ) );
+
+    if( getNumber( a, "rot_x", v ) ) req.set_rot_x( v );
+    if( getNumber( a, "rot_y", v ) ) req.set_rot_y( v );
+    if( getNumber( a, "rot_z", v ) ) req.set_rot_z( v );
+    if( getNumber( a, "zoom", v ) ) req.set_zoom( v );
+    if( getNumber( a, "width", v ) ) req.set_width( (int) v );
+    if( getNumber( a, "height", v ) ) req.set_height( (int) v );
+
+    kb::Render3DResponse r;
+    std::string          err;
+
+    if( !aIpc.Call( req, r, err ) )
+        return { err, true };
+
+    char head[160];
+    std::snprintf( head, sizeof head, "3D %s, %d x %d px in %.1f s; %d part(s) with a model drawn", req.side().empty() ? "top" : req.side().c_str(),
+                   r.width(), r.height(), r.seconds(), r.with_model() );
+    std::string text = head;
+
+    if( r.missing_size() )
+    {
+        // by reason, a few refs each
+        std::map<std::string, std::vector<std::string>> by;
+
+        for( const kb::Render3DMissing& m : r.missing() )
+            by[m.why().substr( 0, m.why().find( " (" ) )].push_back( m.ref() );
+
+        text += "; " + std::to_string( r.missing_size() ) + " drawn without a body:";
+
+        for( const auto& [why, refs] : by )
+        {
+            text += "\n  " + why + ": " + std::to_string( refs.size() ) + " (";
+
+            for( size_t i = 0; i < refs.size() && i < 12; ++i )
+                text += ( i ? " " : "" ) + refs[i];
+
+            text += refs.size() > 12 ? " ...)" : ")";
+        }
+    }
+
+    if( a.contains( "path" ) && a["path"].is_string() && !a["path"].get<std::string>().empty() )
+    {
+        namespace fs = std::filesystem;
+        fs::path p = a["path"].get<std::string>();
+
+        if( p.is_relative() )
+        {
+            std::string              ferr;
+            kb::BoardSummaryResponse s;
+
+            if( aIpc.Call( kb::GetBoardSummary(), s, ferr ) )
+                p = fs::path( s.file() ).parent_path() / p;
+        }
+
+        std::FILE* f = std::fopen( p.string().c_str(), "wb" );
+
+        if( f && std::fwrite( r.png().data(), 1, r.png().size(), f ) == r.png().size() )
+            text += "\nsaved " + p.string();
+        else
+            text += "\nnot saved: cannot write " + p.string();
+
+        if( f )
+            std::fclose( f );
+    }
+
+    TOOL_RESULT out{ text + "\n", false };
+    out.image = r.png();
+    return out;
+}
+
+
 std::string UnsavedBoardChanges( IPC_CLIENT& aIpc )
 {
     // what the unsaved changes are, so the choice is an informed one: undo back to the
@@ -3405,6 +3484,29 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                                  { "back", { { "type", "boolean" } } },
                                  { "path", { { "type", "string" } } } } ),
                        [&aIpc]( const json& a ) { return boardRender( aIpc, a ); } } );
+
+    tools.push_back( { "board_render_3d",
+                       "A 3D picture (PNG) of the board as it is now (unsaved edits included), from KiCad's own "
+                       "raytracer (as kicad-cli pcb render; no OpenGL or screen): to see the assembled board, "
+                       "connectors at the edge, tall parts, the bottom side. side: top (default), bottom, front, "
+                       "back, left, right; rot_x / rot_y / rot_z degrees after it (e.g. side top, rot_x -45 for a "
+                       "tilted view); zoom (default 1); width / height pixels (default 1200 x 900); quality basic "
+                       "or high (reflections, shadows: slower); floor; perspective. Only VRML models load in this "
+                       "build: the parts drawn without a body are listed (no model, file not found, STEP). "
+                       "In the desktop editor the window waits while it renders (seconds). path also saves the "
+                       "PNG (relative: in the project folder).",
+                       schema( { { "side", { { "type", "string" }, { "enum", { "top", "bottom", "front", "back", "left", "right" } } } },
+                                 { "rot_x", { { "type", "number" } } },
+                                 { "rot_y", { { "type", "number" } } },
+                                 { "rot_z", { { "type", "number" } } },
+                                 { "zoom", { { "type", "number" } } },
+                                 { "width", { { "type", "integer" } } },
+                                 { "height", { { "type", "integer" } } },
+                                 { "quality", { { "type", "string" }, { "enum", { "basic", "high" } } } },
+                                 { "floor", { { "type", "boolean" } } },
+                                 { "perspective", { { "type", "boolean" } } },
+                                 { "path", { { "type", "string" } } } } ),
+                       [&aIpc]( const json& a ) { return boardRender3d( aIpc, a ); } } );
 
     tools.push_back( { "export_fab",
                        "Write the fabrication files for JLCPCB from the board as it is now (unsaved edits "

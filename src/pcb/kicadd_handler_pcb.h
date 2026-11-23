@@ -138,6 +138,9 @@ private:
     HANDLER_RESULT<kicadd::board::RenderBoardResponse>
     handleRenderBoard( const HANDLER_CONTEXT<kicadd::board::RenderBoard>& aCtx );
 
+    HANDLER_RESULT<kicadd::board::Render3DResponse>
+    handleRender3D( const HANDLER_CONTEXT<kicadd::board::Render3D>& aCtx );   // kicadd_render3d.cpp
+
     HANDLER_RESULT<kicadd::board::BoardAuditResponse>
     handleBoardAudit( const HANDLER_CONTEXT<kicadd::board::BoardAudit>& aCtx );
 

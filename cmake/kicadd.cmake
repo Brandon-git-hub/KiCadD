@@ -54,6 +54,7 @@ set( KICADD_PCB_SRCS
     ${KICADD_DIR}/src/pcb/kicadd_autoplace.cpp
     ${KICADD_DIR}/src/pcb/kicadd_fab.cpp
     ${KICADD_DIR}/src/pcb/kicadd_picture.cpp
+    ${KICADD_DIR}/src/pcb/kicadd_render3d.cpp
     ${KICADD_DIR}/src/pcb/kicadd_audit.cpp
     ${KICADD_DIR}/src/pcb/kicadd_refplane.cpp
     ${KICADD_DIR}/src/pcb/kicadd_lengths.cpp
