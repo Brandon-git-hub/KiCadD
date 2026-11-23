@@ -128,6 +128,7 @@ add_executable( kicadd-mcp
     ${KICADD_DIR}/mcp/pdn.cpp
     ${KICADD_DIR}/mcp/reflect.cpp
     ${KICADD_DIR}/mcp/project.cpp
+    ${KICADD_DIR}/mcp/launch.cpp
     ${KICADD_DIR}/mcp/tool_docs.cpp
     ${KICADD_DIR}/mcp/drc.cpp
     ${KICADD_DIR}/mcp/transports.cpp

@@ -1105,6 +1105,12 @@ HANDLER_RESULT<SchSummary> KICADD_HANDLER_SCH::handleGetSummary( const HANDLER_C
 
     for( const SCH_SHEET_PATH& sheet : schematic()->Hierarchy() )
     {
+        if( sheet.LastScreen() && sheet.LastScreen()->IsContentModified() )
+            out.set_modified( true );
+    }
+
+    for( const SCH_SHEET_PATH& sheet : schematic()->Hierarchy() )
+    {
         for( SCH_ITEM* item : sheet.LastScreen()->Items().OfType( SCH_SHEET_T ) )
             packSheet( static_cast<SCH_SHEET*>( item ), sheet, *out.add_sheet_list() );
     }

@@ -2121,7 +2121,7 @@ index eda0f8cb..f32c202b 100644
      //-- Preferences menu ----------------------------------------------------
      //
 diff --git a/pcbnew/pcb_edit_frame.cpp b/pcbnew/pcb_edit_frame.cpp
-index e6b786c0..c99a45b2 100644
+index e6b786c0..e779a4c1 100644
 --- a/pcbnew/pcb_edit_frame.cpp
 +++ b/pcbnew/pcb_edit_frame.cpp
 @@ -45,6 +45,11 @@
@@ -2136,7 +2136,7 @@ index e6b786c0..c99a45b2 100644
  #include <api/api_plugin_manager.h>
  #include <api/api_server.h>
  #include <api/api_utils.h>
-@@ -561,6 +566,17 @@ PCB_EDIT_FRAME::PCB_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
+@@ -561,6 +566,25 @@ PCB_EDIT_FRAME::PCB_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
      m_apiHandler = std::make_unique<API_HANDLER_PCB>( this );
      Pgm().GetApiServer().RegisterHandler( m_apiHandler.get() );
  
@@ -2148,13 +2148,21 @@ index e6b786c0..c99a45b2 100644
 +    Pgm().GetApiServer().RegisterHandler( m_kicaddHandler.get() );
 +
 +    if( !wxGetEnv( wxS( "KICADD_NO_API" ), nullptr ) && !Pgm().GetApiServer().Running() )
++    {
++        // kicadd-mcp's launch_kicad starts the editor on the socket the agent already dials
++        wxString socketPath;
++
++        if( wxGetEnv( wxS( "KICADD_API_SOCKET" ), &socketPath ) && !socketPath.IsEmpty() )
++            Pgm().GetApiServer().SetSocketPath( socketPath );
++
 +        Pgm().GetApiServer().Start();
++    }
 +#endif
 +
      if( Kiface().IsSingle() )
      {
          m_apiHandlerCommon = std::make_unique<API_HANDLER_COMMON>();
-@@ -807,6 +823,9 @@ PCB_EDIT_FRAME::~PCB_EDIT_FRAME()
+@@ -807,6 +831,9 @@ PCB_EDIT_FRAME::~PCB_EDIT_FRAME()
      // every cached TEXT_VAR_TRACKER* before the tracker is freed.
      detachTextVarTracker();
  
@@ -2164,7 +2172,7 @@ index e6b786c0..c99a45b2 100644
      if( Kiface().IsSingle() )
      {
          Pgm().GetApiServer().DeregisterHandler( m_apiHandlerCommon.get() );
-@@ -893,6 +912,12 @@ void PCB_EDIT_FRAME::SetBoard( BOARD* aBoard, bool aBuildConnectivity, PROGRESS_
+@@ -893,6 +920,12 @@ void PCB_EDIT_FRAME::SetBoard( BOARD* aBoard, bool aBuildConnectivity, PROGRESS_
          Kiway().LocalHistory().UnregisterSaver( m_pcb );
      }
  
@@ -2177,7 +2185,7 @@ index e6b786c0..c99a45b2 100644
      PCB_BASE_EDIT_FRAME::SetBoard( aBoard, aReporter );
  
      aBoard->AddListener( this );
-@@ -1121,6 +1146,9 @@ void PCB_EDIT_FRAME::setupTools()
+@@ -1121,6 +1154,9 @@ void PCB_EDIT_FRAME::setupTools()
      m_toolManager->RegisterTool( new PCB_SELECTION_TOOL );
      m_toolManager->RegisterTool( new ZOOM_TOOL );
      m_toolManager->RegisterTool( new PCB_PICKER_TOOL );
@@ -2187,7 +2195,7 @@ index e6b786c0..c99a45b2 100644
      m_toolManager->RegisterTool( new ROUTER_TOOL );
      m_toolManager->RegisterTool( new EDIT_TOOL );
      m_toolManager->RegisterTool( new PCB_EDIT_TABLE_TOOL );
-@@ -1773,6 +1801,10 @@ void PCB_EDIT_FRAME::doCloseWindow()
+@@ -1773,6 +1809,10 @@ void PCB_EDIT_FRAME::doCloseWindow()
      GetCanvas()->StopDrawing();
  
      Pgm().GetApiServer().DeregisterHandler( m_apiHandler.get() );

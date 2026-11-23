@@ -2759,6 +2759,54 @@ TOOL_RESULT exportFab( IPC_CLIENT& aIpc, const json& aArgs )
 }
 
 
+} // namespace
+
+
+std::string UnsavedBoardChanges( IPC_CLIENT& aIpc )
+{
+    // what the unsaved changes are, so the choice is an informed one: undo back to the
+    // saved state still counts as modified, and then board_diff finds nothing
+    std::string           what;
+    kb::BoardDiff         diffReq;
+    kb::BoardDiffResponse diff;
+    std::string           diffErr;
+    diffReq.set_limit( 3 );
+
+    if( !aIpc.Call( diffReq, diff, diffErr ) )
+    {
+        what = " (board_diff: " + diffErr + ")";
+    }
+    else if( diff.changes() == 0 )
+    {
+        what = "; board_diff finds it the same as the saved file (zone fills and net classes are not "
+               "compared), e.g. undone back to it: discard=true loses nothing else";
+    }
+    else
+    {
+        what = "; board_diff: " + std::to_string( diff.changes() ) + " change(s) since saved:";
+
+        for( const kb::BoardDiffSection& sec : diff.sections() )
+        {
+            if( sec.summary().empty() && sec.lines().empty() )
+                continue;
+
+            what += "\n  " + sec.name() + ": " + sec.summary();
+
+            for( const std::string& line : sec.lines() )
+                what += "\n    " + line;
+
+            if( sec.more() > 0 )
+                what += "\n    (" + std::to_string( sec.more() ) + " more)";
+        }
+    }
+
+    return what;
+}
+
+
+namespace
+{
+
 TOOL_RESULT openBoard( IPC_CLIENT& aIpc, const json& aArgs )
 {
     namespace kc = kiapi::common::commands;
@@ -2794,42 +2842,7 @@ TOOL_RESULT openBoard( IPC_CLIENT& aIpc, const json& aArgs )
         before.Clear();
     else if( aIpc.Call( kb::GetHistory(), history, err ) && history.modified() && !discard )
     {
-        // what the unsaved changes are, so the choice is an informed one: undo back to the
-        // saved state still counts as modified, and then board_diff finds nothing
-        std::string        what;
-        kb::BoardDiff      diffReq;
-        kb::BoardDiffResponse diff;
-        std::string        diffErr;
-        diffReq.set_limit( 3 );
-
-        if( !aIpc.Call( diffReq, diff, diffErr ) )
-        {
-            what = " (board_diff: " + diffErr + ")";
-        }
-        else if( diff.changes() == 0 )
-        {
-            what = "; board_diff finds it the same as the saved file (zone fills and net classes are not "
-                   "compared), e.g. undone back to it: discard=true loses nothing else";
-        }
-        else
-        {
-            what = "; board_diff: " + std::to_string( diff.changes() ) + " change(s) since saved:";
-
-            for( const kb::BoardDiffSection& sec : diff.sections() )
-            {
-                if( sec.summary().empty() && sec.lines().empty() )
-                    continue;
-
-                what += "\n  " + sec.name() + ": " + sec.summary();
-
-                for( const std::string& line : sec.lines() )
-                    what += "\n    " + line;
-
-                if( sec.more() > 0 )
-                    what += "\n    (" + std::to_string( sec.more() ) + " more)";
-            }
-        }
-
+        const std::string what = UnsavedBoardChanges( aIpc );
         return error( "the open board (" + fs::path( before.file() ).filename().string()
                       + ") has unsaved changes: save_board first, or discard=true to drop them" + what );
     }
@@ -2908,7 +2921,7 @@ json schema( json aProps, std::vector<std::string> aRequired = {} )
 } // namespace
 
 
-std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
+std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
 {
     const json kinds = { { "type", "array" },
                          { "items", { { "type", "string" },
@@ -3531,6 +3544,7 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc )
     AddSchematicTools( tools, aIpc );     // M5a, sch_tools.cpp
     tools.push_back( PdnTool( aIpc ) );           // phase 3 item 3, pdn.cpp
     tools.push_back( ReflectionTool( aIpc ) );    // phase 3 item 4, reflect.cpp
+    AddLaunchTools( tools, aIpc, aAllowLaunch );  // phase 4 item 3, launch.cpp
 
     // batch: a list of the tools above in one call (a copy of the table: the list is handed
     // over to the server afterwards)

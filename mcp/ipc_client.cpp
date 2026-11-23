@@ -94,7 +94,7 @@ bool IPC_CLIENT::Call( const google::protobuf::Message& aRequest, google::protob
         if( int rv = nng_send( m_socket, const_cast<char*>( wire.data() ), wire.size(), 0 ); rv != 0 )
         {
             aError = std::string( "send to KiCad failed: " ) + nng_strerror( rv )
-                     + " (is KiCadD running? desktop: pcbnew with a board open; server: kicad-cli api-server; socket " + m_url + ")";
+                     + " (is KiCadD running? desktop: pcbnew with a board open; server: kicad-cli api-server; launch_kicad starts one; socket " + m_url + ")";
             return false;
         }
 

@@ -101,6 +101,7 @@ message SchSummary
   int32  unconnected_pins = 4;   // pins on no named net and not marked no-connect
   repeated SchSymbol symbols = 5;
   repeated SchSheet sheet_list = 6;   // the hierarchical sheets (root aside)
+  bool   modified         = 7;   // some sheet differs from its file on disk
 }
 
 // Place a symbol: from a library (lib_id "Device:R") or an LCSC part (lcsc "C25804": fetched,

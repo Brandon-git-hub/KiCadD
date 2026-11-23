@@ -90,9 +90,16 @@ Beta 已能走完整個設計流程（電路圖 → 選料 → 擺件 → 規則
      - **存檔：** 最後 `save_board` / `sch_save`，之後磁碟上就是 KiCad 自己寫的檔。
      - **失敗時：** 開啟失敗會刪掉剛寫的檔和剛建立的資料夾。
      - **測試：** `client/project_e2e.py`。
-   - **開啟：** 啟動桌面版（帶專案），或 headless 的 `kicad-cli api-server`，再接上它的 socket。
-   - **關閉：** 有未存檔修改就拒絕，除非 `discard=true`（附 board_diff）。
-   - **安全：** 只啟動 kicadd-mcp 同目錄的 KiCadD 執行檔，不接受任意命令。HTTP 模式預設關閉這兩項，要 `--allow-launch` 才開。
+   - **開啟：** 啟動桌面版（帶專案），或 headless 的 `kicad-cli api-server`，再接上它的 socket。 ✅ 工具 `launch_kicad`（2026-11-23，`mcp/launch.cpp`）：
+     - **socket：** 在 kicadd-mcp 已經連的 socket 上啟動，不必另外接。
+     - **兩種模式：** `mode` 為 `server`（`kicad-cli api-server`，預設）或 `desktop`（pcbnew；上游 patch 讓它讀 `KICADD_API_SOCKET`）。
+     - **啟動後：** 等它回應，回報開了哪塊板、哪份電路圖，以及 log 檔。
+     - **拒絕：** 已有 KiCad 在回應時拒絕。
+   - **關閉：** 有未存檔修改就拒絕，除非 `discard=true`（附 board_diff）。 ✅ 工具 `close_kicad`：
+     - **範圍：** 只關 `launch_kicad` 啟動的程序，其他方式開的拒絕。
+     - **未存檔檢查：** 同時看板子與電路圖（新的 `SchSummary.modified`）。
+   - **安全：** 只啟動 kicadd-mcp 同目錄的 KiCadD 執行檔，不接受任意命令。HTTP 模式預設關閉這兩項，要 `--allow-launch` 才開。 ✅
+   - **測試：** `client/launch_e2e.py`，含 `--desktop`（Xvfb），放進 run_all 與 Windows CI。
 
 ## 盲測（2026-11-22）
 

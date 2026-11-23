@@ -180,6 +180,7 @@ def tests(a):
          lambda w: py + [c("sim_e2e.py")] + b + k + ["--work", w, "--index", a.index_gz, "--ngspice", a.ngspice]),
         ("si", "headless", ["ngspice"], lambda w: py + [c("si_e2e.py")] + b + d + ["--work", w, "--ngspice", a.ngspice]),
         ("project", "headless", [], lambda w: py + [c("project_e2e.py")] + b + k + ["--work", w]),
+        ("launch", "headless", [], lambda w: py + [c("launch_e2e.py")] + b + k + ["--work", w]),
         ("m5", "headless", ["lcsc_cache"], lambda w: py + [c("m5_e2e.py")] + b + k + ["--work", w, "--cache", a.lcsc_cache]),
         ("lcsc", "headless", ["lcsc_cache"], "lcsc"),
         ("model", "headless", ["lcsc_cache"], lambda w: py + [c("model_e2e.py")] + b + k + ["--work", w, "--cache", a.lcsc_cache]),
@@ -191,6 +192,7 @@ def tests(a):
         ("desktop", "desktop", ["xvfb"], lambda w: py + [c("desktop_e2e.py")] + b + d + ["--work", w]),
         ("desktop_sch", "desktop", ["xvfb"], lambda w: py + [c("desktop_sch_e2e.py")] + b + d + ["--work", w]),
         ("desktop_autoplace", "desktop", ["xvfb"], lambda w: py + [c("desktop_autoplace_e2e.py")] + b + d + ["--work", w]),
+        ("desktop_launch", "desktop", ["xvfb"], lambda w: py + [c("launch_e2e.py")] + b + k + ["--work", w, "--desktop"]),
     ]
     return out
 

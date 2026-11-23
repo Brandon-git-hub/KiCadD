@@ -945,6 +945,28 @@ Arguments:
 - `rs` (array)
 - `vdd` (["number","string"])
 
+## launch_kicad
+
+Start KiCad (headless server, or the desktop PCB editor) on this kicadd-mcp's socket; refused while one answers.
+
+Start KiCad for the agent on the socket kicadd-mcp uses, so every tool works on it at once: mode "server" (default: headless kicad-cli api-server; path optional, new_project / open_board after) or "desktop" (the PCB editor with path's board, for a user to watch and route; needs a display). path: a project folder (its one .kicad_pro), .kicad_pro, .kicad_pcb or .kicad_sch, absolute on the server. Waits until it answers (wait_s, default 60 / 120 for the desktop) and returns what is open and the log file. Refused while a KiCad already answers there. Only KiCadD's own programs next to kicadd-mcp. HTTP mode: only with --allow-launch.
+
+Arguments:
+
+- `mode` (string)
+- `path` (string): absolute: folder, .kicad_pro, .kicad_pcb or .kicad_sch
+- `wait_s` (number)
+
+## close_kicad
+
+Stop the KiCad launch_kicad started; refused with unsaved board / schematic changes unless discard.
+
+Stop the KiCad that launch_kicad started (server or desktop editor); one started any other way is left alone (refused). Refused while the board or the schematic has unsaved changes (listed, with board_diff) unless discard=true. HTTP mode: only with --allow-launch.
+
+Arguments:
+
+- `discard` (boolean)
+
 ## new_project
 
 Make a new project (.kicad_pro, empty board and schematic) on the server and open it; never writes over files.

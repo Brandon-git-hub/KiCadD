@@ -95,6 +95,8 @@ void usage()
                   "  --token    require Authorization: Bearer TOKEN; env KICADD_MCP_TOKEN\n"
                   "  --trust-loopback  with --token: let peers on 127.0.0.1/::1 in without it\n"
                   "                    (same machine/container, e.g. a local agent or code-server proxy)\n"
+                  "  --allow-launch  with --http: let launch_kicad / close_kicad start and stop KiCad\n"
+                  "                  (KiCadD's own programs only; always on with --stdio)\n"
                   "  --no-web   don't serve the 2D view (/ and /ws) in --http mode\n"
                   "  --web-root DIR  serve DIR/index.html instead of the embedded page\n"
                   "  --version  print the version and exit\n"
@@ -108,7 +110,7 @@ void usage()
 int main( int argc, char** argv )
 {
     std::string  socket = std::getenv( "KICADD_SOCK" ) ? std::getenv( "KICADD_SOCK" ) : "";
-    bool         stdio = false, httpMode = false;
+    bool         stdio = false, httpMode = false, allowLaunch = false;
     int          timeoutMs = 120000;
     HTTP_OPTIONS http;
 
@@ -154,6 +156,8 @@ int main( int argc, char** argv )
             http.allowedOrigins.push_back( next() );
         else if( a == "--trust-loopback" )
             http.trustLoopback = true;
+        else if( a == "--allow-launch" )
+            allowLaunch = true;
         else if( a == "--no-web" )
             http.web = false;
         else if( a == "--web-root" )
@@ -214,7 +218,8 @@ int main( int argc, char** argv )
         return 1;
     }
 
-    std::vector<TOOL> tools = MakeTools( ipc );
+    // stdio: the client started kicadd-mcp on its own machine; HTTP peers only with --allow-launch
+    std::vector<TOOL> tools = MakeTools( ipc, stdio || allowLaunch );
 
     if( stdio )
     {

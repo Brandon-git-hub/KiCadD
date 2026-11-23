@@ -316,6 +316,17 @@ saves. It never writes over a file: an existing project is opened with `open_boa
 them). KiCadD ships no symbol libraries: start the schematic with `lcsc_fetch` / `sch_add_part
 lcsc=...` or `lib_create_symbol`.
 
+## Starting and stopping KiCad (launch_kicad / close_kicad)
+
+When every tool fails with "is KiCadD running? ... launch_kicad starts one", nothing serves
+kicadd-mcp's socket. `launch_kicad {path: "/abs/project"}` starts the headless server there
+(no path: an empty one, then `new_project` / `open_board`); `mode: "desktop"` starts the PCB
+editor on the project's board instead, for a user to watch, review and route. It is refused
+while a KiCad already answers (use `open_board` to switch the server's board). `close_kicad`
+stops only what `launch_kicad` started, refused while the board or the schematic has unsaved
+changes: save (`save_board`, `sch_save`) or pass `discard=true`. Over HTTP both need
+kicadd-mcp's `--allow-launch`.
+
 ## A new board (outline, layers, rules, pours)
 
 From a blank project, before placing parts:

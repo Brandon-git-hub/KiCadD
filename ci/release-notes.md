@@ -2,7 +2,7 @@
      {{UPSTREAM}} is filled from patches/UPSTREAM_BASE; build info and SHA-256 are appended. -->
 KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修剪版 Windows x64 build，加上 Agent（MCP）協同設計。
 
-> ⚠️ Beta（pre-release）。已能走完整個設計流程，功能仍會持續加入。由 GitHub Actions 自動建置；36 個端到端測試在 Linux 上全部通過（含桌面版），Windows CI 跑 smoke test 與 headless 的出廠、貼片、電路圖文件、模擬、PDN / 反射、新專案、工具、設定、undo 歷史測試；桌面版在 Windows 上只有人工試用。
+> ⚠️ Beta（pre-release）。已能走完整個設計流程，功能仍會持續加入。由 GitHub Actions 自動建置；38 個端到端測試在 Linux 上全部通過（含桌面版），Windows CI 跑 smoke test 與 headless 的出廠、貼片、電路圖文件、模擬、PDN / 反射、新專案、開關 KiCad、工具、設定、undo 歷史測試；桌面版在 Windows 上只有人工試用。
 
 ## 使用前須知
 完整的使用說明（安裝、接上 Agent、skill、存檔格式、做得到 / 做不到）：[docs/GUIDE.md](https://github.com/Brandon-git-hub/KiCadD/blob/main/docs/GUIDE.md)。
@@ -12,6 +12,19 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 - **不附 KiCad 官方元件庫：** 符號和封裝請用 `lcsc_fetch`、`lcsc_match` 從 LCSC 取得，或用 `lib_create_symbol`、`lib_create_footprint` 自建，也可以 `lib_register` 專案裡現有的庫。舊專案裡已經用過的符號（例如 `Device:R`），庫沒掛也能從電路圖內嵌的副本再放。
 - **一次一個專案：** 一個服務同時只開一個專案（板子加電路圖），換專案請用 `open_board`，新專案用 `new_project`。
 - **目前不支援：** 差分對與等長佈線、全板自動佈線（`route` 只代替重複的手動佈線）、電路圖自動排版、組裝圖、STEP 匯出（3D 模型只有 VRML）、ODB++ / IPC-2581 / DXF、MCP resources / prompts。
+
+## 下一版（beta.11，未發布）
+新功能：階段四第 3 項的剩餘部分，由 MCP 開關 KiCad。工具 64 → 66 個。
+
+- **`launch_kicad`：** 在 kicadd-mcp 已經連的 socket 上啟動 KiCad，之後所有工具直接作用在它上面。
+  - **兩種模式：** `mode: "server"`（預設）是 headless 的 `kicad-cli api-server`；`"desktop"` 是 PCB 編輯器，開啟專案的板子，給人看、檢查、佈線。
+  - **路徑：** `path` 可以是專案資料夾（裡面唯一的 `.kicad_pro`）、`.kicad_pro`、`.kicad_pcb` 或 `.kicad_sch`。server 模式可以不給，先開空的，再 `new_project` / `open_board`。
+  - **啟動後：** 等它回應（`wait_s`），回報開了哪塊板、哪份電路圖，以及 log 檔位置。
+  - **限制：** 已經有 KiCad 在回應就拒絕。只啟動 kicadd-mcp 同目錄（或 build tree）裡的 KiCadD 執行檔，不接受任意命令。
+- **`close_kicad`：** 只關 `launch_kicad` 啟動的程序，其他方式開的不動（拒絕）。板子或電路圖有未存檔修改就拒絕，並列出內容（附 board_diff）；`discard=true` 才照關。
+- **HTTP 模式：** 兩個工具預設關閉，啟動 kicadd-mcp 時加 `--allow-launch` 才能用。stdio 模式一律可用。
+- **桌面版的 socket：** PCB 編輯器讀環境變數 `KICADD_API_SOCKET`，所以能在指定的 socket 上服務。
+- **`SchSummary.modified`：** 電路圖有未存檔修改時為 true。
 
 ## 這一版（beta.10）
 修正版：第四輪盲測留下的 4–8 項、非直線的 via 搜尋，以及第五輪盲測發現的路由器當機、`route_short` 逾時與 `route` 的兩個問題。工具數不變（64 個）。

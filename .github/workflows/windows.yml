@@ -37,6 +37,7 @@ on:
       - 'client/sim_e2e.py'
       - 'client/si_e2e.py'
       - 'client/project_e2e.py'
+      - 'client/launch_e2e.py'
       - 'client/run_all.py'
       - 'client/tools_e2e.py'
       - 'client/setup_e2e.py'
@@ -59,6 +60,7 @@ on:
       - 'client/sim_e2e.py'
       - 'client/si_e2e.py'
       - 'client/project_e2e.py'
+      - 'client/launch_e2e.py'
       - 'client/run_all.py'
       - 'client/tools_e2e.py'
       - 'client/setup_e2e.py'
@@ -336,6 +338,8 @@ jobs:
           python -I kicadd/client/si_e2e.py --build dist/bin --demos kicad/demos --work "$env:RUNNER_TEMP/si" --ngspice dist/bin/ngspice/bin/ngspice_con.exe
           if ($LASTEXITCODE -ne 0) { $fail = 1 }
           python -I kicadd/client/project_e2e.py --build dist/bin --kicad kicad --work "$env:RUNNER_TEMP/project"
+          if ($LASTEXITCODE -ne 0) { $fail = 1 }
+          python -I kicadd/client/launch_e2e.py --build dist/bin --kicad kicad --work "$env:RUNNER_TEMP/launch"
           if ($LASTEXITCODE -ne 0) { $fail = 1 }
           exit $fail
       - name: End-to-end (tools, setup, undo history through run_all)

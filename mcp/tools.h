@@ -38,8 +38,9 @@ struct TOOL
     std::string                                       details;   ///< the full description (tool_help); description is the brief
 };
 
-/// Build the tool set bound to aIpc (which must outlive the tools).
-std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc );
+/// Build the tool set bound to aIpc (which must outlive the tools). aAllowLaunch: launch_kicad /
+/// close_kicad may start and stop programs (stdio; HTTP only with --allow-launch).
+std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch = true );
 
 /// M5a schematic tools (sch_tools.cpp)
 void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc );
@@ -60,6 +61,14 @@ std::string ToolDocsMarkdown( const std::vector<TOOL>& aTools );
 /// phase 4 item 3: new_project (project.cpp); it runs open_board, board_setup, board_outline,
 /// save_board and sch_save from aTable
 TOOL NewProjectTool( std::shared_ptr<std::vector<TOOL>> aTable );
+
+/// "; board_diff: N change(s) since saved: ..." for a refusal over unsaved changes (open_board, close_kicad)
+std::string UnsavedBoardChanges( IPC_CLIENT& aIpc );
+
+/// phase 4 item 3: launch_kicad / close_kicad (launch.cpp): start the server or the desktop
+/// editor on aIpc's socket, stop the one started here. aAllowed false (HTTP without
+/// --allow-launch): both refuse.
+void AddLaunchTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc, bool aAllowed );
 
 } // namespace kicadd::mcp
 
