@@ -552,6 +552,7 @@ RESULT SESSION::Route( const REQUEST& aReq )
     sizes.SetViaType( VIATYPE::THROUGH );
     router.UpdateSizes( sizes );
     out.width = sizes.TrackWidth();
+    out.widthFrom = aReq.width > 0 ? std::string( "asked" ) : sizes.GetWidthSource().ToStdString( wxConvUTF8 );
 
     auto fail = [&]( const VECTOR2I& aReached, const VECTOR2I& aTarget, int aLayer, const std::string& aWhy )
     {

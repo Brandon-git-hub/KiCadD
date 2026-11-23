@@ -460,7 +460,9 @@ length matching, dense escapes).
    server restart or crash loses minutes, not the whole layout.
 1. Placement first, then `fanout nets=["GND", ...]` on boards with planes or a ground pour on
    the other side: a via next to each SMD pad. Through-hole pads are skipped; a net without a
-   zone on another layer is only warned about.
+   zone on another layer is only warned about. It refills the pours first, so after routing
+   "already joined" means joined to today's fill (a pad on a pour island cut off from the rest
+   counts as not joined).
 2. `route_short` with the parts (or nets) and a `max_length` (e.g. 10 mm): decoupling caps,
    pull-ups, LED resistors. `dry_run=true` first to see what would fail. It goes shortest first.
    Where one layer won't do it adds vias: one on the way for ends on different sides, over the
@@ -483,7 +485,10 @@ length matching, dense escapes).
    move a part, or give waypoints round it. Between close pads (a solder jumper, fine pitch)
    "the way out ... is tight": a narrower `width`, or start at a point inside the pad on the side
    the track leaves (`from: [x, y]`), not at its centre.
-   A route that changes layer reports them in order ("F.Cu -> B.Cu").
+   A route that changes layer reports them in order ("F.Cu -> B.Cu"). The width says where it
+   came from: `width 0.5 (netclass 'Power')`; a net of a diff pair takes its class's diff pair
+   width. `set_rules` takes effect at once. A width "(board minimum track width)" on a power
+   net means no class gives it one: set it with `set_rules`.
 5. Everything of one call is one `undo`. Then `refill_zones` and `run_drc`.
    The `unconnected=` count of every tool reads the same way: moves leave large nets (GND,
    power) out until something rebuilds them ("excl. deferred nets: GND"); after route_short,
@@ -492,7 +497,10 @@ length matching, dense escapes).
 6. Pour ties: `route from="C12.2" to="zone"` ends on the net's own pour: on the pad's layer
    when the pour is there, else with a via down to the nearest layer that has it (not in the
    pad). It tries the nearest spots in the fill until one works. Use it for VBUS / power pads
-   to their pours; `fanout` does many GND / supply pads at once.
+   to their pours; `fanout` does many GND / supply pads at once. A pad already in its pour
+   with a starved thermal (DRC `starved_thermal`, too few spokes reach copper): give
+   `waypoints: [[x, y, "B.Cu"]]` and it goes through a via to the pour on that layer, or route a
+   short track from the pad into the pour on its own layer.
 7. Rip-up: `delete_tracks` filters narrow each other (`nets: ["GND"], region: [...]` deletes
    only GND inside the box). The reply lists what went, per net: check it before going on
    (`undo` brings it back).

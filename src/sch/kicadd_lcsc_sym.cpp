@@ -349,6 +349,7 @@ wxString KicaddLcscSymbol( const wxString& aRequest )
 
             std::map<std::string, int> count;
             std::vector<std::string>   internal;   // power_in pins that may be the IC's own rails
+            std::vector<std::string>   outNames, sharedOut;   // power_out names; their repeats left passive
 
             for( SCH_PIN* pin : symPins )
             {
@@ -358,9 +359,29 @@ wxString KicaddLcscSymbol( const wxString& aRequest )
                 const std::string  n = clean( pin->GetName() );
                 ELECTRICAL_PINTYPE t = ELECTRICAL_PINTYPE::PT_PASSIVE;
 
+                // "VDD/VDDA", "VSS/VSSA": one pin with two names, either one tells
+                std::vector<std::string> names;
+
+                for( size_t from = 0;; )
+                {
+                    const size_t slash = n.find( '/', from );
+                    names.push_back( n.substr( from, slash == std::string::npos ? std::string::npos : slash - from ) );
+
+                    if( slash == std::string::npos )
+                        break;
+
+                    from = slash + 1;
+                }
+
+                auto anyMatch = [&]( const std::regex& aRe )
+                {
+                    return std::any_of( names.begin(), names.end(),
+                                        [&]( const std::string& x ) { return !x.empty() && std::regex_match( x, aRe ); } );
+                };
+
                 if( !connector )
                 {
-                    if( std::regex_match( n, ground ) || std::regex_match( n, supplyIn ) || std::regex_match( n, supplyIn2 )
+                    if( anyMatch( ground ) || anyMatch( supplyIn ) || anyMatch( supplyIn2 )
                         || ( regulator && n == "IN" ) )
                     {
                         t = ELECTRICAL_PINTYPE::PT_POWER_IN;
@@ -374,7 +395,19 @@ wxString KicaddLcscSymbol( const wxString& aRequest )
                         }
                     }
                     else if( std::regex_match( n, ownRegOut ) || ( regulator && hasIn && std::regex_match( n, regOut ) ) )
-                        t = ELECTRICAL_PINTYPE::PT_POWER_OUT;
+                    {
+                        // the same output on two pins (an AMS1117's VOUT and its tab): one
+                        // power_out, the rest passive; two power outputs on a net are an ERC error
+                        if( std::find( outNames.begin(), outNames.end(), n ) == outNames.end() )
+                        {
+                            outNames.push_back( n );
+                            t = ELECTRICAL_PINTYPE::PT_POWER_OUT;
+                        }
+                        else
+                        {
+                            sharedOut.push_back( n + " (pin " + pin->GetNumber().ToStdString() + ")" );
+                        }
+                    }
                 }
 
                 pin->SetType( t );
@@ -389,6 +422,17 @@ wxString KicaddLcscSymbol( const wxString& aRequest )
             if( !pinTypes.empty() )
                 pinTypes = "pin types inferred from their names (the data left them unspecified): " + pinTypes
                            + ( connector ? " (a connector: all passive)" : "" );
+
+            if( !sharedOut.empty() )
+            {
+                std::string names;
+
+                for( const std::string& n : sharedOut )
+                    names += ( names.empty() ? "" : ", " ) + n;
+
+                pinTypes += "; " + names + " passive: the same output as a power_out pin (two power outputs on one "
+                            "net are an ERC error)";
+            }
 
             if( !internal.empty() )
             {

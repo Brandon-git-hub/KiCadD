@@ -1091,6 +1091,7 @@ message RouteResult
   Point  blocker_at = 19;   // the item in the way: its own position (a pad's centre)
   int64  stray      = 20;   // nm the track goes outside the box between two points of its path (0: not)
   Point  stray_at   = 21;   // where it goes furthest
+  string width_from = 22;   // where the width came from: "netclass 'Power'", "board minimum track width", "asked"
 }
 
 message RouteResponse

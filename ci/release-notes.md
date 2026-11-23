@@ -36,6 +36,13 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
   - 新參數 `keepout`：`[[x0, y0, x1, y1], ...]`，或 `{"area": [...], "side": "top"}`。框內不放零件，例如保留給佈線的通道。
   - 板上有走線時，回應會列出擺完後最擠的焊盤，以及有幾個焊盤旁邊連一條線都放不下。
 - **pair order 看實際佈線：** 已佈好的差分對，若 P 和 N 的走線從上方看（不分層）沒有交叉，就另列為「繞過去」，例如 U 形逃線。這種情況不再一直被當成反序。真的交叉的會附上交叉點（`routed: crosses at x,y`）。
+- **盲測 S1（一般密度兩層感測板）發現並修正：**
+  - **`set_rules` 立即生效：** 新設的 net class 線寬與間距會馬上用在 `route` / `route_short`，不必重開板子。以前要重開才會生效，電源線因此被佈成板子最小線寬 0.127 mm。
+  - **`route` 標出線寬來源：** 例如 `width 0.5 (netclass 'Power')`、`(netclass 'Default' diff pair)`、`(board minimum track width)`。
+  - **`set_rules current`：** 小電流算出的線寬不會再低於板子最小值或 Default 的線寬，提高時會說明原因。class 參數打錯時，錯誤訊息列出所有可用的鍵。
+  - **LCSC 腳型別：** 同名的穩壓輸出腳（AMS1117 的 VOUT 與散熱片）只把一支判為 power_out，其餘為 passive。以前一定會有一個 ERC 錯誤。`VDD/VDDA` 這種斜線分隔的腳名，任一個名字符合電源就判為電源腳。
+  - **`fanout`：** 先重鋪銅再判斷。鋪銅孤島上的焊盤（仍有 ratsnest）不算「已接上」。
+  - **`route to=zone`：** 焊盤已在鋪銅裡時，給了換層的 waypoint 就經過孔接到另一層的鋪銅（用於 starved thermal），不再拒絕。終點的鋪銅取最後一次換層的那一層。
 - **測試：** route_e2e 新增 via 空位與 `auto_place` 通道兩組測試；set_rules、FE2.1 腳型別、NC、晶振 / 保險絲 / 封裝搜尋、`sch_connect` 同一次呼叫的 stub 碰撞，都加進既有測試。
 
 ## beta.11

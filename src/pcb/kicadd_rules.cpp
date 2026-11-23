@@ -8,6 +8,8 @@
 
 #include <board.h>
 #include <board_design_settings.h>
+#include <drc/drc_engine.h>
+#include <wx/filename.h>
 #include <netclass.h>
 #include <project/net_settings.h>
 
@@ -113,6 +115,21 @@ void Apply( BOARD& aBoard, const STATE& aState )
 
     ns.ClearAllCaches();
     aBoard.SynchronizeNetsAndNetClasses( false );
+
+    // The router and DRC read widths and clearances from the DRC engine, which compiled the
+    // net classes when the board was loaded: compile them again, or a class set now (Power 0.5
+    // mm) reaches neither until the board is reopened (blind run S1: power routed at 0.127)
+    if( bds.m_DRCEngine )
+    {
+        try
+        {
+            bds.m_DRCEngine->InitEngine( wxFileName( aBoard.GetDesignRulesPath() ) );
+        }
+        catch( ... )
+        {
+            // a .kicad_dru that does not parse: run_drc reports it
+        }
+    }
 }
 
 } // namespace kicadd::rules

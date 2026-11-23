@@ -735,7 +735,8 @@ std::string renderRoute( const kb::RouteResult& r, bool aDryRun )
                                                           + ( viaStops ? ", " + ratio( r.length(), r.direct() ) + " the path through the waypoints" : "" )
                                                           + ")" )
          + ", " + std::to_string( r.segments() ) + " segment(s), "
-         + std::to_string( r.vias() ) + " via(s), width " + mm( r.width() );
+         + std::to_string( r.vias() ) + " via(s), width " + mm( r.width() )
+         + ( r.width_from().empty() || r.width_from() == "asked" ? std::string() : " (" + r.width_from() + ")" );
 
     if( r.min_gap() >= 0 )
         s += ", min gap " + mm( r.min_gap() ) + " to " + r.gap_to();
@@ -951,6 +952,16 @@ TOOL_RESULT fanout( IPC_CLIENT& aIpc, const json& aArgs )
 
     req.set_layer( aArgs.value( "layer", std::string() ) );
     req.set_dry_run( aArgs.value( "dry_run", false ) );
+
+    // "already joined" reads the pour's fill: it must be today's (after routing it was not:
+    // pads were skipped as joined that DRC called unconnected)
+    if( aArgs.value( "refill", true ) )
+    {
+        TOOL_RESULT f = refillZones( aIpc );
+
+        if( f.isError )
+            return error( "refill_zones before the fanout failed: " + f.text );
+    }
 
     kb::FanoutResponse r;
     std::string        err;
@@ -1541,6 +1552,13 @@ TOOL_RESULT setRules( IPC_CLIENT& aIpc, const json& aArgs )
                     continue;
                 }
 
+                static const std::set<std::string> known = { "clearance", "track_width", "via_diameter", "via_drill",
+                                                              "diff_pair_width", "diff_pair_gap", "current", "temp_rise",
+                                                              "impedance", "diff_impedance" };
+
+                if( !known.count( key ) )
+                    return error( name + ": unknown net class value " + key + "; the values are clearance, track_width, via_diameter, via_drill, diff_pair_width, diff_pair_gap, current, temp_rise, impedance, diff_impedance, impedance_layer" );
+
                 if( !num( v, key.c_str(), d ) )
                     return error( name + "." + key + ": a length in mm (null: from Default)" );
 
@@ -1555,7 +1573,7 @@ TOOL_RESULT setRules( IPC_CLIENT& aIpc, const json& aArgs )
                 else if( key == "impedance" )       c->set_impedance( d );
                 else if( key == "diff_impedance" )  c->set_diff_impedance( d );
                 else
-                    return error( "unknown net class value " + key );
+                    return error( "unknown net class value " + key + "; the values are clearance, track_width, via_diameter, via_drill, diff_pair_width, diff_pair_gap, current, temp_rise, impedance, diff_impedance, impedance_layer" );
             }
         }
     }

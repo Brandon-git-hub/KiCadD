@@ -95,6 +95,22 @@ try:
     m.tool("undo")
     err, t = m.tool("set_rules", {"classes": [{"name": "USB"}]})
     check(err and "classes is an object" in t, "set_rules: a list for classes refused, not ignored")
+    err, t = m.tool("set_rules", {"classes": {"USB": {"track": 0.2}}})
+    check(err and "the values are clearance, track_width" in t, "set_rules: an unknown class value lists the right ones")
+    # a class set now reaches the router at once (blind run S1: power routed at the board minimum)
+    # (/U2D- is half of a pair: the router takes the class's diff pair width, and says so)
+    m.tool("set_rules", {"classes": {"Wide": {"track_width": 0.25, "diff_pair_width": 0.2}},
+                         "assign": {"/U2D-": "Wide", "/U2D+": "Wide"}, "drc": False})
+    m.tool("delete_tracks", {"nets": ["/U2D-"]})
+    err, t = m.tool("route", {"from": "J3.2", "to": "D3.2", "dry_run": True})
+    check("width 0.2 (netclass 'Wide' diff pair)" in t, "route uses a class set in this session, and says which: "
+          + t.splitlines()[0][:160])
+    m.tool("undo")
+    m.tool("undo")
+    err, t = m.tool("set_rules", {"classes": {"Tiny": {"current": 0.2}}, "drc": False})
+    check(not err and "raised to 0.15 mm" in t, "a small current: not narrower than Default / the board minimum: "
+          + next((l for l in t.splitlines() if "Tiny" in l), t)[:160])
+    m.tool("undo")
     err, t = m.tool("silk_tidy", {"dry_run": True})
     print("      ", t.splitlines()[0][:150])
     check(not err and t.startswith("would move 0 text(s)"), "silk_tidy dry run: nothing to move (glyphs judged, not boxes)")

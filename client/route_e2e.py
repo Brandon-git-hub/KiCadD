@@ -115,7 +115,7 @@ def pic(a, work):
 
         err, t = mcp.tool("route", {"from": "R9.1"})
         m = re.search(r"routed on (\S+), ([\d.]+) mm \(([\d.]+)x the straight line\), (\d+) segment\(s\), (\d+) via\(s\), "
-                      r"width ([\d.]+), min gap ([\d.]+) to (.+)", t)
+                      r"width ([\d.]+)(?: \([^)]*\))?, min gap ([\d.]+) to (.+)", t)
         check(not err and m and unconnected(t) == base - 1, "routed from the ratsnest: " + (t.split("\n")[0][:150]))
         check(m and float(m.group(3)) >= 1.0 and float(m.group(7)) >= 0.25 - 1e-6,
               f"quality: {m.group(3) if m else '?'}x, min gap {m.group(7) if m else '?'} mm (clearance 0.25)")

@@ -255,6 +255,11 @@ def main():
             line = next((ln for ln in text.splitlines() if "pin types inferred" in ln), "")
             check(not err and all(w in line for w in want) and (part != "C2765186" or "connector" in line),
                   f"{part}: " + (line.strip() or text.strip()[:120]))
+        if os.path.isfile(os.path.join(a.cache, "C6186.json")):
+            # AMS1117: VOUT on pin 2 and the tab: one power_out (two on a net: an ERC error)
+            err, text = m.tool("lcsc_fetch", {"lcsc": "C6186"})
+            line = next((ln for ln in text.splitlines() if "pin types inferred" in ln), "")
+            check("1 power_out" in line and "VOUT (pin 4) passive" in line, "C6186: one power_out VOUT: " + line.strip()[:140])
         if os.path.isfile(os.path.join(a.cache, "C39693.json")):
             # FE2.1: VD33 / VD18 / VD_PLL are supplies (they were left passive, so audit's
             # decoupling check saw 2 supply pins); VD33_O / VDD18_O the IC's own regulators

@@ -2429,6 +2429,7 @@ void fillResult( RouteResult& aOut, const kicadd::route::RESULT& aRes )
     aOut.set_net( aRes.net );
     aOut.set_layer( aRes.layer );
     aOut.set_width( aRes.width );
+    aOut.set_width_from( aRes.widthFrom );
     aOut.set_length( aRes.length );
     aOut.set_direct( aRes.direct );
     aOut.set_ends( aRes.ends );
@@ -2609,10 +2610,34 @@ HANDLER_RESULT<RouteResponse> KICADD_HANDLER_PCB::handleRoute( const HANDLER_CON
             }
         }
 
-        if( inIt )
+        // in its pour already: with stops (a via to the other side's pour, e.g. for a starved
+        // thermal) go there; without, there is nothing to route
+        if( inIt && req.stops_size() == 0 )
             return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
                                               "to zone: " + from->name + " is already in its pour on "
-                                              + LSET::Name( zoneStart ).ToStdString() + " (the fill joins it; refill_zones)" ) );
+                                              + LSET::Name( zoneStart ).ToStdString()
+                                              + " (the fill joins it; refill_zones). For more copper to it (a starved "
+                                                "thermal): waypoints [[x, y, \"B.Cu\"]] go to the pour on that layer through a via" ) );
+
+        if( inIt )
+            std::erase_if( zoneSpots, [&]( const ZONE_SPOT& z ) { return z.layer == zoneStart; } );
+
+        // the last layer change asked for decides where the route arrives: the pour there
+        // (a pour spot on another layer read as "-> pour F.Cu ... F.Cu -> B.Cu")
+        for( int i = req.stops_size() - 1; i >= 0; --i )
+        {
+            const std::string& to = req.stops( i ).via_to();
+
+            if( to.empty() || to == "other" )
+                continue;
+
+            const int id = b->GetLayerID( wxString::FromUTF8( to ) );
+
+            if( id >= 0 && std::any_of( zoneSpots.begin(), zoneSpots.end(), [&]( const ZONE_SPOT& z ) { return z.layer == id; } ) )
+                std::erase_if( zoneSpots, [&]( const ZONE_SPOT& z ) { return z.layer != id; } );
+
+            break;
+        }
 
         if( zoneSpots.empty() )
             return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
@@ -3727,13 +3752,27 @@ HANDLER_RESULT<FanoutResponse> KICADD_HANDLER_PCB::handleFanout( const HANDLER_C
                 continue;
             }
 
-            // already joined to such a zone (its fill, a via, a track)
+            // already joined to such a zone (its fill, a via, a track), and to the rest of the
+            // net: a pad in an island of the pour cut off from the rest still has a ratsnest line
             bool done = false;
 
             for( BOARD_CONNECTED_ITEM* item : conn->GetConnectedItems( pad ) )
             {
                 for( auto& [z, l] : zones )
                     done = done || item == z;
+            }
+
+            if( done )
+            {
+                if( RN_NET* rn = conn->GetRatsnestForNet( pad->GetNetCode() ) )
+                {
+                    for( const CN_EDGE& e : rn->GetEdges() )
+                    {
+                        if( ( e.GetSourceNode() && e.GetSourceNode()->Parent() == pad )
+                            || ( e.GetTargetNode() && e.GetTargetNode()->Parent() == pad ) )
+                            done = false;
+                    }
+                }
             }
 
             if( done )
@@ -7412,13 +7451,33 @@ HANDLER_RESULT<RulesResponse> KICADD_HANDLER_PCB::handleSetRules( const HANDLER_
             double       outerUm, innerUm;
             kicadd::BoardCopperUm( *b, outerUm, innerUm );
 
-            const double w = std::ceil( kicadd::ipc2221::TrackWidthMm( c.current(), rise, outerUm, true ) * 100 ) / 100;
+            const double ipc = std::ceil( kicadd::ipc2221::TrackWidthMm( c.current(), rise, outerUm, true ) * 100 ) / 100;
+
+            // a small current needs less than the board allows or Default uses: never narrower
+            // than those (a power class at 0.12 mm under a 0.2 mm Default reads as a mistake)
+            int floorNm = st.minTrackWidth;
+            const char* floorWhy = "the board minimum";
+
+            if( auto d = st.classes.find( wxS( "Default" ) ); d != st.classes.end() && d->second.trackWidth
+                                                               && *d->second.trackWidth > floorNm && name != wxS( "Default" ) )
+            {
+                floorNm = *d->second.trackWidth;
+                floorWhy = "the Default class's width";
+            }
+
+            const double w = std::max( ipc, floorNm / 1e6 );
             k.trackWidth = nm( w );
 
-            char buf[320];
+            char buf[400];
             std::snprintf( buf, sizeof( buf ), "%s: %.3g A -> %.2f mm tracks (IPC-2221, %.0f C rise, %.0f um outer copper)",
-                           c.name().c_str(), c.current(), w, rise, outerUm );
+                           c.name().c_str(), c.current(), ipc, rise, outerUm );
             currentNotes += ( currentNotes.empty() ? "" : "; " ) + std::string( buf );
+
+            if( w > ipc )
+            {
+                std::snprintf( buf, sizeof( buf ), ", raised to %.3g mm (%s)", w, floorWhy );
+                currentNotes += buf;
+            }
 
             if( innerUm > 0 )
             {
