@@ -432,6 +432,38 @@ Arguments:
 - `size` (integer)
 - `zoom` (boolean)
 
+## board_render_3d
+
+A 3D picture (PNG) of the board from KiCad's raytracer: any side or angle; lists the parts without a model.
+
+A 3D picture (PNG) of the board as it is now (unsaved edits included), from KiCad's own raytracer (as kicad-cli pcb render; no OpenGL or screen): to see the assembled board, connectors at the edge, tall parts, the bottom side. side: top (default), bottom, front, back, left, right; rot_x / rot_y / rot_z degrees after it (e.g. side top, rot_x -45 for a tilted view); zoom (default 1); width / height pixels (default 1200 x 900); quality basic or high (reflections, shadows: slower); floor; perspective. Only VRML models load in this build: the parts drawn without a body are listed (no model, file not found, STEP). In the desktop editor the window waits while it renders (seconds). path also saves the PNG (relative: in the project folder).
+
+Arguments:
+
+- `floor` (boolean)
+- `height` (integer)
+- `path` (string)
+- `perspective` (boolean)
+- `quality` (string)
+- `rot_x` (number)
+- `rot_y` (number)
+- `rot_z` (number)
+- `side` (string)
+- `width` (integer)
+- `zoom` (number)
+
+## export_assembly
+
+Write the assembly drawing (PDF): top and bottom pages, outlines, pin 1, references, DNP crossed out.
+
+Write the assembly drawing (PDF) from the board as it is now: a page for the top and, when parts are on the bottom, one for the bottom seen from below, each with the title block and scaled to the page. KiCad's plot of the Fab layer (outlines, reference text, pads sketched) and the outline; parts with no Fab drawing (LCSC / EasyEDA footprints) get their outline, pin 1 and reference from the courtyard; DNP parts are crossed out. values=true adds the values. dir defaults to <project>/fab (<board>-assembly.pdf), path names the file.
+
+Arguments:
+
+- `dir` (string)
+- `path` (string)
+- `values` (boolean)
+
 ## export_fab
 
 Gerbers, drill, BOM and CPL for JLCPCB, after refill and DRC.

@@ -42,6 +42,8 @@ private:
     nlohmann::json handleToolsList() const;
     std::string    serverVersion() const;
     nlohmann::json handleToolsCall( const nlohmann::json& aParams );
+    nlohmann::json handleResourcesRead( const nlohmann::json& aParams );
+    nlohmann::json handlePromptsGet( const nlohmann::json& aParams );
 
     std::vector<TOOL> m_tools;
     std::set<std::string> m_hinted;   // tools whose first error pointed at tool_help

@@ -11,10 +11,23 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 - **平台：** 只提供 Windows x64。Linux 可以自行從原始碼編譯，沒有 macOS 版。
 - **不附 KiCad 官方元件庫：** 符號和封裝請用 `lcsc_fetch`、`lcsc_match` 從 LCSC 取得，或用 `lib_create_symbol`、`lib_create_footprint` 自建，也可以 `lib_register` 專案裡現有的庫。舊專案裡已經用過的符號（例如 `Device:R`），庫沒掛也能從電路圖內嵌的副本再放。
 - **一次一個專案：** 一個服務同時只開一個專案（板子加電路圖），換專案請用 `open_board`，新專案用 `new_project`。
-- **目前不支援：** 差分對與等長佈線、全板自動佈線（`route` 只代替重複的手動佈線）、電路圖自動排版、組裝圖、STEP 匯出（3D 模型只有 VRML）、ODB++ / IPC-2581 / DXF、MCP resources / prompts。
+- **目前不支援：** 差分對與等長佈線、全板自動佈線（`route` 只代替重複的手動佈線）、電路圖自動排版、多實例重複圖紙、STEP 匯出與 STEP 模型（3D 只有 VRML）、ODB++ / IPC-2581 / DXF。
 
-## 下一版（beta.11，未發布）
-新功能：階段四全部完成，包括第 1 項（桌面 Co-pilot 面板）、第 2 項（Web 視圖）、第 3 項的剩餘部分（由 MCP 開關 KiCad）。工具 64 → 66 個。
+## 這一版（beta.11）
+新功能：階段四全部完成，包括第 1 項（桌面 Co-pilot 面板）、第 2 項（Web 視圖）、第 3 項的剩餘部分（由 MCP 開關 KiCad）。另有階段五的 3D 圖、組裝圖、MCP Resources / Prompts。工具 64 → 68 個。
+
+- **`board_render_3d`（3D 圖）：**
+  - 用 KiCad 自己的光線追蹤器（和 `kicad-cli pcb render` 相同）渲染記憶體中的板子，含未存檔修改。不需要 OpenGL 或螢幕。
+  - 參數：`side`（top / bottom / front / back / left / right）、`rot_x` / `rot_y` / `rot_z` 傾斜、`zoom`、尺寸、`quality`（basic / high）、`floor`、`perspective`；`path` 可另存 PNG。
+  - 這個 build 只載入 VRML 模型（LCSC 零件轉好的 `.wrl`），沒有本體的零件會依原因列出：沒有模型、找不到檔案、STEP。
+- **`export_assembly`（組裝圖 PDF）：**
+  - 正面一頁；背面有零件時再加一頁，從背面看（鏡像）。每頁都有圖框和標題欄，自動縮放到頁面。
+  - 內容是 KiCad 的 Fab 層（焊盤外框、位號；`values=true` 加數值）和板框。
+  - Fab 層沒有圖的零件（LCSC / EasyEDA 封裝），從 courtyard 補上外框、pin 1、位號。DNP 零件畫叉；logo 等不需組裝的封裝不加東西。
+- **MCP Resources / Prompts：**
+  - Resources：`kicadd://skill`（skill 內建在 kicadd-mcp 裡），以及它的 21 個章節 `kicadd://skill/{section}`，可以只讀需要的那節。另有 `kicadd://tools`、`kicadd://tool/{name}`、`kicadd://board`、`kicadd://schematic`。
+  - Prompts：`review_design`、`new_board {spec}`、`prepare_fab`。
+  - 沒安裝 skill 的客戶端也能取得完整的操作說明。
 
 - **Web 視圖改為主動推送：**
   - KiCad 在 API socket 旁開 `<socket>.ev`（NNG PUB），有變更時通知。kicadd-mcp 只在收到通知時才去拿變更，取代原本每 50 ms 一次的輪詢。
@@ -57,7 +70,7 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 - **桌面版的 socket：** PCB 編輯器讀環境變數 `KICADD_API_SOCKET`，所以能在指定的 socket 上服務。
 - **`SchSummary.modified`：** 電路圖有未存檔修改時為 true。
 
-## 這一版（beta.10）
+## beta.10
 修正版：第四輪盲測留下的 4–8 項、非直線的 via 搜尋，以及第五輪盲測發現的路由器當機、`route_short` 逾時與 `route` 的兩個問題。工具數不變（64 個）。
 
 - **LED / 二極體的極性：** `sch_set_fields` 改 LCSC 料號或封裝時，比對符號的 A / K 腳與新封裝的焊盤編號。依據是該料號自己的 EasyEDA 符號，KiCad 的 `LED_*` / `Diode_*` 庫則依慣例（pad 1 = K）。對不上就警告 `polarity reversed`。例如 C2286 的符號 pin 1 是 A，C779449 的 pad 1 是 K。

@@ -122,8 +122,20 @@ add_custom_command(
     COMMENT "Embedding KiCadD web view"
     )
 
+# the kicadd skill, served as MCP resources (kicadd://skill, kicadd://skill/{section})
+set( KICADD_SKILL_CPP ${CMAKE_BINARY_DIR}/kicadd/skill_md.cpp )
+add_custom_command(
+    OUTPUT ${KICADD_SKILL_CPP}
+    COMMAND ${CMAKE_COMMAND} -DIN=${KICADD_DIR}/skills/kicadd/SKILL.md -DOUT=${KICADD_SKILL_CPP} -DVAR=KICADD_SKILL_MD
+            -P ${KICADD_DIR}/cmake/embed_web.cmake
+    DEPENDS ${KICADD_DIR}/skills/kicadd/SKILL.md ${KICADD_DIR}/cmake/embed_web.cmake
+    COMMENT "Embedding the kicadd skill"
+    )
+
 add_executable( kicadd-mcp
     ${KICADD_WEB_INDEX_CPP}
+    ${KICADD_SKILL_CPP}
+    ${KICADD_DIR}/mcp/resources.cpp
     ${KICADD_DIR}/mcp/web.cpp
     ${KICADD_DIR}/mcp/main.cpp
     ${KICADD_DIR}/mcp/ipc_client.cpp

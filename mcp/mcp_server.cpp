@@ -5,6 +5,7 @@
  */
 
 #include "mcp_server.h"
+#include "resources.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -92,14 +93,59 @@ json MCP_SERVER::handleInitialize( const json& aParams )
     }
 
     return { { "protocolVersion", version },
-             { "capabilities", { { "tools", { { "listChanged", false } } } } },
+             { "capabilities", { { "tools", { { "listChanged", false } } },
+                                 { "resources", { { "subscribe", false }, { "listChanged", false } } },
+                                 { "prompts", { { "listChanged", false } } } } },
              { "serverInfo", { { "name", "kicadd" }, { "version", serverVersion() } } },
              { "instructions",
                "KiCadD: a KiCad PCB held in memory on the server. Coordinates in mm, Y axis down. "
                "Footprints are addressed by reference (U5), pads by REF.PAD (U5.3). Prefer "
                "query_area / query_net over broad queries; move_footprints returns a local DRC, so "
                "iterate with it and call flush_ratsnest / save_board when done. Tool descriptions are "
-               "short: tool_help {name} gives one tool's full description (examples, defaults, limits)." } };
+               "short: tool_help {name} gives one tool's full description (examples, defaults, limits). How to use the "
+               "tools together: the resource kicadd://skill (or one section, kicadd://skill/{section}; resources/list "
+               "names them)." } };
+}
+
+
+json MCP_SERVER::handleResourcesRead( const json& aParams )
+{
+    if( !aParams.contains( "uri" ) || !aParams["uri"].is_string() )
+        throw std::invalid_argument( "uri is required" );
+
+    const std::string uri = aParams["uri"].get<std::string>();
+
+    auto call = [&]( const std::string& aTool, const json& aArgs ) -> TOOL_RESULT
+    {
+        auto it = std::find_if( m_tools.begin(), m_tools.end(), [&]( const TOOL& t ) { return t.name == aTool; } );
+
+        if( it == m_tools.end() )
+            return { "no tool " + aTool, true };
+
+        std::lock_guard<std::mutex> lock( m_callMutex );
+        return it->run( aArgs );
+    };
+
+    std::optional<std::pair<std::string, std::string>> r = ResourceRead( uri, m_tools, call );
+
+    if( !r )
+        throw std::invalid_argument( "no resource " + uri + " (resources/list names them)" );
+
+    return { { "contents", json::array( { { { "uri", uri }, { "mimeType", r->first }, { "text", r->second } } } ) } };
+}
+
+
+json MCP_SERVER::handlePromptsGet( const json& aParams )
+{
+    if( !aParams.contains( "name" ) || !aParams["name"].is_string() )
+        throw std::invalid_argument( "name is required" );
+
+    std::optional<json> p = PromptGet( aParams["name"].get<std::string>(), aParams.value( "arguments", json::object() ) );
+
+    if( !p )
+        throw std::invalid_argument( "no prompt " + aParams["name"].get<std::string>() + " (or a required argument missing)" );
+
+    return *p;
 }
 
 
@@ -340,6 +386,21 @@ std::optional<json> MCP_SERVER::HandleMessage( const json& aMessage )
 
         if( method == "tools/call" )
             return rpcResult( id, handleToolsCall( params ) );
+
+        if( method == "resources/list" )
+            return rpcResult( id, ResourcesList() );
+
+        if( method == "resources/templates/list" )
+            return rpcResult( id, ResourceTemplatesList() );
+
+        if( method == "resources/read" )
+            return rpcResult( id, handleResourcesRead( params ) );
+
+        if( method == "prompts/list" )
+            return rpcResult( id, PromptsList() );
+
+        if( method == "prompts/get" )
+            return rpcResult( id, handlePromptsGet( params ) );
 
         return rpcError( id, JSONRPC_METHOD_NOT_FOUND, "method not found: " + method );
     }

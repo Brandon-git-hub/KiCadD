@@ -9,6 +9,7 @@ Starts kicadd-mcp itself (HTTP on 127.0.0.1:<port>, a second instance with a tok
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -94,7 +95,7 @@ async def test_http_sdk(url):
               and any(descr(t, "refs").startswith("Reference designators") for t in props),
               "nets / layers / ids described as what they are (not reference designators)")
         names = sorted(t.name for t in tools.tools)
-        check(len(names) == 66 and all(n in names for n in ("launch_kicad", "close_kicad", "simulate", "tool_help", "pdn", "reflection", "new_project", "impedance", "sch_annotate", "sch_export_pdf", "silk_tidy", "board_diff", "sch_render", "stitch_vias", "teardrops", "board_render", "lcsc_match", "board_outline", "board_setup", "route", "route_short", "fanout", "sch_undo", "sch_redo", "sch_set_fields", "pcb_set_fields", "get_rules", "set_rules", "zones", "batch")) and all(n in names for n in ("delete_tracks", "sch_move", "sch_wire", "run_erc", "lib_register", "export_fab", "audit", "lcsc_search", "lib_create_symbol", "lib_create_footprint")) and "lcsc_fetch" in names and "sch_connect" in names and "auto_place" in names and "sch_add_sheet" in names, f"tools/list -> {names}")
+        check(len(names) == 68 and all(n in names for n in ("export_assembly", "board_render_3d", "launch_kicad", "close_kicad", "simulate", "tool_help", "pdn", "reflection", "new_project", "impedance", "sch_annotate", "sch_export_pdf", "silk_tidy", "board_diff", "sch_render", "stitch_vias", "teardrops", "board_render", "lcsc_match", "board_outline", "board_setup", "route", "route_short", "fanout", "sch_undo", "sch_redo", "sch_set_fields", "pcb_set_fields", "get_rules", "set_rules", "zones", "batch")) and all(n in names for n in ("delete_tracks", "sch_move", "sch_wire", "run_erc", "lib_register", "export_fab", "audit", "lcsc_search", "lib_create_symbol", "lib_create_footprint")) and "lcsc_fetch" in names and "sch_connect" in names and "auto_place" in names and "sch_add_sheet" in names, f"tools/list -> {names}")
         check(all(t.input_schema.get("type") == "object" for t in tools.tools), "every inputSchema is an object")
         await exercise(client.call_tool, "http")
 
@@ -113,6 +114,55 @@ async def test_stdio_sdk(binary, sock):
                 check(out.startswith("kicadd-mcp ") and ver and init.server_info.version.startswith(ver + "+t"),
                       f"--version '{out}' is serverInfo.version's release ({init.server_info.version})")
                 await exercise(session.call_tool, "stdio")
+                await resources_prompts(session, init)
+
+
+async def resources_prompts(session, init):
+    """phase 5 item 2: the skill and the tools' descriptions as resources, three prompts"""
+    print("\n[resources and prompts]")
+    caps = init.capabilities
+    check(caps.resources is not None and caps.prompts is not None, "resources and prompts announced")
+    res = (await session.list_resources()).resources
+    uris = [str(r.uri) for r in res]
+    sections = [u for u in uris if u.startswith("kicadd://skill/")]
+    check("kicadd://skill" in uris and len(sections) >= 15 and "kicadd://skill/review-a-design" in sections
+          and {"kicadd://tools", "kicadd://board", "kicadd://schematic"} <= set(uris),
+          f"{len(uris)} resources: the skill, {len(sections)} of its sections, the tools, the board, the schematic")
+    whole = (await session.read_resource("kicadd://skill")).contents[0].text
+    one = (await session.read_resource("kicadd://skill/review-a-design")).contents[0].text
+    check(whole.startswith("# Working with KiCadD") and "---" not in whole[:5] and len(whole) > 30000,
+          f"the skill without its front matter ({len(whole)} chars)")
+    check(one.startswith("## Review a design") and one in whole and len(one) < len(whole) / 3,
+          f"one section alone ({len(one)} chars)")
+    tools_md = (await session.read_resource("kicadd://tools")).contents[0].text
+    check("## board_render_3d" in tools_md and "## export_assembly" in tools_md, "every tool's full description")
+    tmpl = [t.uri_template for t in (await session.list_resource_templates()).resource_templates]
+    check("kicadd://tool/{name}" in tmpl and "kicadd://skill/{section}" in tmpl, "templates: a tool, a section")
+    one_tool = (await session.read_resource("kicadd://tool/auto_place")).contents[0].text
+    check("auto_place" in one_tool and "back_decaps" in one_tool, "kicadd://tool/auto_place: its full description")
+    board = (await session.read_resource("kicadd://board")).contents[0].text
+    check(board.startswith("file=") and "footprints=" in board, "kicadd://board: " + board.strip()[:60])
+    try:
+        await session.read_resource("kicadd://nope")
+        check(False, "an unknown resource is an error")
+    except Exception as e:
+        check("no resource" in str(e), "an unknown resource is an error")
+    prompts = {p.name: p for p in (await session.list_prompts()).prompts}
+    check(set(prompts) == {"review_design", "new_board", "prepare_fab"}, f"prompts: {sorted(prompts)}")
+    r = await session.get_prompt("review_design", {"focus": "USB"})
+    text = r.messages[0].content.text
+    check("kicadd://skill/review-a-design" in text and text.endswith("Focus on: USB"), "review_design with a focus")
+    r = await session.get_prompt("new_board", {"spec": "a 2-layer USB-C to UART board, 30 x 20 mm"})
+    text = r.messages[0].content.text
+    named = re.findall(r"kicadd://skill/[a-z0-9-]+", text)
+    for other, args in (("review_design", {}), ("prepare_fab", {})):
+        named += re.findall(r"kicadd://skill/[a-z0-9-]+", (await session.get_prompt(other, args)).messages[0].content.text)
+    check(len(named) >= 11 and all(u in sections for u in named), f"the prompts name {len(named)} skill sections, all real")
+    try:
+        await session.get_prompt("new_board", {})
+        check(False, "new_board without spec is refused")
+    except Exception as e:
+        check("required" in str(e), "new_board without spec is refused")
 
 
 def test_http_raw(url, token_url):

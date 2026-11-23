@@ -16,13 +16,19 @@ what each tool does; this skill says how to use them together.
 those: a full DRC's counts by type, the unrouted connections per net, the impedance line.
 Use it in the route / check loop instead of the whole audit.
 
-## Tool descriptions
+## Tool descriptions and resources
 
 The descriptions in the tool list are one or two sentences, to keep every turn cheap. The full
 text of each tool (arguments in detail, examples, defaults, formulas, limits) is in
 [TOOLS.md](TOOLS.md) next to this file, and `tool_help {"name": "auto_place"}` returns it for one
 tool. Read it before the first use of a tool with many options (audit, auto_place, simulate,
 set_rules, zones, pdn, reflection), or when a call fails: a tool's first error also points there.
+
+Without this skill installed, the server serves it as MCP resources: `kicadd://skill`, or one
+section at a time (`kicadd://skill/routing-the-repetitive-part-not-an-autorouter`; the list
+names them), `kicadd://tool/{name}` (as tool_help), `kicadd://board` / `kicadd://schematic`
+(the summaries). Its prompts `review_design`, `new_board {spec}` and `prepare_fab` start those
+jobs.
 
 ## Ground rules
 
@@ -520,6 +526,12 @@ net's wires, labels and pins in blue, `sheet` / `area` / `frame=true` (the whole
 title block; refs / nets are still marked but not zoomed to). Look at it after a group of `sch_add_part` / `sch_connect` edits: overlapping
 symbols or text, labels away from their wires, a sheet that does not read well.
 
+`board_render_3d` is the assembled board in 3D (KiCad's raytracer, from the board in memory):
+`side` top / bottom / front / back / left / right, `rot_x` etc. to tilt (`side: "top", rot_x:
+-40` looks at it at an angle), `zoom`. Use it for connectors at the edge, tall parts, what is on
+the bottom. Only VRML models load in this build (the LCSC parts' are VRML): the answer lists the
+parts drawn without a body; that is not a fault of the board.
+
 ## Manufacturing (JLCPCB)
 
 1. `refill_zones` and a clean `run_drc` (or the user's agreement on what remains).
@@ -535,6 +547,9 @@ symbols or text, labels away from their wires, a sheet that does not read well.
    the CPL, rotations to check in JLCPCB's preview.
 5. The schematic for the documents or a review: `sch_export_pdf` (every sheet in one PDF,
    unsaved edits included; default `<project>/<schematic>.pdf`).
+6. The assembly drawing for the assembler: `export_assembly` (a PDF in `<project>/fab`: the top,
+   and the bottom seen from below when parts are there; DNP parts crossed out). A
+   `board_render_3d` of each side shows the result to the user.
 
 ## Repeated work
 

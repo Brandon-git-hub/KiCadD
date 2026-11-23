@@ -36,6 +36,11 @@ Claude Code：`claude mcp add kicadd -- C:\KiCadD\bin\kicadd-mcp.exe --stdio`（
 
 `kicadd-mcp --http 127.0.0.1:8765` 會改用 HTTP 提供 MCP，同一個埠也有瀏覽器的 2D 檢視（`/`）。對外開放時請加 `--token`。HTTP 模式下 `launch_kicad` / `close_kicad` 預設關閉，要加 `--allow-launch` 才能用。
 
+**MCP Resources / Prompts：** 沒安裝 skill 的客戶端（例如 Cursor）也能取得操作說明。
+- **Resources：** `kicadd://skill`（整份 skill），或單一章節 `kicadd://skill/{section}`；`kicadd://tool/{name}`（單一工具的完整說明）；`kicadd://board`、`kicadd://schematic`（目前設計的摘要）。
+- **Prompts：** `review_design`（審查設計）、`new_board`（依規格開新板）、`prepare_fab`（下單前的檢查與出檔）。
+- **Claude Code：** 可以在對話中用 `@` 引用 resource。
+
 **瀏覽器的 2D 檢視（Web 視圖）：** 可以用手機或任何瀏覽器看 Agent 在伺服器上做什麼，也可以拖曳零件。
 - **即時更新：** KiCad 有變更時主動通知，畫面立刻更新，不靠輪詢。標頭的「live」旁邊會顯示同時有幾個人在看。
 - **Agent 區塊：** 列出 Agent 最近的編輯與被拒絕的請求。「Pause」可以暫停 Agent 的編輯，和桌面版 Co-pilot 面板是同一個開關。
@@ -79,6 +84,8 @@ Claude Code：`claude mcp add kicadd -- C:\KiCadD\bin\kicadd-mcp.exe --stdio`（
 | 電源完整性 | `pdn`：電源軌在負載處的阻抗 Z(f)，電容的 ESR / ESL / DC Bias 加上板上實際的安裝電感（走線、過孔、平面），找反諧振尖峰並標出兩側的電容；給目標阻抗才列出超標頻段；可試加電容、改安裝電感 |
 | 訊號完整性 | `reflection`：依實際佈線（每段走線的 Z0 與延遲）模擬邊緣，列出每個接收端的過衝、ringback、flight time、是否單調，並建議串聯端接電阻（Z0 − 驅動阻抗，E24）及加上後的結果 |
 | 專案 | `new_project`：在伺服器上建立新專案（`.kicad_pro`、空白板子與電路圖，可指定層數、疊層、板框），不覆寫既有檔案；`open_board` 開既有專案 |
+| 3D 圖 | `board_render_3d`：用 KiCad 的光線追蹤渲染目前的板子（任何一面、可傾斜、縮放），列出沒有 3D 模型的零件（這個 build 只載入 VRML） |
+| 組裝圖 | `export_assembly`：組裝圖 PDF（正面一頁，背面有零件時加一頁並從背面看），Fab 層沒有圖的零件補外框、pin 1、位號，DNP 畫叉 |
 | 開關 KiCad | `launch_kicad`：在 kicadd-mcp 的 socket 上啟動 headless 伺服器，或桌面版 PCB 編輯器（帶專案）；`close_kicad`：關掉它啟動的那一個，有未存檔修改就拒絕，除非 `discard=true` |
 | 電路圖到 PCB | `sync_pcb`（照 UUID 對應，重新編號的零件原地改名）、`auto_place`（依連線擺放、去耦電容靠 IC，可設分群和擺件規則；USB、RJ45、DC 插座等連接器可依板邊規則朝外伸出板框） |
 | PCB 編輯 | 查詢、移動、翻面、新增 / 刪除封裝、`pcb_set_fields`、`delete_tracks`、`board_outline`、`board_setup`（疊層，或 JLCPCB 的阻抗疊層）、`set_rules`（網路類別、JLCPCB 製程預設、依電流算線寬、依阻抗算線寬 / 差分間距）、`impedance`（各銅層的控制阻抗線寬）、`zones` |
