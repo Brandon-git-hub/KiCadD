@@ -49,6 +49,9 @@ def main():
               f"pins on their sides {sides}")
         types = dict(re.findall(r"^\s+\d+ (\S+) (\S+) ", t, re.M))
         check(types.get("VIN") == "power_in" and types.get("PG") == "open_collector", f"pin types {types}")
+        nc_row = re.search(r"^\s+6 NC no_connect .*$", t, re.M)
+        check(nc_row and nc_row.group(0).endswith(" NC"), "a no_connect pin reads NC, not (unconnected): "
+              + (nc_row.group(0).strip() if nc_row else t[:200]))
 
         print("[lib_create_footprint]")
         # the first footprint registers kicadd.pretty; add_footprint finds it at once

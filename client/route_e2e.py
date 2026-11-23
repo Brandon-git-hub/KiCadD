@@ -239,6 +239,19 @@ def stickhub(a, work):
         check(not other, f"DRC: nothing new but unrouted connections ({kinds})")
         err, t = mcp.tool("undo")
         check(not err and tracks(mcp) == n0, "one undo takes the fanout back")
+
+        print("[query_area: pad sizes, via spots]")
+        err, t = mcp.tool("query_area", {"ref": "J3", "radius": 3, "kinds": ["pad"], "limit": 100})
+        row = re.search(r"PAD J3\.2 \[/U2D-\] F\.Cu @[\d.,]+ 1\.55x0\.6.*", t)
+        check(row is not None, "pad rows have their size: " + (row.group(0) if row else t[:200]))
+        # U1 is on the bottom, J5 on top: /U4D- needs one via near U1.11 (the design had it at 155.75,98.5)
+        mcp.tool("delete_tracks", {"nets": ["/U4D-"]})
+        err, t = mcp.tool("query_area", {"x": 155.28, "y": 97.4, "radius": 2.5, "via_net": "/U4D-"})
+        spots = [(float(x), float(y)) for x, y in re.findall(r"@([\d.]+),([\d.]+)~", t)]
+        check(not err and spots and math.dist(spots[0], (155.75, 98.5)) < 0.3,
+              "via spots for /U4D- near U1.11, the first where the design has its via: " + t.split("\n")[1][:80])
+        err, t = mcp.tool("query_area", {"x": 0, "y": 0, "radius": 1, "via_net": "GND"})
+        check(not err and "off the board" in t, "a circle off the board says so: " + t.strip()[:90])
     finally:
         mcp.close()
         server.stop()
@@ -358,6 +371,94 @@ def detour(a, work):
         server.stop()
 
 
+
+def channel(a, work):
+    """auto_place among tracks: not into a channel a part fits but can't be wired from (Run 5)."""
+    print("[auto_place between tracks: track_room, keepout]")
+    import tiny_board
+    from m5_e2e import binaries
+    tiny = os.path.join(work, "channel")
+    os.makedirs(tiny)
+    tiny_board.write(os.path.join(tiny, "channel.kicad_pcb"), [
+        # two tracks across the board (routed below), 2.2 mm apart: a 1.6 mm channel for pads
+        ("A1", (84, 90), "F", [("1", (0, 0), (0.6, 0.6), "TA")]), ("A2", (106, 90), "F", [("1", (0, 0), (0.6, 0.6), "TA")]),
+        ("B1", (84, 92.2), "F", [("1", (0, 0), (0.6, 0.6), "TB")]), ("B2", (106, 92.2), "F", [("1", (0, 0), (0.6, 0.6), "TB")]),
+        # what C1 ties to: its best spot is in the channel
+        ("Q1", (95, 86), "F", [("1", (0, 0), (0.6, 0.6), "P")]), ("Q2", (95, 96), "F", [("1", (0, 0), (0.6, 0.6), "N")]),
+        # a 0603-like part, off the board to begin with
+        ("C1", (120, 91), "F", [("1", (-0.8, 0), (0.9, 0.95), "P"), ("2", (0.8, 0), (0.9, 0.95), "N")]),
+    ], outline=(80, 80, 110, 100))
+    _, kicadd_mcp, env = binaries(a.build)
+    sock = os.path.join(work, "chan.sock")
+    server = Server(a.build, sock, os.path.join(tiny, "channel.kicad_pcb"), env, os.path.join(work, "channel.log"))
+    check(server.start(), "api-server up on the channel board")
+    mcp = Mcp([kicadd_mcp, "--socket", sock, "--stdio"], env)
+
+    def c1_y():
+        e, t = mcp.tool("query_area", {"ref": "C1", "radius": 0.1, "kinds": ["footprint"]})
+        return float(re.search(r"FP C1 \S+ @[\d.]+,([\d.]+)", t).group(1))
+
+    try:
+        for f, z in (("A1.1", "A2.1"), ("B1.1", "B2.1")):
+            err, t = mcp.tool("route", {"from": f, "to": z, "layer": "F.Cu"})
+            check(not err, f"track {f} -> {z}")
+        err, t = mcp.tool("auto_place", {"refs": ["C1"], "track_room": 0, "spacing": 0, "silk_room": False})
+        y0 = c1_y()
+        check(not err and 90 < y0 < 92.2 and "no room for a track" in t,
+              f"track_room=0: C1 into the channel (y {y0}), the tight pads said: " + " | ".join(t.splitlines()[-2:])[:200])
+        mcp.tool("undo")
+        err, t = mcp.tool("auto_place", {"refs": ["C1"], "spacing": 0, "silk_room": False})
+        y1 = c1_y()
+        check(not err and not (90 < y1 < 92.2) and "kept 0.4 mm more" in t,
+              f"default: C1 not in the channel (y {y1}): " + next((l for l in t.splitlines() if "pads kept" in l), "")[:160])
+        mcp.tool("undo")
+        side = 1 if y1 > 92.2 else -1
+        box = [80, 92.2, 110, 100] if side > 0 else [80, 80, 110, 90]
+        err, t = mcp.tool("auto_place", {"refs": ["C1"], "spacing": 0, "silk_room": False, "keepout": [box]})
+        y2 = c1_y()
+        check(not err and not (box[1] < y2 < box[3]), f"keepout {box}: C1 elsewhere (y {y2})")
+        err, t = mcp.tool("auto_place", {"refs": ["C1"], "keepout": [[1, 2, 3]]})
+        check(err and "keepout" in t, "a bad keepout is refused")
+    finally:
+        mcp.close()
+        server.stop()
+
+
+def viaspots(a, work):
+    """query_area via_net on pic_programmer: spots out of the keepout; a route through one breaks no rule."""
+    print("[query_area via spots, a route through one]")
+
+    def add_keepout(text):
+        i = text.rindex("\n)")
+        return text[:i + 1] + keepout_block(*KEEPOUT) + text[i + 1:]
+
+    server, mcp = session(a, os.path.join(work, "vs"), "pic_programmer", add_keepout)
+    try:
+        mcp.tool("delete_tracks", {"refs": ["R9"]})
+        mcp.tool("refill_zones")
+        err, t = mcp.tool("run_drc")
+        base = drc_kinds(t)
+        err, n = mcp.tool("query_area", {"ref": "R9", "radius": 15, "kinds": ["pad"], "limit": 200})
+        net = re.search(r"PAD R9\.2 \[([^\]]+)\]", n).group(1)
+        err, t = mcp.tool("query_area", {"x": 151.5, "y": 77.5, "radius": 4, "via_net": net})
+        spots = [(float(x), float(y)) for x, y in re.findall(r"@([\d.]+),([\d.]+)~", t)]
+        x0, y0, x1, y1 = KEEPOUT
+        check(not err and spots and not any(x0 - 0.3 < x < x1 + 0.3 and y0 - 0.3 < y < y1 + 0.3 for x, y in spots),
+              f"via spots for {net}, none in the keepout: " + t.split("\n")[1][:90])
+        for sp in spots:
+            err, t = mcp.tool("route", {"from": "R9.2", "to": "D8.2", "via": list(sp)})
+            if not err and "1 via(s)" in t:
+                break
+        check(not err and "1 via(s)" in t, "routed R9.2 -> D8.2 through a spot: " + t.split("\n")[0][:120])
+        mcp.tool("refill_zones")
+        err, t = mcp.tool("run_drc")
+        kinds = drc_kinds(t)
+        other = {k: n for k, n in kinds.items() if k != "unconnected_items" and n > base.get(k, 0)}
+        check(not other, f"the via on the spot breaks no rule ({kinds})")
+    finally:
+        mcp.close()
+        server.stop()
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--build", required=True)
@@ -373,6 +474,8 @@ def main():
     stickhub(a, work)
     qfn(a, work)
     detour(a, work)
+    channel(a, work)
+    viaspots(a, work)
 
     print("\nRESULT:", "PASS" if not FAILS else f"FAIL ({len(FAILS)})")
     return 1 if FAILS else 0

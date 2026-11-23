@@ -20,6 +20,17 @@ namespace kicadd::lcsc
 
 bool SearchParts( const kicadd::board::LcscSearch& aReq, kicadd::board::LcscSearchResponse& aOut, std::string& aError );
 
+/// What the parts index on disk says of one part (never downloads): its JLC stock and class and
+/// the index's date. false when there is no index or the part is not in it.
+struct INDEX_ENTRY
+{
+    long long   stock = 0;
+    std::string kind;   ///< "basic" / "preferred" / "extended"
+    std::string date;   ///< the index's date
+};
+
+bool IndexEntry( const std::string& aLcsc, INDEX_ENTRY& aOut );
+
 /// "100nF" -> 1e-7 with unit "F"; "4k7" -> 4700 "Ω"; aUnit is the default when none is given.
 bool ParseValue( const std::string& aText, double& aValue, std::string& aUnit );
 

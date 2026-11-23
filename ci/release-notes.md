@@ -13,7 +13,32 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 - **一次一個專案：** 一個服務同時只開一個專案（板子加電路圖），換專案請用 `open_board`，新專案用 `new_project`。
 - **目前不支援：** 差分對與等長佈線、全板自動佈線（`route` 只代替重複的手動佈線）、電路圖自動排版、多實例重複圖紙、STEP 匯出與 STEP 模型（3D 只有 VRML）、ODB++ / IPC-2581 / DXF。
 
-## 這一版（beta.11）
+## 這一版（beta.12）
+通用改進：beta.10 之後清單（`docs/NEXT_beta10.md`）的第一優先 10 項，對任何板子都有用的部分。工具數不變（68 個）。
+
+- **`query_area` 的焊盤尺寸與過孔空位：**
+  - 焊盤列加上銅箔的實際尺寸（旋轉後），例如 `PAD U1.5 [VDD] F.Cu @x,y 0.3x1.5`。
+  - 新參數 `via_net`：在半徑內列出這個網路可放 through via 的空位，近的先列，彼此至少隔一顆過孔。空位條件：每一層都不撞其他網路的銅、不在焊盤上、不在有散熱焊盤的 IC 本體下、在板內。過孔尺寸用該網路的 class。
+- **各工具的未連線數一致：** 所有工具（move、route、route_short、fanout、stitch_vias、undo、flush_ratsnest）用同一個函式計算，也用同一種寫法：延後的大網路寫 `excl. deferred nets: GND`，已計入的大網路寫出佔多少，例如 `unconnected=111 (incl. GND 24)`。以前 87 → 111 這種跳動看起來像弄壞了東西。
+- **`set_rules` 的樣式比對：**
+  - 每個 assign 樣式回報配到幾個網路。
+  - 只因階層路徑（`/USBUP_P`）沒配到的網路會列出，並建議 `*USB*_P` 這類寫法。沒有網路配到時也會說明。
+  - `classes` / `assign` / `constraints` 給成陣列時直接拒絕。以前會被忽略，回「nothing changed」。
+- **電源腳的型別：** `lcsc_fetch` 把 `VD33`、`VD18`、`VD_PLL`、`VDD_1V8`、`VCC3V3`、`VDD33_USB` 這類腳判為 power_in（FE2.1 從 2 支變成 13 支），`VD33_O` / `VDD18_O` 仍是 power_out。可能是 IC 自己內部穩壓的腳（1V8 / PLL / CORE，同名只有一支），會提示 ERC 需要時加 PWR_FLAG。
+- **LCSC 資料來源：** `lcsc_fetch` / `sch_add_part` 的庫存標明來源與日期（`EasyEDA, as of ...`），並附上零件索引（`lcsc_search` 讀的 jlcparts 資料）對同一料號的說法。兩者不一致時直接說出來，並說明哪一份比較新。
+- **`sch_connect`：**
+  - 選 stub 位置時，避開同一次呼叫裡剛放的 stub，也避開既有導線的中段。
+  - 錯誤先報根本原因：哪支腳、哪個網路、被什麼擋住、在哪裡（例如 `the stub of R2.2 (P1) made in this call, at (209.55, 203.2)`）。網路合併改成一對網路一行，不再每支腳一行「asked +5V, on +1V8」。
+- **NC 腳：** `sch_part` 的 no-connect 腳顯示 `NC`，不再顯示「(unconnected)」。`sch_netlist` 也把 no_connect 型別的腳列進 no-connect。
+- **`lcsc_search` 的值：** 接受頻率（`12MHz`、`32.768kHz`）和電流（保險絲 `500mA`、電感 `2A`），以型錄寫法比對描述。電流也會比對額定電流欄。封裝可以只給名稱開頭的幾個詞：`LQFP-48` 找得到 `LQFP-48(7x7)`，`SSOP-28` 找得到 `SSOP-28-150mil`。
+- **`auto_place` 與既有走線：**
+  - 新參數 `track_room`。焊盤和既有走線、過孔之間，除了間距，還要多留一條走線的空間（預設：class 的線寬加間距）。零件不再被放進塞得下、卻接不出線的通道（第五輪：1.1 mm 的通道）。設 0 則照舊。
+  - 新參數 `keepout`：`[[x0, y0, x1, y1], ...]`，或 `{"area": [...], "side": "top"}`。框內不放零件，例如保留給佈線的通道。
+  - 板上有走線時，回應會列出擺完後最擠的焊盤，以及有幾個焊盤旁邊連一條線都放不下。
+- **pair order 看實際佈線：** 已佈好的差分對，若 P 和 N 的走線從上方看（不分層）沒有交叉，就另列為「繞過去」，例如 U 形逃線。這種情況不再一直被當成反序。真的交叉的會附上交叉點（`routed: crosses at x,y`）。
+- **測試：** route_e2e 新增 via 空位與 `auto_place` 通道兩組測試；set_rules、FE2.1 腳型別、NC、晶振 / 保險絲 / 封裝搜尋、`sch_connect` 同一次呼叫的 stub 碰撞，都加進既有測試。
+
+## beta.11
 新功能：階段四全部完成，包括第 1 項（桌面 Co-pilot 面板）、第 2 項（Web 視圖）、第 3 項的剩餘部分（由 MCP 開關 KiCad）。另有階段五的 3D 圖、組裝圖、MCP Resources / Prompts。工具 64 → 68 個。
 
 - **`board_render_3d`（3D 圖）：**

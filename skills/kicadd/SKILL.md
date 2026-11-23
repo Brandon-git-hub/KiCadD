@@ -402,7 +402,11 @@ From a blank project, before placing parts:
    connector's datasheet (the enclosure decides the real overhang).
 3. On a board that is already placed or routed, `auto_place` keeps the current placement when
    the new one is not better (`force=true` applies it anyway). Tracks are obstacles: rip up
-   with `delete_tracks` first if the parts should really move.
+   with `delete_tracks` first if the parts should really move. Among tracks, each pad keeps
+   room for one more track beside it (`track_room`, default the class's track width +
+   clearance; 0 lets a part into a channel it fits but can't be wired from), and the reply
+   names the placed pads with the least room. `keepout: [[x0, y0, x1, y1], ...]` (or
+   `{"area": [...], "side": "top"}`) keeps areas free of parts, e.g. a routing channel.
 4. After moving parts: `refill_zones`, then `run_drc`. Zones keep their old shape until
    refilled, and that shows up as clearance / soldermask errors that are not real.
 5. Fine-tune with `move_footprints` (every reply carries a local DRC of the moved parts) and
@@ -432,9 +436,11 @@ From a blank project, before placing parts:
   `note: pair order (a placement check, not of the routing): 1 of 1 pair(s) have P and N swapped ... USB1_P / USB1_N: U1 - J2 (bottom)`.
   Fix it before routing: put J2 back on top, turn it, move U1's side, or accept a via pair. A
   USB-C's doubled D+ / D- pads (A6 / B6, A7 / B7) fit either order, and are not reported.
-  It is a placement check only: it compares straight lines between the pads, not the copper,
-  so a pair you have routed across (a via pair, a loop) stays listed. Once the pairs are routed,
-  judge them with the diff pair rows (skew, uncoupled) and DRC, not with this line.
+  Unrouted, it compares straight lines between the pads. Once a pair is routed it looks at the
+  copper too: P and N tracks that cross seen from above (on two layers) are listed with the
+  point ("routed: crosses at x,y"); a pair routed round with no crossing (a U-turn escape out of
+  the pin row and back in) is named apart as going round, not swapped. Judge routed pairs with
+  the diff pair rows (skew, uncoupled) and DRC.
 - **Thin board for 2-layer impedance.** On 2 layers the plane is the whole board away. 90 Ω
   differential on 1.6 mm needs about 0.7 mm tracks, impossible at a fine-pitch IC. Either take
   a thinner board (0.8 mm: about 0.55 mm), or accept a higher Zdiff on short runs: USB 2.0
@@ -466,7 +472,9 @@ length matching, dense escapes).
    ones don't take the channels the short ones need.
 3. One connection: `route from="U1.5"` (to the nearest unrouted connection) or `to="C3.1"`.
    Steer it with `waypoints: [[x, y], ...]`; change layer with `[x, y, "B.Cu"]` among them, or
-   `via: [x, y]`. Pick via spots yourself (`query_area` around the point). Between two
+   `via: [x, y]`. Pick via spots with `query_area x=.. y=.. radius=2 via_net="NET"`: free
+   spots for that net's via (clear of other-net copper on every layer, off pads), nearest
+   first. `query_area` pad rows carry the pad's copper size as placed (`0.3x1.5`). Between two
    waypoints the router may still go round something; the reply says how far it leaves the
    box between them ("leaves the way through the waypoints by ..."), and `strict=true` refuses
    such a route instead.
@@ -477,6 +485,10 @@ length matching, dense escapes).
    the track leaves (`from: [x, y]`), not at its centre.
    A route that changes layer reports them in order ("F.Cu -> B.Cu").
 5. Everything of one call is one `undo`. Then `refill_zones` and `run_drc`.
+   The `unconnected=` count of every tool reads the same way: moves leave large nets (GND,
+   power) out until something rebuilds them ("excl. deferred nets: GND"); after route_short,
+   fanout or stitch_vias they are in, with their share ("incl. GND 24"). A jump between two
+   replies is that, not something broken; `flush_ratsnest` gives the full count.
 6. Pour ties: `route from="C12.2" to="zone"` ends on the net's own pour: on the pad's layer
    when the pour is there, else with a via down to the nearest layer that has it (not in the
    pad). It tries the nearest spots in the fill until one works. Use it for VBUS / power pads

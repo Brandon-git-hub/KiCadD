@@ -119,6 +119,10 @@ struct OPTIONS
     /// their own side's only, through-hole pads every layer.
     std::vector<int>   obstacleLayers;
 
+    /// Extra room a pad keeps from track / via obstacles (OBST_PADS), nm: one track and its
+    /// clearance, so a part does not land in a channel it can sit in but not be wired from
+    int trackRoom = 0;
+
     /// Decoupling caps (two pads, one on ground, tied to an IC pin) may go to the back too,
     /// under the pin (when they have canFlip shapes)
     bool backSatellites = false;
@@ -141,7 +145,8 @@ struct OPTIONS
 };
 
 enum { OBST_FRONT = 1, OBST_BACK = 2, OBST_INNER = 4,
-       OBST_PADS = 8 };   ///< only the pads must clear it (tracks may run between a part's pins)
+       OBST_PADS = 8,     ///< only the pads must clear it (tracks may run between a part's pins)
+       OBST_BODY = 16 };  ///< no courtyard in it at all (an area the agent keeps free)
 
 
 struct RESULT

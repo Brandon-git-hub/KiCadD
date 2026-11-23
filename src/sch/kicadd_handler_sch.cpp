@@ -28,6 +28,7 @@
 #include <connection_graph.h>
 #include <sch_label.h>
 #include <sch_line.h>
+#include <geometry/seg.h>
 #include <sch_no_connect.h>
 #include <sch_pin.h>
 #include <sch_reference_list.h>
@@ -101,6 +102,14 @@ double mm( int aIU )
 int iu( double aMm )
 {
     return schIUScale.mmToIU( aMm );
+}
+
+/// "(101.6, 45.72)" in mm
+std::string mmPt( const VECTOR2I& aP )
+{
+    char buf[64];
+    std::snprintf( buf, sizeof( buf ), "(%g, %g)", mm( aP.x ), mm( aP.y ) );
+    return buf;
 }
 
 int snap( int aIU )
@@ -239,6 +248,15 @@ bool occupied( SCH_SCREEN* aScreen, const VECTOR2I& aPos )
 {
     if( !labelsAt( aScreen, aPos ).empty() || !wiresEndingAt( aScreen, aPos ).empty() || noConnectAt( aScreen, aPos ) )
         return true;
+
+    // the middle of a wire: an end put there connects to it as well
+    for( SCH_ITEM* item : aScreen->Items().Overlapping( SCH_LINE_T, aPos ) )
+    {
+        auto* line = static_cast<SCH_LINE*>( item );
+
+        if( ( line->IsWire() || line->IsBus() ) && line->HitTest( aPos, 0 ) )
+            return true;
+    }
 
     for( SCH_ITEM* item : aScreen->Items().Overlapping( SCH_SYMBOL_T, aPos ) )
     {
@@ -1074,6 +1092,9 @@ void KICADD_HANDLER_SCH::packSymbol( SCH_SYMBOL* aSymbol, const SCH_SHEET_PATH& 
         }
 
         p->set_net( pinNet( pin, aSheet ) );
+        p->set_no_connect( p->net().empty()
+                           && ( pin->GetType() == ELECTRICAL_PINTYPE::PT_NC
+                                || ( aSheet.LastScreen() && noConnectAt( aSheet.LastScreen(), pin->GetPosition() ) ) ) );
     }
 }
 
@@ -1602,6 +1623,28 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleConnect( const HAND
     const std::map<std::string, std::string> netsBefore = pinNets();   // to see what it joined
     std::vector<std::pair<SCH_SCREEN*, BOX2I>> textPlaced;   // the labels / power symbols made here
 
+    // the stubs made here (not on the screen until the commit): a later stub must not run into
+    // one of them, or an asked net joins another without a word
+    struct STUB_PLACED
+    {
+        SCH_SCREEN* screen;
+        SEG         seg;
+        std::string who;   // "C3.2 (+1V8)"
+    };
+
+    std::vector<STUB_PLACED> stubsPlaced;
+
+    auto placedAt = [&]( SCH_SCREEN* aScreen, const VECTOR2I& aPos ) -> const STUB_PLACED*
+    {
+        for( const STUB_PLACED& st : stubsPlaced )
+        {
+            if( st.screen == aScreen && st.seg.Distance( aPos ) == 0 )
+                return &st;
+        }
+
+        return nullptr;
+    };
+
     // every pin's net now, before this call changes anything (the connectivity is not current
     // once the first wires are in)
     std::map<std::string, std::string> netNow;
@@ -1746,17 +1789,31 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleConnect( const HAND
         VECTOR2I end;
         bool     free = false;
         std::optional<VECTOR2I> firstFree;
+        std::string             blocker;   // what is in the way out of the pin
 
         for( int k = 1; k <= 6 && !free; ++k )
         {
             end = at.pos + at.out * ( STUB * k );
 
             // the wire must not pass another pin's end or a wire / label on its way (it would
-            // connect them): every half step out to the end
+            // connect them), nor a stub made earlier in this call: every half step out to the end
             bool through = false;
 
             for( int h = 1; h <= 2 * k && !through; ++h )
-                through = occupied( at.screen, at.pos + at.out * ( STUB * h / 2 ) );
+            {
+                const VECTOR2I p = at.pos + at.out * ( STUB * h / 2 );
+
+                if( const STUB_PLACED* st = placedAt( at.screen, p ) )
+                {
+                    through = true;
+                    blocker = "the stub of " + st->who + " made in this call, at " + mmPt( p );
+                }
+                else if( occupied( at.screen, p ) )
+                {
+                    through = true;
+                    blocker = "a pin, wire or label at " + mmPt( p );
+                }
+            }
 
             if( through )
                 break;   // further out passes it too
@@ -1776,11 +1833,14 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleConnect( const HAND
         }
         else if( !free )
         {
-            out.add_errors( label + ": no free spot for a label next to the pin" );
+            out.add_errors( label + " (" + link.net() + "): no free spot for a label next to the pin: "
+                            + ( blocker.empty() ? std::string( "something" ) : blocker )
+                            + " is in the way out (sch_move the part, or connect it in another call)" );
             continue;
         }
 
         textPlaced.emplace_back( at.screen, textBox( end ) );
+        stubsPlaced.push_back( { at.screen, SEG( at.pos, end ), label + " (" + link.net() + ")" } );
 
         auto            port = ports.find( link.net() );
         SCH_LABEL_BASE* netLabel = nullptr;
@@ -1896,6 +1956,7 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleConnect( const HAND
 
         std::map<std::string, std::string> netOfAsked;   // the net each asked name ended on
         std::map<std::string, std::vector<std::string>> touched;   // "GND -> +1V8": pins not asked
+        std::map<std::string, std::vector<std::string>> joined;    // "+5V|+1V8": pins asked +5V, on +1V8
 
         for( const auto& [key, now] : netsAfter )
         {
@@ -1911,7 +1972,7 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleConnect( const HAND
             {
                 // a port's net may take the parent's name; others are named as asked
                 if( !ports.count( ask->second ) && last( now ) != ask->second )
-                    wrong.push_back( key + ": asked " + ask->second + ", on " + shown( now ) );
+                    joined[ask->second + "|" + shown( now )].push_back( key );
 
                 // a local label is a net per sheet: "/A/N1" and "/B/N1" are two, as asked
                 const std::string scope = now.substr( 0, now.size() - last( now ).size() );
@@ -1929,6 +1990,22 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleConnect( const HAND
             }
         }
 
+        // what touched what first (a pin not asked for, joined by a stub / label / symbol), then
+        // one line per pair of nets made one, not one per pin
+        std::vector<std::string> causes;
+
+        for( const auto& [pair, pins] : joined )
+        {
+            const std::string want = pair.substr( 0, pair.find( '|' ) ), got = pair.substr( pair.find( '|' ) + 1 );
+            std::string       some;
+
+            for( size_t i = 0; i < pins.size() && i < 4; ++i )
+                some += ( i ? " " : "" ) + pins[i];
+
+            causes.push_back( want + " and " + got + " made one net: " + std::to_string( pins.size() ) + " pin(s) asked "
+                              + want + " ended on " + got + " (" + some + ( pins.size() > 4 ? " ..." : "" ) + ")" );
+        }
+
         for( const auto& [change, pins] : touched )
         {
             std::string some;
@@ -1936,9 +2013,11 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleConnect( const HAND
             for( size_t i = 0; i < pins.size() && i < 4; ++i )
                 some += ( i ? " " : "" ) + pins[i];
 
-            wrong.push_back( change + " for " + std::to_string( pins.size() ) + " pin(s) not asked (" + some
-                             + ( pins.size() > 4 ? " ..." : "" ) + ")" );
+            wrong.insert( wrong.begin(), "a pin not asked for was joined, " + change + " for " + std::to_string( pins.size() )
+                                         + " pin(s) (" + some + ( pins.size() > 4 ? " ..." : "" ) + ")" );
         }
+
+        wrong.insert( wrong.end(), causes.begin(), causes.end() );
 
         std::map<std::string, std::string> askedOfNet;
 
@@ -2069,7 +2148,7 @@ HANDLER_RESULT<SchNetlist> KICADD_HANDLER_SCH::handleGetNetlist( const HANDLER_C
 
                 if( !net.empty() )
                     nets[net].insert( name );
-                else if( noConnectAt( sheet.LastScreen(), pin->GetPosition() ) )
+                else if( noConnectAt( sheet.LastScreen(), pin->GetPosition() ) || pin->GetType() == ELECTRICAL_PINTYPE::PT_NC )
                     noConnect.insert( name );
                 else
                     unconnected.insert( name );

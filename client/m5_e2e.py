@@ -295,6 +295,10 @@ def main():
             check(not unconnected, "nothing unconnected after the NC flag")
             err, t = mcp.tool("sch_summary")
             check(" 0 unconnected pins" in t, "summary: " + t.splitlines()[0][-50:])
+            err, t = mcp.tool("sch_part", {"ref": "U1"})
+            row = re.search(rf"^\s+{re.escape(tab[0])} .*$", t, re.M)
+            check(row and row.group(0).endswith(" NC"), "sch_part shows the flagged pin as NC: "
+                  + (row.group(0).strip() if row else t[:120]))
 
         err, t = mcp.tool("sch_disconnect", {"pins": ["R2.1"]})
         nets, unconnected = netlist(mcp)

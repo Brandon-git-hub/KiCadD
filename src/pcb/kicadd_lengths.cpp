@@ -426,6 +426,7 @@ PAIR_ORDER CheckPairOrder( BOARD& aBoard, const std::map<int, int>& aPairs, cons
     // would take.
     PAIR_ORDER               out;
     std::vector<std::string> crossed;
+    std::vector<std::string> roundRouted;   // swapped by the straight lines, routed round on one layer
 
     auto centroid = []( const std::vector<const PAD*>& aPads )
     {
@@ -487,7 +488,47 @@ PAIR_ORDER CheckPairOrder( BOARD& aBoard, const std::map<int, int>& aPairs, cons
             continue;
 
         out.checked++;
-        std::string which;
+        std::string which, whichRound;
+
+        // both nets fully routed: a swap between two parts with no via of the pair between them
+        // can't be a crossing (P and N can't cross on one layer), the route goes round there
+        std::shared_ptr<CONNECTIVITY_DATA> conn = aBoard.GetConnectivity();
+        bool                               routed = true;
+
+        for( int net : { pc, nc } )
+        {
+            if( RN_NET* rn = conn->GetRatsnestForNet( net ) )
+                routed &= rn->GetEdges().empty();
+        }
+
+        // the pair's copper seen from above: where a P track and an N track meet (on two layers,
+        // through a via each), the pair crosses; routed with no such point, it went round
+        std::vector<SEG> pSegs, nSegs;
+
+        for( const PCB_TRACK* t : aBoard.Tracks() )
+        {
+            if( t->Type() == PCB_VIA_T )
+                continue;
+
+            if( t->GetNetCode() == pc )
+                pSegs.emplace_back( t->GetStart(), t->GetEnd() );
+            else if( t->GetNetCode() == nc )
+                nSegs.emplace_back( t->GetStart(), t->GetEnd() );
+        }
+
+        auto copperCrossing = [&]( const BOX2I& aArea ) -> std::optional<VECTOR2I>
+        {
+            for( const SEG& sp : pSegs )
+            {
+                for( const SEG& sn : nSegs )
+                {
+                    if( OPT_VECTOR2I x = sp.Intersect( sn ); x && aArea.Contains( *x ) )
+                        return *x;
+                }
+            }
+
+            return std::nullopt;
+        };
 
         for( size_t a = 0; a < both.size(); ++a )
         {
@@ -508,17 +549,37 @@ PAIR_ORDER CheckPairOrder( BOARD& aBoard, const std::map<int, int>& aPairs, cons
                         return str( f->GetReference() ) + ( f->IsFlipped() ? " (bottom)" : "" );
                     };
 
-                    which += ( which.empty() ? "" : ", " ) + name( both[a].first ) + " - " + name( both[b].first );
+                    // the U-turn may go well out of the pads' box: look a few mm round it
+                    BOX2I between( ps.A );
+                    between.Merge( ps.B );
+                    between.Merge( ns.A );
+                    between.Merge( ns.B );
+                    between.Inflate( 5000000 );
+                    const std::optional<VECTOR2I> cross = routed ? copperCrossing( between ) : std::nullopt;
+                    std::string& list = routed && !cross ? whichRound : which;
 
-                    if( !out.at )
+                    list += ( list.empty() ? "" : ", " ) + name( both[a].first ) + " - " + name( both[b].first );
+
+                    if( cross )
+                    {
+                        char at[64];
+                        std::snprintf( at, sizeof( at ), " (routed: crosses at %.2f,%.2f)", cross->x / 1e6, cross->y / 1e6 );
+                        list += at;
+                    }
+
+                    if( !out.at && &list == &which )
                         out.at = *x;
                 }
             }
         }
 
+        const std::string pairName = str( aBoard.FindNet( pc )->GetNetname() ) + " / " + str( aBoard.FindNet( nc )->GetNetname() );
+
         if( !which.empty() )
-            crossed.push_back( str( aBoard.FindNet( pc )->GetNetname() ) + " / " + str( aBoard.FindNet( nc )->GetNetname() )
-                               + ": " + which );
+            crossed.push_back( pairName + ": " + which );
+
+        if( !whichRound.empty() )
+            roundRouted.push_back( pairName + ": " + whichRound );
     }
 
     out.crossed = (int) crossed.size();
@@ -526,10 +587,28 @@ PAIR_ORDER CheckPairOrder( BOARD& aBoard, const std::map<int, int>& aPairs, cons
     if( out.checked == 0 )
         return out;
 
+    std::string round;
+
+    if( !roundRouted.empty() )
+    {
+        round = std::to_string( roundRouted.size() ) + " pair(s) swapped by the straight lines are routed with P and N "
+                "never crossing (seen from above, any layer), so they go round there (a U-turn escape): ";
+
+        for( size_t i = 0; i < roundRouted.size() && i < 4; ++i )
+            round += ( i ? "; " : "" ) + roundRouted[i];
+
+        round += std::string( roundRouted.size() > 4 ? "; ..." : "" ) + " (audit diff_pair's coupled length shows how "
+                 "well the loop keeps them together)";
+    }
+
     if( crossed.empty() )
     {
         out.line = "pair order (a placement check): P and N in the same order at both ends of all "
                    + std::to_string( out.checked ) + " pair(s) between parts";
+
+        if( !roundRouted.empty() )
+            out.line = "pair order (a placement check): no pair needs P and N to cross; " + round;
+
         return out;
     }
 
@@ -538,12 +617,12 @@ PAIR_ORDER CheckPairOrder( BOARD& aBoard, const std::map<int, int>& aPairs, cons
     for( size_t i = 0; i < crossed.size() && i < 6; ++i )
         list += ( i ? "; " : "" ) + crossed[i];
 
-    out.line = "pair order (a placement check, not of the routing): " + std::to_string( crossed.size() ) + " of "
+    out.line = "pair order (a placement check): " + std::to_string( crossed.size() ) + " of "
                + std::to_string( out.checked )
                + " pair(s) have P and N swapped between two of their parts (the straight lines P-P and "
                  "N-N between their pads cross: the routing must cross them, a via pair or a loop; or turn, "
-                 "move or flip a part; a part on the bottom is mirrored). Routed copper is not looked at: a "
-                 "pair routed across stays listed. " + list + ( crossed.size() > 6 ? "; ..." : "" );
+                 "move or flip a part; a part on the bottom is mirrored). " + list + ( crossed.size() > 6 ? "; ..." : "" )
+               + ( round.empty() ? "" : ". " + round );
     return out;
 }
 

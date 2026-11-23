@@ -78,6 +78,18 @@ try:
     check(not err and "4.7kΩ" in t, "4k7 means 4.7 kΩ")
     err, t = m.tool("lcsc_search", {"value": "banana", "live": 0})
     check(err and "not understood" in t, "a bad value is refused")
+    # a frequency, a current: no column of their own, matched as the catalogue writes them
+    err, t = m.tool("lcsc_search", {"category": "crystal", "value": "12MHz", "live": 0, "limit": 3})
+    check(not err and hits(t) and "12MHz" in t, "crystal 12MHz: " + (t.splitlines()[1][:80] if len(t.splitlines()) > 1 else t))
+    err, t = m.tool("lcsc_search", {"category": "crystal", "value": "32.768kHz", "live": 0, "limit": 3})
+    check(not err and hits(t) and "32.768kHz" in t, "crystal 32.768kHz")
+    err, t = m.tool("lcsc_search", {"category": "fuse", "value": "500mA", "live": 0, "limit": 3})
+    check(not err and hits(t), "fuse 500mA: " + t.splitlines()[0][:80])
+    err, t = m.tool("lcsc_search", {"category": "inductor", "value": "2A", "live": 0, "limit": 3})
+    check(not err and hits(t) and re.search(r"\b2(\.0)?A\b", t), "inductor 2A (an inductor, rated 2 A)")
+    # a package name with more words after it: LQFP-48(7x7), SSOP-28-150mil
+    err, t = m.tool("lcsc_search", {"keyword": "STM32", "package": "LQFP-48", "live": 0, "limit": 2})
+    check(not err and "LQFP-48(7x7)" in t, "package LQFP-48 finds LQFP-48(7x7)")
 
     print("[part parameters: where]")
     q = {"category": "MOSFET", "where": {"rds_on": "<=20m", "vds": ">=30", "vgs_th": "1..2.5"}, "limit": 10, "live": 0}

@@ -145,6 +145,10 @@ bool FetchAndSave( const wxString& aProjectDir, KIWAY* aKiway, const std::string
 /// One line for a status bar: "C8734 STM32F103C8T6: LCSC stock 10693, US$2.398, JLC Extended Part (2026-11-09)"
 std::string Summary( const PART& aPart );
 
+/// "; agrees with the parts index (jlcparts <date>, ...): JLC stock N, extended" or "; differs from
+/// ...": what lcsc_search's index holds for the part next to EasyEDA's answer; "" without one.
+std::string IndexComparison( const PART& aPart );
+
 } // namespace kicadd::lcsc
 
 /**

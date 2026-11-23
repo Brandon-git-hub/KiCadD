@@ -468,8 +468,10 @@ bool ParseValue( const std::string& aText, double& aValue, std::string& aUnit )
 
     if( ends( "ohm" ) ) { unit = "Ω"; s.resize( s.size() - 3 ); }
     else if( s.size() >= 2 && s.compare( s.size() - 2, 2, "Ω" ) == 0 ) { unit = "Ω"; s.resize( s.size() - 2 ); }
+    else if( ends( "Hz" ) ) { unit = "Hz"; s.resize( s.size() - 2 ); }   // crystals, oscillators: 12MHz
     else if( ends( "F" ) ) { unit = "F"; s.pop_back(); }
     else if( ends( "H" ) ) { unit = "H"; s.pop_back(); }
+    else if( ends( "A" ) ) { unit = "A"; s.pop_back(); }                  // fuses, inductors: 500mA, 2A
 
     if( s.empty() )
         return false;
@@ -580,6 +582,46 @@ static std::string keywordTerm( const std::string& aWord )
 
     return t + ")";
 }
+
+bool IndexEntry( const std::string& aLcsc, INDEX_ENTRY& aOut )
+{
+    std::lock_guard<std::mutex> lock( g_lock );
+    wxString path = wxString::FromUTF8( env( "KICADD_PARTS_DB" ) );
+
+    if( path.IsEmpty() )
+        path = indexPath();
+
+    std::string digits = aLcsc;
+
+    if( !digits.empty() && ( digits[0] == 'C' || digits[0] == 'c' ) )
+        digits = digits.substr( 1 );
+
+    if( digits.empty() || digits.find_first_not_of( "0123456789" ) != std::string::npos || digits.size() > 15
+        || !wxFileName::FileExists( path ) )
+        return false;
+
+    DB db;
+
+    if( sqlite3_open_v2( path.ToStdString( wxConvUTF8 ).c_str(), &db.db, SQLITE_OPEN_READONLY, nullptr ) != SQLITE_OK )
+        return false;
+
+    aOut.date = meta( db.db, "date" );
+    STMT one;
+
+    if( aOut.date.empty()
+        || sqlite3_prepare_v2( db.db, "SELECT basic, preferred, stock FROM parts WHERE lcsc = ?", -1, &one.st, nullptr ) != SQLITE_OK )
+        return false;
+
+    sqlite3_bind_int64( one.st, 1, std::stoll( digits ) );
+
+    if( sqlite3_step( one.st ) != SQLITE_ROW )
+        return false;
+
+    aOut.kind = sqlite3_column_int( one.st, 0 ) ? "basic" : sqlite3_column_int( one.st, 1 ) ? "preferred" : "extended";
+    aOut.stock = sqlite3_column_int64( one.st, 2 );
+    return true;
+}
+
 
 bool SearchParts( const kicadd::board::LcscSearch& aReq, kicadd::board::LcscSearchResponse& aOut, std::string& aError )
 {
@@ -747,26 +789,80 @@ bool SearchParts( const kicadd::board::LcscSearch& aReq, kicadd::board::LcscSear
         where.push_back( "(lower(p.category) LIKE " + a + " OR lower(p.subcategory) LIKE " + b + ")" );
     }
 
+    const std::string catUnit = unit;   // the category's (an inductor's H), kept for a value in A
+
     if( !aReq.value().empty() )
     {
         double v = 0;
 
         if( !ParseValue( aReq.value(), v, unit ) )
         {
-            aError = "value \"" + aReq.value() + "\" not understood (e.g. 100nF, 10k, 4k7, 2.2uH)";
+            aError = "value \"" + aReq.value() + "\" not understood (e.g. 100nF, 10k, 4k7, 2.2uH, 12MHz, 500mA)";
             return false;
         }
 
         if( unit.empty() )
         {
-            aError = "value \"" + aReq.value() + "\": give a unit (F, H, Ω) or a category";
+            aError = "value \"" + aReq.value() + "\": give a unit (F, H, Ω, Hz, A) or a category";
             return false;
         }
 
-        where.push_back( "p.unit = " + bindText( unit ) );
-        std::string lo = bindNum( v * 0.999 );
-        std::string hi = bindNum( v * 1.001 );
-        where.push_back( "p.value BETWEEN " + lo + " AND " + hi );
+        if( unit == "Hz" || unit == "A" )
+        {
+            // no column of its own for a frequency; a current is the rating column (fuses,
+            // switches) or, for an inductor, a word of the description: matched as the words the
+            // catalogue writes ("12MHz", "32.768kHz", "500mA", "1.5A")
+            static const std::vector<std::pair<double, std::string>> prefixes = {
+                { 1e9, "G" }, { 1e6, "M" }, { 1e3, "k" }, { 1, "" }, { 1e-3, "m" }, { 1e-6, "u" } };
+            std::vector<std::string> words;
+
+            for( const auto& [f, pre] : prefixes )
+            {
+                const double n = v / f;
+
+                if( n < 1 - 1e-9 && f != 1e-6 )
+                    continue;
+
+                char buf[48];
+                std::snprintf( buf, sizeof( buf ), "%.10g", n );
+                words.push_back( std::string( buf ) + pre + unit );
+
+                for( const char* fmt : { "%.1f", "%.3f" } )
+                {
+                    std::snprintf( buf, sizeof( buf ), fmt, n );
+                    std::string w = std::string( buf ) + pre + unit;
+
+                    if( std::find( words.begin(), words.end(), w ) == words.end() && std::fabs( std::atof( buf ) - n ) < 1e-9 * n )
+                        words.push_back( w );
+                }
+
+                break;
+            }
+
+            std::string any;
+
+            for( const std::string& w : words )
+                any += ( any.empty() ? "" : " OR " ) + std::string( "(' ' || p.description || ' ') LIKE " ) + bindText( "% " + w + " %" );
+
+            if( unit == "A" )
+            {
+                std::string lo = bindNum( v * 0.999 );
+                std::string hi = bindNum( v * 1.001 );
+                any += " OR p.current BETWEEN " + lo + " AND " + hi;
+            }
+
+            where.push_back( "(" + any + ")" );
+
+            if( !catUnit.empty() && catUnit != unit )
+                where.push_back( "p.unit = " + bindText( catUnit ) );
+        }
+        else
+        {
+            where.push_back( "p.unit = " + bindText( unit ) );
+            std::string lo = bindNum( v * 0.999 );
+            std::string hi = bindNum( v * 1.001 );
+            where.push_back( "p.value BETWEEN " + lo + " AND " + hi );
+        }
     }
     else if( !unit.empty() )
     {
@@ -775,10 +871,26 @@ bool SearchParts( const kicadd::board::LcscSearch& aReq, kicadd::board::LcscSear
 
     if( !aReq.package().empty() )
     {
+        // the package name or a run of its words: "LQFP-48" finds LQFP-48(7x7), "3225" finds
+        // SMD-3225-4P, "SOT-23" finds SOT-23-3 (words split at - _ ( ) , / and space)
+        auto words = []( const std::string& aCol )
+        {
+            std::string e = "upper(" + aCol + ")";
+
+            for( const char* d : { "-", "_", "(", ")", ",", "/" } )
+                e = "replace(" + e + ", '" + d + "', ' ')";
+
+            return "(' ' || " + e + " || ' ')";
+        };
+
+        std::string pkg;
+
+        for( char c : aReq.package() )
+            pkg += std::strchr( "-_(),/", c ) ? ' ' : (char) std::toupper( (unsigned char) c );
+
         std::string a = bindText( aReq.package() );
-        std::string b = bindText( aReq.package() + "-%" );
-        std::string c = bindText( aReq.package() + "\\_%" );
-        where.push_back( "(p.package = " + a + " OR p.package LIKE " + b + " OR p.package LIKE " + c + " ESCAPE '\\')" );
+        std::string b = bindText( "% " + pkg + " %" );
+        where.push_back( "(p.package = " + a + " OR " + words( "p.package" ) + " LIKE " + b + ")" );
     }
 
     if( aReq.tolerance() > 0 )

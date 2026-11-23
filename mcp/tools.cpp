@@ -148,6 +148,10 @@ std::string renderItem( const kb::CompactItem& aItem, int64_t aRadius = 0 )
     if( aItem.kind() == kb::IK_VIA )
         s += " d" + mm( aItem.width() );
 
+    // pad copper as it lies on the board: where a via or track can go beside it
+    if( aItem.kind() == kb::IK_PAD && aItem.size().x() > 0 )
+        s += " " + mm( aItem.size().x() ) + "x" + mm( aItem.size().y() );
+
     if( aItem.kind() == kb::IK_FOOTPRINT && aItem.rot_decideg() != 0 )
         s += " r" + deg( aItem.rot_decideg() );
 
@@ -281,17 +285,42 @@ std::string renderDrc( const google::protobuf::RepeatedPtrField<kb::DrcViolation
 }
 
 
-std::string renderPending( const google::protobuf::RepeatedPtrField<std::string>& aPending )
+/// "unconnected=111 (incl. GND 24)" / "unconnected=87 (excl. deferred nets: GND; ...)": every
+/// tool says the same thing the same way, so a count that moves because a large net was rebuilt
+/// (route_short, fanout and stitch_vias read GND's ratsnest; moves defer it) reads as such.
+std::string renderUnconnected( int aCount, const google::protobuf::RepeatedPtrField<std::string>& aPending,
+                               const google::protobuf::RepeatedPtrField<std::string>& aLarge )
 {
-    if( aPending.empty() )
-        return "";
+    std::string s = "unconnected=" + std::to_string( aCount );
 
-    std::string s = " (excl. deferred nets:";
+    if( !aLarge.empty() )
+    {
+        s += " (incl.";
 
-    for( const std::string& n : aPending )
-        s += " " + n;
+        for( const std::string& n : aLarge )
+            s += " " + n;
 
-    return s + "; call flush_ratsnest for the full count)";
+        s += ")";
+    }
+
+    if( !aPending.empty() )
+    {
+        s += " (excl. deferred nets:";
+
+        for( const std::string& n : aPending )
+            s += " " + n;
+
+        s += "; call flush_ratsnest for the full count)";
+    }
+
+    return s;
+}
+
+
+template <typename MSG>
+std::string unconnectedOf( const MSG& r )
+{
+    return renderUnconnected( r.unconnected(), r.ratsnest_pending(), r.large_included() );
 }
 
 
@@ -373,7 +402,7 @@ std::string renderMoveResult( const kb::MoveResponse& r, bool aDetail = false )
         s += "\n";
     }
 
-    s += "unconnected=" + std::to_string( r.unconnected() ) + renderPending( r.ratsnest_pending() ) + "\n";
+    s += unconnectedOf( r ) + "\n";
 
     for( const std::string& n : r.notes() )
         s += "note: " + n + "\n";
@@ -479,13 +508,36 @@ TOOL_RESULT queryArea( IPC_CLIENT& aIpc, const json& aArgs )
     if( getNumber( aArgs, "limit", limit ) )
         req.set_limit( static_cast<int>( limit ) );
 
+    if( aArgs.contains( "via_net" ) && aArgs["via_net"].is_string() )
+        req.set_via_net( aArgs["via_net"].get<std::string>() );
+
     kb::QueryResponse r;
     std::string       err;
 
     if( !aIpc.Call( req, r, err ) )
         return error( err );
 
-    return { renderQuery( r, req.radius() ) };
+    if( req.via_net().empty() )
+        return { renderQuery( r, req.radius() ) };
+
+    // via spots: one line, nearest first
+    std::string s = "via " + req.via_net() + " d" + mm( r.via_diameter() ) + "/" + mm( r.via_drill() )
+                    + ": " + std::to_string( r.via_spots_size() ) + " spot(s)";
+
+    if( r.via_spots_size() == 0 && r.via_tested() == 0 )
+        return { s + ": the circle is off the board, or all on pads / under an exposed-pad IC\n" };
+
+    if( r.via_spots_size() == 0 )
+        return { s + ", none free within " + mm( req.radius() ) + " mm (" + std::to_string( r.via_tested() )
+                 + " grid points tested: each clashes with other-net copper on some layer or the edge). "
+                   "Try a larger radius.\n" };
+
+    s += ", nearest first:\n";
+
+    for( int i = 0; i < r.via_spots_size(); ++i )
+        s += ( i ? " " : "" ) + std::string( "@" ) + pt( r.via_spots( i ) ) + "~" + mm( r.via_dist( i ) );
+
+    return { s + "\n" };
 }
 
 
@@ -767,10 +819,10 @@ TOOL_RESULT routeTrack( IPC_CLIENT& aIpc, const json& aArgs )
         s += "the rules it would break:\n" + renderDrc( r.drc(), true );
 
     if( !r.history_label().empty() )
-        s += "unconnected=" + std::to_string( r.unconnected() ) + "; undo: \"" + r.history_label()
+        s += unconnectedOf( r ) + "; undo: \"" + r.history_label()
              + "\"; refill_zones before run_drc\n";
     else if( !r.dry_run() )
-        s += "nothing changed; unconnected=" + std::to_string( r.unconnected() ) + "\n";
+        s += "nothing changed; " + unconnectedOf( r ) + "\n";
 
     return TOOL_RESULT{ s, !ok && !r.dry_run() };
 }
@@ -836,10 +888,10 @@ std::string renderRoutes( const kb::RouteResponse& r, bool aDetail, const char* 
         s += "(detail=true lists every route)\n";
 
     if( !r.history_label().empty() )
-        s += "unconnected=" + std::to_string( r.unconnected() ) + "; undo takes all of it back: \"" + r.history_label()
+        s += unconnectedOf( r ) + "; undo takes all of it back: \"" + r.history_label()
              + "\"\n";
     else if( !r.dry_run() )
-        s += "nothing changed; unconnected=" + std::to_string( r.unconnected() ) + "\n";
+        s += "nothing changed; " + unconnectedOf( r ) + "\n";
 
     return s;
 }
@@ -1042,7 +1094,7 @@ TOOL_RESULT stitchVias( IPC_CLIENT& aIpc, const json& aArgs )
 
     if( !r.history_label().empty() )
     {
-        s += "unconnected=" + std::to_string( r.unconnected() ) + "; undo takes it back\n";
+        s += unconnectedOf( r ) + "; undo takes it back\n";
 
         if( aArgs.value( "refill", true ) )
         {
@@ -1242,8 +1294,9 @@ TOOL_RESULT lcscFetch( IPC_CLIENT& aIpc, const json& aArgs )
 
         out += "\n  LCSC stock " + ( st.stock() >= 0 ? std::to_string( st.stock() ) : std::string( "?" ) ) + price
                + "; JLC assembly: " + ( st.jlc_smt() ? "yes" : "no" )
-               + ( st.jlc_class().empty() ? "" : " (" + st.jlc_class() + ")" ) + " -- as of " + st.as_of()
-               + ( r.from_cache() ? " (cached; refresh=true for today's)" : "" );
+               + ( st.jlc_class().empty() ? "" : " (" + st.jlc_class() + ")" ) + " -- EasyEDA, as of " + st.as_of()
+               + ( r.from_cache() ? " (cached; refresh=true for today's)" : "" )
+               + ( st.index_note().empty() ? "" : "\n  " + st.index_note().substr( 2 ) );
     }
 
     if( r.has_symbol() )
@@ -1457,6 +1510,15 @@ TOOL_RESULT setRules( IPC_CLIENT& aIpc, const json& aArgs )
         return true;
     };
 
+    // the wrong shape (a list of {name, ...}) was ignored and read as "nothing changed"
+    for( const auto& [key, shape] : { std::pair<const char*, const char*>{ "classes", "{\"USB\": {\"track_width\": 0.2}}" },
+                                      { "assign", "{\"/USB_D*\": \"USB\"}" },
+                                      { "constraints", "{\"min_clearance\": 0.15}" } } )
+    {
+        if( aArgs.contains( key ) && !aArgs[key].is_object() )
+            return error( std::string( key ) + " is an object, e.g. " + shape );
+    }
+
     if( aArgs.contains( "classes" ) && aArgs["classes"].is_object() )
     {
         for( const auto& [name, v] : aArgs["classes"].items() )
@@ -1592,6 +1654,9 @@ TOOL_RESULT setRules( IPC_CLIENT& aIpc, const json& aArgs )
 
         t += ( diff.empty() ? std::string( " (no change)" ) : " (" + diff + ")" ) + "; run_drc lists them\n";
     }
+
+    for( const std::string& m : r.assign_matches() )
+        t += "assign " + m + "\n";
 
     return { t + renderRules( r ) };
 }
@@ -2122,8 +2187,8 @@ TOOL_RESULT flushRatsnest( IPC_CLIENT& aIpc )
     if( !aIpc.Call( kb::FlushRatsnest(), r, err ) )
         return error( err );
 
-    return { "rebuilt " + std::to_string( r.nets_flushed() ) + " deferred nets; unconnected="
-             + std::to_string( r.unconnected() ) + "\n" };
+    return { "rebuilt " + std::to_string( r.nets_flushed() ) + " deferred nets; "
+             + renderUnconnected( r.unconnected(), {}, r.large_included() ) + "\n" };
 }
 
 
@@ -3031,14 +3096,18 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
 
     tools.push_back( { "query_area",
                        "Items near a footprint (ref: the part itself first, then what is around it) or a point (x,y), nearest first. Lines: KIND handle [net] "
-                       "layer @x,y (pads are REF.PADNUM; tracks start>end wWIDTH; ~DIST from the centre). "
+                       "layer @x,y (pads are REF.PADNUM WxH, the copper as placed; tracks start>end wWIDTH; ~DIST from the centre). "
+                       "via_net=NET lists free via spots instead. "
                        "Use this instead of dumping the board.",
                        schema( { { "ref", { { "type", "string" }, { "description", "Centre on this footprint" } } },
                                  { "x", { { "type", "number" }, { "description", "Centre X, mm" } } },
                                  { "y", { { "type", "number" }, { "description", "Centre Y, mm" } } },
                                  { "radius", { { "type", "number" }, { "description", "Radius, mm" } } },
                                  { "kinds", kinds },
-                                 { "limit", { { "type", "integer" }, { "description", "Max items (default 64)" } } } },
+                                 { "limit", { { "type", "integer" }, { "description", "Max items (default 64; via spots 8)" } } },
+                                 { "via_net", { { "type", "string" },
+                                                { "description", "Instead of items: free spots for a through via of this net "
+                                                                 "(its class's size) within the radius, nearest first" } } } },
                                { "radius" } ),
                        [&aIpc]( const json& a ) { return queryArea( aIpc, a ); } } );
 

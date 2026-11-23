@@ -179,6 +179,18 @@ def main():
         check(err and "no free spot" in t and "T" not in netlist(mcp) and "/T" not in netlist(mcp),
               f"the stub's end on {rf}'s pin: refused, not run on through it (that would put {rf} on T)")
         mcp.tool("sch_delete", {"refs": [rh, ri, re_, rf]})
+
+        print("[sch_connect: a stub made earlier in the same call is in the way]")
+        rg = add("7", 203.2, 203.2, 90)
+        pg = max(pins_of(mcp, rg).items(), key=lambda kv: kv[1][0])        # rg's right pin
+        rk = add("8", pg[1][0] + 5.08 + 3.81, pg[1][1], 90)               # rk's left pin 5.08 mm across
+        pk = min(pins_of(mcp, rk).items(), key=lambda kv: kv[1][0])
+        before = netlist(mcp)
+        err, t = mcp.tool("sch_connect", {"nets": {"P1": [f"{rg}.{pg[0]}"], "P2": [f"{rk}.{pk[0]}"]}})
+        check(err and f"{rk}.{pk[0]} (P2): no free spot" in t and f"the stub of {rg}.{pg[0]} (P1) made in this call" in t
+              and netlist(mcp) == before,
+              "the second stub would end on the first's: refused at the root, named: " + t.replace("\n", " | ")[:220])
+        mcp.tool("sch_delete", {"refs": [rg, rk]})
         before = netlist(mcp)
 
         print("[sch_wire]")
@@ -320,8 +332,8 @@ def main():
         before_meet = netlist(mcp)
         err, t = mcp.tool("sch_connect", {"nets": {"MEET1": [f"{rx}.2"], "MEET2": [f"{ry}.1"]}})
         print("      ", " ".join(t.split())[:200])
-        check(err and t.startswith("0 pin(s) connected") and "all or none" in t and "ended on one net" in t,
-              "sch_connect whose two stubs meet: refused (they would be one net), said why")
+        check(err and t.startswith("0 pin(s) connected") and "all or none" in t and "made in this call" in t,
+              "sch_connect whose two stubs meet: refused (they would be one net), the first stub named")
         check(netlist(mcp) == before_meet, "refused: the nets as before")
         err, t = mcp.tool("sch_connect", {"nets": {"MEET1": [f"{rx}.2"]}})
         check(not err and t.startswith("1 pin(s) connected"), "one at a time: fine")

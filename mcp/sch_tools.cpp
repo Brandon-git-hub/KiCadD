@@ -145,7 +145,7 @@ std::string pinLines( const ks::SchSymbol& s )
             t += " " + p.name();
 
         t += " " + p.type() + " " + p.side() + " @" + num( p.x() ) + "," + num( p.y() );
-        t += p.net().empty() ? std::string( " (unconnected)" ) : " -> " + p.net();
+        t += !p.net().empty() ? " -> " + p.net() : p.no_connect() ? std::string( " NC" ) : std::string( " (unconnected)" );
     }
 
     return t;
@@ -1563,6 +1563,12 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                                 { "description", "apply the result even when the current placement is better" } } },
                    { "measure_only", { { "type", "boolean" },
                                        { "description", "move nothing, report the numbers for the parts as they are" } } },
+                   { "track_room", { { "type", "number" },
+                                     { "description", "mm a pad keeps from existing tracks / vias beyond clearance "
+                                                      "(default one track + clearance; 0 none)" } } },
+                   { "keepout", { { "type", "array" },
+                                  { "description", "areas no part may go: [[x0, y0, x1, y1], ...] or "
+                                                   "[{\"area\": [...], \"side\": \"top\"|\"bottom\"|\"both\"}]" } } },
                    { "detail", { { "type", "boolean" }, { "description", "list every moved part (default: the first 15)" } } },
                    { "rules", { { "type", "object" },
                                 { "description",
@@ -1754,6 +1760,38 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
 
                 req.set_no_silk_room( !a.value( "silk_room", true ) );
 
+                if( a.contains( "track_room" ) )
+                {
+                    if( !a["track_room"].is_number() || a["track_room"].get<double>() < 0 )
+                        return TOOL_RESULT{ "track_room: mm, 0 or more", true };
+
+                    req.set_track_room( (int64_t) std::llround( a["track_room"].get<double>() * 1e6 ) );
+                }
+
+                if( a.contains( "keepout" ) )
+                {
+                    if( !a["keepout"].is_array() )
+                        return TOOL_RESULT{ "keepout: a list of [x0, y0, x1, y1] (mm) or {\"area\": [...], \"side\": ...}", true };
+
+                    for( const json& k : a["keepout"] )
+                    {
+                        const json  area = k.is_object() ? k.value( "area", json() ) : k;
+                        std::string side = k.is_object() ? k.value( "side", std::string( "both" ) ) : std::string( "both" );
+
+                        if( !area.is_array() || area.size() != 4
+                            || !std::all_of( area.begin(), area.end(), []( const json& v ) { return v.is_number(); } ) )
+                            return TOOL_RESULT{ "keepout: each [x0, y0, x1, y1] in mm (or {\"area\": [...], \"side\": \"top\"})", true };
+
+                        kicadd::board::PlaceKeepout* ko = req.add_keepouts();
+                        auto mmNm = []( const json& v ) { return (int64_t) std::llround( v.get<double>() * 1e6 ); };
+                        ko->mutable_min()->set_x( std::min( mmNm( area[0] ), mmNm( area[2] ) ) );
+                        ko->mutable_min()->set_y( std::min( mmNm( area[1] ), mmNm( area[3] ) ) );
+                        ko->mutable_max()->set_x( std::max( mmNm( area[0] ), mmNm( area[2] ) ) );
+                        ko->mutable_max()->set_y( std::max( mmNm( area[1] ), mmNm( area[3] ) ) );
+                        ko->set_side( side );
+                    }
+                }
+
                 kicadd::board::AutoPlaceResponse r;
                 std::string                      err;
 
@@ -1875,21 +1913,40 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                 for( const std::string& note : r.edit().notes() )
                     t += "\n  " + note;
 
-                if( r.moved() > 0 && ( r.track_obstacles() > 0 || r.zones() > 0 ) )
+                if( r.moved() > 0 && ( r.tracks_left() > 0 || r.zones() > 0 ) )
                 {
                     t += "\n  the moved parts left";
 
-                    if( r.track_obstacles() > 0 )
-                        t += " their tracks behind (reroute, or delete_tracks refs=[...])";
+                    if( r.tracks_left() > 0 )
+                        t += " their " + std::to_string( r.tracks_left() )
+                             + " track(s)/via(s) behind (reroute, or delete_tracks refs=[...])";
 
                     if( r.zones() > 0 )
-                        t += std::string( r.track_obstacles() > 0 ? " and" : "" ) + " the "
+                        t += std::string( r.tracks_left() > 0 ? " and" : "" ) + " the "
                              + std::to_string( r.zones() ) + " copper zone(s) in their old shape: "
                              "refill_zones before run_drc";
                 }
 
                 for( const std::string& n : r.edge_notes() )
                     t += "\n  edge: " + n;
+
+                // among existing tracks: how much room the placed pads have to be wired
+                if( r.track_obstacles() > 0 && r.moved() > 0 )
+                {
+                    t += "\n  pads kept " + num( r.track_room() / 1e6 ) + " mm more than clearance from the tracks/vias"
+                         + ( r.track_room() == 0 ? " (track_room=0)" : " (track_room)" );
+
+                    if( r.tight_pads_size() )
+                    {
+                        t += "; " + std::to_string( r.tight_count() ) + " placed pad(s) with no room for a track to "
+                             "an other-net track/via; tightest:";
+
+                        for( const std::string& p : r.tight_pads() )
+                            t += " " + p + ";";
+
+                        t.pop_back();
+                    }
+                }
 
                 if( r.rule_violations_size() )
                 {

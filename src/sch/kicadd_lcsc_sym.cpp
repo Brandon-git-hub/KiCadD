@@ -295,6 +295,14 @@ wxString KicaddLcscSymbol( const wxString& aRequest )
             static const std::regex ground( R"(^(A|D|P|S|SIG|PWR)?(GND|VSS|VEE)[A-Z]?\d*(_?\d+)?$)" );
             static const std::regex supplyIn(
                     R"(^(A|D|P|IO)?(VCC|VDD|VIN|VBAT|VDDIO|VCCIO|VDDA|VDDD|VCCA|VPP|VM|VS)[A-Z]?\d*(_?(IO|A|D|PLL|CORE|\d+))?$|^V(DD|CC)\d+$|^V[+-]$)" );
+            // VD33, VD18, VD_PLL, VDD_1V8, VCC3V3, VDD33_USB: a supply prefix with a voltage or a
+            // domain word (FE2.1 / USB2517 left theirs unchecked as passive)
+            static const std::string tok = R"((\d+V?\d*|\d*V\d+|PLL|IO|CORE|A|D|OSC|USB|PHY|REF|RTC|BAT|ANA|DIG|HV|LV))";
+            static const std::regex  supplyIn2( "^(A|D|P|IO)?V(D|DD|CC)_?" + tok + "(_?" + tok + ")*$" );
+            // a rail an IC often makes itself (core / PLL / 1.8 V): if only a capacitor is on it,
+            // ERC wants a driver for the power_in pin
+            static const std::regex  supplyPrefix( R"(^(A|D|P)?V(D|DD|CC))" );   // not VS_PLL (a ground)
+            static const std::regex  internalRail( R"((^|[^0-9])(18|1V8|12|1V2|11|1V1|09|0V9)([^0-9]|$)|PLL|CORE)" );
             static const std::regex regOut( R"(^(V?OUT\d?|VO\d?)$)" );
             static const std::regex ownRegOut(
                     R"(^(V(DD|CC|D)?\d+V?\d*|\d+V\d*|REG)_?O(UT)?$)" );   // VD33_O, VDD18_OUT, 3V3_OUT, REGOUT
@@ -340,6 +348,7 @@ wxString KicaddLcscSymbol( const wxString& aRequest )
                                             } );
 
             std::map<std::string, int> count;
+            std::vector<std::string>   internal;   // power_in pins that may be the IC's own rails
 
             for( SCH_PIN* pin : symPins )
             {
@@ -351,8 +360,19 @@ wxString KicaddLcscSymbol( const wxString& aRequest )
 
                 if( !connector )
                 {
-                    if( std::regex_match( n, ground ) || std::regex_match( n, supplyIn ) || ( regulator && n == "IN" ) )
+                    if( std::regex_match( n, ground ) || std::regex_match( n, supplyIn ) || std::regex_match( n, supplyIn2 )
+                        || ( regulator && n == "IN" ) )
+                    {
                         t = ELECTRICAL_PINTYPE::PT_POWER_IN;
+
+                        if( !regulator && std::regex_search( n, supplyPrefix ) && std::regex_search( n, internalRail )
+                            && std::count_if( symPins.begin(), symPins.end(),
+                                              [&]( const SCH_PIN* q ) { return clean( q->GetName() ) == n; } ) == 1
+                            && std::find( internal.begin(), internal.end(), n ) == internal.end() )
+                        {
+                            internal.push_back( n );
+                        }
+                    }
                     else if( std::regex_match( n, ownRegOut ) || ( regulator && hasIn && std::regex_match( n, regOut ) ) )
                         t = ELECTRICAL_PINTYPE::PT_POWER_OUT;
                 }
@@ -369,6 +389,17 @@ wxString KicaddLcscSymbol( const wxString& aRequest )
             if( !pinTypes.empty() )
                 pinTypes = "pin types inferred from their names (the data left them unspecified): " + pinTypes
                            + ( connector ? " (a connector: all passive)" : "" );
+
+            if( !internal.empty() )
+            {
+                std::string names;
+
+                for( const std::string& n : internal )
+                    names += ( names.empty() ? "" : ", " ) + n;
+
+                pinTypes += "; " + names + " typed power_in: if the IC makes that rail itself (only a "
+                            "capacitor on it), put a PWR_FLAG on its net for ERC";
+            }
         }
 
         // A different part may already use this name in the library: keep both.

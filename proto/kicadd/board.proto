@@ -50,7 +50,8 @@ message CompactItem
   int32    rot_decideg = 8;  // footprint rotation
   int64    dist  = 9;    // distance from query center (nm)
   string   id    = 10;   // full KIID, only when the query sets with_ids
-  Point    size  = 11;   // footprints: body bounding-box width/height (no text)
+  Point    size  = 11;   // footprints: body bounding-box width/height (no text);
+                         // pads: copper width/height as placed on the board (rotation applied)
 }
 
 // ---------------------------------------------------------------------------
@@ -88,6 +89,8 @@ message QueryRadius
   repeated ItemKind kinds    = 4;   // empty = footprints, tracks, vias, pads
   int32             limit    = 5;   // 0 = default (64)
   bool              with_ids = 6;   // also return full KIIDs (costs tokens; for tooling)
+  string            via_net  = 7;   // instead of items: free spots for a through via of this
+                                    // net (its rules' sizes) within the circle, nearest first
 }
 
 // Topology of a single net: pads, tracks and vias on it.
@@ -103,6 +106,14 @@ message QueryResponse
   repeated CompactItem items     = 1;
   int32                total     = 2;  // total matches before limit was applied
   bool                 truncated = 3;
+  // QueryRadius with via_net: free via spots (no clash with other-net copper on any layer or the
+  // board edge, off pads, not under an exposed-pad IC), nearest first, at least a via apart
+  repeated Point       via_spots    = 4;
+  repeated int64       via_dist     = 5;   // nm from the centre, per spot
+  int64                via_diameter = 6;
+  int64                via_drill    = 7;
+  int32                via_free     = 8;   // unused (spots are tested nearest first, the search stops at limit)
+  int32                via_tested   = 9;   // grid points tested by the router
 }
 
 // Relative move/rotate/flip of footprints, addressed by reference designator.
@@ -168,6 +179,7 @@ message MoveResponse
                                                // on any more: taken off the board (undo puts them back)
   bool                  on_unfilled_pour = 20; // moved parts on a filled pour not refilled since: the
                                                // local DRC checked against its old shape
+  repeated string       large_included = 21;   // large nets (deferrable) counted in unconnected: "GND 24"
 }
 
 // Remove footprints (and their pads from connectivity). Tracks and vias are left in place,
@@ -291,6 +303,22 @@ message AutoPlace
   // Only the courtyards take room (what DRC keeps apart): no room for the silkscreen (texts and
   // graphics), for a dense board; silk_tidy / hidden references after
   bool   no_silk_room   = 21;
+
+  // Room a pad keeps from the board's tracks and vias beyond their clearance, nm (unset: the
+  // default class's track width + clearance, one more track beside the pad; 0: none). A part
+  // between tracks needs it to be wired at all.
+  optional int64 track_room = 22;
+
+  // Areas no part may go (courtyards out), e.g. a channel kept for routing: side top / bottom /
+  // both (default both)
+  repeated PlaceKeepout keepouts = 23;
+}
+
+message PlaceKeepout
+{
+  Point  min  = 1;
+  Point  max  = 2;
+  string side = 3;
 }
 
 // Returns AutoPlaceResponse: running (progress), or the finished result, applied now
@@ -369,6 +397,12 @@ message AutoPlaceResponse
                                    // which stay inside and why
   string room_note = 28;           // parts left out: why there is no room (the board's area against the
                                    // parts', parts bigger than the board)
+  int64  track_room = 29;          // the room pads kept from tracks / vias (nm), 0 = none
+  // after placing, among the board's tracks / vias: the placed pads with the least room to an
+  // other-net track or via ("C5.2 0.12 mm to track +5V"), fewer than one track's room first
+  repeated string tight_pads = 30;
+  int32  tight_count = 31;         // placed pads with less than one track's room
+  int32  tracks_left = 32;         // tracks / vias that were on the moved parts' pads: left where they were
 }
 
 message FetchLcsc
@@ -415,6 +449,7 @@ message LcscStock
   bool   jlc_smt   = 5;    // JLCPCB assembly can place it
   string jlc_class = 6;    // "Basic Part" / "Extended Part"
   string as_of     = 7;    // date of the data (when fetched or cached), not live
+  string index_note = 8;   // what the parts index (lcsc_search's data) holds, and whether it agrees
 }
 
 message LcscSymbol
@@ -538,6 +573,7 @@ message FlushRatsnestResponse
   int32 nets_flushed = 1;
   int32 unconnected  = 2;   // complete, board-wide
   int64 elapsed_us   = 3;
+  repeated string large_included = 4;   // large nets' share: "GND 24"
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -840,6 +876,9 @@ message RulesResponse
   BoardConstraints        constraints   = 3;
   string                  history_label = 4;
   string                  note          = 5;   // preset: where its numbers come from
+  // SetRules: per assign pattern given, how many of the board's nets it matches; nets under a
+  // sheet path ("/USB/D+", "/USBUP_P") the pattern misses only for that path; a suggestion
+  repeated string         assign_matches = 6;
 }
 
 // Copper zones: list them, or change their settings as one undoable edit (undo / redo).
@@ -1063,6 +1102,8 @@ message RouteResponse
   bool                  dry_run       = 5;
   int32                 tracks_added  = 6;
   int32                 vias_added    = 7;
+  repeated string       ratsnest_pending = 8;   // as MoveResponse: nets not counted (deferred)
+  repeated string       large_included   = 9;   // large nets counted: "GND 24"
 }
 
 // Route the unrouted connections of refs / nets up to max_length, shortest first, each as
@@ -1132,6 +1173,8 @@ message StitchViasResponse
   int32  unconnected     = 12;
   bool   dry_run         = 13;
   repeated string notes  = 14;
+  repeated string ratsnest_pending = 15;
+  repeated string large_included   = 16;
 }
 
 // Teardrops (KiCad's own: copper zones that widen a track into its pad or via) on vias and

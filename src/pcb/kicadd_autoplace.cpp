@@ -1008,6 +1008,9 @@ private:
         if( !m_opt.obstacles.empty() )
         {
             BOX2I cu = cuAt( i, aPos, aRot );
+            BOX2I roomy = cu;       // with room for a track out of each pad (tracks / vias only)
+            roomy.Inflate( m_opt.trackRoom );
+            const BOX2I body = boxAt( i, aPos, aRot );
 
             const PART& me = m_parts[i];
             const int   mine = me.tht ? ( OBST_FRONT | OBST_BACK | OBST_INNER ) : me.back ? OBST_BACK : OBST_FRONT;
@@ -1015,21 +1018,35 @@ private:
 
             for( size_t k = 0; k < m_opt.obstacles.size(); ++k )
             {
-                if( layered && !( m_opt.obstacleLayers[k] & mine ) )
+                const int what = layered ? m_opt.obstacleLayers[k] : 0;
+
+                if( layered && !( what & mine ) )
                     continue;
 
-                if( !cu.Intersects( m_opt.obstacles[k] ) )
+                // an area the agent keeps free: no part's courtyard in it
+                if( what & OBST_BODY )
+                {
+                    if( body.Intersects( m_opt.obstacles[k] ) )
+                        return false;
+
+                    continue;
+                }
+
+                if( !( what & OBST_PADS ? roomy : cu ).Intersects( m_opt.obstacles[k] ) )
                     continue;
 
                 // copper text and graphics: not under the part at all
-                if( !layered || !( m_opt.obstacleLayers[k] & OBST_PADS ) )
+                if( !layered || !( what & OBST_PADS ) )
                     return false;
 
                 // a track: the box around all pads meets it, does a pad? (a track between the
-                // rows of an IC's pins doesn't keep the IC out)
+                // rows of an IC's pins doesn't keep the IC out). With trackRoom, a pad also keeps
+                // room for one more track beside it: a part dropped into a channel narrower than
+                // that could be placed but not connected
                 for( BOX2I pb : m_work[i].padBox[at( me, aRot )] )
                 {
                     pb.Move( aPos );
+                    pb.Inflate( m_opt.trackRoom );
 
                     if( pb.Intersects( m_opt.obstacles[k] ) )
                         return false;

@@ -5,6 +5,7 @@
  */
 
 #include "lcsc/kicadd_lcsc.h"
+#include "lcsc/kicadd_parts.h"
 #include "common/kicadd_libtable.h"
 
 #include <board.h>
@@ -1010,7 +1011,28 @@ std::string Summary( const PART& aPart )
 
     s += aPart.jlcSmt ? " JLC assembly" + ( aPart.jlcClass.empty() ? "" : " (" + aPart.jlcClass + ")" )
                       : std::string( " no JLC assembly" );
-    s += " -- as of " + aPart.asOf;
+    s += " -- EasyEDA, as of " + aPart.asOf;
+    return s + IndexComparison( aPart );
+}
+
+
+std::string IndexComparison( const PART& aPart )
+{
+    // lcsc_search reads the parts index (jlcparts): say what it holds for this part too, and
+    // when the two disagree, so neither reads as the tool contradicting itself
+    INDEX_ENTRY idx;
+
+    if( !IndexEntry( aPart.lcsc, idx ) )
+        return "";
+
+    const bool  differs = ( idx.stock > 0 ) != aPart.jlcSmt;
+    std::string s = std::string( differs ? "; differs from" : "; agrees with" ) + " the parts index (jlcparts "
+                    + idx.date + ", what lcsc_search reads): JLC stock " + std::to_string( idx.stock ) + ", " + idx.kind;
+
+    if( differs )
+        s += aPart.asOf >= idx.date ? " (EasyEDA's answer is the newer; jlcpcb.com/parts has the truth)"
+                                    : " (the index is the newer: refresh=true asks EasyEDA again)";
+
     return s;
 }
 

@@ -81,7 +81,7 @@ try:
     err, t = m.tool("auto_place", {"all": True, "force": True, "time_limit": 3})
     print("      ", t.splitlines()[0][:100])
     check(not err and t.startswith("placed"), "force applies it")
-    check("their tracks behind" in t and "refill_zones" in t, "says the tracks are left behind, refill")
+    check(re.search(r"their \d+ track\(s\)/via\(s\) behind", t) and "refill_zones" in t, "says the tracks are left behind, refill")
     check("in all; detail=true" in t and len(t.split(":")[1].split("...")[0].split()) == 15,
           "auto_place lists 15 refs, then a count")
 

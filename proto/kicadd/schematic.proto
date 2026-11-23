@@ -22,6 +22,7 @@ message SchPin
   string side   = 6;       // where a wire leaves it: left, right, up, down
   string net    = 7;       // "" when not connected yet
   int32  unit   = 8;
+  bool   no_connect = 9;   // on no net, and marked no-connect (an X) or a no_connect pin type
 }
 
 message SchSymbol

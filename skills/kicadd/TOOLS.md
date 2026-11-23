@@ -10,20 +10,22 @@ Counts, layer count and board outline of the open PCB. Units: mm. KiCad's Y axis
 
 ## query_area
 
-Items near a part or a point, nearest first. Use instead of dumping the board.
+Items near a part or a point, nearest first (pads with their size). Use instead of dumping the board; via_net finds free via spots.
 
-Items near a footprint (ref: the part itself first, then what is around it) or a point (x,y), nearest first. Lines: KIND handle [net] layer @x,y (pads are REF.PADNUM; tracks start>end wWIDTH; ~DIST from the centre). Use this instead of dumping the board.
+Items near a footprint (ref: the part itself first, then what is around it) or a point (x,y), nearest first. Lines: KIND handle [net] layer @x,y (pads are REF.PADNUM WxH, the copper as placed; tracks start>end wWIDTH; ~DIST from the centre). via_net=NET lists free via spots instead. Use this instead of dumping the board.
 
 Parameter notes:
 
 - kinds: Item kinds to include (default: footprint, pad, track, arc, via)
+- via_net: Instead of items: free spots for a through via of this net (its class's size) within the radius, nearest first
 
 Arguments:
 
 - `kinds` (array): default footprint, pad, track, arc, via
-- `limit` (integer): Max items (default 64)
+- `limit` (integer): Max items (default 64; via spots 8)
 - `radius` (number): Radius, mm
 - `ref` (string): Centre on this footprint
+- `via_net` (string): free through-via spots of this net instead of items
 - `x` (number): Centre X, mm
 - `y` (number): Centre Y, mm
 
@@ -666,9 +668,11 @@ Parameter notes:
 - force: apply the result even when the current placement is better
 - group_weight: pull to the block's centre, 1 = like a two-pin net (default 3)
 - groups: {"LDO": ["U2", "C3"], ...} blocks to keep together, "sheets", or false: no blocks
+- keepout: areas no part may go: [[x0, y0, x1, y1], ...] or [{"area": [...], "side": "top"|"bottom"|"both"}]
 - measure_only: move nothing, report the numbers for the parts as they are
 - rules: placement rules; refs may be patterns ("J*"). edge: {"J1": "left"} (left/right/top/bottom/any: the courtyard at that board edge); a connector (USB, RJ45, DC jack: its courtyard well past its pads on one side) is turned to open over that edge, the footprint's own "PCB Edge" line on the edge (else its front flush with it); {"J1": {"side": "left", "overhang": 1}} puts its front 1 mm past the edge, "inside": true keeps it inside like any part; region: {"U1": [x0, y0, x1, y1]} (mm, the courtyard inside); rotation: {"J1": 90}; near: [{"refs": ["Y1", "U1"], "max": 5}] (mm between the centres of their pads). edge/region/rotation are hard, near is reported when it can't be met
 - time_limit: seconds for improving the wire length after every part has a legal spot (default 10, -1 no limit); the placement is legal either way
+- track_room: mm a pad keeps from existing tracks / vias beyond clearance (default one track + clearance; 0 none)
 
 Arguments:
 
@@ -681,6 +685,7 @@ Arguments:
 - `force` (boolean): apply even when worse than now
 - `group_weight` (number): pull to the block's centre (default 3)
 - `groups`: {name: [refs]}, "sheets", or false
+- `keepout` (array): areas no part may go, [[x0, y0, x1, y1], ...]
 - `measure_only` (boolean): report only, move nothing
 - `refs` (array)
 - `rotate` (boolean): try 90/180/270 (default true)
@@ -688,6 +693,7 @@ Arguments:
 - `silk_room` (boolean): room for silkscreen (default true)
 - `spacing` (number): courtyard gap, mm (default 0.25)
 - `time_limit` (number): seconds of improving (default 10, -1 none)
+- `track_room` (number): mm pads keep from existing tracks beyond clearance
 
 ## sch_move
 

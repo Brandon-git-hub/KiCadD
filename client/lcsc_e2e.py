@@ -255,6 +255,13 @@ def main():
             line = next((ln for ln in text.splitlines() if "pin types inferred" in ln), "")
             check(not err and all(w in line for w in want) and (part != "C2765186" or "connector" in line),
                   f"{part}: " + (line.strip() or text.strip()[:120]))
+        if os.path.isfile(os.path.join(a.cache, "C39693.json")):
+            # FE2.1: VD33 / VD18 / VD_PLL are supplies (they were left passive, so audit's
+            # decoupling check saw 2 supply pins); VD33_O / VDD18_O the IC's own regulators
+            err, text = m.tool("lcsc_fetch", {"lcsc": "C39693"})
+            line = next((ln for ln in text.splitlines() if "pin types inferred" in ln), "")
+            check("13 power_in" in line and "2 power_out" in line and "VD_PLL" in line and "PWR_FLAG" in line
+                  and "VS_PLL" not in line, "C39693 (FE2.1): VD33, VD18, VD_PLL power_in: " + line.strip()[:160])
         if os.path.isfile(os.path.join(a.cache, "C165948.json")):
             err, text = m.tool("lcsc_fetch", {"lcsc": "C165948"})
             line = next((ln for ln in text.splitlines() if "pin types inferred" in ln), "")

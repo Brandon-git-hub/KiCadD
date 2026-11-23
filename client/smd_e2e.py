@@ -85,7 +85,16 @@ try:
           "audit: the board half answers")
     err, t = m.tool("set_rules", {"classes": {"Power": {"current": 2}}, "assign": {"+5V": "Power"}, "drc": False})
     check(not err and "Power: 2 A -> " in t, "set_rules current: " + (t.splitlines()[1] if len(t.splitlines()) > 1 else t)[:100])
+    check("assign +5V -> Power: 1 net(s)" in t, "set_rules says what each pattern matched")
     m.tool("undo")
+    # a pattern that misses the sheet-path nets ("/U2D-") says so, with a pattern that catches them
+    err, t = m.tool("set_rules", {"classes": {"USB": {"track_width": 0.2}}, "assign": {"U?D-": "USB"}, "drc": False})
+    miss = re.search(r"assign U\?D- -> USB: 0 net\(s\); (\d+) more only under a sheet path.*\"\*U\?D-\"", t)
+    check(not err and miss and int(miss.group(1)) >= 6, "set_rules: sheet-path nets missed by a pattern named: "
+          + next((l for l in t.splitlines() if l.startswith("assign")), t)[:160])
+    m.tool("undo")
+    err, t = m.tool("set_rules", {"classes": [{"name": "USB"}]})
+    check(err and "classes is an object" in t, "set_rules: a list for classes refused, not ignored")
     err, t = m.tool("silk_tidy", {"dry_run": True})
     print("      ", t.splitlines()[0][:150])
     check(not err and t.startswith("would move 0 text(s)"), "silk_tidy dry run: nothing to move (glyphs judged, not boxes)")

@@ -27,7 +27,7 @@ namespace
 const std::map<std::string, std::string> BRIEFS = {
     // the board
     { "board_summary", "Counts, copper layers and outline of the open PCB (mm, Y down). Start here." },
-    { "query_area", "Items near a part or a point, nearest first. Use instead of dumping the board." },
+    { "query_area", "Items near a part or a point, nearest first (pads with their size). Use instead of dumping the board; via_net finds free via spots." },
     { "query_net", "Pads, tracks, vias and zones of one net." },
     { "move_footprints", "Move parts by a delta or to absolute places (x, y, rotation, side), one undoable edit; returns a local DRC around them." },
     { "check_drc", "Local DRC of parts against their surroundings, without moving them." },
@@ -109,6 +109,9 @@ const std::map<std::string, std::string> BRIEFS = {
 const std::map<std::string, std::string> PARAM_BRIEFS = {
     { "*.detail", "list everything (default: long lists cut short)" },
     { "query_area.kinds", "default footprint, pad, track, arc, via" },
+    { "auto_place.track_room", "mm pads keep from existing tracks beyond clearance" },
+    { "auto_place.keepout", "areas no part may go, [[x0, y0, x1, y1], ...]" },
+    { "query_area.via_net", "free through-via spots of this net instead of items" },
     { "move_footprints.flip", "to the other side (mirrored)" },
     { "move_footprints.pivot", "each part around itself (default), or the group" },
     { "add_footprint.lcsc", "LCSC number, e.g. C8734" },

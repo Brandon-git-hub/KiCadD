@@ -34,6 +34,7 @@
 #include <wx/filename.h>
 #include <wx/tokenzr.h>
 #include <board.h>
+#include <eda_pattern_match.h>
 #include <board_commit.h>
 #include <footprint.h>
 #include <view/view.h>
@@ -146,6 +147,75 @@ CompactItem makeItem( ItemKind aKind, const BOARD_ITEM* aItem, std::string aHand
 }
 
 
+/// The unrouted-connection count every tool reports, the same way: without rebuilding deferred
+/// nets (they are named, not counted), and naming the large nets (more than aMinPads pads, the
+/// ones moves defer) that are counted, with their share: "GND 24". A count that jumps when a
+/// tool rebuilds GND then says why.
+struct UNCONNECTED
+{
+    int                      count = 0;
+    std::vector<std::string> pending;
+    std::vector<std::string> large;
+};
+
+
+UNCONNECTED unconnectedNow( BOARD* aBoard, int aMinPads )
+{
+    UNCONNECTED                        u;
+    std::shared_ptr<CONNECTIVITY_DATA> conn = aBoard->GetConnectivity();
+    u.count = (int) conn->GetUnconnectedCountNoFlush( false );
+    const std::vector<int> pending = conn->GetPendingRatsnestNets();
+
+    for( int net : pending )
+        u.pending.push_back( netName( aBoard, net ) );
+
+    std::map<int, int> padsPerNet;
+
+    for( const FOOTPRINT* fp : aBoard->Footprints() )
+        for( const PAD* pad : fp->Pads() )
+            if( pad->GetNetCode() > 0 )
+                padsPerNet[pad->GetNetCode()]++;
+
+    std::map<int, int> edges;
+
+    conn->RunOnUnconnectedEdgesNoFlush(
+            [&]( int aNet, const CN_EDGE& )
+            {
+                auto it = padsPerNet.find( aNet );
+
+                if( it != padsPerNet.end() && it->second > aMinPads )
+                    edges[aNet]++;
+
+                return true;
+            } );
+
+    for( const auto& [net, n] : edges )
+        u.large.push_back( netName( aBoard, net ) + " " + std::to_string( n ) );
+
+    return u;
+}
+
+
+template <typename MSG>
+void fillUnconnected( MSG& aOut, const UNCONNECTED& aU )
+{
+    aOut.set_unconnected( aU.count );
+    aOut.clear_ratsnest_pending();
+    aOut.clear_large_included();
+
+    for( const std::string& n : aU.pending )
+        aOut.add_ratsnest_pending( n );
+
+    for( const std::string& n : aU.large )
+        aOut.add_large_included( n );
+}
+
+
+/// query_area via_net: free through-via spots of a net round aCenter (defined with icBodies).
+std::optional<std::string> viaSpots( BOARD* aBoard, const VECTOR2I& aCenter, int64_t aRadius,
+                                     const std::string& aNet, int aLimit, QueryResponse& aOut );
+
+
 CompactItem describeFootprint( const FOOTPRINT* aFp )
 {
     CompactItem out = makeItem( IK_FOOTPRINT, aFp, aFp->GetReference().ToStdString() );
@@ -173,6 +243,23 @@ CompactItem describePad( const PAD* aPad )
     if( cu.count() == 1 )
         out.set_layer( LSET::Name( aPad->GetLayer() ).ToStdString() );
 
+    // copper size as placed (rotation applied): a 90-degree pad reads as it lies on the board;
+    // any other angle gives its bounding box
+    PCB_LAYER_ID sizeLayer = cu.count() ? cu.Seq().front() : F_Cu;
+    VECTOR2I     sz = aPad->GetSize( sizeLayer );
+    if( aPad->GetOrientation().IsCardinal() )
+    {
+        if( aPad->GetOrientation().IsCardinal90() )
+            std::swap( sz.x, sz.y );
+    }
+    else
+    {
+        const BOX2I bb = aPad->GetBoundingBox( sizeLayer );
+        sz = VECTOR2I( bb.GetWidth(), bb.GetHeight() );
+    }
+
+    out.mutable_size()->set_x( sz.x );
+    out.mutable_size()->set_y( sz.y );
     return out;
 }
 
@@ -481,6 +568,20 @@ KICADD_HANDLER_PCB::handleQueryRadius( const HANDLER_CONTEXT<QueryRadius>& aCtx 
     if( req.radius() <= 0 )
         return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "radius must be > 0" ) );
 
+    if( !req.via_net().empty() )
+    {
+        if( std::optional<ApiResponseStatus> wait = busy() )
+            return tl::unexpected( *wait );
+
+        QueryResponse out;
+
+        if( std::optional<std::string> err = viaSpots( b, center, req.radius(), req.via_net(),
+                                                       req.limit() > 0 ? req.limit() : 8, out ) )
+            return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, *err ) );
+
+        return out;
+    }
+
     std::set<int> kinds( req.kinds().begin(), req.kinds().end() );
 
     if( kinds.empty() )
@@ -717,11 +818,7 @@ void KICADD_HANDLER_PCB::runCommit( const std::function<std::vector<KIID>( BOARD
     aOut.set_elapsed_us( std::chrono::duration_cast<std::chrono::microseconds>(
                                  std::chrono::steady_clock::now() - t0 ).count() );
     {
-        std::shared_ptr<CONNECTIVITY_DATA> conn = b->GetConnectivity();
-        aOut.set_unconnected( static_cast<int>( conn->GetUnconnectedCountNoFlush( false ) ) );
-
-        for( int net : conn->GetPendingRatsnestNets() )
-            aOut.add_ratsnest_pending( netName( b, net ) );
+        fillUnconnected( aOut, unconnectedNow( b, m_deferMinPads ) );
     }
 
     if( !report.empty() )
@@ -2138,8 +2235,7 @@ KICADD_HANDLER_PCB::handleDeleteTracks( const HANDLER_CONTEXT<DeleteTracks>& aCt
 
     if( targets.empty() )
     {
-        std::shared_ptr<CONNECTIVITY_DATA> conn = b->GetConnectivity();
-        out.set_unconnected( static_cast<int>( conn->GetUnconnectedCountNoFlush( false ) ) );
+        fillUnconnected( out, unconnectedNow( b, m_deferMinPads ) );
         return out;
     }
 
@@ -2687,7 +2783,7 @@ HANDLER_RESULT<RouteResponse> KICADD_HANDLER_PCB::handleRoute( const HANDLER_CON
     // keeps clearances; this is the check that it did)
     if( !res.ok || req.dry_run() )
     {
-        out.set_unconnected( (int) b->GetConnectivity()->GetUnconnectedCountNoFlush( false ) );
+        fillUnconnected( out, unconnectedNow( b, m_deferMinPads ) );
         return out;
     }
 
@@ -2853,6 +2949,209 @@ std::vector<BOX2I> icBodies( BOARD* aBoard )
     }
 
     return out;
+}
+
+/// Free spots for a through via of aNet within aRadius of aCenter, nearest first, at least one
+/// via diameter apart. A spot is free when the router finds no clash with other-net copper on any
+/// layer or the board edge (SESSION::ViaFits), it is inside the outline, off every pad (no
+/// via-in-pad), and not under an exposed-pad IC (as route_short). Returns an error text or nothing.
+std::optional<std::string> viaSpots( BOARD* aBoard, const VECTOR2I& aCenter, int64_t aRadius,
+                                     const std::string& aNet, int aLimit, QueryResponse& aOut )
+{
+    const NETINFO_ITEM* net = aBoard->FindNet( wxString::FromUTF8( aNet ) );
+
+    if( !net || net->GetNetCode() <= 0 )
+        return "unknown net " + aNet;
+
+    BOARD_CONNECTED_ITEM* netItem = nullptr;
+
+    for( FOOTPRINT* fp : aBoard->Footprints() )
+    {
+        for( PAD* pad : fp->Pads() )
+        {
+            if( pad->GetNetCode() == net->GetNetCode() && ( pad->GetLayerSet() & LSET::AllCuMask() ).any() )
+            {
+                netItem = pad;
+                break;
+            }
+        }
+
+        if( netItem )
+            break;
+    }
+
+    if( !netItem )
+    {
+        for( PCB_TRACK* t : aBoard->Tracks() )
+        {
+            if( t->GetNetCode() == net->GetNetCode() )
+            {
+                netItem = t;
+                break;
+            }
+        }
+    }
+
+    if( !netItem )
+        return "net " + aNet + " has no pads or tracks";
+
+    // the via the router would use for this net (its rules)
+    const NETCLASS*                                nc = net->GetNetClass();
+    const int via = nc && nc->HasViaDiameter() ? nc->GetViaDiameter()
+                                               : aBoard->GetDesignSettings().GetCurrentViaSize();
+    const int drill = nc && nc->HasViaDrill() ? nc->GetViaDrill() : aBoard->GetDesignSettings().GetCurrentViaDrill();
+    aOut.set_via_diameter( via );
+    aOut.set_via_drill( drill );
+
+    SHAPE_POLY_SET outline;
+    const bool     haveOutline = aBoard->GetBoardPolygonOutlines( outline, false ) && outline.OutlineCount() > 0;
+    const std::vector<BOX2I> bodies = icBodies( aBoard );
+
+    BOX2I area( aCenter, VECTOR2I( 0, 0 ) );
+    area.Inflate( (int) aRadius );
+
+    // pads near the circle (any net): no spot on a pad or touching one of its own net
+    std::vector<const PAD*> pads;
+
+    for( FOOTPRINT* fp : aBoard->Footprints() )
+    {
+        if( !fp->GetBoundingBox( false ).Intersects( BOX2I( area ).Inflate( via ) ) )
+            continue;
+
+        for( const PAD* pad : fp->Pads() )
+            pads.push_back( pad );
+    }
+
+    // a fine grid (a quarter via, 0.05..0.1 mm), tested nearest first until aLimit spots a via
+    // apart are found or the budget is spent (the router check is the costly part)
+    const double pitch = std::clamp( via / 4.0, 0.05e6, 0.1e6 );
+    std::vector<std::pair<double, VECTOR2I>> grid;
+
+    for( double y = area.GetTop(); y <= area.GetBottom(); y += pitch )
+    {
+        for( double x = area.GetLeft(); x <= area.GetRight(); x += pitch )
+        {
+            const VECTOR2I p( KiROUND( x ), KiROUND( y ) );
+            const double   d = ( VECTOR2D( p ) - VECTOR2D( aCenter ) ).EuclideanNorm();
+
+            if( d <= aRadius )
+                grid.emplace_back( d, p );
+        }
+    }
+
+    std::stable_sort( grid.begin(), grid.end(), []( const auto& a, const auto& b ) { return a.first < b.first; } );
+
+    constexpr int          BUDGET = 40000;
+    kicadd::route::SESSION session( aBoard );
+    std::vector<VECTOR2I>  chosen;
+    int                    tested = 0, free = 0;
+
+    for( const auto& [d, p] : grid )
+    {
+        if( (int) chosen.size() >= aLimit || tested >= BUDGET )
+            break;
+
+        // near a chosen spot: no new spot can be taken there, skip the router check
+        if( std::any_of( chosen.begin(), chosen.end(),
+                         [&]( const VECTOR2I& q ) { return ( VECTOR2D( p ) - VECTOR2D( q ) ).EuclideanNorm() < via; } ) )
+            continue;
+
+        if( haveOutline && !outline.Contains( p ) )
+            continue;
+
+        if( std::any_of( bodies.begin(), bodies.end(), [&]( const BOX2I& bb ) { return bb.Contains( p ); } ) )
+            continue;
+
+        if( std::any_of( pads.begin(), pads.end(),
+                         [&]( const PAD* pad )
+                         {
+                             return pad->GetNetCode() == net->GetNetCode() ? pad->HitTest( p, via / 2 )
+                                                                           : pad->HitTest( p, 0 );
+                         } ) )
+            continue;
+
+        tested++;
+
+        if( !session.ViaFits( p, netItem ) )
+            continue;
+
+        free++;
+        chosen.push_back( p );
+        setPoint( aOut.add_via_spots(), p );
+        aOut.add_via_dist( (int64_t) d );
+    }
+
+    aOut.set_via_free( free );
+    aOut.set_via_tested( tested );
+    return std::nullopt;
+}
+
+/// After auto_place on a board with tracks: the placed pads with the least room to an other-net
+/// track or via on their layers, worst first; those with no room for one more track (width +
+/// two clearances of the default class) counted. A measure of how wireable the spots are.
+void tightPads( BOARD* aBoard, const std::vector<FOOTPRINT*>& aParts, AutoPlaceResponse& aOut )
+{
+    if( aBoard->Tracks().empty() || aParts.empty() )
+        return;
+
+    int width = aBoard->GetDesignSettings().GetCurrentTrackWidth(), gap = aBoard->GetDesignSettings().m_MinClearance;
+
+    if( std::shared_ptr<NETCLASS> nc = aBoard->GetDesignSettings().m_NetSettings->GetDefaultNetclass() )
+    {
+        width = std::max( width, nc->GetTrackWidth() );
+        gap = std::max( gap, nc->GetClearance() );
+    }
+
+    const int lane = width + 2 * gap;   // a track passes between the pad and it
+    std::vector<std::pair<int, std::string>> rows;
+    int                                      tight = 0;
+
+    for( const FOOTPRINT* fp : aParts )
+    {
+        for( const PAD* pad : fp->Pads() )
+        {
+            if( pad->GetNetCode() <= 0 )
+                continue;
+
+            BOX2I reach = pad->GetBoundingBox();
+            reach.Inflate( lane );
+            int         best = INT_MAX;
+            std::string what;
+
+            for( const PCB_TRACK* t : aBoard->Tracks() )
+            {
+                if( t->GetNetCode() == pad->GetNetCode() || !t->GetBoundingBox().Intersects( reach ) )
+                    continue;
+
+                for( PCB_LAYER_ID layer : LSET( t->GetLayerSet() & pad->GetLayerSet() & LSET::AllCuMask() ).Seq() )
+                {
+                    int actual = 0;
+
+                    if( pad->GetEffectiveShape( layer )->Collide( t->GetEffectiveShape( layer ).get(), lane, &actual )
+                        && actual < best )
+                    {
+                        best = actual;
+                        what = std::string( t->Type() == PCB_VIA_T ? "via " : "track " ) + t->GetNetname().ToStdString();
+                    }
+                }
+            }
+
+            if( best == INT_MAX )
+                continue;
+
+            tight += best < lane;
+            char buf[48];
+            std::snprintf( buf, sizeof( buf ), " %.2f mm to ", best / 1e6 );
+            rows.emplace_back( best, fp->GetReference().ToStdString() + "." + pad->GetNumber().ToStdString() + buf + what );
+        }
+    }
+
+    std::stable_sort( rows.begin(), rows.end(), []( const auto& a, const auto& b ) { return a.first < b.first; } );
+
+    for( size_t i = 0; i < rows.size() && i < 5; ++i )
+        aOut.add_tight_pads( rows[i].second );
+
+    aOut.set_tight_count( tight );
 }
 
 } // namespace
@@ -3316,7 +3615,7 @@ HANDLER_RESULT<RouteResponse> KICADD_HANDLER_PCB::handleRouteShort( const HANDLE
 
     if( req.dry_run() || routed == 0 )
     {
-        out.set_unconnected( (int) conn->GetUnconnectedCountNoFlush( false ) );
+        fillUnconnected( out, unconnectedNow( b, m_deferMinPads ) );
         return out;
     }
 
@@ -3560,7 +3859,7 @@ HANDLER_RESULT<FanoutResponse> KICADD_HANDLER_PCB::handleFanout( const HANDLER_C
 
     if( req.dry_run() || routed == 0 )
     {
-        routes.set_unconnected( (int) conn->GetUnconnectedCountNoFlush( false ) );
+        fillUnconnected( routes, unconnectedNow( b, m_deferMinPads ) );
         return out;
     }
 
@@ -3940,7 +4239,7 @@ HANDLER_RESULT<StitchViasResponse> KICADD_HANDLER_PCB::handleStitchVias( const H
 
     if( req.dry_run() || placed == 0 )
     {
-        out.set_unconnected( (int) conn->GetUnconnectedCountNoFlush( false ) );
+        fillUnconnected( out, unconnectedNow( b, m_deferMinPads ) );
         return out;
     }
 
@@ -3949,6 +4248,8 @@ HANDLER_RESULT<StitchViasResponse> KICADD_HANDLER_PCB::handleStitchVias( const H
                   routes );
     out.set_history_label( routes.history_label() );
     out.set_unconnected( routes.unconnected() );
+    *out.mutable_ratsnest_pending() = routes.ratsnest_pending();
+    *out.mutable_large_included() = routes.large_included();
     return out;
 }
 
@@ -4131,6 +4432,8 @@ void KICADD_HANDLER_PCB::commitRoutes( std::vector<std::unique_ptr<PCB_TRACK>>&&
     }
 
     aOut.set_unconnected( moved.unconnected() );
+    *aOut.mutable_ratsnest_pending() = moved.ratsnest_pending();
+    *aOut.mutable_large_included() = moved.large_included();
     aOut.set_tracks_added( tracks );
     aOut.set_vias_added( vias );
     aOut.set_history_label( entry.label );
@@ -4371,6 +4674,7 @@ KICADD_HANDLER_PCB::handleFetchLcsc( const HANDLER_CONTEXT<FetchLcsc>& aCtx )
     st->set_jlc_smt( part.jlcSmt );
     st->set_jlc_class( part.jlcClass );
     st->set_as_of( part.asOf );
+    st->set_index_note( kicadd::lcsc::IndexComparison( part ) );
 
     std::string note = part.note;
 
@@ -4542,7 +4846,7 @@ bool KICADD_HANDLER_PCB::applyHistory( const HISTORY_ENTRY& aEntry, bool aUndo, 
         kicadd::rules::Apply( *b, target );
         rulesChanged();
         // no item moved, so no commit counted them: the board's count, ratsnest brought up to date
-        aOut.set_unconnected( (int) b->GetConnectivity()->GetUnconnectedCount( false ) );
+        fillUnconnected( aOut, unconnectedNow( b, m_deferMinPads ) );
         return true;
     }
 
@@ -4574,7 +4878,7 @@ bool KICADD_HANDLER_PCB::applyHistory( const HISTORY_ENTRY& aEntry, bool aUndo, 
 
         kicadd::setup::Apply( *b, target );
         setupChanged();
-        aOut.set_unconnected( (int) b->GetConnectivity()->GetUnconnectedCount( false ) );
+        fillUnconnected( aOut, unconnectedNow( b, m_deferMinPads ) );
         return true;
     }
 
@@ -5379,7 +5683,11 @@ KICADD_HANDLER_PCB::handleFlushRatsnest( const HANDLER_CONTEXT<FlushRatsnest>& a
 
     FlushRatsnestResponse out;
     out.set_nets_flushed( conn->FlushDeferredRatsnest() );
-    out.set_unconnected( static_cast<int>( conn->GetUnconnectedCount( false ) ) );
+    UNCONNECTED u = unconnectedNow( b, m_deferMinPads );
+    out.set_unconnected( u.count );
+
+    for( const std::string& n : u.large )
+        out.add_large_included( n );
     out.set_elapsed_us( std::chrono::duration_cast<std::chrono::microseconds>(
                                 std::chrono::steady_clock::now() - t0 ).count() );
     return out;
@@ -6516,6 +6824,41 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
         }
     }
 
+    // room for one track beside each pad, from the board's tracks / vias (default class)
+    {
+        int width = b->GetDesignSettings().GetCurrentTrackWidth(), gap = b->GetDesignSettings().m_MinClearance;
+
+        if( std::shared_ptr<NETCLASS> nc = b->GetDesignSettings().m_NetSettings->GetDefaultNetclass() )
+        {
+            width = std::max( width, nc->GetTrackWidth() );
+            gap = std::max( gap, nc->GetClearance() );
+        }
+
+        opt.trackRoom = req.has_track_room() ? (int) std::max<int64_t>( 0, req.track_room() ) : width + gap;
+        out.set_track_room( opt.trackRoom );
+    }
+
+    for( const PlaceKeepout& k : req.keepouts() )
+    {
+        BOX2I box( VECTOR2I( k.min().x(), k.min().y() ) );
+        box.Merge( VECTOR2I( k.max().x(), k.max().y() ) );
+
+        if( box.GetWidth() <= 0 || box.GetHeight() <= 0 )
+            return bad( "keepout: [x0, y0, x1, y1] with x1 > x0 and y1 > y0" );
+
+        int side = ap::OBST_FRONT | ap::OBST_BACK | ap::OBST_INNER;
+
+        if( k.side() == "top" )
+            side = ap::OBST_FRONT;
+        else if( k.side() == "bottom" )
+            side = ap::OBST_BACK;
+        else if( !k.side().empty() && k.side() != "both" )
+            return bad( "keepout side: top, bottom or both" );
+
+        opt.obstacles.push_back( box );
+        opt.obstacleLayers.push_back( side | ap::OBST_BODY );
+    }
+
     // Pads must keep the hole clearance from the holes of through-hole parts, on both sides
     // (board rules may ask for much more than the courtyard gap)
     {
@@ -6761,6 +7104,19 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::finishAutoPlace( AUTOPLACE
 
     std::string label = "auto-place " + std::to_string( targets.size() ) + " part" + ( targets.size() == 1 ? "" : "s" );
 
+    // the copper on the parts' pads stays where it is
+    {
+        std::set<const PCB_TRACK*>         attached;
+        std::shared_ptr<CONNECTIVITY_DATA> conn = b->GetConnectivity();
+
+        for( const FOOTPRINT* fp : targets )
+            for( const PAD* pad : fp->Pads() )
+                for( const PCB_TRACK* t : conn->GetConnectedTracks( pad ) )
+                    attached.insert( t );
+
+        out.set_tracks_left( (int) attached.size() );
+    }
+
     applyFootprintEdit( targets,
                         [&]( FOOTPRINT* fp )
                         {
@@ -6776,6 +7132,7 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::finishAutoPlace( AUTOPLACE
                         wxString::FromUTF8( "Agent: " + label ), *out.mutable_edit() );
 
     notePairOrder( targets, *out.mutable_edit() );
+    tightPads( b, targets, out );
 
     if( !targets.empty() )
     {
@@ -7346,6 +7703,64 @@ HANDLER_RESULT<RulesResponse> KICADD_HANDLER_PCB::handleSetRules( const HANDLER_
         entry.rulesAfter = std::make_shared<STATE>( st );
         record( std::move( entry ) );
         out.set_history_label( label );
+    }
+
+    // what each pattern given catches: a pattern that misses nets only for their sheet path
+    // ("USB*_P" on "/USBUP_P") would otherwise go unnoticed until a check reads the wrong class
+    for( const NetclassAssign& a : req.assign() )
+    {
+        if( a.netclass().empty() )
+            continue;
+
+        EDA_COMBINED_MATCHER     matcher( wxString::FromUTF8( a.pattern() ), CTX_NETCLASS );
+        EDA_COMBINED_MATCHER     leaf( wxString::FromUTF8( a.pattern() ), CTX_NETCLASS );
+        int                      hits = 0;
+        std::vector<std::string> missed;
+
+        for( const NETINFO_ITEM* net : b->GetNetInfo() )
+        {
+            if( !net || net->GetNetCode() <= 0 )
+                continue;
+
+            const wxString name = net->GetNetname();
+
+            if( name.StartsWith( wxS( "unconnected-(" ) ) )
+                continue;
+
+            if( matcher.StartsWith( name ) )
+            {
+                hits++;
+                continue;
+            }
+
+            const int slash = name.Find( '/', true );
+
+            if( slash != wxNOT_FOUND && leaf.StartsWith( name.Mid( slash + 1 ) ) )
+                missed.push_back( name.ToStdString( wxConvUTF8 ) );
+        }
+
+        std::string line = a.pattern() + " -> " + a.netclass() + ": " + std::to_string( hits ) + " net(s)";
+
+        if( !missed.empty() )
+        {
+            std::sort( missed.begin(), missed.end() );
+            line += "; " + std::to_string( missed.size() ) + " more only under a sheet path, not matched: ";
+
+            for( size_t i = 0; i < missed.size() && i < 4; ++i )
+                line += ( i ? ", " : "" ) + missed[i];
+
+            if( missed.size() > 4 )
+                line += ", ...";
+
+            const std::string p = a.pattern();
+            line += " (\"*" + ( p.rfind( '/', 0 ) == 0 ? p.substr( 1 ) : p ) + "\" matches with any path)";
+        }
+        else if( hits == 0 )
+        {
+            line += " (no net on the board matches; patterns are whole names, * and ? wildcards, /regex/)";
+        }
+
+        out.add_assign_matches( line );
     }
 
     packRules( out );
