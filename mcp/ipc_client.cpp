@@ -22,9 +22,10 @@ using kiapi::common::ApiStatusCode;
 namespace kicadd::mcp
 {
 
-IPC_CLIENT::IPC_CLIENT( std::string aUrl, int aTimeoutMs ) :
+IPC_CLIENT::IPC_CLIENT( std::string aUrl, int aTimeoutMs, std::string aClientName ) :
         m_url( std::move( aUrl ) ),
-        m_timeoutMs( aTimeoutMs )
+        m_timeoutMs( aTimeoutMs ),
+        m_clientName( std::move( aClientName ) )
 {
 }
 
@@ -73,7 +74,7 @@ bool IPC_CLIENT::Call( const google::protobuf::Message& aRequest, google::protob
                        std::string& aError )
 {
     ApiRequest envelope;
-    envelope.mutable_header()->set_client_name( "kicadd-mcp" );
+    envelope.mutable_header()->set_client_name( m_clientName );
     envelope.mutable_message()->PackFrom( aRequest );
     const std::string wire = envelope.SerializeAsString();
 

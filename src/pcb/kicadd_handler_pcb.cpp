@@ -277,6 +277,8 @@ KICADD_HANDLER_PCB::KICADD_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext ) 
     registerHandler<Undo, HistoryResponse>( &KICADD_HANDLER_PCB::handleUndo );
     registerHandler<Redo, HistoryResponse>( &KICADD_HANDLER_PCB::handleRedo );
     registerHandler<GetHistory, HistoryResponse>( &KICADD_HANDLER_PCB::handleGetHistory );
+    registerHandler<GetCopilot, CopilotState>( &KICADD_HANDLER_PCB::handleGetCopilot );
+    registerHandler<SetCopilotPaused, CopilotState>( &KICADD_HANDLER_PCB::handleSetCopilotPaused );
     registerHandler<DescribeItems, DescribeItemsResponse>( &KICADD_HANDLER_PCB::handleDescribeItems );
     registerHandler<CheckLocalDrc, LocalDrcResponse>( &KICADD_HANDLER_PCB::handleCheckLocalDrc );
     registerHandler<GetStateDigest, StateDigestResponse>( &KICADD_HANDLER_PCB::handleGetStateDigest );
@@ -8530,5 +8532,63 @@ HANDLER_RESULT<ImpedanceResponse> KICADD_HANDLER_PCB::handleImpedance( const HAN
     std::string planes;
     kicadd::impedance::Planes( *b, &planes );
     out.set_note( planes + "\n" + kicadd::impedance::Source( *b ) );
+    return out;
+}
+
+
+// ---- Co-pilot state for the web view (phase 4 item 2) ---------------------------------------
+
+namespace
+{
+
+void packCopilot( int64_t aSince, int aLimit, CopilotState& aOut )
+{
+    const kicadd::COPILOT& c = kicadd::COPILOT::Get();
+    const auto&            events = c.Events();
+
+    aOut.set_paused( c.Paused() );
+    aOut.set_requests( c.Requests() );
+    aOut.set_edits( c.EditCount() );
+    aOut.set_refused( c.RefusedCount() );
+    aOut.set_added( c.EventsAdded() );
+    aOut.set_last_type( c.LastType().ToStdString() );
+    aOut.set_last_ms( c.LastRequest().IsValid() ? c.LastRequest().GetValue().GetValue() : 0 );
+
+    // the newest aLimit of those added after aSince (the last one again when it was repeated)
+    int64_t fresh = std::min<int64_t>( (int64_t) events.size(), c.EventsAdded() - aSince );
+
+    if( aSince <= 0 || fresh < 1 )
+        fresh = aSince <= 0 ? (int64_t) events.size() : ( events.empty() ? 0 : 1 );
+
+    fresh = std::min<int64_t>( fresh, aLimit > 0 ? aLimit : 20 );
+
+    for( size_t i = events.size() - fresh; i < events.size(); ++i )
+    {
+        CopilotEvent* e = aOut.add_events();
+        e->set_when_ms( events[i].when.GetValue().GetValue() );
+        e->set_kind( (int) events[i].kind );
+        e->set_text( events[i].text.ToStdString( wxConvUTF8 ) );
+        e->set_repeat( events[i].repeat );
+    }
+}
+
+} // namespace
+
+
+HANDLER_RESULT<CopilotState> KICADD_HANDLER_PCB::handleGetCopilot( const HANDLER_CONTEXT<GetCopilot>& aCtx )
+{
+    CopilotState out;
+    packCopilot( aCtx.Request.since(), aCtx.Request.limit(), out );
+    return out;
+}
+
+
+HANDLER_RESULT<CopilotState> KICADD_HANDLER_PCB::handleSetCopilotPaused( const HANDLER_CONTEXT<SetCopilotPaused>& aCtx )
+{
+    wxString who = aCtx.Request.who().empty() ? wxString( wxS( "a viewer" ) ) : wxString::FromUTF8( aCtx.Request.who() );
+    kicadd::COPILOT::Get().SetPaused( aCtx.Request.paused(), who );
+
+    CopilotState out;
+    packCopilot( 0, 20, out );
     return out;
 }

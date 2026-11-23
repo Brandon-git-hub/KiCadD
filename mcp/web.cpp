@@ -17,6 +17,8 @@
  *     {"t":"ratsnest","xy":[x1,y1,x2,y2,..],"net":[i,..],"nets":[..],"pending":[..],"unconnected":N,
  *      "final":bool}   (final=false: deferred large nets still missing, a final one follows)
  *     {"t":"status","push":bool,"viewers":N}   (push: KiCad notifies changes; N browsers here)
+ *     {"t":"copilot","paused":bool,"edits":N,"refused":N,"requests":N,"last_type":"..","last_ms":unix ms,
+ *      "events":[[unix ms,kind,text,repeat],..]}   (the agent's activity; kind 0 edit, 1 refused, 2 note)
  *     {"t":"error","error":".."}
  *   ITEMS = "nets":[..],"lys":[..]  (string tables; items reference them by index)
  *           "fp":[{id,ref,val,back,x,y,r,lk,bb:[x0,y0,x1,y1],cy:[..],
@@ -30,7 +32,7 @@
  *     {"t":"delete","refs":[..]}
  *     {"t":"add","footprint":"Lib:Name"|"like":"C12","ref":"C?","x":mm,"y":mm,"rot":deg,"back":bool,
  *      "value":"..","nets":{"1":"GND",..}}
- *     {"t":"undo"} / {"t":"redo"} / {"t":"save"}
+ *     {"t":"undo"} / {"t":"redo"} / {"t":"save"}   /   {"t":"pause","paused":bool}   (the agent's edits)
  *     {"t":"fills","ids":[..]}   (ids empty = all)   /   {"t":"art","layers":["F.SilkS",..]}   /   {"t":"refill"}   /   {"t":"drc"}
  *   server -> client (full DRC)
  *     {"t":"drcfull","ok":bool,"s":secs,"errors":{type:n},"warnings":{type:n},
@@ -418,9 +420,13 @@ std::string errorJson( const std::string& aMsg )
 // Hub
 
 WEB_HUB::WEB_HUB( IPC_CLIENT& aIpc, asio::io_context& aIoc ) :
-        m_ipc( aIpc ),
+        m_ownIpc( std::make_unique<IPC_CLIENT>( aIpc.Url(), aIpc.TimeoutMs(), "kicadd-web" ) ),
+        m_ipc( *m_ownIpc ),
         m_ioc( aIoc )
 {
+    std::string err;
+    m_ownIpc->Connect( err );   // non-blocking dial; NNG keeps retrying
+
     m_ioThread = std::thread(
             [this]()
             {
@@ -469,6 +475,9 @@ void WEB_HUB::eventsLoop()
 
         if( nng_recv( sock, &buf, &size, NNG_FLAG_ALLOC ) != 0 )
             continue;
+
+        if( std::string( buf, size ) == "copilot" )
+            m_copilotDue = true;
 
         nng_free( buf, size );
         Kick();   // "board", "copilot", "sch": the poll asks what changed
@@ -544,7 +553,7 @@ void WEB_HUB::Received( const std::shared_ptr<WS_SESSION>& aSession, const std::
     if( t == "resync" )
         msg = json{ { "t", "snapshot" } };
     else if( t != "move" && t != "delete" && t != "add" && t != "undo" && t != "redo" && t != "save" && t != "fills" && t != "art" && t != "refill"
-             && t != "drc" )
+             && t != "drc" && t != "pause" )
     {
         aSession->Send( std::make_shared<std::string>( errorJson( "unknown message type '" + t + "'" ) ) );
         return;
@@ -567,6 +576,49 @@ void WEB_HUB::Kick()
 std::string WEB_HUB::statusJson()
 {
     return json{ { "t", "status" }, { "push", Pushed() }, { "viewers", sessions().size() } }.dump();
+}
+
+
+std::string WEB_HUB::copilotJson()
+{
+    kb::GetCopilot   req;
+    kb::CopilotState r;
+    std::string      err;
+    req.set_limit( 30 );
+
+    if( !m_ipc.Call( req, r, err ) )
+        return {};
+
+    json events = json::array();
+
+    for( const kb::CopilotEvent& e : r.events() )
+        events.push_back( { e.when_ms(), e.kind(), e.text(), e.repeat() } );
+
+    return json{ { "t", "copilot" }, { "paused", r.paused() }, { "edits", r.edits() }, { "refused", r.refused() },
+                 { "requests", r.requests() }, { "last_type", r.last_type() }, { "last_ms", r.last_ms() },
+                 { "events", std::move( events ) } }.dump();
+}
+
+
+void WEB_HUB::sendCopilotIfChanged()
+{
+    // told by KiCad; without its notifications, once a second
+    auto now = std::chrono::steady_clock::now();
+
+    if( !m_copilotDue.exchange( false ) )
+    {
+        if( Pushed() || now - m_copilotPolled < std::chrono::seconds( 1 ) )
+            return;
+    }
+
+    m_copilotPolled = now;
+    std::string s = copilotJson();
+
+    if( !s.empty() && s != m_lastCopilot )
+    {
+        m_lastCopilot = s;
+        broadcast( s );
+    }
 }
 
 
@@ -622,6 +674,7 @@ void WEB_HUB::workerLoop()
         {
             poll();
             sendStatusIfChanged();
+            sendCopilotIfChanged();
         }
 
         // Edits have gone quiet: rebuild the deferred large nets and send the full ratsnest.
@@ -667,9 +720,27 @@ void WEB_HUB::runJob( const JOB& aJob )
         session->Send( std::make_shared<std::string>( historyJson() ) );
         session->Send( std::make_shared<std::string>( statusJson() ) );
 
+        if( std::string cp = copilotJson(); !cp.empty() )
+            session->Send( std::make_shared<std::string>( cp ) );
+
         bool pending = false;
         session->Send( std::make_shared<std::string>( ratsnestJson( false, &pending ) ) );
         scheduleRatsnestFlush( pending );
+        return;
+    }
+
+    if( t == "pause" )
+    {
+        kb::SetCopilotPaused req;
+        kb::CopilotState     r;
+        req.set_paused( aJob.message.value( "paused", true ) );
+        req.set_who( "a web viewer" );
+
+        if( !m_ipc.Call( req, r, err ) )
+            session->Send( std::make_shared<std::string>( errorJson( err ) ) );
+
+        m_copilotDue = true;
+        sendCopilotIfChanged();
         return;
     }
 

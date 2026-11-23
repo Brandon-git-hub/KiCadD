@@ -175,7 +175,7 @@ index 02e5f1c9..291f59df 100644
                  {
                      const wxString& id = plugin->Identifier();
 diff --git a/common/api/api_server.cpp b/common/api/api_server.cpp
-index 317ed06e..7b192848 100644
+index 317ed06e..23e0dcd4 100644
 --- a/common/api/api_server.cpp
 +++ b/common/api/api_server.cpp
 @@ -28,6 +28,10 @@
@@ -224,7 +224,7 @@ index 317ed06e..7b192848 100644
  }
  
  
-@@ -360,6 +378,16 @@ void KICAD_API_SERVER::handleApiRequestString( std::string& aRequestString )
+@@ -360,6 +378,17 @@ void KICAD_API_SERVER::handleApiRequestString( std::string& aRequestString )
      if( notifyNetSettings )
          NotifyNetSettingsChanged();
  
@@ -234,7 +234,8 @@ index 317ed06e..7b192848 100644
 +        std::string type;
 +        google::protobuf::Any::ParseAnyTypeUrl( request.message().type_url(), &type );
 +        kicadd::COPILOT::Get().Request( type, result.has_value() ? ApiStatusCode::AS_OK : result.error().status(),
-+                                        result.has_value() ? std::string() : result.error().error_message() );
++                                        result.has_value() ? std::string() : result.error().error_message(),
++                                        request.header().client_name() );
 +    }
 +#endif
 +

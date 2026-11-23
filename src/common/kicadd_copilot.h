@@ -49,14 +49,16 @@ public:
     static COPILOT& Get();
 
     bool Paused() const { return m_paused; }
-    void SetPaused( bool aPaused );
+    /// aWho for the log ("you": the switch in this KiCad; "a web viewer")
+    void SetPaused( bool aPaused, const wxString& aWho = wxS( "you" ) );
 
     /// An edit went through: the handlers' announce text ("Agent: moved R1" -> "moved R1")
     void Edit( const wxString& aWhat );
 
     /// Every API request the server answered: aType the message's full name
-    /// ("kicadd.board.MoveFootprints"), aStatus its ApiStatusCode, aError the message if not OK
-    void Request( const std::string& aType, int aStatus, const std::string& aError );
+    /// ("kicadd.board.MoveFootprints"), aStatus its ApiStatusCode, aError the message if not OK,
+    /// aClient the header's client name ("kicadd-web": a viewer, left out)
+    void Request( const std::string& aType, int aStatus, const std::string& aError, const std::string& aClient = {} );
 
     const std::vector<COPILOT_EVENT>& Events() const { return m_events; }
     void                              Clear();

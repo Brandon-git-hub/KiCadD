@@ -19,7 +19,9 @@ namespace kicadd::mcp
 class IPC_CLIENT
 {
 public:
-    IPC_CLIENT( std::string aUrl, int aTimeoutMs );
+    /// aClientName goes in every request's header: KiCad's Co-pilot log leaves out the web
+    /// view's own reads ("kicadd-web")
+    IPC_CLIENT( std::string aUrl, int aTimeoutMs, std::string aClientName = "kicadd-mcp" );
     ~IPC_CLIENT();
 
     IPC_CLIENT( const IPC_CLIENT& ) = delete;
@@ -38,10 +40,12 @@ public:
                std::string& aError );
 
     const std::string& Url() const { return m_url; }
+    int                TimeoutMs() const { return m_timeoutMs; }
 
 private:
     std::string m_url;
     int         m_timeoutMs;
+    std::string m_clientName;
     nng_socket  m_socket = NNG_SOCKET_INITIALIZER;
     bool        m_open = false;
     std::mutex  m_mutex;

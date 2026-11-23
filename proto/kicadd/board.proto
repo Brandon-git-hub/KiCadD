@@ -1397,3 +1397,41 @@ message NetTopologyResponse
   int32            vias      = 6;
   repeated string  notes     = 7;
 }
+
+
+// ---------------------------------------------------------------------------------------------
+// Co-pilot state (phase 4 items 1-2): the agent's activity as the desktop panel shows it, for the
+// web view; and its pause switch, which a viewer may flip too.
+
+message GetCopilot
+{
+  int64 since = 1;    // events after this many (CopilotState.added of an earlier answer); 0 = the latest
+  int32 limit = 2;    // at most this many events (default 20)
+}
+
+message CopilotEvent
+{
+  int64  when_ms = 1;   // Unix time
+  int32  kind    = 2;   // 0 edit, 1 refused, 2 note (the pause switch)
+  string text    = 3;
+  int32  repeat  = 4;
+}
+
+message CopilotState
+{
+  bool   paused    = 1;
+  int64  requests  = 2;
+  int64  edits     = 3;
+  int64  refused   = 4;
+  int64  added     = 5;   // events ever added (pass back as since)
+  repeated CopilotEvent events = 6;   // oldest first
+  string last_type = 7;
+  int64  last_ms   = 8;   // Unix time of the last request (0: none)
+}
+
+// Returns CopilotState
+message SetCopilotPaused
+{
+  bool   paused = 1;
+  string who    = 2;   // for the log: "a web viewer"
+}

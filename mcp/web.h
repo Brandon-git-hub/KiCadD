@@ -83,8 +83,11 @@ private:
     std::set<std::shared_ptr<WS_SESSION>> sessions();
     void        eventsLoop();
     std::string statusJson();
+    std::string copilotJson();          ///< {"t":"copilot",...}, empty when KiCad has none (older)
+    void        sendCopilotIfChanged();
     void        sendStatusIfChanged();
 
+    std::unique_ptr<IPC_CLIENT> m_ownIpc;   // the view's own connection ("kicadd-web"): its reads are not the agent's
     IPC_CLIENT&              m_ipc;
     boost::asio::io_context& m_ioc;
 
@@ -105,6 +108,9 @@ private:
     std::thread       m_events;
     std::atomic<int>  m_evPipes{ 0 };
     std::string       m_lastStatus;         // worker only
+    std::string       m_lastCopilot;        // worker only
+    std::atomic<bool> m_copilotDue{ true };
+    std::chrono::steady_clock::time_point m_copilotPolled{};   // worker only (fallback without push)
 };
 
 } // namespace kicadd::mcp

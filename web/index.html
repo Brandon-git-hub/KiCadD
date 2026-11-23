@@ -45,6 +45,10 @@
   .drc .t.w { color: var(--warn); }
   .log div { cursor: default; color: var(--dim); } .log b { color: var(--text); font-weight: 500; }
   .empty { color: var(--dim); font-style: italic; }
+  .alog div { padding: 2px 0; border-bottom: 1px dashed #232830; color: var(--text); overflow-wrap: anywhere; }
+  .alog .tm { color: var(--dim); margin-right: 6px; font-variant-numeric: tabular-nums; }
+  .alog .k1 { color: var(--warn); } .alog .k2 { color: var(--dim); font-style: italic; }
+  #agentPill { display: none; }
   footer { grid-column: 1 / 3; display: flex; gap: 18px; align-items: center; padding: 0 12px;
            border-top: 1px solid var(--line); background: var(--panel); color: var(--dim); font-size: 12px; }
   .help { color: var(--dim); font-size: 12px; }
@@ -65,11 +69,19 @@
       <button id="add" title="Add a footprint at the cursor (A)">＋ Add</button>
       <button id="refill" title="Refill all copper zones (fills go stale when parts move)">Refill zones</button>
     </span>
+    <span class="pill warn" id="agentPill" title="The agent's edits are refused until resumed">agent paused</span>
     <span class="pill" id="conn">offline</span>
     <button id="fit" title="Fit board (Home, or F with nothing selected)">Fit</button>
   </header>
   <div id="stage"><canvas id="cv"></canvas><div id="tip"></div></div>
   <aside>
+    <section id="agentSec">
+      <h3 style="display:flex;align-items:center;gap:8px">Agent
+        <span style="flex:1"></span><button id="pauseAgent" disabled
+          title="Refuse the agent's edits until resumed (it is told why); it can still read the board">Pause</button></h3>
+      <div id="agentStats" class="mono" style="color:var(--dim);margin-bottom:4px">–</div>
+      <div id="agentLog" class="alog empty">No agent activity yet</div>
+    </section>
     <section>
       <h3>Layers</h3>
       <div class="layers" id="layers"></div>
@@ -1024,6 +1036,7 @@ $("redo").onclick = () => undoRedo("redo");
 $("save").onclick = () => send({ t: "save" });
 $("add").onclick = () => { lastWorld = null; requestAdd(); };
 $("fulldrc").onclick = () => { $("fulldrc").disabled = true; $("fulldrc").textContent = "Running…"; send({ t: "drc" }); };
+$("pauseAgent").onclick = () => send({ t: "pause", paused: !(agent && agent.paused) });
 $("refill").onclick = () => { $("refill").disabled = true; $("refill").textContent = "Refilling…"; send({ t: "refill" }); };
 window.addEventListener("resize", resize);
 
@@ -1034,6 +1047,42 @@ let ws = null, backoff = 500;
 function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
 
 function setConn(state, text) { const c = $("conn"); c.className = "pill " + state; c.textContent = text; }
+
+let agent = null;                       // the last {"t":"copilot"}
+function onCopilot(c) {
+  agent = c;
+  const b = $("pauseAgent");
+  b.disabled = false;
+  b.textContent = c.paused ? "Resume" : "Pause";
+  b.classList.toggle("dirty", c.paused);
+  $("agentPill").style.display = c.paused ? "inline-block" : "none";
+  updateAgentStats();
+  const box = $("agentLog");
+  if (!c.events.length) { box.className = "alog empty"; box.textContent = "No agent activity yet"; return; }
+  box.className = "alog";
+  box.innerHTML = "";
+  for (const [ms, kind, text, rep] of [...c.events].reverse().slice(0, 15)) {
+    const d = document.createElement("div");
+    const tm = document.createElement("span");
+    tm.className = "tm"; tm.textContent = new Date(ms).toLocaleTimeString([], { hour12: false });
+    const tx = document.createElement("span");
+    tx.className = "k" + kind;
+    tx.textContent = (kind === 1 ? "refused " : "") + text + (rep > 1 ? ` (×${rep})` : "");
+    d.append(tm, tx);
+    box.append(d);
+  }
+}
+function updateAgentStats() {           // also every few seconds: "last 12 s ago"
+  if (!agent) return;
+  let s = `${agent.edits} edits · ${agent.refused} refused`;
+  if (agent.last_ms) {
+    const secs = Math.max(0, Math.round((Date.now() - agent.last_ms) / 1000));
+    s += ` · last ${secs < 2 ? "just now" : secs < 120 ? secs + " s ago" : Math.round(secs / 60) + " min ago"}`
+       + (agent.last_type ? ` (${agent.last_type})` : "");
+  }
+  $("agentStats").textContent = (agent.paused ? "PAUSED · " : "") + s;
+}
+setInterval(updateAgentStats, 5000);
 
 function onStatus(st) {                 // push: KiCad notifies its changes; viewers: browsers on this view
   setConn("ok", "live" + (st.viewers > 1 ? ` · ${st.viewers} viewers` : ""));
@@ -1068,6 +1117,7 @@ function connect() {
     else if (msg.t === "art") onArt(msg);
     else if (msg.t === "drcfull") onDrcFull(msg);
     else if (msg.t === "status") onStatus(msg);
+    else if (msg.t === "copilot") onCopilot(msg);
     else if (msg.t === "refilled") {
       $("refill").disabled = false; $("refill").textContent = "Refill zones";
       log(msg.ok ? `zones refilled in <b>${(msg.ms / 1000).toFixed(1)} s</b>` : `<span style="color:var(--bad)">refill failed: ${msg.error}</span>`);

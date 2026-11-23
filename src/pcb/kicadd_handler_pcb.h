@@ -259,6 +259,12 @@ private:
     HANDLER_RESULT<kicadd::board::HistoryResponse>
     handleGetHistory( const HANDLER_CONTEXT<kicadd::board::GetHistory>& aCtx );
 
+    HANDLER_RESULT<kicadd::board::CopilotState>
+    handleGetCopilot( const HANDLER_CONTEXT<kicadd::board::GetCopilot>& aCtx );
+
+    HANDLER_RESULT<kicadd::board::CopilotState>
+    handleSetCopilotPaused( const HANDLER_CONTEXT<kicadd::board::SetCopilotPaused>& aCtx );
+
     HANDLER_RESULT<kicadd::board::DescribeItemsResponse>
     handleDescribeItems( const HANDLER_CONTEXT<kicadd::board::DescribeItems>& aCtx );
 

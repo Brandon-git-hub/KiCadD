@@ -19,18 +19,18 @@ COPILOT& COPILOT::Get()
 
 std::string COPILOT::PausedMessage()
 {
-    return "paused: the user paused the agent's edits (Co-pilot panel in the editor); nothing was "
+    return "paused: the user paused the agent's edits (Co-pilot panel in the editor, or the web view); nothing was "
            "changed. Reads still work; ask the user to resume";
 }
 
 
-void COPILOT::SetPaused( bool aPaused )
+void COPILOT::SetPaused( bool aPaused, const wxString& aWho )
 {
     if( aPaused == m_paused )
         return;
 
     m_paused = aPaused;
-    add( COPILOT_EVENT::NOTE, aPaused ? wxS( "you paused the agent's edits" ) : wxS( "you resumed the agent's edits" ) );
+    add( COPILOT_EVENT::NOTE, aWho + ( aPaused ? wxS( " paused the agent's edits" ) : wxS( " resumed the agent's edits" ) ) );
 }
 
 
@@ -43,20 +43,23 @@ void COPILOT::Edit( const wxString& aWhat )
 }
 
 
-void COPILOT::Request( const std::string& aType, int aStatus, const std::string& aError )
+void COPILOT::Request( const std::string& aType, int aStatus, const std::string& aError, const std::string& aClient )
 {
+    // a viewer's requests (kicadd-mcp's web view; its render feed; this state itself): not the agent's
+    if( aClient == "kicadd-web" || aType.starts_with( "kicadd.render." ) || aType.ends_with( "Copilot" )
+        || aType.ends_with( "CopilotPaused" ) )
+        return;
+
     std::string type = aType.substr( aType.rfind( '.' ) == std::string::npos ? 0 : aType.rfind( '.' ) + 1 );
     m_requests++;
     m_last = wxDateTime::Now();
     m_lastType = wxString::FromUTF8( type );
 
     // 1 = AS_OK; 5 = AS_UNHANDLED (another editor's request, e.g. a schematic one in the PCB
-    // Editor alone): nothing for the user
+    // Editor alone): nothing for the user. Counted only: the panel's status line follows on its
+    // timer (a notification per read would wake every viewer for nothing)
     if( aStatus == 1 || aStatus == 5 )
-    {
-        notify();
         return;
-    }
 
     std::string first = aError.substr( 0, aError.find( '\n' ) );
 
