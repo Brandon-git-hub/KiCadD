@@ -20,6 +20,12 @@ KiCadD 是以 KiCad nightly（10.99）為基礎的精簡版，加上讓 Agent �
 | 用法 | 怎麼開 | 適合 |
 |---|---|---|
 | **桌面協同** | 從專案管理器開專案，再開電路圖編輯器（Ctrl+E）和 PCB 編輯器（Ctrl+P）。`kicadd-mcp` 會自己找到編輯器的 API socket。 | 你和 Agent 一起改同一份設計，你可以看著它改，按 Ctrl+Z 撤回 |
+
+**Co-pilot 面板（桌面版）：** 兩個編輯器右側都有「Co-pilot」面板（View → Panels → Co-pilot 開關）。
+- **紀錄：** 列出 Agent 的每次編輯和被拒絕的請求，最新的在上面。
+- **狀態列：** 顯示請求次數，以及最後一次請求是多久以前。
+- **暫停：** 勾「Pause agent edits」或按 Ctrl+Alt+P（View → Pause Agent Edits）。暫停期間 Agent 的編輯會立刻被拒絕，並告訴它是你暫停的；它仍然可以讀取設計。同一個 KiCad 裡的兩個編輯器共用這個開關。
+- **焦點：** 點了面板之後，鍵盤焦點會回到畫布，所以 Ctrl+Z 等快捷鍵照常可用。
 | **無介面（headless）** | `bin\kicad-cli.exe api-server --socket <名稱> <板子.kicad_pcb>`，再用 `kicadd-mcp --socket <名稱> --stdio`。 | 讓 Agent 自己跑：審查、出廠檔、批次修改、CI |
 
 Claude Desktop（`%APPDATA%\Claude\claude_desktop_config.json`）或 Cursor（`mcp.json`）：

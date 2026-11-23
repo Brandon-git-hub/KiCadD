@@ -49,6 +49,8 @@ set( KICADD_PCB_SRCS
     ${KICADD_DIR}/src/lcsc/kicadd_parts.cpp
     ${KICADD_DIR}/src/lcsc/kicadd_obj2wrl.cpp
     ${KICADD_DIR}/src/pcb/kicadd_lcsc_tool.cpp
+    ${KICADD_DIR}/src/common/kicadd_copilot_tool.cpp
+    ${KICADD_DIR}/src/common/kicadd_copilot_panel.cpp
     ${KICADD_DIR}/src/pcb/kicadd_autoplace.cpp
     ${KICADD_DIR}/src/pcb/kicadd_fab.cpp
     ${KICADD_DIR}/src/pcb/kicadd_picture.cpp
@@ -87,6 +89,8 @@ set( KICADD_SCH_SRCS
     ${KICADD_DIR}/src/sch/kicadd_sch_history.cpp
     ${KICADD_DIR}/src/sch/kicadd_sch_sim.cpp
     ${KICADD_DIR}/src/common/kicadd_libtable.cpp
+    ${KICADD_DIR}/src/common/kicadd_copilot_tool.cpp
+    ${KICADD_DIR}/src/common/kicadd_copilot_panel.cpp
     )
 
 # Python client stubs (for tests / plugins; no SWIG anywhere).

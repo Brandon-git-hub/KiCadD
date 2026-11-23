@@ -38,7 +38,9 @@ set_rules, zones, pdn, reflection), or when a call fails: a tool's first error a
    user changed since. The user can also Ctrl+Z any agent edit in the editor.
 4. **"The editor is busy"** means the user is in a tool, a dialog or a progress window; the
    message says which. Do not hammer it: tell the user, or wait and try once more. kicadd-mcp
-   already retries for 10 s.
+   already retries for 10 s. **"paused: the user paused the agent's edits"** is the user's own
+   switch (Co-pilot panel, Ctrl+Alt+P): stop editing, say what you were about to do, and wait
+   for the user to resume; reads still work (`board_summary` / `sch_summary` say when paused).
 5. **Save only when asked** (`save_board`, `sch_save`). Before saving, or to report what a
    session did, `board_diff` lists what changed since the last save. Saving writes this build's file format
    (KiCad nightly 10.99); KiCad 9/10 may not open the files afterwards. Say so the first time.

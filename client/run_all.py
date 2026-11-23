@@ -192,6 +192,7 @@ def tests(a):
         ("desktop", "desktop", ["xvfb"], lambda w: py + [c("desktop_e2e.py")] + b + d + ["--work", w]),
         ("desktop_sch", "desktop", ["xvfb"], lambda w: py + [c("desktop_sch_e2e.py")] + b + d + ["--work", w]),
         ("desktop_autoplace", "desktop", ["xvfb"], lambda w: py + [c("desktop_autoplace_e2e.py")] + b + d + ["--work", w]),
+        ("copilot", "desktop", ["xvfb"], lambda w: py + [c("copilot_e2e.py")] + b + k + ["--work", w]),
         ("desktop_launch", "desktop", ["xvfb"], lambda w: py + [c("launch_e2e.py")] + b + k + ["--work", w, "--desktop"]),
     ]
     return out

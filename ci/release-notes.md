@@ -2,7 +2,7 @@
      {{UPSTREAM}} is filled from patches/UPSTREAM_BASE; build info and SHA-256 are appended. -->
 KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修剪版 Windows x64 build，加上 Agent（MCP）協同設計。
 
-> ⚠️ Beta（pre-release）。已能走完整個設計流程，功能仍會持續加入。由 GitHub Actions 自動建置；38 個端到端測試在 Linux 上全部通過（含桌面版），Windows CI 跑 smoke test 與 headless 的出廠、貼片、電路圖文件、模擬、PDN / 反射、新專案、開關 KiCad、工具、設定、undo 歷史測試；桌面版在 Windows 上只有人工試用。
+> ⚠️ Beta（pre-release）。已能走完整個設計流程，功能仍會持續加入。由 GitHub Actions 自動建置；39 個端到端測試在 Linux 上全部通過（含桌面版），Windows CI 跑 smoke test 與 headless 的出廠、貼片、電路圖文件、模擬、PDN / 反射、新專案、開關 KiCad、工具、設定、undo 歷史測試；桌面版在 Windows 上只有人工試用。
 
 ## 使用前須知
 完整的使用說明（安裝、接上 Agent、skill、存檔格式、做得到 / 做不到）：[docs/GUIDE.md](https://github.com/Brandon-git-hub/KiCadD/blob/main/docs/GUIDE.md)。
@@ -14,7 +14,15 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 - **目前不支援：** 差分對與等長佈線、全板自動佈線（`route` 只代替重複的手動佈線）、電路圖自動排版、組裝圖、STEP 匯出（3D 模型只有 VRML）、ODB++ / IPC-2581 / DXF、MCP resources / prompts。
 
 ## 下一版（beta.11，未發布）
-新功能：階段四第 3 項的剩餘部分，由 MCP 開關 KiCad。工具 64 → 66 個。
+新功能：階段四第 1 項（桌面 Co-pilot 面板），以及第 3 項的剩餘部分（由 MCP 開關 KiCad）。工具 64 → 66 個。
+
+- **Co-pilot 面板：** PCB 與電路圖編輯器右側新增停靠面板（View → Panels → Co-pilot）。
+  - **內容：** Agent 的編輯紀錄（含 undo / redo）、被拒絕的請求（同一個拒絕在幾秒內重複時合成一列並計次），以及狀態列（編輯數、被拒數、最後一次請求多久以前、是哪一種）。
+  - **暫停：** 「Pause agent edits」勾選框，或 Ctrl+Alt+P（View → Pause Agent Edits）。暫停期間 Agent 的編輯立刻被拒絕（`paused: ...`，kicadd-mcp 不會像忙碌時那樣重試 10 秒），讀取照常。
+  - **Agent 看得到暫停狀態：** `board_summary` / `sch_summary` 會加一行提示。
+  - **共用：** 同一個 KiCad 程序裡的兩個編輯器共用紀錄與開關（狀態放在 kicommon）。
+  - **焦點：** 點面板後鍵盤焦點會回到畫布，Ctrl+Z 等快捷鍵照常作用在編輯器。
+  - **啟動時隱藏：** 設 `KICADD_COPILOT=0`。
 
 - **`launch_kicad`：** 在 kicadd-mcp 已經連的 socket 上啟動 KiCad，之後所有工具直接作用在它上面。
   - **兩種模式：** `mode: "server"`（預設）是 headless 的 `kicad-cli api-server`；`"desktop"` 是 PCB 編輯器，開啟專案的板子，給人看、檢查、佈線。

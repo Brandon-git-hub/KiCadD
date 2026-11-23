@@ -16,7 +16,8 @@ its one API server.
      sheet with a part on it, two Ctrl+Z take both away
   3e. sch_annotate renumbers a part, the user's Ctrl+Z takes it back; sch_export_pdf writes the
      editor's schematic (both pages) and the editor still answers
-  4. user in an interactive tool (drawing a wire): agent edits refused as busy, applied after
+  4. user in an interactive tool (drawing a wire): agent edits refused as busy, applied after;
+     4b. the user pauses the agent (Ctrl+Alt+P): its edits refused at once, sch_summary says so
   5. Ctrl+P, agent sync_pcb: the PCB Editor's board gets the new part from the open Schematic
      Editor (unsaved), and the schematic file on disk is untouched
   6. Ctrl+Q closes everything cleanly (don't save)
@@ -254,6 +255,20 @@ def main():
         ref = m.group(1) if m else None
         check(not err and ref, "after the user leaves the tool it applies: " + t.splitlines()[0][:60])
         mcp.tool("sch_connect", {"nets": {"VPP": [f"{ref}.1"], "AGENT_PULLUP": [f"{ref}.2"]}})
+
+        print("[4b] user pauses the agent (Ctrl+Alt+P, the Co-pilot panel's switch)")
+        canvas_keys(sch_win, "ctrl+alt+p")
+        time.sleep(1)
+        t0 = time.time()
+        err, t = mcp.tool("sch_move", {"ref": ref, "dx": 2.54})
+        check(err and "paused" in t and time.time() - t0 < 3, "sch_move refused at once: " + t.strip()[:80])
+        err, s = mcp.tool("sch_summary")
+        check(not err and "the user paused the agent's edits" in s, "sch_summary says edits are paused")
+        d.shot(os.path.join(work, "shot-2b-paused.png"))
+        canvas_keys(sch_win, "ctrl+alt+p")
+        time.sleep(1)
+        err, s = mcp.tool("sch_summary")
+        check(not err and "paused" not in s, "resumed (Ctrl+Alt+P again)")
 
         print("[5] PCB Editor, agent sync_pcb from the open Schematic Editor")
         d.keys(manager, "ctrl+p")

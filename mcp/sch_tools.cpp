@@ -981,6 +981,9 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                                 + std::to_string( r.nets() ) + " nets, " + std::to_string( r.unconnected_pins() )
                                 + " unconnected pins, " + std::to_string( r.sheets() ) + " sheet(s)";
 
+                if( r.agent_paused() )
+                    t += "\nnote: the user paused the agent's edits (Co-pilot panel): edits are refused until resumed; reads work";
+
                 for( const ks::SchSheet& s : r.sheet_list() )
                     t += "\n" + sheetLine( s );
 

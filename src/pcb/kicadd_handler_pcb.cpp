@@ -5,6 +5,7 @@
  */
 
 #include "kicadd_handler_pcb.h"
+#include "common/kicadd_copilot.h"
 #include "kicadd_local_drc.h"
 #include "kicadd_render.h"
 #include "lcsc/kicadd_lcsc.h"
@@ -326,6 +327,10 @@ kicadd::RENDER_FEED* KICADD_HANDLER_PCB::feed()
 
 std::optional<ApiResponseStatus> KICADD_HANDLER_PCB::busy() const
 {
+    // the user's switch in the Co-pilot panel (phase 4 item 1)
+    if( kicadd::COPILOT::Get().Paused() )
+        return makeError( ApiStatusCode::AS_BUSY, kicadd::COPILOT::PausedMessage() );
+
     if( m_autoPlace )
     {
         return makeError( ApiStatusCode::AS_BUSY,
@@ -371,6 +376,8 @@ bool KICADD_HANDLER_PCB::editorOwnsUndo() const
 
 void KICADD_HANDLER_PCB::announce( const wxString& aWhat ) const
 {
+    kicadd::COPILOT::Get().Edit( aWhat );
+
     TOOL_MANAGER* mgr = m_context ? m_context->GetToolManager() : nullptr;
 
     // The commit has updated the view items; an API request (unlike a tool event) does not
@@ -430,6 +437,7 @@ KICADD_HANDLER_PCB::handleGetBoardSummary( const HANDLER_CONTEXT<GetBoardSummary
             out.add_duplicate_refs( ref.ToStdString() + " x" + std::to_string( n ) );
     }
 
+    out.set_agent_paused( kicadd::COPILOT::Get().Paused() );
     return out;
 }
 
@@ -5034,6 +5042,7 @@ KICADD_HANDLER_PCB::handleUndo( const HANDLER_CONTEXT<Undo>& aCtx )
 
         out.set_ok( applyHistory( entry, true, *out.mutable_result() ) );
         out.set_label( entry.label );
+        kicadd::COPILOT::Get().Edit( wxString::FromUTF8( "undo " + entry.label ) );
 
         if( out.ok() )
             noteStaleFills( entry, *out.mutable_result() );
@@ -5070,6 +5079,7 @@ KICADD_HANDLER_PCB::handleRedo( const HANDLER_CONTEXT<Redo>& aCtx )
 
         out.set_ok( applyHistory( entry, false, *out.mutable_result() ) );
         out.set_label( entry.label );
+        kicadd::COPILOT::Get().Edit( wxString::FromUTF8( "redo " + entry.label ) );
 
         if( out.ok() )
             noteStaleFills( entry, *out.mutable_result() );

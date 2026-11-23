@@ -79,7 +79,12 @@ Beta 已能走完整個設計流程（電路圖 → 選料 → 擺件 → 規則
 
 ## 階段四：協同介面
 
-1. **桌面 Co-pilot 面板：** 即時活動紀錄、「暫停 Agent 寫入」開關。
+1. **桌面 Co-pilot 面板：** 即時活動紀錄、「暫停 Agent 寫入」開關。 ✅（2026-11-23）
+   - **共用狀態：** `src/common/kicadd_copilot`，編進 kicommon，同一程序的 PCB 與電路圖編輯器共用。API server 回報每個請求，handler 的 `announce` 寫入編輯描述。
+   - **面板：** `src/common/kicadd_copilot_panel`，停靠在兩個編輯器右側。顯示狀態列與紀錄（最新在上，重複的拒絕合併計次）。點面板後焦點交還畫布。
+   - **動作：** `src/common/kicadd_copilot_tool`，View → Panels → Co-pilot，以及 View → Pause Agent Edits（Ctrl+Alt+P）。
+   - **暫停：** pcb / sch handler 的 `busy()` 回 `paused: ...`，kicadd-mcp 不重試；`board_summary` / `sch_summary` 會提示。
+   - **測試：** `client/copilot_e2e.py`；`desktop_sch_e2e` 加了 [4b]。
 2. **遠端 Web 2D 視圖：** 電路圖檢視、網路高亮、協同狀態提示，輪詢改為主動推送。
    - **模擬圖表分頁（2026-11-21 加入）：** `simulate` 的結果經 WebSocket 推到 Web 視圖的「圖表」分頁，可縮放、游標讀值、切換 probe；和第三階段的圖形輸出共用同一份資料。
 3. **由 MCP 開關 KiCad、新建專案（2026-11-21 加入）：**

@@ -5,6 +5,7 @@
  */
 
 #include "sch/kicadd_handler_sch.h"
+#include "common/kicadd_copilot.h"
 
 #include <api/sch_context.h>
 #include <base_units.h>
@@ -634,6 +635,10 @@ SCH_EDIT_FRAME* KICADD_HANDLER_SCH::editor() const
 
 std::optional<ApiResponseStatus> KICADD_HANDLER_SCH::busy() const
 {
+    // the user's switch in the Co-pilot panel (phase 4 item 1)
+    if( kicadd::COPILOT::Get().Paused() )
+        return makeError( ApiStatusCode::AS_BUSY, kicadd::COPILOT::PausedMessage() );
+
     if( !m_context || m_context->CanAcceptApiCommands() )
         return std::nullopt;
 
@@ -645,6 +650,11 @@ std::optional<ApiResponseStatus> KICADD_HANDLER_SCH::busy() const
 
 void KICADD_HANDLER_SCH::announce( const wxString& aWhat ) const
 {
+    // the Co-pilot log is shared with the PCB Editor: say which editor
+    wxString what = aWhat;
+    what.StartsWith( wxS( "Agent: " ), &what );
+    kicadd::COPILOT::Get().Edit( wxS( "schematic: " ) + what );
+
     // The commit has updated the view; an API request (unlike a tool event) does not repaint
     // the canvas by itself.
     if( SCH_EDIT_FRAME* frame = editor() )
@@ -1108,6 +1118,8 @@ HANDLER_RESULT<SchSummary> KICADD_HANDLER_SCH::handleGetSummary( const HANDLER_C
         if( sheet.LastScreen() && sheet.LastScreen()->IsContentModified() )
             out.set_modified( true );
     }
+
+    out.set_agent_paused( kicadd::COPILOT::Get().Paused() );
 
     for( const SCH_SHEET_PATH& sheet : schematic()->Hierarchy() )
     {

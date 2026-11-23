@@ -71,6 +71,7 @@ message BoardSummaryResponse
   Point  bbox_min   = 8;
   Point  bbox_max   = 9;
   repeated string duplicate_refs = 10;   // "R22 x2": a reference on more than one footprint
+  bool   agent_paused = 11;   // the user paused the agent's edits (desktop Co-pilot panel)
 }
 
 // Items whose bounding box intersects a circle.

@@ -119,7 +119,9 @@ bool IPC_CLIENT::Call( const google::protobuf::Message& aRequest, google::protob
 
         ApiStatusCode status = reply.status().status();
 
-        if( status == ApiStatusCode::AS_NOT_READY || status == ApiStatusCode::AS_BUSY )
+        // the user's pause (Co-pilot panel) is not waited out: it lasts until the user resumes
+        if( ( status == ApiStatusCode::AS_NOT_READY || status == ApiStatusCode::AS_BUSY )
+            && !reply.status().error_message().starts_with( "paused:" ) )
         {
             lastBusy = reply.status().error_message();
             std::this_thread::sleep_for( std::chrono::milliseconds( 200 ) );

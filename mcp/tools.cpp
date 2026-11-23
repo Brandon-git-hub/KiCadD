@@ -423,7 +423,10 @@ TOOL_RESULT boardSummary( IPC_CLIENT& aIpc )
              + " tracks=" + std::to_string( r.tracks() ) + " vias=" + std::to_string( r.vias() )
              + " zones=" + std::to_string( r.zones() ) + " nets=" + std::to_string( r.nets() )
              + " cu_layers=" + std::to_string( r.copper_layers() )
-             + " outline=" + pt( r.bbox_min() ) + ".." + pt( r.bbox_max() ) + "mm\n" };
+             + " outline=" + pt( r.bbox_min() ) + ".." + pt( r.bbox_max() ) + "mm\n"
+             + ( r.agent_paused() ? "note: the user paused the agent's edits (Co-pilot panel): edits are refused "
+                                    "until resumed; reads work\n"
+                                  : "" ) };
 }
 
 

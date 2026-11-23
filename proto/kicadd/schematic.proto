@@ -102,6 +102,7 @@ message SchSummary
   repeated SchSymbol symbols = 5;
   repeated SchSheet sheet_list = 6;   // the hierarchical sheets (root aside)
   bool   modified         = 7;   // some sheet differs from its file on disk
+  bool   agent_paused     = 8;   // the user paused the agent's edits (desktop Co-pilot panel)
 }
 
 // Place a symbol: from a library (lib_id "Device:R") or an LCSC part (lcsc "C25804": fetched,
