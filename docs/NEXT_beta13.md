@@ -1,11 +1,50 @@
 # 交接：beta.13 的工作清單（2026-11-24）
 
+> **狀態（2026-11-24）：** v0.1.0-beta.12 已打 tag 並發布（pre-release）。origin/main 在 87015f0，本機領先（本文件的 commit）。
+
 beta.12 已發布（NEXT_beta10 第一優先 1–10 項、盲測 S1 的修正）。這份清單合併三個來源：
 - 盲測 S2（四層 RP2040 板）的回報；
 - `docs/NEXT_beta12.md` 裡還沒做的項目；
 - MCP 工具調用次數的統計。
 
 方向不變：只做對任何板子都有用的改進。
+
+## 已定案的 beta.13 計畫（2026-11-24，使用者確認）
+
+### 原則
+避免對 StickHub 過度擬合。優先做通用修正，在多種板子上驗證一般化。
+
+### 階段 1（先做）：修正 S2 回報的問題
+- **順序：** 從〈第一優先〉第 1 項開始：同一組 0.324 / 0.15 mm 的線對，`impedance` / `set_rules` 算出 90 Ω，`audit` 量到 108 Ω。先找出哪一邊錯，再統一兩邊的平面模型。
+- **接著：** 第 2–6 項，以及第 8 項（NEXT_beta12 留下的項目）。第 7 項（back_decaps 把按鈕放到底面）也一併做。
+- **完成條件：**
+  - 每項都有 e2e 測試。
+  - `python3 -I client/run_all.py` 全部通過（目前 40 個）。
+  - 先在本機 commit。
+
+### 階段 2：合併工具
+- **範圍：** 只做下方〈收斂合併建議〉的 A 類：
+  - undo / redo / sch_undo / sch_redo；
+  - get_rules → set_rules；
+  - check_drc → run_drc；
+  - flush_ratsnest → board_summary；
+  - open_board + new_project → project；
+  - 三個 export 合成一個。
+- **board_render_3d：** 若很容易，也併入 `board_render {view: "3d"}`。
+- **舊名稱：** 保留一版作為別名，回應時提示新名稱。
+- **一起更新：** SKILL.md、TOOLS.md、MCP Resources / Prompts、e2e 測試。
+- **不動：** simulate、pdn、reflection、board_diff、teardrops。launch_kicad / close_kicad 也維持獨立。
+
+### 階段 3：審查型盲測（階段 1、2 都通過之後）
+- **作法：** 在 CM5 或 Jetson 板上跑一輪審查型盲測，例如「審查這塊板並提出問題」。
+- **目的：** 公平評估 audit、simulate、pdn、reflection、board_diff、export_assembly 等分析工具。之後再決定它們要保留還是合併。
+
+### 發布流程
+1. push main。
+2. 等 Windows CI 變綠。
+3. 推 annotated tag `v0.1.0-beta.13`。
+
+使用者已同意 CI 綠燈後直接推 tag。不過自動模式的權限檢查可能會擋下推 tag：被擋時，請使用者自己推。
 
 ## 盲測 S2 的結果
 
