@@ -1,0 +1,118 @@
+# 交接：beta.13 的工作清單（2026-11-24）
+
+beta.12 已發布（NEXT_beta10 第一優先 1–10 項、盲測 S1 的修正）。這份清單合併三個來源：
+- 盲測 S2（四層 RP2040 板）的回報；
+- `docs/NEXT_beta12.md` 裡還沒做的項目；
+- MCP 工具調用次數的統計。
+
+方向不變：只做對任何板子都有用的改進。
+
+## 盲測 S2 的結果
+
+- **規格：** `run/exp/s2-spec.md`。RP2040、四層，內層是完整的 GND 平面和 3V3 平面，另有 USB 90 Ω 差分對、QSPI flash 和晶振。
+- **專案：** `run/exp/s2`。
+- **結果：** ERC 0 錯 / 13 警告，DRC 0 錯 / 1 警告，未佈線 0，出廠檔齊全。
+  - 平面檢查：內層平面沒有被訊號切開。
+  - USB 線對：
+    - 接頭端的 USB_D 有 1.33 mm skew。原因是 USB-C 的 A/B 兩排腳在接頭底下交叉，只能經過孔換層。
+    - audit 量到 108 Ω，不是預定的 90 Ω。
+- **最花時間的兩件事：**
+  - QFN（0.4 mm 腳距）電源腳的逃線。
+  - `auto_place` 把電容放進 IC 的逃線通道後，要手動重擺。
+
+## 第一優先：通用改進
+
+1. **`impedance` / `set_rules` 和 `audit impedance` 的結果不一致。**
+   - 同樣 0.324 / 0.15 mm 的線對：前者算出 90 Ω，後者量到 108 Ω。
+   - 兩邊應該共用同一個平面模型（`impedance::Planes()`）。要查出差在哪一層：In1 GND 平面的參考距離，或線對旁邊的鋪銅。
+   - 修好後，回應要說明採用的參考平面。
+2. **把過孔打進平面。**
+   - `route to=zone` 給了 via / 換層 waypoint 時，在那一點只打一顆貫孔，接上該層的平面。現在會多打一顆並繞路。
+   - 允許過孔放在 QFN 的焊盤環內。
+   - `stitch_vias` 要能處理只鋪一層的網路（In2.Cu 的 +3V3）。
+3. **`auto_place` 預留細腳距 IC 的逃線區。**
+   - QFN、QFP、BGA 周圍預設留一圈 keepout，大約一到兩個腳距加一條線寬，讓去耦電容和它們的過孔不擋住逃線。
+   - 這是第 9 項（track_room）的延伸：那一項處理的是既有走線，這一項處理還沒佈的逃線。
+4. **線寬配合腳距。**
+   - `route` / `fanout` 從細腳距焊盤出發時，自動縮到 min(class 線寬, 焊盤間隙 − 2 × 間距) 再加寬。
+   - 間隙剛好等於 clearance 時要接受。S2 遇到的情況：0.2 mm 線在 0.4 mm 腳距上被拒，相鄰的腳卻可以。
+5. **腳型別推定擴充。**
+   - EasyEDA 的資料把 RP2040 的 IOVDD、DVDD、VREG_* 標成 bidirectional，造成幾個後果：
+     - `audit` 的去耦檢查跳過主 IC。
+     - `ir_drop` 找不到 +1V1 的電源。
+     - ERC 出現 13 個警告。
+   - 名稱明確是電源的腳（IOVDD、DVDD、AVDD、VREG_*、USB_VDD、ADC_AVDD、VCC*、VDD*）即使資料標了 bidirectional，也改成 power_in。回應要列出改了哪些腳。
+6. **`query_area` 的 custom 形狀焊盤顯示 0x0。** 例如 USB-C 的 A4B9 / A1B12。改用 bbox。
+7. **`auto_place back_decaps=true` 把按鈕 SW2 放到底面。** 只有去耦電容才可以翻到底面。
+8. **NEXT_beta12 留下的項目：**
+   - 邊緣排針「沿邊」的方向。
+   - `sch_connect partial=true`：S1、S2 都因為一個衝突，整批 30–70 支腳失敗。
+   - 修改腳型別的工具。
+   - USB-C 外殼焊盤沒有編號。
+   - starved thermal 的建議。
+   - `board_render` 有時沒畫出 NPTH 孔。
+   - 定義 `hole_inset`。
+
+## 文件（SKILL.md）
+
+- 細腳距 QFN 電源腳的逃線作法：焊盤環內打過孔、先拉短線再打孔、小過孔（JLC 0.45 / 0.2 mm）。
+- 本地標籤在板上的網路名稱是 `/NAME`。`set_rules` 的樣式回報已經會提示這一點；SKILL.md 也要寫。
+- USB-C 的 A/B 兩排腳交叉：pair order 不報錯，但佈線仍需要一對過孔。
+- `to=zone` 搭配 via / waypoint 的行為。
+
+## MCP 工具調用統計（2026-11-24）
+
+**資料：**
+- 來源：16 份 transcript，包括盲測第一到五輪、S1、S2，以及開發時的代理工作階段。
+- 調用次數：直接調用 1968 次，`batch` 內又有 1589 次。
+- 工具總數 68 個，其中 16 個從未被調用。
+
+**偏差：** 這些幾乎都是「從零設計一塊板」的任務。分析和審查類工具沒被用到，是因為任務沒要求，不代表它們沒用。決定之前，應該先跑一輪「審查既有設計」的盲測，例如 cm5 或 Jetson 的 review：`audit`、`simulate`、`pdn`、`reflection`、`board_diff`、`export_assembly`。
+
+**最常用：**
+
+| 工具 | 次數 |
+|---|---|
+| route | 617 |
+| sch_add_part | 551 |
+| move_footprints | 310 |
+| batch | 284 |
+| lcsc_search | 208 |
+| sch_move | 180 |
+| query_area | 177 |
+| board_render | 99 |
+| sch_connect | 91 |
+| route_short | 85 |
+
+錯誤率最高的是 `route`：55 次錯誤，約 9%。
+
+**0 次：** add_footprint、delete_footprints、pcb_set_fields、teardrops、redo、sch_redo、board_render_3d、export_assembly、board_diff、lib_register、sch_export_pdf、simulate、pdn、reflection、launch_kicad、close_kicad。
+
+**1–6 次：** open_board 1、sch_annotate 2、get_rules 3、board_outline 5、check_drc 5、export_fab 5、flush_ratsnest 6、sch_summary 6。
+
+### 收斂合併建議（68 → 約 59）
+
+**A. 明確可以合併：** 這些工具都很薄、同一領域，而且很少用到。
+
+| 合併 | 現在 → 之後 | 說明 |
+|---|---|---|
+| `undo` / `redo` / `sch_undo` / `sch_redo` | 4 → 1 | `undo {target: "board" \| "schematic", redo: true}`。redo 兩個都是 0 次 |
+| `get_rules` 併入 `set_rules` | 2 → 1 | `set_rules` 不帶參數就是查詢（它本來就會回傳完整規則） |
+| `check_drc` 併入 `run_drc` | 2 → 1 | `run_drc {refs, local: true}`：只檢查零件周圍，不移動 |
+| `flush_ratsnest` 併入 `board_summary` | 2 → 1 | `board_summary` 直接給完整的未連線數。各工具的計數已經統一，會標出延後的網路 |
+| `open_board` + `new_project` | 2 → 1 | `project {open: path}` / `project {new: {...}}` |
+| `export_fab` / `export_assembly` / `sch_export_pdf` | 3 → 1 | `export {fab: {...}, assembly: {...}, schematic_pdf: {...}}`，可以一次出多份 |
+
+**B. 可以考慮：** 參數差異較大，合併後 schema 會變長，要權衡。
+- `board_render_3d` 併入 `board_render {view: "3d", ...}`（1 個）。
+- `add_footprint` / `delete_footprints` / `pcb_set_fields` 合成 `footprints {add | delete | set}`（−2）。這三個是給不走電路圖的板上直接編輯和桌面協作用的，從零設計的流程不會用到。
+- `lib_register` 併入 `lib_create_*`（−1），三者參數不同，效益小。
+
+**C. 保留：**
+- `simulate`、`pdn`、`reflection`、`teardrops`、`board_diff`：審查和分析領域，要用審查型盲測驗證後再決定。
+- `launch_kicad` / `close_kicad`：有 `--allow-launch` 的安全邊界，宜保持獨立。
+
+**注意：** 合併會改變工具名稱，要一起處理：
+- 舊名稱保留一版作為別名，回應時提示新名稱。
+- 更新 SKILL.md、TOOLS.md、MCP Resources / Prompts。
+- 更新所有 e2e 測試。
