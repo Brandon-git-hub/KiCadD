@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <iterator>
 #include <map>
+#include <mutex>
 #include <tuple>
 #include <utility>
 
@@ -750,6 +751,41 @@ std::string Png( const CHART& aChart )
     }
 
     return img.png();
+}
+
+
+namespace
+{
+std::mutex                                                     g_sinkMutex;
+std::function<void( const CHART&, const std::string& )>        g_sink;
+} // namespace
+
+
+void SetSink( std::function<void( const CHART&, const std::string& )> aSink )
+{
+    std::lock_guard<std::mutex> lock( g_sinkMutex );
+    g_sink = std::move( aSink );
+}
+
+
+bool HasSink()
+{
+    std::lock_guard<std::mutex> lock( g_sinkMutex );
+    return (bool) g_sink;
+}
+
+
+void Publish( const CHART& aChart, const std::string& aTool )
+{
+    std::function<void( const CHART&, const std::string& )> sink;
+
+    {
+        std::lock_guard<std::mutex> lock( g_sinkMutex );
+        sink = g_sink;
+    }
+
+    if( sink && !aChart.panels.empty() )
+        sink( aChart, aTool );
 }
 
 } // namespace kicadd::mcp::plot

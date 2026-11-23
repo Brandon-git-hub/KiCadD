@@ -15,6 +15,7 @@
 
 #include "ipc_client.h"
 #include "mcp_server.h"
+#include "plot.h"
 #include "tools.h"
 #include "transports.h"
 #include "web.h"
@@ -246,6 +247,15 @@ int main( int argc, char** argv )
         }
     }
 
+    // the tools' charts to the Chart tab
+    if( hub )
+    {
+        plot::SetSink( [h = hub.get()]( const plot::CHART& aChart, const std::string& aTool )
+                       { h->PublishChart( ChartJson( aChart, aTool, WEB_HUB::MAX_CHART_POINTS ) ); } );
+    }
+
     MCP_SERVER server( std::move( tools ) );
-    return RunHttp( server, http, hub.get(), ioc );
+    int        rc = RunHttp( server, http, hub.get(), ioc );
+    plot::SetSink( nullptr );
+    return rc;
 }

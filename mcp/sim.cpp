@@ -2228,6 +2228,7 @@ TOOL_RESULT Simulate( IPC_CLIENT& aIpc, const json& a )
     }
 
     const bool plotOn = a.value( "plot", false );
+    const bool chartOn = plotOn || plot::HasSink();   // the PNG, or the web view's Chart tab
 
     const double settlePct = a.contains( "settle_pct" ) && a["settle_pct"].is_number() ? a["settle_pct"].get<double>() : 2.0;
     const int    timeout = a.contains( "timeout_s" ) && a["timeout_s"].is_number_integer() ? std::clamp( a["timeout_s"].get<int>(), 1, 600 ) : 60;
@@ -2354,7 +2355,7 @@ TOOL_RESULT Simulate( IPC_CLIENT& aIpc, const json& a )
             aVectors.push_back( analysis == "ac" && !biasPass ? "vdb(" + node + ")" : "v(" + node + ")" );
             aLabels.push_back( "v:" + pr );
 
-            if( analysis == "ac" && !biasPass && plotOn )
+            if( analysis == "ac" && !biasPass && chartOn )
             {
                 aVectors.push_back( "vp(" + node + ")" );
                 aLabels.push_back( "ph:" + pr );
@@ -2876,7 +2877,7 @@ TOOL_RESULT Simulate( IPC_CLIENT& aIpc, const json& a )
     {
         result.text += "plot: nothing to draw for op (one point)\n";
     }
-    else if( plotOn )
+    else if( chartOn && analysis != "op" )
     {
         plot::CHART chart;
         chart.title = "simulate " + analysis;
@@ -2959,10 +2960,15 @@ TOOL_RESULT Simulate( IPC_CLIENT& aIpc, const json& a )
 
         chart.panels.erase( std::remove_if( chart.panels.begin(), chart.panels.end(), []( const plot::PANEL& p ) { return p.series.empty(); } ),
                             chart.panels.end() );
-        result.image = plot::Png( chart );
+        plot::Publish( chart, "simulate" );
 
-        if( result.image.empty() )
-            result.text += "plot: nothing to draw\n";
+        if( plotOn )
+        {
+            result.image = plot::Png( chart );
+
+            if( result.image.empty() )
+                result.text += "plot: nothing to draw\n";
+        }
     }
 
     return result;
@@ -2997,9 +3003,11 @@ sim::CAP_MODEL sim::CapModel( const std::string& aValue, const std::string& aTex
             m.c = v;
         else
         {
-            // a value written as a part name: "CC0402_100NF_16V_10%_X7R", "C_4U7_0603", "10uF/6.3V"
+            // a value written as a part name: "CC0402_100NF_16V_10%_X7R", "C_4U7_0603", "10uF/6.3V",
+            // "C_100n_0402" / "C_22u_25V_0805" (a bare p / n / u token; M would be ambiguous)
             static const std::regex rxF( R"((^|[^A-Z0-9.])(\d+(?:\.\d+)?)\s*([PNUM])F(?![A-Z]))" );
             static const std::regex rxMid( R"((^|[^A-Z0-9.])(\d+)([PNU])(\d+)(?![A-Z0-9]))" );
+            static const std::regex rxBare( R"((^|[_\s/-])(\d+(?:\.\d+)?)([PNU])(?=$|[_\s/-]))" );
             const std::string       uv = upper( aValue );
             std::smatch             sm;
             const auto              scale = []( char c ) { return c == 'P' ? 1e-12 : c == 'N' ? 1e-9 : c == 'U' ? 1e-6 : 1e-3; };
@@ -3008,6 +3016,8 @@ sim::CAP_MODEL sim::CapModel( const std::string& aValue, const std::string& aTex
                 m.c = std::stod( sm[2].str() ) * scale( sm[3].str()[0] );
             else if( std::regex_search( uv, sm, rxMid ) )
                 m.c = std::stod( sm[2].str() + "." + sm[4].str() ) * scale( sm[3].str()[0] );
+            else if( std::regex_search( uv, sm, rxBare ) )
+                m.c = std::stod( sm[2].str() ) * scale( sm[3].str()[0] );
         }
     }
 

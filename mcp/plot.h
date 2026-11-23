@@ -12,6 +12,7 @@
 
 #include <optional>
 #include <string>
+#include <functional>
 #include <vector>
 
 namespace kicadd::mcp::plot
@@ -53,6 +54,13 @@ std::string Png( const CHART& aChart );
 
 /// A value with its SI prefix for an axis ("2.5 µs", "100 kHz", "-20 dB").
 std::string Tick( double aValue, const std::string& aUnit );
+
+/// The web view's Chart tab (phase 4 item 2): with a view running (kicadd-mcp --http), every chart
+/// a tool makes (simulate, pdn, reflection) is also handed to it, plot=true or not; the PNG is
+/// still made only when asked. aTool names the tool that made it.
+void SetSink( std::function<void( const CHART&, const std::string& aTool )> aSink );
+bool HasSink();
+void Publish( const CHART& aChart, const std::string& aTool );
 
 } // namespace kicadd::mcp::plot
 

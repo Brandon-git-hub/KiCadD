@@ -17,6 +17,10 @@
  *     {"t":"ratsnest","xy":[x1,y1,x2,y2,..],"net":[i,..],"nets":[..],"pending":[..],"unconnected":N,
  *      "final":bool}   (final=false: deferred large nets still missing, a final one follows)
  *     {"t":"status","push":bool,"viewers":N}   (push: KiCad notifies changes; N browsers here)
+ *     {"t":"chart","id":N,"at":unix ms,"tool":"simulate","title":"..","xUnit":"s","logX":bool,
+ *      "panels":[{"yUnit":"V","logY":bool,"limit":v|null,"limitLabel":"..",
+ *                 "series":[{"label","color","faint","dashed","x":[..],"y":[..]},..]},..]}
+ *          (a tool's chart for the Chart tab; the last few are sent to a view that joins)
  *     {"t":"copilot","paused":bool,"edits":N,"refused":N,"requests":N,"last_type":"..","last_ms":unix ms,
  *      "events":[[unix ms,kind,text,repeat],..]}   (the agent's activity; kind 0 edit, 1 refused, 2 note)
  *     {"t":"error","error":".."}
@@ -48,6 +52,7 @@
 #include "web.h"
 #include "drc.h"
 #include "ipc_client.h"
+#include "plot.h"
 
 #include <chrono>
 #include <cmath>
@@ -579,6 +584,28 @@ std::string WEB_HUB::statusJson()
 }
 
 
+void WEB_HUB::PublishChart( const json& aChart )
+{
+    json c = aChart;
+    c["t"] = "chart";
+    c["at"] = std::chrono::duration_cast<std::chrono::milliseconds>( std::chrono::system_clock::now().time_since_epoch() ).count();
+    std::shared_ptr<const std::string> text;
+
+    {
+        std::lock_guard<std::mutex> lock( m_chartsMutex );
+        c["id"] = ++m_chartSeq;
+        text = std::make_shared<const std::string>( c.dump() );
+        m_charts.push_back( text );
+
+        while( m_charts.size() > MAX_CHARTS )
+            m_charts.pop_front();
+    }
+
+    for( const auto& s : sessions() )
+        s->Send( text );
+}
+
+
 std::string WEB_HUB::copilotJson()
 {
     kb::GetCopilot   req;
@@ -722,6 +749,13 @@ void WEB_HUB::runJob( const JOB& aJob )
 
         if( std::string cp = copilotJson(); !cp.empty() )
             session->Send( std::make_shared<std::string>( cp ) );
+
+        {
+            std::lock_guard<std::mutex> lock( m_chartsMutex );
+
+            for( const auto& chart : m_charts )
+                session->Send( chart );
+        }
 
         bool pending = false;
         session->Send( std::make_shared<std::string>( ratsnestJson( false, &pending ) ) );
@@ -1172,6 +1206,71 @@ void WEB_HUB::scheduleRatsnestFlush( bool aPending )
     // Every change pushes the deadline back, so the flush runs once edits stop.
     m_flushDue = aPending ? std::chrono::steady_clock::now() + std::chrono::milliseconds( RATSNEST_IDLE_MS )
                           : std::chrono::steady_clock::time_point{};
+}
+
+
+json ChartJson( const plot::CHART& aChart, const std::string& aTool, size_t aMaxPoints )
+{
+    auto num = []( double v ) -> json { return std::isfinite( v ) ? json( v ) : json(); };
+
+    json panels = json::array();
+
+    for( const plot::PANEL& p : aChart.panels )
+    {
+        json series = json::array();
+
+        for( const plot::SERIES& s : p.series )
+        {
+            json   xs = json::array(), ys = json::array();
+            size_t n = std::min( s.x.size(), s.y.size() );
+
+            if( n <= aMaxPoints )
+            {
+                for( size_t i = 0; i < n; ++i )
+                {
+                    xs.push_back( num( s.x[i] ) );
+                    ys.push_back( num( s.y[i] ) );
+                }
+            }
+            else
+            {
+                // buckets of k points: the min and the max of each, in x order
+                size_t k = ( n + aMaxPoints / 2 - 1 ) / ( aMaxPoints / 2 );
+
+                for( size_t b = 0; b < n; b += k )
+                {
+                    size_t e = std::min( n, b + k ), lo = b, hi = b;
+
+                    for( size_t i = b; i < e; ++i )
+                    {
+                        if( s.y[i] < s.y[lo] )
+                            lo = i;
+
+                        if( s.y[i] > s.y[hi] )
+                            hi = i;
+                    }
+
+                    for( size_t i : { std::min( lo, hi ), std::max( lo, hi ) } )
+                    {
+                        xs.push_back( num( s.x[i] ) );
+                        ys.push_back( num( s.y[i] ) );
+
+                        if( lo == hi )
+                            break;
+                    }
+                }
+            }
+
+            series.push_back( { { "label", s.label }, { "color", s.color }, { "faint", s.faint }, { "dashed", s.dashed },
+                                { "x", std::move( xs ) }, { "y", std::move( ys ) } } );
+        }
+
+        panels.push_back( { { "yUnit", p.yUnit }, { "logY", p.logY }, { "limit", p.limit ? num( *p.limit ) : json() },
+                            { "limitLabel", p.limitLabel }, { "series", std::move( series ) } } );
+    }
+
+    return { { "tool", aTool }, { "title", aChart.title }, { "xUnit", aChart.xUnit }, { "logX", aChart.logX },
+             { "panels", std::move( panels ) } };
 }
 
 } // namespace kicadd::mcp

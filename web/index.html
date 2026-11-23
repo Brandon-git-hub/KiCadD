@@ -27,7 +27,21 @@
   button:disabled { opacity: .4; cursor: default; }
   button.dirty { border-color: var(--warn); color: var(--warn); }
   .btns { display: flex; gap: 6px; }
-  #stage { position: relative; overflow: hidden; }
+  #main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  #tabs { display: flex; gap: 4px; align-items: center; padding: 4px 8px; border-bottom: 1px solid var(--line);
+          background: var(--panel); }
+  #tabs button { padding: 2px 12px; border-color: transparent; background: transparent; color: var(--dim); }
+  #tabs button.on { color: var(--text); border-color: var(--line); background: #222831; }
+  #chartBadge { color: var(--accent); }
+  #chartPick { background: #222831; color: var(--text); border: 1px solid var(--line); border-radius: 5px;
+               font: inherit; padding: 2px 6px; max-width: 46%; display: none; }
+  #stage { position: relative; overflow: hidden; flex: 1; min-height: 0; }
+  #chartPane { position: relative; flex: 1; min-height: 0; display: none; background: #0b0e11; }
+  #ch { cursor: crosshair; }
+  #chTip { position: absolute; pointer-events: none; background: rgba(16,19,23,.94); border: 1px solid var(--line);
+           padding: 4px 8px; border-radius: 4px; font-size: 12px; white-space: nowrap; display: none; }
+  #chTip .sw { margin-right: 6px; vertical-align: -1px; }
+  #chEmpty { position: absolute; left: 0; right: 0; top: 45%; text-align: center; }
   canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
   canvas.grab { cursor: grabbing; }
   #tip { position: absolute; pointer-events: none; background: rgba(16,19,23,.92); border: 1px solid var(--line);
@@ -77,7 +91,19 @@
     <span class="pill" id="conn">offline</span>
     <button id="fit" title="Fit board (Home, or F with nothing selected)">Fit</button>
   </header>
-  <div id="stage"><canvas id="cv"></canvas><div id="tip"></div><div id="hiNet"></div></div>
+  <div id="main">
+    <div id="tabs">
+      <button data-tab="board" class="on">Board</button>
+      <button data-tab="chart" title="Charts from simulate, pdn and reflection">Chart <span id="chartBadge"></span></button>
+      <span style="flex:1"></span>
+      <select id="chartPick" title="Recent charts"></select>
+    </div>
+    <div id="stage"><canvas id="cv"></canvas><div id="tip"></div><div id="hiNet"></div></div>
+    <div id="chartPane">
+      <canvas id="ch"></canvas><div id="chTip"></div>
+      <div id="chEmpty" class="empty">No chart yet: the agent's simulate, pdn and reflection results show here</div>
+    </div>
+  </div>
   <aside>
     <section id="agentSec">
       <h3 style="display:flex;align-items:center;gap:8px">Agent
@@ -1107,7 +1133,8 @@ window.addEventListener("mouseup", () => {
 });
 
 window.addEventListener("keydown", e => {
-  if (e.target.tagName === "INPUT") return;
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+  if (tab !== "board" && !(e.ctrlKey || e.metaKey)) return;   // the board's keys only on its tab
   if (e.ctrlKey || e.metaKey) {
     const k = e.key.toLowerCase();
     if (k === "z" && !e.shiftKey) undoRedo("undo");
@@ -1223,6 +1250,7 @@ function connect() {
     else if (msg.t === "drcfull") onDrcFull(msg);
     else if (msg.t === "status") onStatus(msg);
     else if (msg.t === "copilot") onCopilot(msg);
+    else if (msg.t === "chart") onChart(msg);
     else if (msg.t === "refilled") {
       $("refill").disabled = false; $("refill").textContent = "Refill zones";
       log(msg.ok ? `zones refilled in <b>${(msg.ms / 1000).toFixed(1)} s</b>` : `<span style="color:var(--bad)">refill failed: ${msg.error}</span>`);
@@ -1231,6 +1259,279 @@ function connect() {
     else if (msg.t === "error") log(`<span style="color:var(--bad)">${msg.error}</span>`);
   };
 }
+
+// ---------------------------------------------------------------------------------------------
+// Chart tab: the tools' charts (simulate, pdn, reflection), the same data as their PNG
+
+const ch = $("ch"), cctx = ch.getContext("2d");
+const CH_PALETTE = ["#3a9be0", "#e0701a", "#1fb890", "#d98bb8", "#6cc4f0", "#f0ad1a", "#c8c8c8"];
+const charts = [];                      // the latest last
+let chart = null, chView = null;        // the shown one; its x range {x0, x1} (null: all)
+let chHidden = new Set();               // "panel|colour" switched off in the legend
+let chMouse = null, chDrag = null, chLegendBoxes = [];
+let tab = "board";
+
+function setTab(t) {
+  tab = t;
+  for (const b of document.querySelectorAll("#tabs button")) b.classList.toggle("on", b.dataset.tab === t);
+  $("stage").style.display = t === "board" ? "" : "none";
+  $("chartPane").style.display = t === "chart" ? "block" : "none";
+  $("chartPick").style.display = t === "chart" && charts.length ? "inline-block" : "none";
+  if (t === "chart") { $("chartBadge").textContent = ""; chResize(); }
+  else resize();
+}
+for (const b of document.querySelectorAll("#tabs button")) b.onclick = () => setTab(b.dataset.tab);
+
+function onChart(c) {
+  if (charts.some(o => o.id === c.id)) return;
+  charts.push(c);
+  while (charts.length > 8) charts.shift();
+  const pick = $("chartPick");
+  pick.innerHTML = "";
+  for (const o of [...charts].reverse()) {
+    const opt = document.createElement("option");
+    opt.value = o.id;
+    opt.textContent = new Date(o.at).toLocaleTimeString([], { hour12: false }) + "  " + o.title;
+    pick.append(opt);
+  }
+  showChart(c);
+  if (tab !== "chart") $("chartBadge").textContent = "●";
+  log(`chart from <b>${c.tool}</b>: ${c.title.replace(/[<>&]/g, "")}`);
+}
+$("chartPick").onchange = () => showChart(charts.find(o => String(o.id) === $("chartPick").value));
+
+function showChart(c) {
+  if (!c) return;
+  chart = c; chView = null; chHidden = new Set();
+  $("chartPick").value = c.id;
+  $("chEmpty").style.display = "none";
+  if (tab === "chart") $("chartPick").style.display = "inline-block";
+  chDraw();
+}
+
+function chResize() {
+  const dpr = window.devicePixelRatio || 1, r = $("chartPane").getBoundingClientRect();
+  ch.width = Math.max(1, Math.round(r.width * dpr)); ch.height = Math.max(1, Math.round(r.height * dpr));
+  ch.style.width = r.width + "px"; ch.style.height = r.height + "px";
+  chDraw();
+}
+window.addEventListener("resize", () => { if (tab === "chart") chResize(); });
+
+const SI = [[1e12, "T"], [1e9, "G"], [1e6, "M"], [1e3, "k"], [1, ""], [1e-3, "m"], [1e-6, "µ"], [1e-9, "n"], [1e-12, "p"], [1e-15, "f"]];
+function si(v, unit, digits = 3) {
+  if (v === null || !isFinite(v)) return "–";
+  if (unit === "dB" || unit === "°") return `${+v.toPrecision(digits)} ${unit}`;
+  if (v === 0) return "0 " + unit;
+  const a = Math.abs(v);
+  for (const [m, p] of SI) if (a >= m * 0.9995) return `${+(v / m).toPrecision(digits)} ${p}${unit}`;
+  return `${v.toExponential(2)} ${unit}`;
+}
+
+function niceTicks(lo, hi, n) {         // linear: steps of 1, 2, 5 x 10^k
+  const span = hi - lo;
+  if (!(span > 0)) return [lo];
+  const raw = span / n, mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1, 2, 5, 10].map(k => k * mag).find(s => s >= raw) || 10 * mag;
+  const out = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi + step * 1e-9; v += step) out.push(Math.abs(v) < step * 1e-9 ? 0 : v);
+  return out;
+}
+function logTicks(lo, hi) {             // decades (lo, hi > 0); with 2 and 5 when there are few
+  const out = [];
+  const d0 = Math.floor(Math.log10(lo)), d1 = Math.ceil(Math.log10(hi));
+  const sub = d1 - d0 <= 3 ? [1, 2, 5] : [1];
+  for (let d = d0; d <= d1; d++) for (const k of sub) { const v = k * Math.pow(10, d); if (v >= lo && v <= hi) out.push(v); }
+  return out;
+}
+
+function seriesOn(pi, s, si_) { return !chHidden.has(pi + "|" + (s.color >= 0 ? s.color : si_)); }
+
+function chLayout() {
+  const dpr = window.devicePixelRatio || 1, W = ch.width / dpr, H = ch.height / dpr;
+  const n = chart.panels.length, top = 34, bottom = 30, gap = 22, left = 70, right = 18;
+  const ph = Math.max(60, (H - top - bottom - gap * (n - 1)) / n);
+  return { W, H, left, right, top, ph, gap, x0: left, x1: W - right };
+}
+
+function xExtent() {
+  let lo = Infinity, hi = -Infinity;
+  chart.panels.forEach((p, pi) => p.series.forEach((s, k) => {
+    if (!seriesOn(pi, s, k)) return;
+    for (const x of s.x) if (x !== null && (!chart.logX || x > 0)) { lo = Math.min(lo, x); hi = Math.max(hi, x); }
+  }));
+  return isFinite(lo) ? { x0: lo, x1: hi > lo ? hi : lo + 1 } : { x0: 0, x1: 1 };
+}
+
+function chDraw() {
+  const dpr = window.devicePixelRatio || 1;
+  cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  cctx.fillStyle = "#0b0e11"; cctx.fillRect(0, 0, ch.width, ch.height);
+  if (!chart) return;
+  const L = chLayout(), xr = chView || xExtent();
+  const fx = chart.logX ? (v => Math.log10(v)) : (v => v);
+  const X = v => L.x0 + (fx(v) - fx(xr.x0)) / (fx(xr.x1) - fx(xr.x0)) * (L.x1 - L.x0);
+  chart._X = X; chart._xr = xr; chart._L = L; chart._y = [];
+  cctx.font = "12px system-ui, sans-serif"; cctx.textBaseline = "middle";
+  cctx.fillStyle = "#d6dbe2"; cctx.textAlign = "left";
+  cctx.fillText(chart.title, L.left, 14);
+  chLegendBoxes = [];
+  let lx = L.x1;                          // legend: right-aligned on the title line, per panel
+  const legend = [];
+  chart.panels.forEach((p, pi) => {
+    const seen = new Set();
+    p.series.forEach((s, k) => {
+      const key = pi + "|" + (s.color >= 0 ? s.color : k);
+      if (seen.has(key) || !s.label) return;
+      seen.add(key);
+      legend.push({ key, label: s.label, col: CH_PALETTE[(s.color >= 0 ? s.color : k) % CH_PALETTE.length], dashed: s.dashed });
+    });
+  });
+  cctx.textAlign = "right";
+  for (const e of [...legend].reverse()) {
+    const w = cctx.measureText(e.label).width;
+    const off = chHidden.has(e.key);
+    cctx.globalAlpha = off ? 0.35 : 1;
+    cctx.fillStyle = "#d6dbe2"; cctx.fillText(e.label, lx, 14);
+    cctx.strokeStyle = e.col; cctx.lineWidth = 2.5; cctx.setLineDash(e.dashed ? [5, 3] : []);
+    cctx.beginPath(); cctx.moveTo(lx - w - 22, 14); cctx.lineTo(lx - w - 6, 14); cctx.stroke(); cctx.setLineDash([]);
+    chLegendBoxes.push({ key: e.key, x0: lx - w - 24, x1: lx, y0: 4, y1: 24 });
+    lx -= w + 40;
+    cctx.globalAlpha = 1;
+  }
+
+  chart.panels.forEach((p, pi) => {
+    const y0 = L.top + pi * (L.ph + L.gap), y1 = y0 + L.ph;
+    // y range: the visible series inside the x range
+    let lo = Infinity, hi = -Infinity;
+    p.series.forEach((s, k) => {
+      if (!seriesOn(pi, s, k)) return;
+      for (let i = 0; i < s.x.length; i++) {
+        const x = s.x[i], y = s.y[i];
+        if (x === null || y === null || x < xr.x0 || x > xr.x1 || (p.logY && y <= 0)) continue;
+        lo = Math.min(lo, y); hi = Math.max(hi, y);
+      }
+    });
+    if (p.limit !== null && p.limit !== undefined && (!p.logY || p.limit > 0)) { lo = Math.min(lo, p.limit); hi = Math.max(hi, p.limit); }
+    if (!isFinite(lo)) { lo = p.logY ? 1 : 0; hi = p.logY ? 10 : 1; }
+    if (p.logY) { lo = Math.pow(10, Math.floor(Math.log10(lo) * 4) / 4); hi = Math.pow(10, Math.ceil(Math.log10(hi) * 4) / 4); if (hi <= lo) hi = lo * 10; }
+    else { const pad = (hi - lo) * 0.06 || Math.abs(hi) * 0.1 || 1; lo -= pad; hi += pad; }
+    const fy = p.logY ? (v => Math.log10(v)) : (v => v);
+    const Y = v => y1 - (fy(v) - fy(lo)) / (fy(hi) - fy(lo)) * (y1 - y0);
+    chart._y.push({ y0, y1, Y, lo, hi, p });
+
+    // grid and ticks
+    cctx.strokeStyle = "#1f252d"; cctx.lineWidth = 1; cctx.fillStyle = "#8a93a0"; cctx.textAlign = "right";
+    for (const v of p.logY ? logTicks(lo, hi) : niceTicks(lo, hi, Math.max(2, Math.round(L.ph / 45)))) {
+      const y = Math.round(Y(v)) + 0.5;
+      cctx.beginPath(); cctx.moveTo(L.x0, y); cctx.lineTo(L.x1, y); cctx.stroke();
+      cctx.fillText(si(v, p.yUnit), L.x0 - 6, y);
+    }
+    const xt = chart.logX ? logTicks(xr.x0, xr.x1) : niceTicks(xr.x0, xr.x1, Math.max(2, Math.round((L.x1 - L.x0) / 90)));
+    cctx.textAlign = "center";
+    for (const v of xt) {
+      const x = Math.round(X(v)) + 0.5;
+      cctx.beginPath(); cctx.moveTo(x, y0); cctx.lineTo(x, y1); cctx.stroke();
+      if (pi === chart.panels.length - 1) cctx.fillText(si(v, chart.xUnit), x, y1 + 14);
+    }
+    cctx.strokeStyle = "#2a3039"; cctx.strokeRect(L.x0 + 0.5, y0 + 0.5, L.x1 - L.x0, y1 - y0);
+
+    // series, clipped to the panel
+    cctx.save(); cctx.beginPath(); cctx.rect(L.x0, y0, L.x1 - L.x0, y1 - y0); cctx.clip();
+    p.series.forEach((s, k) => {
+      if (!seriesOn(pi, s, k)) return;
+      cctx.strokeStyle = CH_PALETTE[(s.color >= 0 ? s.color : k) % CH_PALETTE.length];
+      cctx.globalAlpha = s.faint ? 0.45 : 1; cctx.lineWidth = s.faint ? 1 : 1.6;
+      cctx.setLineDash(s.dashed ? [6, 4] : []);
+      cctx.beginPath();
+      let pen = false;
+      for (let i = 0; i < s.x.length; i++) {
+        const x = s.x[i], y = s.y[i];
+        if (x === null || y === null || (chart.logX && x <= 0) || (p.logY && y <= 0)) { pen = false; continue; }
+        const px = X(x), py = Y(y);
+        if (pen) cctx.lineTo(px, py); else { cctx.moveTo(px, py); pen = true; }
+      }
+      cctx.stroke();
+    });
+    cctx.setLineDash([]); cctx.globalAlpha = 1;
+    if (p.limit !== null && p.limit !== undefined && (!p.logY || p.limit > 0)) {
+      const y = Y(p.limit);
+      cctx.strokeStyle = "#ff5d5d"; cctx.setLineDash([6, 4]); cctx.lineWidth = 1.2;
+      cctx.beginPath(); cctx.moveTo(L.x0, y); cctx.lineTo(L.x1, y); cctx.stroke(); cctx.setLineDash([]);
+      cctx.fillStyle = "#ff8d8d"; cctx.textAlign = "right"; cctx.fillText(p.limitLabel || "", L.x1 - 6, y - 9);
+    }
+    cctx.restore();
+  });
+
+  // the cursor: a line and each visible series' value there
+  const tip = $("chTip");
+  if (chMouse && !chDrag && chMouse.x >= L.x0 && chMouse.x <= L.x1) {
+    const inv = chart.logX ? Math.pow(10, fx(xr.x0) + (chMouse.x - L.x0) / (L.x1 - L.x0) * (fx(xr.x1) - fx(xr.x0)))
+                           : xr.x0 + (chMouse.x - L.x0) / (L.x1 - L.x0) * (xr.x1 - xr.x0);
+    cctx.strokeStyle = "rgba(214,219,226,.5)"; cctx.lineWidth = 1;
+    cctx.beginPath(); cctx.moveTo(Math.round(chMouse.x) + 0.5, L.top); cctx.lineTo(Math.round(chMouse.x) + 0.5, L.H - 30); cctx.stroke();
+    let html = `<b>${si(inv, chart.xUnit, 4)}</b>`;
+    chart.panels.forEach((p, pi) => p.series.forEach((s, k) => {
+      if (!seriesOn(pi, s, k) || !s.label) return;
+      const v = interp(s, inv);
+      if (v === null) return;
+      const col = CH_PALETTE[(s.color >= 0 ? s.color : k) % CH_PALETTE.length];
+      cctx.fillStyle = col;
+      const py = chart._y[pi].Y(v);
+      if (py >= chart._y[pi].y0 && py <= chart._y[pi].y1) { cctx.beginPath(); cctx.arc(chMouse.x, py, 3.5, 0, Math.PI * 2); cctx.fill(); }
+      html += `<br><span class="sw" style="background:${col}"></span>${s.label.replace(/[<>&]/g, "")}: ${si(v, p.yUnit, 4)}`;
+    }));
+    tip.innerHTML = html; tip.style.display = "block";
+    const pr = $("chartPane").getBoundingClientRect();
+    tip.style.left = Math.min(chMouse.x + 14, pr.width - tip.offsetWidth - 6) + "px";
+    tip.style.top = Math.max(4, chMouse.y - tip.offsetHeight - 10) + "px";
+  } else tip.style.display = "none";
+}
+
+function interp(s, x) {                 // the series at x (x ascending), null outside it
+  const xs = s.x;
+  let lo = 0, hi = xs.length - 1;
+  if (hi < 0 || xs[0] === null || x < xs[0] || x > xs[hi]) return null;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (xs[m] <= x) lo = m; else hi = m; }
+  const a = s.y[lo], b = s.y[hi];
+  if (a === null || b === null) return a ?? b;
+  return xs[hi] === xs[lo] ? a : a + (b - a) * (x - xs[lo]) / (xs[hi] - xs[lo]);
+}
+
+function chXAt(px) {                    // the x value at a pixel column (the current range)
+  const L = chart._L, xr = chart._xr, f = chart.logX ? Math.log10 : (v => v), g = chart.logX ? (v => Math.pow(10, v)) : (v => v);
+  return g(f(xr.x0) + (px - L.x0) / (L.x1 - L.x0) * (f(xr.x1) - f(xr.x0)));
+}
+
+function chPos(e) { const r = ch.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+ch.addEventListener("mousemove", e => {
+  chMouse = chPos(e);
+  if (chDrag && chart) {
+    const f = chart.logX ? Math.log10 : (v => v), g = chart.logX ? (v => Math.pow(10, v)) : (v => v);
+    const L = chart._L, xr = chDrag.xr, span = f(xr.x1) - f(xr.x0);
+    const d = (chMouse.x - chDrag.x) / (L.x1 - L.x0) * span;
+    chView = { x0: g(f(xr.x0) - d), x1: g(f(xr.x1) - d) };
+  }
+  chDraw();
+});
+ch.addEventListener("mouseleave", () => { chMouse = null; chDraw(); });
+ch.addEventListener("mousedown", e => {
+  if (!chart) return;
+  const p = chPos(e);
+  const hit = chLegendBoxes.find(b => p.x >= b.x0 && p.x <= b.x1 && p.y >= b.y0 && p.y <= b.y1);
+  if (hit) { chHidden.has(hit.key) ? chHidden.delete(hit.key) : chHidden.add(hit.key); chDraw(); return; }
+  chDrag = { x: p.x, xr: { ...chart._xr } };
+});
+window.addEventListener("mouseup", () => { if (chDrag) { chDrag = null; chDraw(); } });
+ch.addEventListener("dblclick", () => { chView = null; chDraw(); });
+ch.addEventListener("wheel", e => {
+  if (!chart) return;
+  e.preventDefault();
+  const p = chPos(e), f = chart.logX ? Math.log10 : (v => v), g = chart.logX ? (v => Math.pow(10, v)) : (v => v);
+  const xr = chart._xr, c = f(chXAt(Math.max(chart._L.x0, Math.min(chart._L.x1, p.x))));
+  const k = Math.exp(e.deltaY * 0.0015);
+  chView = { x0: g(c - (c - f(xr.x0)) * k), x1: g(c + (f(xr.x1) - c) * k) };
+  chDraw();
+}, { passive: false });
 
 resize();
 requestAnimationFrame(frame);

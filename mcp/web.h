@@ -37,6 +37,11 @@ namespace kicadd::mcp
 
 class IPC_CLIENT;
 class WS_SESSION;
+namespace plot { struct CHART; }
+
+/// A chart as the Chart tab's JSON, each series thinned to at most aMaxPoints (per bucket its
+/// min and max, in order: peaks survive)
+nlohmann::json ChartJson( const plot::CHART& aChart, const std::string& aTool, size_t aMaxPoints );
 
 class WEB_HUB
 {
@@ -55,6 +60,12 @@ public:
 
     /// Ask the worker to poll now (e.g. after an MCP edit in this process).
     void Kick();
+
+    /// A tool's chart (plot::Publish) for the Chart tab: sent to every view, the last
+    /// MAX_CHARTS kept for views that join later. Any thread.
+    void PublishChart( const nlohmann::json& aChart );
+    static constexpr size_t MAX_CHARTS = 8;
+    static constexpr size_t MAX_CHART_POINTS = 4000;   ///< per series; more are thinned (min / max kept)
 
     static constexpr int POLL_MS = 50;
     static constexpr int EVENT_POLL_MS = 1000;
@@ -107,6 +118,9 @@ private:
     std::thread       m_worker;
     std::thread       m_events;
     std::atomic<int>  m_evPipes{ 0 };
+    std::mutex        m_chartsMutex;
+    std::deque<std::shared_ptr<const std::string>> m_charts;
+    int               m_chartSeq = 0;
     std::string       m_lastStatus;         // worker only
     std::string       m_lastCopilot;        // worker only
     std::atomic<bool> m_copilotDue{ true };

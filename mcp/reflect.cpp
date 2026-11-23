@@ -975,7 +975,7 @@ TOOL_RESULT reflection( IPC_CLIENT& aIpc, const json& a )
 
     TOOL_RESULT r{ out + "\n", false };
 
-    if( a.value( "plot", false ) )
+    if( a.value( "plot", false ) || plot::HasSink() )
     {
         plot::CHART chart;
         chart.title = "reflection " + b.net() + " (" + dp.ref() + "." + dp.pin() + ")";
@@ -1002,7 +1002,10 @@ TOOL_RESULT reflection( IPC_CLIENT& aIpc, const json& a )
         p.limit = vdd;
         p.limitLabel = si( vdd, "V" );
         chart.panels.push_back( std::move( p ) );
-        r.image = plot::Png( chart );
+        plot::Publish( chart, "reflection" );
+
+        if( a.value( "plot", false ) )
+            r.image = plot::Png( chart );
     }
 
     return r;

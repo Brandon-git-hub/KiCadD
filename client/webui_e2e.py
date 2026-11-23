@@ -7,6 +7,9 @@ usage: python -I webui_e2e.py <base-url> [--chromium /usr/bin/chromium] [--shots
              selection panel highlights it too; Esc clears
   agent      the Agent section lists the agent's edit; Pause / Resume reach KiCad (the agent's
              move is refused while paused)
+  chart      pdn on the rail with the most decoupling capacitors: the Chart tab gets its |Z|
+             (a badge on the tab, the chart's title, the cursor's readout, a legend entry
+             switched off, wheel zoom, double-click back)
 """
 
 import argparse
@@ -116,6 +119,48 @@ def main():
         page.wait_for_function("() => agent && !agent.paused", timeout=5000)
         out = mcp_call(base, "move_footprints", {"refs": [pad["ref"] if pad else "R1"], "dx": -0.5})
         check("paused" not in out, "Resume: the agent's move goes through")
+
+        print("[chart]")
+        rail = page.evaluate("""() => {
+          const caps = new Map();
+          for (const f of board.fp.values()) {
+            if (!/^C\\d/.test(f.ref) || f.pads.length !== 2) continue;
+            const [a, b] = f.pads.map(p => p.net);
+            const r = /GND/i.test(a) ? b : /GND/i.test(b) ? a : null;
+            if (r && !/GND/i.test(r)) caps.set(r, (caps.get(r) || 0) + 1);
+          }
+          return [...caps].sort((x, y) => y[1] - x[1])[0] || null;
+        }""")
+        check(rail is not None, f"the rail with the most decoupling: {rail}")
+        if rail:
+            out = mcp_call(base, "pdn", {"net": rail[0]})
+            check(out.startswith("pdn "), "pdn: " + out.splitlines()[0][:80])
+            page.wait_for_function("() => charts.length > 0", timeout=10000)
+            check(page.inner_text("#chartBadge") == "●", "a badge on the Chart tab")
+            page.click("#tabs button[data-tab=chart]")
+            page.wait_for_timeout(300)
+            check(page.is_visible("#ch") and page.evaluate("() => chart && chart.tool") == "pdn"
+                  and rail[0] in page.evaluate("() => chart.title"), "the Chart tab shows it: " + page.evaluate("() => chart.title"))
+            box = page.locator("#ch").bounding_box()
+            page.mouse.move(box["x"] + box["width"] * 0.5, box["y"] + box["height"] * 0.5)
+            page.wait_for_timeout(200)
+            tip = page.inner_text("#chTip")
+            check("Hz" in tip and "Ω" in tip, "the cursor reads the curve: " + tip.replace("\n", " | ")[:80])
+            if a.shots:
+                page.screenshot(path=os.path.join(a.shots, "webui-chart.png"))
+            x0 = page.evaluate("() => chart._xr.x1 / chart._xr.x0")
+            page.mouse.wheel(0, -400)
+            page.wait_for_timeout(200)
+            x1 = page.evaluate("() => chart._xr.x1 / chart._xr.x0")
+            check(x1 < x0 / 2, f"wheel zooms in (x span ratio {x0:.0f} -> {x1:.0f})")
+            page.mouse.dblclick(box["x"] + box["width"] * 0.5, box["y"] + box["height"] * 0.5)
+            page.wait_for_timeout(200)
+            check(abs(page.evaluate("() => chart._xr.x1 / chart._xr.x0") - x0) < 1e-6 * x0, "double-click: the whole range again")
+            b0 = page.evaluate("() => chLegendBoxes[0]")
+            page.mouse.click(box["x"] + (b0["x0"] + b0["x1"]) / 2, box["y"] + (b0["y0"] + b0["y1"]) / 2)
+            page.wait_for_timeout(200)
+            check(page.evaluate("() => chHidden.size") == 1, "a legend entry switches its curve off")
+            page.click("#tabs button[data-tab=board]")
 
         check(not errors, "no page errors" + (": " + errors[0] if errors else ""))
         browser.close()
