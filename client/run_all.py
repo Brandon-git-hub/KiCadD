@@ -310,7 +310,7 @@ def main():
                 base = "http://127.0.0.1:%d" % stack["port"]
                 argv = {
                     "mcp": venv_argv(a, "mcp_e2e.py", [mcp_bin(a.build), stack["sock"], str(free_port())]),
-                    "web": venv_argv(a, "web_e2e.py", [base]),
+                    "web": venv_argv(a, "web_e2e.py", [base, stack["sock"], mcp_bin(a.build)]),
                     "layout": venv_argv(a, "layout_e2e.py", [base, stack["sock"]]),
                     "history": venv_argv(a, "history_e2e.py", [base, sys.executable, "-I", os.path.abspath(__file__),
                                                               "--restart-stack", stack["file"]]),

@@ -737,8 +737,15 @@ TOOL_RESULT close( IPC_CLIENT& aIpc, STATE& aState, const json& a )
     // a killed KiCad leaves its socket file behind
     std::error_code ec;
 
-    if( std::string s = socketPath( aIpc ); !s.empty() && fs::exists( toPath( s ), ec ) )
-        fs::remove( toPath( s ), ec );
+    if( std::string s = socketPath( aIpc ); !s.empty() )
+    {
+        // and its change notifications' socket (<socket>.ev)
+        for( const std::string& f : { s, s + ".ev" } )
+        {
+            if( fs::exists( toPath( f ), ec ) )
+                fs::remove( toPath( f ), ec );
+        }
+    }
 #endif
 
     child.forget();

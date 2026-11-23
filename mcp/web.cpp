@@ -16,6 +16,7 @@
  *     {"t":"art","rev":R,"layers":[..],"lys":[..],"fp":{id:GX,..},"dr":GX}   (silk / fab, see GX)
  *     {"t":"ratsnest","xy":[x1,y1,x2,y2,..],"net":[i,..],"nets":[..],"pending":[..],"unconnected":N,
  *      "final":bool}   (final=false: deferred large nets still missing, a final one follows)
+ *     {"t":"status","push":bool,"viewers":N}   (push: KiCad notifies changes; N browsers here)
  *     {"t":"error","error":".."}
  *   ITEMS = "nets":[..],"lys":[..]  (string tables; items reference them by index)
  *           "fp":[{id,ref,val,back,x,y,r,lk,bb:[x0,y0,x1,y1],cy:[..],
@@ -50,6 +51,9 @@
 #include <cmath>
 #include <cstdio>
 #include <unordered_map>
+
+#include <nng/nng.h>
+#include <nng/protocol/pubsub0/sub.h>
 
 #include <boost/asio/post.hpp>
 #include <boost/beast/core.hpp>
@@ -425,6 +429,52 @@ WEB_HUB::WEB_HUB( IPC_CLIENT& aIpc, asio::io_context& aIoc ) :
             } );
 
     m_worker = std::thread( [this]() { workerLoop(); } );
+
+    if( m_ipc.Url().starts_with( "ipc://" ) )
+        m_events = std::thread( [this]() { eventsLoop(); } );
+}
+
+
+void WEB_HUB::eventsLoop()
+{
+    nng_socket sock;
+
+    if( nng_sub0_open( &sock ) != 0 )
+        return;
+
+    nng_socket_set( sock, NNG_OPT_SUB_SUBSCRIBE, "", 0 );   // every topic
+    nng_socket_set_ms( sock, NNG_OPT_RECVTIMEO, 300 );        // to see m_running
+
+    // count the connected publishers (KiCad may start, stop and start again)
+    auto onPipe = []( nng_pipe, nng_pipe_ev aEv, void* aArg )
+    {
+        auto* pipes = static_cast<std::atomic<int>*>( aArg );
+
+        if( aEv == NNG_PIPE_EV_ADD_POST )
+            ( *pipes )++;
+        else if( aEv == NNG_PIPE_EV_REM_POST )
+            ( *pipes )--;
+    };
+
+    nng_pipe_notify( sock, NNG_PIPE_EV_ADD_POST, onPipe, &m_evPipes );
+    nng_pipe_notify( sock, NNG_PIPE_EV_REM_POST, onPipe, &m_evPipes );
+
+    // non-blocking: KiCad may come later; NNG keeps redialling
+    nng_dial( sock, ( m_ipc.Url() + ".ev" ).c_str(), nullptr, NNG_FLAG_NONBLOCK );
+
+    while( m_running )
+    {
+        char*  buf = nullptr;
+        size_t size = 0;
+
+        if( nng_recv( sock, &buf, &size, NNG_FLAG_ALLOC ) != 0 )
+            continue;
+
+        nng_free( buf, size );
+        Kick();   // "board", "copilot", "sch": the poll asks what changed
+    }
+
+    nng_close( sock );
 }
 
 
@@ -436,6 +486,9 @@ WEB_HUB::~WEB_HUB()
 
     if( m_worker.joinable() )
         m_worker.join();
+
+    if( m_events.joinable() )
+        m_events.join();
 
     if( m_ioThread.joinable() )
         m_ioThread.join();
@@ -463,8 +516,12 @@ void WEB_HUB::Joined( const std::shared_ptr<WS_SESSION>& aSession )
 
 void WEB_HUB::Left( const std::shared_ptr<WS_SESSION>& aSession )
 {
-    std::lock_guard<std::mutex> lock( m_sessionsMutex );
-    m_sessions.erase( aSession );
+    {
+        std::lock_guard<std::mutex> lock( m_sessionsMutex );
+        m_sessions.erase( aSession );
+    }
+
+    Kick();   // the others' viewer count
 }
 
 
@@ -507,6 +564,24 @@ void WEB_HUB::Kick()
 }
 
 
+std::string WEB_HUB::statusJson()
+{
+    return json{ { "t", "status" }, { "push", Pushed() }, { "viewers", sessions().size() } }.dump();
+}
+
+
+void WEB_HUB::sendStatusIfChanged()
+{
+    std::string s = statusJson();
+
+    if( s != m_lastStatus )
+    {
+        m_lastStatus = s;
+        broadcast( s );
+    }
+}
+
+
 std::set<std::shared_ptr<WS_SESSION>> WEB_HUB::sessions()
 {
     std::lock_guard<std::mutex> lock( m_sessionsMutex );
@@ -531,7 +606,7 @@ void WEB_HUB::workerLoop()
 
         {
             std::unique_lock<std::mutex> lock( m_jobsMutex );
-            m_jobsCv.wait_for( lock, std::chrono::milliseconds( POLL_MS ),
+            m_jobsCv.wait_for( lock, std::chrono::milliseconds( Pushed() ? EVENT_POLL_MS : POLL_MS ),
                                [this]() { return !m_running || !m_jobs.empty() || m_kick; } );
             jobs.swap( m_jobs );
             m_kick = false;
@@ -544,7 +619,10 @@ void WEB_HUB::workerLoop()
             runJob( job );
 
         if( !sessions().empty() )
+        {
             poll();
+            sendStatusIfChanged();
+        }
 
         // Edits have gone quiet: rebuild the deferred large nets and send the full ratsnest.
         if( m_flushDue != std::chrono::steady_clock::time_point{} && std::chrono::steady_clock::now() >= m_flushDue )
@@ -587,6 +665,7 @@ void WEB_HUB::runJob( const JOB& aJob )
 
         session->Send( std::make_shared<std::string>( snapshotJson( snap ).dump() ) );
         session->Send( std::make_shared<std::string>( historyJson() ) );
+        session->Send( std::make_shared<std::string>( statusJson() ) );
 
         bool pending = false;
         session->Send( std::make_shared<std::string>( ratsnestJson( false, &pending ) ) );

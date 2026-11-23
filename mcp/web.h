@@ -5,7 +5,11 @@
  *   - the io thread runs every WebSocket session (Beast async; one thread, so session
  *     handlers never race each other);
  *   - one worker thread does all daemon IPC: snapshots for new sessions, moves requested by
- *     browsers, and the change poll (every POLL_MS, immediately after an edit).
+ *     browsers, and the change poll: when KiCad says something changed (its "<socket>.ev"
+ *     notifications, see src/common/kicadd_events.h), right after an edit here, and every
+ *     EVENT_POLL_MS as a fallback (every POLL_MS while the notifications are not connected:
+ *     an older KiCadD, a tcp:// socket);
+ *   - one thread waits on the notifications.
  *
  * This file is part of KiCadD and is licensed GPL-3.0-or-later, like KiCad.
  */
@@ -53,6 +57,10 @@ public:
     void Kick();
 
     static constexpr int POLL_MS = 50;
+    static constexpr int EVENT_POLL_MS = 1000;
+
+    /// The notifications are connected (KiCad pushes its changes)
+    bool Pushed() const { return m_evPipes.load() > 0; }
 
 private:
     struct JOB
@@ -73,6 +81,9 @@ private:
                          const std::string& aError, const void* aMoveResponse, double aMs,
                          const std::string& aLabel );
     std::set<std::shared_ptr<WS_SESSION>> sessions();
+    void        eventsLoop();
+    std::string statusJson();
+    void        sendStatusIfChanged();
 
     IPC_CLIENT&              m_ipc;
     boost::asio::io_context& m_ioc;
@@ -91,6 +102,9 @@ private:
     std::atomic<bool> m_running{ true };
     std::thread       m_ioThread;
     std::thread       m_worker;
+    std::thread       m_events;
+    std::atomic<int>  m_evPipes{ 0 };
+    std::string       m_lastStatus;         // worker only
 };
 
 } // namespace kicadd::mcp

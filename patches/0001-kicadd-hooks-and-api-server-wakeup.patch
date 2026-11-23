@@ -130,10 +130,10 @@ index 56f064f1..8618dc21 100644
  /// A file extension with a leading '.' is a suffix, and this one is used on
  /// top level program modules which implement the KIFACE.
 diff --git a/common/CMakeLists.txt b/common/CMakeLists.txt
-index de2e4823..d14f848b 100644
+index de2e4823..5f46cc25 100644
 --- a/common/CMakeLists.txt
 +++ b/common/CMakeLists.txt
-@@ -1473,3 +1473,15 @@ make_lexer_export(
+@@ -1473,3 +1473,18 @@ make_lexer_export(
  # to build it, first enable #define STAND_ALONE at top of dsnlexer.cpp
  add_executable( dsntest EXCLUDE_FROM_ALL dsnlexer.cpp )
  target_link_libraries( dsntest common ${wxWidgets_LIBRARIES} rt )
@@ -145,8 +145,11 @@ index de2e4823..d14f848b 100644
 +                         eda_base_frame.cpp tool/common_control.cpp api/api_server.cpp
 +                  APPEND PROPERTY COMPILE_DEFINITIONS KICADD )
 +    # the co-pilot's shared state (phase 4 item 1): in kicommon, so both editors of one KiCad share it
-+    target_sources( kicommon PRIVATE ${KICADD_DIR}/src/common/kicadd_copilot.cpp )
++    # and the change notifications (phase 4 item 2)
++    target_sources( kicommon PRIVATE ${KICADD_DIR}/src/common/kicadd_copilot.cpp
++                                     ${KICADD_DIR}/src/common/kicadd_events.cpp )
 +    set_property( SOURCE api/api_server.cpp ${KICADD_DIR}/src/common/kicadd_copilot.cpp
++                         ${KICADD_DIR}/src/common/kicadd_events.cpp
 +                  APPEND PROPERTY INCLUDE_DIRECTORIES ${KICADD_DIR}/src )
 +endif()
 diff --git a/common/api/api_plugin_manager.cpp b/common/api/api_plugin_manager.cpp
@@ -172,20 +175,46 @@ index 02e5f1c9..291f59df 100644
                  {
                      const wxString& id = plugin->Identifier();
 diff --git a/common/api/api_server.cpp b/common/api/api_server.cpp
-index 317ed06e..1f8c7b0a 100644
+index 317ed06e..7b192848 100644
 --- a/common/api/api_server.cpp
 +++ b/common/api/api_server.cpp
-@@ -28,6 +28,9 @@
+@@ -28,6 +28,10 @@
  #include <api/api_handler.h>
  #include <api/api_task_scheduler.h>
  #include <api/api_utils.h> // traceApi
 +#ifdef KICADD
 +#include <common/kicadd_copilot.h>
++#include <common/kicadd_events.h>
 +#endif
  #include <api/api_server.h>
  #include <kiid.h>
  #include <kinng.h>
-@@ -258,6 +261,9 @@ void KICAD_API_SERVER::onApiRequest( std::string* aRequest )
+@@ -177,6 +181,13 @@ void KICAD_API_SERVER::Start()
+     }
+ 
+     wxLogTrace( traceApi, wxString::Format( "Server: listening at %s", SocketPath() ) );
++
++#ifdef KICADD
++    // change notifications next to the API socket (<socket>.ev): kicadd-mcp's web view waits
++    // on them instead of asking every 50 ms
++    kicadd::EVENTS::Get().Open( fmt::format( "ipc://{}", socket.GetFullPath().ToStdString() ) );
++#endif
++
+     Bind( API_REQUEST_EVENT, &KICAD_API_SERVER::handleApiEvent, this );
+ }
+ 
+@@ -187,6 +198,10 @@ void KICAD_API_SERVER::Stop()
+         return;
+ 
+     wxLogTrace( traceApi, "Stopping server" );
++
++#ifdef KICADD
++    kicadd::EVENTS::Get().Close();
++#endif
+     Unbind( API_REQUEST_EVENT, &KICAD_API_SERVER::handleApiEvent, this );
+ 
+     m_server->Stop();
+@@ -258,6 +273,9 @@ void KICAD_API_SERVER::onApiRequest( std::string* aRequest )
  
      // Takes ownership and frees the wxCommandEvent
      QueueEvent( evt );
@@ -195,7 +224,7 @@ index 317ed06e..1f8c7b0a 100644
  }
  
  
-@@ -360,6 +366,16 @@ void KICAD_API_SERVER::handleApiRequestString( std::string& aRequestString )
+@@ -360,6 +378,16 @@ void KICAD_API_SERVER::handleApiRequestString( std::string& aRequestString )
      if( notifyNetSettings )
          NotifyNetSettingsChanged();
  

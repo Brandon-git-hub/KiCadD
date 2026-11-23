@@ -1035,6 +1035,12 @@ function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj))
 
 function setConn(state, text) { const c = $("conn"); c.className = "pill " + state; c.textContent = text; }
 
+function onStatus(st) {                 // push: KiCad notifies its changes; viewers: browsers on this view
+  setConn("ok", "live" + (st.viewers > 1 ? ` · ${st.viewers} viewers` : ""));
+  $("conn").title = st.push ? "Changes are pushed by KiCad as they happen"
+                            : "KiCad does not push changes (older KiCadD or a tcp socket): asked every 50 ms";
+}
+
 function connect() {
   // Relative to the page, so the view also works behind path-prefix proxies such as
   // code-server's /proxy/8765/ or VS Code port forwarding.
@@ -1061,6 +1067,7 @@ function connect() {
     else if (msg.t === "fills") onFills(msg);
     else if (msg.t === "art") onArt(msg);
     else if (msg.t === "drcfull") onDrcFull(msg);
+    else if (msg.t === "status") onStatus(msg);
     else if (msg.t === "refilled") {
       $("refill").disabled = false; $("refill").textContent = "Refill zones";
       log(msg.ok ? `zones refilled in <b>${(msg.ms / 1000).toFixed(1)} s</b>` : `<span style="color:var(--bad)">refill failed: ${msg.error}</span>`);

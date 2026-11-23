@@ -5,6 +5,7 @@
  */
 
 #include "kicadd_render.h"
+#include "common/kicadd_events.h"
 
 #include <board_design_settings.h>
 #include <footprint.h>
@@ -416,6 +417,9 @@ RENDER_FEED::RENDER_FEED( BOARD* aBoard ) :
 {
     if( m_board )
         m_board->AddListener( this );
+
+    // another board: views resync (its revisions start again)
+    kicadd::EVENTS::Get().Publish( "board" );
 }
 
 
@@ -460,6 +464,7 @@ void RENDER_FEED::touch( const BOARD_ITEM* aItem )
             --m_removedCount;
 
         e = { ++m_revision, false };
+        kicadd::EVENTS::Get().Publish( "board" );   // sent once after the commit
     }
 }
 
@@ -484,6 +489,7 @@ void RENDER_FEED::remove( const BOARD_ITEM* aItem )
         ++m_removedCount;
 
     e = { ++m_revision, true };
+    kicadd::EVENTS::Get().Publish( "board" );
     compactRemovals();
 }
 

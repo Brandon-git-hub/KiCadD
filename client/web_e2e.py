@@ -1,12 +1,16 @@
 """End-to-end test of the 2D view channel: two browsers (WebSocket clients) + an MCP agent.
 
-usage: python -I web_e2e.py <base-url, e.g. http://127.0.0.1:8765>
+usage: python -I web_e2e.py <base-url, e.g. http://127.0.0.1:8765> [SOCKET KICADD_MCP]
+
+With SOCKET and KICADD_MCP: an edit from another kicadd-mcp (not this view's) reaches the
+browsers through KiCad's change notifications ("<socket>.ev"), well before the 1 s fallback poll.
 
 Checks snapshot delivery, browser->server moves, fan-out of deltas to the other browser,
 agent (MCP) edits reaching browsers, latency, and WebSocket origin/path checks.
 """
 
 import asyncio
+import subprocess
 import json
 import sys
 import time
@@ -70,6 +74,35 @@ async def main(base):
 
     u78 = fp_by_ref(snap_a, "U78")
     x0 = u78["x"]
+
+    print("[status]")
+    st = await recv_until(b, lambda m: m["t"] == "status" and m["viewers"] == 2, 3)
+    check(st and st["push"], f"status: KiCad pushes its changes, 2 viewers ({st})")
+
+    if len(sys.argv) > 3:
+        print("[another agent edits: KiCad's notification, not the poll]")
+        sock, mcp = sys.argv[2], sys.argv[3]
+        lat = []
+        for dx in (0.5, -0.5):
+            def other():
+                init = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+                    "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "other", "version": "1"}}}
+                call = {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                        "params": {"name": "move_footprints", "arguments": {"refs": ["U78"], "dx": dx}}}
+                p = subprocess.Popen([mcp, "--socket", sock, "--stdio"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+                p.stdin.write(json.dumps(init) + "\n"); p.stdin.flush(); p.stdout.readline()
+                p.stdin.write(json.dumps(call) + "\n"); p.stdin.flush(); p.stdout.readline()
+                done = time.perf_counter()
+                p.stdin.close(); p.wait(10)
+                return done
+            want = x0 + (500 if dx > 0 else 0)
+            done = await asyncio.to_thread(other)
+            d = await recv_until(a, lambda m: m["t"] == "delta" and fp_by_ref(m, "U78") and fp_by_ref(m, "U78")["x"] == want, 5)
+            lat.append((time.perf_counter() - done) * 1000)
+            check(d is not None, f"the other agent's move of U78 reaches browser A")
+        # the reply may come before or after the delta (the view's poll is on another thread):
+        # well under the 1 s fallback either way
+        check(max(lat) < 400, "... at once: " + ", ".join(f"{v:.0f} ms" for v in lat) + " after its reply")
 
     print("[browser A moves U78 by +0.5 mm]")
     t0 = time.perf_counter()

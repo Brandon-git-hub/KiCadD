@@ -5,6 +5,7 @@
  */
 
 #include "common/kicadd_copilot.h"
+#include "common/kicadd_events.h"
 
 namespace kicadd
 {
@@ -102,6 +103,8 @@ void COPILOT::add( COPILOT_EVENT::KIND aKind, const wxString& aText )
 
 void COPILOT::notify()
 {
+    EVENTS::Get().Publish( "copilot" );
+
     // a copy: a listener may unlisten (a panel closed) while being called
     std::map<int, std::function<void()>> listeners = m_listeners;
 
