@@ -187,6 +187,7 @@ def tests(a):
         ("autoplace_bg", "headless", ["venv"], lambda w: venv + [c("autoplace_bg_e2e.py")] + b + d + ["--work", w]),
         ("mcp", "stack", ["venv"], "mcp"),
         ("web", "stack", ["venv"], "web"),
+        ("webui", "stack", ["venv", "chromium"], "webui"),
         ("layout", "stack", ["venv"], "layout"),
         ("history", "stack", ["venv"], "history"),
         ("desktop", "desktop", ["xvfb"], lambda w: py + [c("desktop_e2e.py")] + b + d + ["--work", w]),
@@ -206,6 +207,7 @@ def missing(a, needs):
         "venv": (os.path.isfile(a.venv), "no venv Python at " + a.venv + " (README: Python client)"),
         "ngspice": (os.path.isfile(a.ngspice), "no ngspice at " + a.ngspice + " (--ngspice, $KICADD_NGSPICE)"),
         "xvfb": (shutil.which("Xvfb") is not None and shutil.which("xdotool") is not None, "Xvfb / xdotool not installed"),
+        "chromium": (shutil.which("chromium") is not None, "chromium not installed (the page test drives it with Playwright)"),
     }
     for n in needs:
         if not have[n][0]:
@@ -311,6 +313,8 @@ def main():
                 argv = {
                     "mcp": venv_argv(a, "mcp_e2e.py", [mcp_bin(a.build), stack["sock"], str(free_port())]),
                     "web": venv_argv(a, "web_e2e.py", [base, stack["sock"], mcp_bin(a.build)]),
+                    "webui": venv_argv(a, "webui_e2e.py", [base, "--chromium", shutil.which("chromium") or "",
+                                                           "--shots", work]),
                     "layout": venv_argv(a, "layout_e2e.py", [base, stack["sock"]]),
                     "history": venv_argv(a, "history_e2e.py", [base, sys.executable, "-I", os.path.abspath(__file__),
                                                               "--restart-stack", stack["file"]]),

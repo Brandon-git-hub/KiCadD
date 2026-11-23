@@ -49,6 +49,10 @@
   .alog .tm { color: var(--dim); margin-right: 6px; font-variant-numeric: tabular-nums; }
   .alog .k1 { color: var(--warn); } .alog .k2 { color: var(--dim); font-style: italic; }
   #agentPill { display: none; }
+  #hiNet { position: absolute; left: 10px; top: 10px; display: none; background: rgba(16,19,23,.92);
+           border: 1px solid #7a6a2a; color: var(--text); padding: 3px 9px; border-radius: 4px; font-size: 12px; }
+  #hiNet b { color: #ffe27a; } #hiNet .x { cursor: pointer; color: var(--dim); margin-left: 6px; }
+  .netlink { cursor: pointer; color: var(--accent); } .netlink:hover { text-decoration: underline; }
   footer { grid-column: 1 / 3; display: flex; gap: 18px; align-items: center; padding: 0 12px;
            border-top: 1px solid var(--line); background: var(--panel); color: var(--dim); font-size: 12px; }
   .help { color: var(--dim); font-size: 12px; }
@@ -73,7 +77,7 @@
     <span class="pill" id="conn">offline</span>
     <button id="fit" title="Fit board (Home, or F with nothing selected)">Fit</button>
   </header>
-  <div id="stage"><canvas id="cv"></canvas><div id="tip"></div></div>
+  <div id="stage"><canvas id="cv"></canvas><div id="tip"></div><div id="hiNet"></div></div>
   <aside>
     <section id="agentSec">
       <h3 style="display:flex;align-items:center;gap:8px">Agent
@@ -106,7 +110,8 @@
       <kbd>drag</kbd> on empty board: select several (→ enclosed, ← touched) ·
       <kbd>←↑→↓</kbd> nudge 0.1 mm (<kbd>⇧</kbd> 1 mm) · <kbd>wheel</kbd> zoom ·
       <kbd>right-drag</kbd> pan · <kbd>Home</kbd> fit · <kbd>Alt</kbd> no grid snap ·
-      <kbd>Ctrl+Z</kbd>/<kbd>Ctrl+Y</kbd> undo/redo · <kbd>Ctrl+S</kbd> save
+      <kbd>Ctrl+Z</kbd>/<kbd>Ctrl+Y</kbd> undo/redo · <kbd>Ctrl+S</kbd> save ·
+      <kbd>double-click</kbd> or <kbd>H</kbd> on copper: highlight its net (<kbd>Esc</kbd> clears)
     </section>
   </aside>
   <footer>
@@ -147,6 +152,20 @@ let drcMarks = [];
 const flashes = new Map();                          // id -> expiry ms
 const pendingOwn = new Set();                       // ids we just moved (don't flash as remote)
 let dirty = true;
+let hiNet = null, hiPaths = null;                   // highlighted net, and its items' paths (rebuilt lazily)
+function highlight(net) {
+  hiNet = net || null; hiPaths = null; dirty = true;
+  const b = $("hiNet");
+  b.style.display = hiNet ? "block" : "none";
+  if (hiNet) {
+    let pads = 0, trk = 0, len = 0;
+    for (const f of board.fp.values()) for (const p of f.pads) if (p.net === hiNet) pads++;
+    for (const t of board.trk.values()) if (t.net === hiNet) { trk++; len += Math.hypot(t.bx - t.ax, t.by - t.ay); }
+    b.innerHTML = `<b></b> · ${pads} pads · ${trk} tracks, ${(len / 1000).toFixed(1)} mm <span class="x" title="Esc">✕</span>`;
+    b.querySelector("b").textContent = hiNet;
+    b.querySelector(".x").onclick = () => highlight(null);
+  }
+}
 // Render caches: tracks/vias/zones/outline rebuild together (cheap, ~5 ms on 22k tracks);
 // footprints keep per-footprint Path2Ds that are merged with addPath. One giant Path2D of all
 // pads costs ~200 ms; per-footprint paths + merge cost ~15 ms once, ~1 ms per edit after.
@@ -340,6 +359,7 @@ function footprintPaths(f) {
 }
 
 function buildCache() {
+  hiPaths = null;
   if (trkDirty) {
     cache.tracks = new Map(); cache.vias = new Path2D(); cache.viaHoles = new Path2D();
     cache.zones = new Map(); cache.outline = new Path2D();
@@ -468,6 +488,25 @@ function draw() {
     ctx.lineCap = "round";
   }
 
+  // Highlighted net: the rest dimmed, its copper drawn again on top
+  if (hiNet) {
+    if (!hiPaths) hiPaths = netPaths(hiNet);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = 0.62; ctx.fillStyle = "#0b0e11"; ctx.fillRect(0, 0, W, H);
+    ctx.setTransform(s, 0, 0, s, view.ox * dpr, view.oy * dpr);
+    ctx.globalAlpha = 0.55;
+    for (const [l, p] of hiPaths.fills) if (vis.layers[l]) { ctx.fillStyle = layerColor(l); ctx.fill(p, "evenodd"); }
+    ctx.globalAlpha = 1;
+    for (const l of layerOrder()) {
+      if (!vis.layers[l]) continue;
+      ctx.strokeStyle = layerColor(l);
+      for (const e of hiPaths.tracks) if (e.layer === l) { ctx.lineWidth = Math.max(e.w, px); ctx.stroke(e.path); }
+    }
+    ctx.fillStyle = "#ffe27a"; ctx.fill(hiPaths.pads); ctx.fillStyle = "#e6e9ee"; ctx.fill(hiPaths.vias);
+    ctx.fillStyle = "#0b0e11"; ctx.fill(hiPaths.holes, "evenodd");
+    ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 1.5 * px; ctx.stroke(hiPaths.pads);
+  }
+
   // Lifted footprint (being dragged) on top.
   if (drag && drag.moved) {
     const p = new Path2D(), cy = new Path2D(), art = new Map();
@@ -532,6 +571,59 @@ function draw() {
     ctx.moveTo(d.x + r * .6, d.y - r * .6); ctx.lineTo(d.x - r * .6, d.y + r * .6); ctx.stroke();
   }
   if (flashes.size) dirty = true;      // keep animating fades
+}
+
+function netPaths(net) {               // the net's tracks (by layer|width), pads, vias, fills
+  const out = { tracks: [], pads: new Path2D(), vias: new Path2D(), holes: new Path2D(), fills: new Map() };
+  const tk = new Map();
+  for (const t of board.trk.values()) {
+    if (t.net !== net) continue;
+    const key = t.layer + "|" + t.w;
+    let e = tk.get(key);
+    if (!e) tk.set(key, e = { layer: t.layer, w: t.w, path: new Path2D() });
+    if (t.arc) arcThrough(e.path, t); else { e.path.moveTo(t.ax, t.ay); e.path.lineTo(t.bx, t.by); }
+  }
+  out.tracks = [...tk.values()];
+  for (const f of board.fp.values()) for (const p of f.pads) {
+    if (p.net !== net) continue;
+    addPad(out.pads, p);
+    if (p.drill > 0) { out.holes.moveTo(p.x + p.drill / 2, p.y); out.holes.arc(p.x, p.y, p.drill / 2, 0, Math.PI * 2); }
+  }
+  for (const v of board.via.values()) {
+    if (v.net !== net) continue;
+    out.vias.moveTo(v.x + v.d / 2, v.y); out.vias.arc(v.x, v.y, v.d / 2, 0, Math.PI * 2);
+    out.holes.moveTo(v.x + v.drill / 2, v.y); out.holes.arc(v.x, v.y, v.drill / 2, 0, Math.PI * 2);
+  }
+  for (const f of fills.values()) {
+    if (f.net !== net) continue;
+    let p = out.fills.get(f.ly);
+    if (!p) out.fills.set(f.ly, p = new Path2D());
+    for (const poly of f.polys) addPoly(p, poly);
+  }
+  return out;
+}
+
+function segDist(x, y, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+  const t = l2 ? Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / l2)) : 0;
+  return Math.hypot(x - ax - t * dx, y - ay - t * dy);
+}
+
+function netAt(x, y) {                  // the net of the pad, via or track under (x, y), front first
+  const f = footprintAt(x, y), p = padAt(f, x, y);
+  if (p && p.net) return p.net;
+  const slack = 3 / view.s;
+  for (const v of board.via.values()) if (v.net && Math.hypot(x - v.x, y - v.y) <= v.d / 2 + slack) return v.net;
+  for (const l of [...layerOrder()].reverse()) {
+    if (!vis.layers[l]) continue;
+    for (const t of board.trk.values()) {
+      if (t.layer !== l || !t.net) continue;
+      const d = t.arc ? Math.min(segDist(x, y, t.ax, t.ay, t.arc.mx, t.arc.my), segDist(x, y, t.arc.mx, t.arc.my, t.bx, t.by))
+                      : segDist(x, y, t.ax, t.ay, t.bx, t.by);
+      if (d <= t.w / 2 + slack) return t.net;
+    }
+  }
+  return null;
 }
 
 function frame() {
@@ -784,6 +876,7 @@ function decodePoly(d) {
 }
 
 function onFills(msg) {
+  hiPaths = null;
   const t0 = performance.now();
   if (msg.full) fills.clear();
   else for (const id of new Set(msg.fills.map(f => f.id))) dropFills(id);
@@ -899,7 +992,17 @@ function showSelection() {
     `<span>Value</span><span>${f.val}</span><span>Side</span><span>${f.back ? "Back" : "Front"}</span>` +
     `<span>Position</span><span class="mono">${mm(f.x)}, ${mm(f.y)} mm</span>` +
     `<span>Rotation</span><span class="mono">${f.r}°</span>` +
-    `<span>Pads</span><span>${f.pads.length} · ${nets.size} nets</span>`;
+    `<span>Pads</span><span>${f.pads.length} · ${nets.size} nets</span>` +
+    `<span>Nets</span><span class="mono" id="selNets"></span>`;
+  const list = $("selNets");
+  [...nets].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).slice(0, 24).forEach((n, i) => {
+    const a = document.createElement("span");
+    a.className = "netlink"; a.textContent = n; a.title = "Highlight this net";
+    a.onclick = () => highlight(hiNet === n ? null : n);
+    if (i) list.append(" ");
+    list.append(a);
+  });
+  if (nets.size > 24) list.append(` … ${nets.size - 24} more`);
 }
 
 function updateStats() {
@@ -920,6 +1023,7 @@ function log(html) {
 // Input
 
 cv.addEventListener("contextmenu", e => e.preventDefault());
+cv.addEventListener("dblclick", e => { const [x, y] = toWorld(e); highlight(netAt(x, y)); });
 cv.addEventListener("wheel", e => {
   e.preventDefault();
   const r = cv.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
@@ -1016,7 +1120,8 @@ window.addEventListener("keydown", e => {
   const sel = selFps(), f = sel.length ? sel : null;
   const step = e.shiftKey ? 1000 : 100;
   if (e.key === "Home" || ((e.key === "f" || e.key === "F") && !f)) fit();
-  else if (e.key === "Escape") { boxSel = null; select([]); drcMarks = []; dirty = true; }
+  else if (e.key === "Escape") { boxSel = null; select([]); drcMarks = []; highlight(null); dirty = true; }
+  else if (e.key === "`" || e.key === "h" || e.key === "H") highlight(lastWorld ? netAt(lastWorld[0], lastWorld[1]) : null);
   else if (e.key === "a" || e.key === "A") requestAdd();
   else if (!f) return;
   else if (e.key === "f" || e.key === "F") requestMove(f, 0, 0, 0, true);
