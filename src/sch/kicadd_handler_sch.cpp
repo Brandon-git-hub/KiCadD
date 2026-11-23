@@ -6,6 +6,7 @@
 
 #include "sch/kicadd_handler_sch.h"
 #include "common/kicadd_copilot.h"
+#include "common/kicadd_events.h"
 
 #include <api/sch_context.h>
 #include <base_units.h>
@@ -604,6 +605,7 @@ KICADD_HANDLER_SCH::KICADD_HANDLER_SCH( std::shared_ptr<SCH_CONTEXT> aContext ) 
     registerHandler<SchSetFields, SchConnectResponse>( &KICADD_HANDLER_SCH::handleSetFields );
     registerHandler<RegisterLibrary, RegisterLibraryResponse>( &KICADD_HANDLER_SCH::handleRegisterLibrary );
     registerHandler<SchRender, SchRenderResponse>( &KICADD_HANDLER_SCH::handleRender );
+    registerHandler<SchSheetSvg, SchSvgResponse>( &KICADD_HANDLER_SCH::handleSheetSvg );
     registerHandler<SchExportPdf, SchExportPdfResponse>( &KICADD_HANDLER_SCH::handleExportPdf );
     registerHandler<SchSimRegion, SchSimRegionResponse>( &KICADD_HANDLER_SCH::handleSimRegion );
     registerHandler<SchAnnotate, SchAnnotateResponse>( &KICADD_HANDLER_SCH::handleAnnotate );
@@ -650,6 +652,9 @@ std::optional<ApiResponseStatus> KICADD_HANDLER_SCH::busy() const
 
 void KICADD_HANDLER_SCH::announce( const wxString& aWhat ) const
 {
+    // the web view's Schematic tab reloads its sheet
+    kicadd::EVENTS::Get().Publish( "sch" );
+
     // the Co-pilot log is shared with the PCB Editor: say which editor
     wxString what = aWhat;
     what.StartsWith( wxS( "Agent: " ), &what );

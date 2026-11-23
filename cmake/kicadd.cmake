@@ -84,6 +84,7 @@ set( KICADD_SCH_SRCS
     ${KICADD_DIR}/src/sch/kicadd_lcsc_sch_tool.cpp
     ${KICADD_DIR}/src/sch/kicadd_handler_sch.cpp
     ${KICADD_DIR}/src/sch/kicadd_sch_render.cpp
+    ${KICADD_DIR}/src/sch/kicadd_sch_svg.cpp
     ${KICADD_DIR}/src/sch/kicadd_sch_pdf.cpp
     ${KICADD_DIR}/src/sch/kicadd_sch_annotate.cpp
     ${KICADD_DIR}/src/sch/kicadd_sch_history.cpp

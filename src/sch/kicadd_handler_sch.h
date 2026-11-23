@@ -115,6 +115,9 @@ private:
     HANDLER_RESULT<kicadd::schematic::SchRenderResponse>
     handleRender( const HANDLER_CONTEXT<kicadd::schematic::SchRender>& aCtx );
 
+    HANDLER_RESULT<kicadd::schematic::SchSvgResponse>
+    handleSheetSvg( const HANDLER_CONTEXT<kicadd::schematic::SchSheetSvg>& aCtx );
+
     HANDLER_RESULT<kicadd::schematic::SchExportPdfResponse>
     handleExportPdf( const HANDLER_CONTEXT<kicadd::schematic::SchExportPdf>& aCtx );
 

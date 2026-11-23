@@ -7,6 +7,10 @@ usage: python -I webui_e2e.py <base-url> [--chromium /usr/bin/chromium] [--shots
              selection panel highlights it too; Esc clears
   agent      the Agent section lists the agent's edit; Pause / Resume reach KiCad (the agent's
              move is refused while paused)
+  schematic  the Schematic tab shows a sheet (KiCad's SVG); a click on a part selects its
+             footprint on the board; a click on a wire highlights the net (the board too); a
+             sub-sheet opens from the picker; an agent's sch_set_fields reloads the sheet
+             (KiCad's "sch" notification) with the new value; the edit undone
   chart      pdn on the rail with the most decoupling capacitors: the Chart tab gets its |Z|
              (a badge on the tab, the chart's title, the cursor's readout, a legend entry
              switched off, wheel zoom, double-click back)
@@ -119,6 +123,59 @@ def main():
         page.wait_for_function("() => agent && !agent.paused", timeout=5000)
         out = mcp_call(base, "move_footprints", {"refs": [pad["ref"] if pad else "R1"], "dx": -0.5})
         check("paused" not in out, "Resume: the agent's move goes through")
+
+        print("[schematic]")
+        page.click("#tabs button[data-tab=sch]")
+        try:
+            page.wait_for_function("() => sch.loaded", timeout=30000)
+        except Exception:
+            pass
+        loaded = page.evaluate("() => sch.loaded")
+        check(loaded and page.evaluate("() => !!document.querySelector('#schSvg svg')"),
+              "the root sheet as SVG: " + (page.evaluate("() => `${sch.msg.symbols.length} parts, ${sch.msg.nets.length} nets, ${sch.msg.sheets.length} sheets, ${(sch.msg.svg.length / 1e6).toFixed(1)} MB`") if loaded else "-"))
+        if loaded:
+            page.wait_for_timeout(300)
+            hit = page.evaluate("""() => {
+              const r = $('schPane').getBoundingClientRect();
+              const at = (x, y) => ({ x: r.left + sch.x + x * sch.s, y: r.top + sch.y + y * sch.s });
+              const onBoard = new Set([...board.fp.values()].map(f => f.ref));
+              const s = sch.msg.symbols.find(s => onBoard.has(s[0]) && (s[3][2] - s[3][0]) * sch.s > 12);
+              const n = sch.msg.nets.find(n => n.s.length >= 4 && Math.hypot(n.s[2] - n.s[0], n.s[3] - n.s[1]) * sch.s > 20);
+              return { part: s && { ref: s[0], ...at((s[3][0] + s[3][2]) / 2, (s[3][1] + s[3][3]) / 2) },
+                       net: n && { n: n.n, ...at((n.s[0] + n.s[2]) / 2, (n.s[1] + n.s[3]) / 2) } };
+            }""")
+            if hit["part"]:
+                # zoom so the part is large enough to hit, around it
+                page.mouse.click(hit["part"]["x"], hit["part"]["y"])
+                page.wait_for_timeout(300)
+                check(page.evaluate("() => selFps().map(f => f.ref)") == [hit["part"]["ref"]],
+                      f"a click on {hit['part']['ref']} selects its footprint on the board")
+                check(page.evaluate("() => $('schOver').querySelectorAll('rect').length") >= 1, "... framed in the schematic")
+            if hit["net"]:
+                page.mouse.click(hit["net"]["x"], hit["net"]["y"])
+                page.wait_for_timeout(300)
+                hi = page.evaluate("() => hiNet")
+                check(hi is not None and hi.strip("/") == hit["net"]["n"].strip("/"),
+                      f"a click on a wire of {hit['net']['n']} highlights it (board: {hi})")
+                check(page.evaluate("() => $('schOver').querySelectorAll('line').length") >= 1, "... drawn bright in the schematic")
+            if a.shots:
+                page.screenshot(path=os.path.join(a.shots, "webui-schematic.png"))
+            sheets = page.evaluate("() => sch.msg.sheets.map(s => s[1])")
+            if len(sheets) > 1:
+                page.select_option("#schPick", sheets[1])
+                page.wait_for_function(f"() => sch.sheet === {json.dumps(sheets[1])}", timeout=20000)
+                check(True, f"the picker opens {sheets[1]}")
+            # an agent edit on the shown sheet: the view reloads it
+            ref, val = page.evaluate("() => [sch.msg.symbols[0][0], sch.msg.symbols[0][1]]")
+            mcp_call(base, "sch_set_fields", {"parts": {ref: {"Value": val + "_X"}}})
+            try:
+                page.wait_for_function(f"() => sch.msg.symbols.some(s => s[0] === {json.dumps(ref)} && s[1] === {json.dumps(val + '_X')})", timeout=10000)
+                ok = True
+            except Exception:
+                ok = False
+            check(ok, f"the agent's sch_set_fields on {ref} reloads the sheet with the new value")
+            mcp_call(base, "sch_undo", {})
+            page.click("#tabs button[data-tab=board]")
 
         print("[chart]")
         rail = page.evaluate("""() => {

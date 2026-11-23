@@ -2,7 +2,7 @@
      {{UPSTREAM}} is filled from patches/UPSTREAM_BASE; build info and SHA-256 are appended. -->
 KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修剪版 Windows x64 build，加上 Agent（MCP）協同設計。
 
-> ⚠️ Beta（pre-release）。已能走完整個設計流程，功能仍會持續加入。由 GitHub Actions 自動建置；39 個端到端測試在 Linux 上全部通過（含桌面版），Windows CI 跑 smoke test 與 headless 的出廠、貼片、電路圖文件、模擬、PDN / 反射、新專案、開關 KiCad、工具、設定、undo 歷史測試；桌面版在 Windows 上只有人工試用。
+> ⚠️ Beta（pre-release）。已能走完整個設計流程，功能仍會持續加入。由 GitHub Actions 自動建置；40 個端到端測試在 Linux 上全部通過（含桌面版），Windows CI 跑 smoke test 與 headless 的出廠、貼片、電路圖文件、模擬、PDN / 反射、新專案、開關 KiCad、工具、設定、undo 歷史測試；桌面版在 Windows 上只有人工試用。
 
 ## 使用前須知
 完整的使用說明（安裝、接上 Agent、skill、存檔格式、做得到 / 做不到）：[docs/GUIDE.md](https://github.com/Brandon-git-hub/KiCadD/blob/main/docs/GUIDE.md)。
@@ -14,7 +14,30 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 - **目前不支援：** 差分對與等長佈線、全板自動佈線（`route` 只代替重複的手動佈線）、電路圖自動排版、組裝圖、STEP 匯出（3D 模型只有 VRML）、ODB++ / IPC-2581 / DXF、MCP resources / prompts。
 
 ## 下一版（beta.11，未發布）
-新功能：階段四第 1 項（桌面 Co-pilot 面板），以及第 3 項的剩餘部分（由 MCP 開關 KiCad）。工具 64 → 66 個。
+新功能：階段四全部完成，包括第 1 項（桌面 Co-pilot 面板）、第 2 項（Web 視圖）、第 3 項的剩餘部分（由 MCP 開關 KiCad）。工具 64 → 66 個。
+
+- **Web 視圖改為主動推送：**
+  - KiCad 在 API socket 旁開 `<socket>.ev`（NNG PUB），有變更時通知。kicadd-mcp 只在收到通知時才去拿變更，取代原本每 50 ms 一次的輪詢。
+  - 保底輪詢降為 1 秒；連不上通知時（舊版或 tcp socket）維持 50 ms。
+  - 另一個 Agent 的編輯，幾毫秒內就會出現在瀏覽器。
+- **Web 視圖的協同狀態：**
+  - 新的「Agent」區塊：最近的編輯、被拒的請求、計數。
+  - 可以從瀏覽器暫停或恢復 Agent 的編輯，和 Co-pilot 面板是同一個開關。暫停時標頭會顯示。
+  - 「live」旁邊顯示同時有幾個人在看。
+  - Web 視圖用自己的連線（`kicadd-web`），它的讀取不算進 Agent 的紀錄。
+- **網路高亮：**
+  - 在銅箔上雙擊，或游標指著按 H，高亮整條網路；其他部分變暗，並顯示焊盤數與走線長度。
+  - 選取面板的網路名稱可以點。Esc 清除。
+- **Schematic 分頁：**
+  - KiCad 的 SVG 繪圖，可縮放、平移、換頁，點圖紙框可進入子圖。
+  - 點零件會在板子上選取它，點導線會高亮該網路，兩邊同步。
+  - Agent 改電路圖時自動重新載入。
+  - 新請求 `SchSheetSvg`。
+- **Chart 分頁：**
+  - `simulate`、`pdn`、`reflection` 的圖表一律送到 Web 視圖（不必 `plot=true`；和 PNG 是同一份資料），保留最近 8 張。
+  - 多面板、log 軸、目標線、游標讀值、圖例開關、滾輪縮放、雙擊回到全範圍。
+- **`pdn` 認得 `C_100n_0402`、`C_22u_25V_0805` 這類值：** 以前 Jetson 底板的每個 rail 都找不到電容。
+- **測試：** 新增 `client/webui_e2e.py`，用 headless Chromium（Playwright）實際操作頁面。
 
 - **Co-pilot 面板：** PCB 與電路圖編輯器右側新增停靠面板（View → Panels → Co-pilot）。
   - **內容：** Agent 的編輯紀錄（含 undo / redo）、被拒絕的請求（同一個拒絕在幾秒內重複時合成一列並計次），以及狀態列（編輯數、被拒數、最後一次請求多久以前、是哪一種）。

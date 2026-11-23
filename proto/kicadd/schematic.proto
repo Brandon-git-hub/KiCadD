@@ -544,3 +544,47 @@ message SchSimRegionResponse
   repeated string     notes = 4;
   string              project_dir = 5;
 }
+
+
+// One sheet as SVG for the web view's Schematic tab (phase 4 item 2): KiCad's plot of the sheet
+// in memory (frame and title block included), with what the view needs to point at things.
+// SVG user units are mm, the same coordinates as the other schematic tools. Returns SchSvgResponse
+message SchSheetSvg
+{
+  string sheet = 1;   // name or path; default the root
+}
+
+message SchSvgSymbol
+{
+  string ref       = 1;
+  string value     = 2;
+  repeated double box = 3;   // [x0, y0, x1, y1] mm, the body
+  string footprint = 4;
+}
+
+message SchSvgNet
+{
+  string name = 1;
+  repeated double segs = 2;   // wires: x0, y0, x1, y1, ...  (mm)
+  repeated double pins = 3;   // pins, labels, sheet pins: x, y, ...
+}
+
+message SchSvgSheetRef
+{
+  string name = 1;
+  string path = 2;
+  string page = 3;
+  repeated double box = 4;   // a sheet symbol on this page: [x0, y0, x1, y1]
+}
+
+message SchSvgResponse
+{
+  string svg    = 1;
+  string sheet  = 2;           // its path
+  double width  = 3;           // page, mm
+  double height = 4;
+  repeated SchSvgSymbol   symbols  = 5;
+  repeated SchSvgNet      nets     = 6;
+  repeated SchSvgSheetRef sheets   = 7;   // every sheet, in page order
+  repeated SchSvgSheetRef children = 8;   // the sheet symbols on this page (with box)
+}

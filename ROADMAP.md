@@ -77,7 +77,7 @@ Beta 已能走完整個設計流程（電路圖 → 選料 → 擺件 → 規則
    - **未納入：** 損耗、過孔筒身（當成接點）、與其他網路的耦合、封裝。只處理單端網路，差分對請一次看一條。
    - **測試：** `client/si_e2e.py`，用 vme-wren。檢查開路末端的峰值等於 2·vdd·Z0/(Z0+rout)；建議的串聯電阻（18 Ω = 48 − 30，取 E24）把過衝壓到 0.4%；flight time 等於線的延遲；`/PP_OUT2` 從另一側經 R337 找到驅動端；兩個驅動端、驅動端不在網路上、沒有走線的網路都會拒絕。
 
-## 階段四：協同介面
+## 階段四：協同介面 ✅（2026-11-23）
 
 1. **桌面 Co-pilot 面板：** 即時活動紀錄、「暫停 Agent 寫入」開關。 ✅（2026-11-23）
    - **共用狀態：** `src/common/kicadd_copilot`，編進 kicommon，同一程序的 PCB 與電路圖編輯器共用。API server 回報每個請求，handler 的 `announce` 寫入編輯描述。
@@ -85,8 +85,13 @@ Beta 已能走完整個設計流程（電路圖 → 選料 → 擺件 → 規則
    - **動作：** `src/common/kicadd_copilot_tool`，View → Panels → Co-pilot，以及 View → Pause Agent Edits（Ctrl+Alt+P）。
    - **暫停：** pcb / sch handler 的 `busy()` 回 `paused: ...`，kicadd-mcp 不重試；`board_summary` / `sch_summary` 會提示。
    - **測試：** `client/copilot_e2e.py`；`desktop_sch_e2e` 加了 [4b]。
-2. **遠端 Web 2D 視圖：** 電路圖檢視、網路高亮、協同狀態提示，輪詢改為主動推送。
-   - **模擬圖表分頁（2026-11-21 加入）：** `simulate` 的結果經 WebSocket 推到 Web 視圖的「圖表」分頁，可縮放、游標讀值、切換 probe；和第三階段的圖形輸出共用同一份資料。
+2. **遠端 Web 2D 視圖：** 電路圖檢視、網路高亮、協同狀態提示，輪詢改為主動推送。 ✅（2026-11-23）
+   - **主動推送：** `src/common/kicadd_events`，KiCad 在 `<socket>.ev` 發布 `board` / `sch` / `copilot`。hub 收到才 poll，保底 1 秒。
+   - **協同狀態：** Agent 區塊與暫停開關（`GetCopilot` / `SetCopilotPaused`），檢視者人數。Web 用自己的連線 `kicadd-web`。
+   - **網路高亮：** 雙擊銅箔或按 H。
+   - **電路圖：** Schematic 分頁（`SchSheetSvg`，KiCad 的 SVG 繪圖），與板子雙向對應零件與網路。
+   - **測試：** `client/webui_e2e.py`（Playwright + Chromium）。
+   - **模擬圖表分頁（2026-11-21 加入）：** `simulate` 的結果經 WebSocket 推到 Web 視圖的「圖表」分頁，可縮放、游標讀值、切換 probe；和第三階段的圖形輸出共用同一份資料。 ✅ `pdn`、`reflection` 的圖表也一併推送（`plot::Publish`）。
 3. **由 MCP 開關 KiCad、新建專案（2026-11-21 加入）：**
    - **新建專案：** 在伺服器上建立 `.kicad_pro`、空白 `.kicad_pcb`、`.kicad_sch`，接著開啟；已存在就拒絕，不覆寫。 ✅ 工具 `new_project`（2026-11-22，`mcp/project.cpp`）：
      - **參數：** `path`（資料夾，不存在就建立；或直接給 `.kicad_pro` 路徑）、`name`（預設為資料夾名）。

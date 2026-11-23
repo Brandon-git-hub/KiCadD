@@ -23,6 +23,10 @@
  *          (a tool's chart for the Chart tab; the last few are sent to a view that joins)
  *     {"t":"copilot","paused":bool,"edits":N,"refused":N,"requests":N,"last_type":"..","last_ms":unix ms,
  *      "events":[[unix ms,kind,text,repeat],..]}   (the agent's activity; kind 0 edit, 1 refused, 2 note)
+ *     {"t":"sch","sheet":"/Power/","w":mm,"h":mm,"svg":"..","symbols":[[ref,value,footprint,[x0,y0,x1,y1]],..],
+ *      "nets":[{"n":name,"s":[x0,y0,x1,y1,..],"p":[x,y,..]},..],"sheets":[[name,path,page],..],
+ *      "children":[[name,path,page,[x0,y0,x1,y1]],..]}   (a sheet for the Schematic tab; mm, KiCad's plot)
+ *     {"t":"schdirty"}   (the schematic changed: ask for the shown sheet again)
  *     {"t":"error","error":".."}
  *   ITEMS = "nets":[..],"lys":[..]  (string tables; items reference them by index)
  *           "fp":[{id,ref,val,back,x,y,r,lk,bb:[x0,y0,x1,y1],cy:[..],
@@ -37,6 +41,7 @@
  *     {"t":"add","footprint":"Lib:Name"|"like":"C12","ref":"C?","x":mm,"y":mm,"rot":deg,"back":bool,
  *      "value":"..","nets":{"1":"GND",..}}
  *     {"t":"undo"} / {"t":"redo"} / {"t":"save"}   /   {"t":"pause","paused":bool}   (the agent's edits)
+ *     {"t":"sch","sheet":"name or path"}   (default the root)
  *     {"t":"fills","ids":[..]}   (ids empty = all)   /   {"t":"art","layers":["F.SilkS",..]}   /   {"t":"refill"}   /   {"t":"drc"}
  *   server -> client (full DRC)
  *     {"t":"drcfull","ok":bool,"s":secs,"errors":{type:n},"warnings":{type:n},
@@ -68,6 +73,7 @@
 
 #include <kicadd/board.pb.h>
 #include <kicadd/render.pb.h>
+#include <kicadd/schematic.pb.h>
 #include <api/common/commands/project_commands.pb.h>
 #include <api/board/board_commands.pb.h>
 #include <api/common/types/base_types.pb.h>
@@ -78,6 +84,7 @@ namespace beast = boost::beast;
 namespace websocket = beast::websocket;
 namespace asio = boost::asio;
 using tcp = asio::ip::tcp;
+namespace ks = kicadd::schematic;
 namespace kr = kicadd::render;
 namespace kb = kicadd::board;
 
@@ -483,6 +490,8 @@ void WEB_HUB::eventsLoop()
 
         if( std::string( buf, size ) == "copilot" )
             m_copilotDue = true;
+        else if( std::string( buf, size ) == "sch" )
+            m_schDue = true;
 
         nng_free( buf, size );
         Kick();   // "board", "copilot", "sch": the poll asks what changed
@@ -558,7 +567,7 @@ void WEB_HUB::Received( const std::shared_ptr<WS_SESSION>& aSession, const std::
     if( t == "resync" )
         msg = json{ { "t", "snapshot" } };
     else if( t != "move" && t != "delete" && t != "add" && t != "undo" && t != "redo" && t != "save" && t != "fills" && t != "art" && t != "refill"
-             && t != "drc" && t != "pause" )
+             && t != "drc" && t != "pause" && t != "sch" )
     {
         aSession->Send( std::make_shared<std::string>( errorJson( "unknown message type '" + t + "'" ) ) );
         return;
@@ -702,6 +711,10 @@ void WEB_HUB::workerLoop()
             poll();
             sendStatusIfChanged();
             sendCopilotIfChanged();
+
+            // the schematic changed: views showing a sheet ask for it again
+            if( m_schDue.exchange( false ) )
+                broadcast( json{ { "t", "schdirty" } }.dump() );
         }
 
         // Edits have gone quiet: rebuild the deferred large nets and send the full ratsnest.
@@ -760,6 +773,49 @@ void WEB_HUB::runJob( const JOB& aJob )
         bool pending = false;
         session->Send( std::make_shared<std::string>( ratsnestJson( false, &pending ) ) );
         scheduleRatsnestFlush( pending );
+        return;
+    }
+
+    if( t == "sch" )
+    {
+        ks::SchSheetSvg   req;
+        ks::SchSvgResponse r;
+        req.set_sheet( aJob.message.value( "sheet", std::string() ) );
+
+        if( !m_ipc.Call( req, r, err ) )
+        {
+            session->Send( std::make_shared<std::string>( json{ { "t", "sch" }, { "error", err } }.dump() ) );
+            return;
+        }
+
+        auto boxOf = []( const auto& aBox )
+        {
+            json b = json::array();
+
+            for( double v : aBox )
+                b.push_back( v );
+
+            return b;
+        };
+
+        json symbols = json::array(), nets = json::array(), sheets = json::array(), children = json::array();
+
+        for( const ks::SchSvgSymbol& s : r.symbols() )
+            symbols.push_back( { s.ref(), s.value(), s.footprint(), boxOf( s.box() ) } );
+
+        for( const ks::SchSvgNet& n : r.nets() )
+            nets.push_back( { { "n", n.name() }, { "s", boxOf( n.segs() ) }, { "p", boxOf( n.pins() ) } } );
+
+        for( const ks::SchSvgSheetRef& s : r.sheets() )
+            sheets.push_back( { s.name(), s.path(), s.page() } );
+
+        for( const ks::SchSvgSheetRef& s : r.children() )
+            children.push_back( { s.name(), s.path(), s.page(), boxOf( s.box() ) } );
+
+        session->Send( std::make_shared<std::string>(
+                json{ { "t", "sch" }, { "sheet", r.sheet() }, { "w", r.width() }, { "h", r.height() }, { "svg", r.svg() },
+                      { "symbols", std::move( symbols ) }, { "nets", std::move( nets ) }, { "sheets", std::move( sheets ) },
+                      { "children", std::move( children ) } }.dump() ) );
         return;
     }
 

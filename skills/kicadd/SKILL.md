@@ -318,6 +318,13 @@ saves. It never writes over a file: an existing project is opened with `open_boa
 them). KiCadD ships no symbol libraries: start the schematic with `lcsc_fetch` / `sch_add_part
 lcsc=...` or `lib_create_symbol`.
 
+## The user's web view
+
+When kicadd-mcp serves HTTP, the user may be watching in a browser: your edits show at once,
+the charts of `simulate` / `pdn` / `reflection` appear in its Chart tab without `plot=true`
+(ask for the PNG only when you need to look at it yourself), and the user can pause your edits
+from there ("paused: ...", see the ground rules).
+
 ## Starting and stopping KiCad (launch_kicad / close_kicad)
 
 When every tool fails with "is KiCadD running? ... launch_kicad starts one", nothing serves

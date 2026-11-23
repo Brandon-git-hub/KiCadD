@@ -124,6 +124,7 @@ private:
     std::string       m_lastStatus;         // worker only
     std::string       m_lastCopilot;        // worker only
     std::atomic<bool> m_copilotDue{ true };
+    std::atomic<bool> m_schDue{ false };
     std::chrono::steady_clock::time_point m_copilotPolled{};   // worker only (fallback without push)
 };
 

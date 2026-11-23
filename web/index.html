@@ -37,6 +37,14 @@
                font: inherit; padding: 2px 6px; max-width: 46%; display: none; }
   #stage { position: relative; overflow: hidden; flex: 1; min-height: 0; }
   #chartPane { position: relative; flex: 1; min-height: 0; display: none; background: #0b0e11; }
+  #schPane { position: relative; flex: 1; min-height: 0; display: none; overflow: hidden; background: #2a2e33; cursor: grab; }
+  #schPane.grab { cursor: grabbing; }
+  #schWrap { position: absolute; left: 0; top: 0; transform-origin: 0 0; box-shadow: 0 2px 14px rgba(0,0,0,.5); }
+  #schSvg svg { display: block; }
+  #schOver { position: absolute; left: 0; top: 0; pointer-events: none; overflow: visible; }
+  #schMsg { position: absolute; left: 0; right: 0; top: 45%; text-align: center; }
+  #schPick { background: #222831; color: var(--text); border: 1px solid var(--line); border-radius: 5px;
+             font: inherit; padding: 2px 6px; max-width: 40%; display: none; }
   #ch { cursor: crosshair; }
   #chTip { position: absolute; pointer-events: none; background: rgba(16,19,23,.94); border: 1px solid var(--line);
            padding: 4px 8px; border-radius: 4px; font-size: 12px; white-space: nowrap; display: none; }
@@ -66,7 +74,7 @@
   #hiNet { position: absolute; left: 10px; top: 10px; display: none; background: rgba(16,19,23,.92);
            border: 1px solid #7a6a2a; color: var(--text); padding: 3px 9px; border-radius: 4px; font-size: 12px; }
   #hiNet b { color: #ffe27a; } #hiNet .x { cursor: pointer; color: var(--dim); margin-left: 6px; }
-  .netlink { cursor: pointer; color: var(--accent); } .netlink:hover { text-decoration: underline; }
+  .netlink, .kv .netlink { cursor: pointer; color: var(--accent); } .netlink:hover { text-decoration: underline; }
   footer { grid-column: 1 / 3; display: flex; gap: 18px; align-items: center; padding: 0 12px;
            border-top: 1px solid var(--line); background: var(--panel); color: var(--dim); font-size: 12px; }
   .help { color: var(--dim); font-size: 12px; }
@@ -94,11 +102,18 @@
   <div id="main">
     <div id="tabs">
       <button data-tab="board" class="on">Board</button>
+      <button data-tab="sch" title="The schematic, as KiCad plots it">Schematic</button>
       <button data-tab="chart" title="Charts from simulate, pdn and reflection">Chart <span id="chartBadge"></span></button>
       <span style="flex:1"></span>
+      <span id="schInfo" class="help"></span>
+      <select id="schPick" title="Sheets"></select>
       <select id="chartPick" title="Recent charts"></select>
     </div>
     <div id="stage"><canvas id="cv"></canvas><div id="tip"></div><div id="hiNet"></div></div>
+    <div id="schPane">
+      <div id="schWrap"><div id="schSvg"></div><svg id="schOver" xmlns="http://www.w3.org/2000/svg"></svg></div>
+      <div id="schMsg" class="empty">Loading the schematic…</div>
+    </div>
     <div id="chartPane">
       <canvas id="ch"></canvas><div id="chTip"></div>
       <div id="chEmpty" class="empty">No chart yet: the agent's simulate, pdn and reflection results show here</div>
@@ -171,6 +186,7 @@ function select(ids, add) {
   if (!add) selection.clear();
   for (const id of ids) selection.add(id);
   showSelection(); dirty = true;
+  if (typeof schOverlay === "function") schOverlay();
 }
 let drag = null;                                    // {id, sx, sy, dx, dy, moved}
 let pan = null;
@@ -181,6 +197,7 @@ let dirty = true;
 let hiNet = null, hiPaths = null;                   // highlighted net, and its items' paths (rebuilt lazily)
 function highlight(net) {
   hiNet = net || null; hiPaths = null; dirty = true;
+  if (typeof schOverlay === "function") schOverlay();
   const b = $("hiNet");
   b.style.display = hiNet ? "block" : "none";
   if (hiNet) {
@@ -1251,6 +1268,8 @@ function connect() {
     else if (msg.t === "status") onStatus(msg);
     else if (msg.t === "copilot") onCopilot(msg);
     else if (msg.t === "chart") onChart(msg);
+    else if (msg.t === "sch") onSch(msg);
+    else if (msg.t === "schdirty") { sch.dirty = true; if (tab === "sch") schLoad(sch.sheet); }
     else if (msg.t === "refilled") {
       $("refill").disabled = false; $("refill").textContent = "Refill zones";
       log(msg.ok ? `zones refilled in <b>${(msg.ms / 1000).toFixed(1)} s</b>` : `<span style="color:var(--bad)">refill failed: ${msg.error}</span>`);
@@ -1259,6 +1278,159 @@ function connect() {
     else if (msg.t === "error") log(`<span style="color:var(--bad)">${msg.error}</span>`);
   };
 }
+
+// ---------------------------------------------------------------------------------------------
+// Schematic tab: KiCad's SVG of one sheet (mm), an overlay for the highlighted net and the
+// selected parts (shared with the board), click a part to select it on the board
+
+const sch = { loaded: false, dirty: false, sheet: "", sheets: [], msg: null, s: 1, x: 0, y: 0, fitted: "", drag: null };
+const SVGNS = "http://www.w3.org/2000/svg";
+
+function schLoad(sheet) {
+  sch.dirty = false;
+  if (!sch.loaded) $("schMsg").style.display = "block";
+  send({ t: "sch", sheet: sheet || "" });
+}
+
+function onSch(m) {
+  if (m.error) {
+    $("schMsg").style.display = "block";
+    $("schMsg").textContent = /no schematic/.test(m.error) ? "No schematic is open here" : "The schematic could not be drawn: " + m.error;
+    return;
+  }
+  const newSheet = m.sheet !== sch.sheet || !sch.loaded;
+  sch.msg = m; sch.sheet = m.sheet; sch.loaded = true; sch.sheets = m.sheets;
+  $("schMsg").style.display = "none";
+  const host = $("schSvg");
+  host.innerHTML = m.svg;
+  const svg = host.querySelector("svg");
+  if (svg) { svg.setAttribute("width", m.w); svg.setAttribute("height", m.h); }
+  const over = $("schOver");
+  over.setAttribute("viewBox", `0 0 ${m.w} ${m.h}`); over.setAttribute("width", m.w); over.setAttribute("height", m.h);
+  const pick = $("schPick");
+  pick.innerHTML = "";
+  for (const [name, path, page] of m.sheets) {
+    const o = document.createElement("option");
+    o.value = path; o.textContent = `${page ? page + " · " : ""}${name === "root" ? "/" : path}`;
+    pick.append(o);
+  }
+  pick.value = m.sheet;
+  pick.style.display = tab === "sch" && m.sheets.length > 1 ? "inline-block" : "none";
+  $("schInfo").textContent = `${m.symbols.length} parts`;
+  if (newSheet) schFit(); else schApply();
+  schOverlay();
+}
+$("schPick").onchange = () => schLoad($("schPick").value);
+function schFitIfNew() { if (sch.fitted !== sch.sheet) schFit(); }
+
+function schFit() {
+  if (!sch.msg) return;
+  const r = $("schPane").getBoundingClientRect();
+  if (!r.width) return;
+  sch.s = Math.min(r.width / sch.msg.w, r.height / sch.msg.h) * 0.96;
+  sch.x = (r.width - sch.msg.w * sch.s) / 2; sch.y = (r.height - sch.msg.h * sch.s) / 2;
+  sch.fitted = sch.sheet;
+  schApply();
+}
+function schApply() { $("schWrap").style.transform = `translate(${sch.x}px, ${sch.y}px) scale(${sch.s})`; }
+
+function schOverlay() {                 // the highlighted net, the selected parts (board selection)
+  const over = $("schOver");
+  if (!sch.msg) return;
+  over.innerHTML = "";
+  const add = (tag, attrs) => { const e = document.createElementNS(SVGNS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); over.append(e); return e; };
+  if (hiNet) {
+    for (const n of sch.msg.nets) {
+      if (n.n !== hiNet && n.n !== "/" + hiNet && "/" + n.n !== hiNet) continue;
+      for (let i = 0; i + 3 < n.s.length; i += 4)
+        add("line", { x1: n.s[i], y1: n.s[i + 1], x2: n.s[i + 2], y2: n.s[i + 3], stroke: "#ff9f1a", "stroke-width": 0.55, "stroke-linecap": "round", opacity: 0.9 });
+      for (let i = 0; i + 1 < n.p.length; i += 2)
+        add("circle", { cx: n.p[i], cy: n.p[i + 1], r: 0.7, fill: "#ff9f1a", opacity: 0.9 });
+    }
+  }
+  const refs = new Set(selFps().map(f => f.ref));
+  for (const [ref, , , b] of sch.msg.symbols) {
+    if (!refs.has(ref)) continue;
+    add("rect", { x: b[0] - 1, y: b[1] - 1, width: b[2] - b[0] + 2, height: b[3] - b[1] + 2, fill: "rgba(43,123,255,.08)",
+                  stroke: "#2b7bff", "stroke-width": 0.45, rx: 0.6 });
+  }
+}
+
+function schPoint(e) {                  // the event's position in sheet mm
+  const r = $("schPane").getBoundingClientRect();
+  return [(e.clientX - r.left - sch.x) / sch.s, (e.clientY - r.top - sch.y) / sch.s];
+}
+
+function schHit(x, y) {                 // a part, a sheet symbol, or a net under (x, y) mm
+  const m = sch.msg;
+  let best = null;
+  for (const [ref, val, fp, b] of m.symbols)
+    if (x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3]) {
+      const area = (b[2] - b[0]) * (b[3] - b[1]);
+      if (!best || area < best.area) best = { kind: "part", ref, val, fp, area };
+    }
+  const tol = Math.max(0.5, 5 / sch.s);
+  for (const n of m.nets) {
+    for (let i = 0; i + 1 < n.p.length; i += 2)
+      if (Math.hypot(x - n.p[i], y - n.p[i + 1]) <= tol) return { kind: "net", net: n.n };
+    for (let i = 0; i + 3 < n.s.length; i += 4)
+      if (segDist(x, y, n.s[i], n.s[i + 1], n.s[i + 2], n.s[i + 3]) <= tol * 0.6) return { kind: "net", net: n.n };
+  }
+  if (best) return best;
+  for (const [name, path, , b] of m.children)
+    if (x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3]) return { kind: "sheet", name, path };
+  return null;
+}
+
+function boardNet(net) {                // the board's name for a schematic net ("/VPP" or "VPP")
+  const names = new Set();
+  for (const t of board.trk.values()) names.add(t.net);
+  for (const f of board.fp.values()) for (const p of f.pads) names.add(p.net);
+  if (names.has(net)) return net;
+  if (names.has("/" + net)) return "/" + net;
+  if (net.startsWith("/") && names.has(net.slice(1))) return net.slice(1);
+  return net;
+}
+
+$("schPane").addEventListener("mousedown", e => {
+  if (!sch.msg || e.button !== 0) return;
+  sch.drag = { x: e.clientX, y: e.clientY, ox: sch.x, oy: sch.y, moved: false };
+  $("schPane").classList.add("grab");
+});
+window.addEventListener("mousemove", e => {
+  if (!sch.drag) return;
+  const dx = e.clientX - sch.drag.x, dy = e.clientY - sch.drag.y;
+  if (Math.abs(dx) + Math.abs(dy) > 3) sch.drag.moved = true;
+  sch.x = sch.drag.ox + dx; sch.y = sch.drag.oy + dy; schApply();
+});
+window.addEventListener("mouseup", e => {
+  if (!sch.drag) return;
+  const d = sch.drag;
+  sch.drag = null;
+  $("schPane").classList.remove("grab");
+  if (d.moved || !sch.msg) return;
+  const [x, y] = schPoint(e), hit = schHit(x, y);
+  if (!hit) { select([]); highlight(null); $("schInfo").textContent = `${sch.msg.symbols.length} parts`; return; }
+  if (hit.kind === "part") {
+    const f = [...board.fp.values()].find(o => o.ref === hit.ref);
+    select(f ? [f.id] : []);
+    $("schInfo").textContent = `${hit.ref} · ${hit.val}` + (f ? "" : " · not on the board");
+  } else if (hit.kind === "net") {
+    const n = boardNet(hit.net);
+    highlight(hiNet === n ? null : n);
+    $("schInfo").textContent = hiNet ? "net " + hiNet : "";
+  } else if (hit.kind === "sheet") schLoad(hit.path);
+});
+$("schPane").addEventListener("dblclick", () => schFit());
+$("schPane").addEventListener("wheel", e => {
+  if (!sch.msg) return;
+  e.preventDefault();
+  const r = $("schPane").getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  const k = Math.exp(-e.deltaY * 0.0015), s = Math.min(60, Math.max(0.2, sch.s * k));
+  sch.x = mx - (mx - sch.x) * s / sch.s; sch.y = my - (my - sch.y) * s / sch.s; sch.s = s;
+  schApply();
+}, { passive: false });
+window.addEventListener("resize", () => { if (tab === "sch" && sch.fitted) schFit(); });
 
 // ---------------------------------------------------------------------------------------------
 // Chart tab: the tools' charts (simulate, pdn, reflection), the same data as their PNG
@@ -1276,7 +1448,11 @@ function setTab(t) {
   for (const b of document.querySelectorAll("#tabs button")) b.classList.toggle("on", b.dataset.tab === t);
   $("stage").style.display = t === "board" ? "" : "none";
   $("chartPane").style.display = t === "chart" ? "block" : "none";
+  $("schPane").style.display = t === "sch" ? "block" : "none";
   $("chartPick").style.display = t === "chart" && charts.length ? "inline-block" : "none";
+  $("schPick").style.display = t === "sch" && sch.sheets.length > 1 ? "inline-block" : "none";
+  $("schInfo").style.display = t === "sch" ? "" : "none";
+  if (t === "sch") { if (!sch.loaded || sch.dirty) schLoad(sch.sheet); else schFitIfNew(); }
   if (t === "chart") { $("chartBadge").textContent = ""; chResize(); }
   else resize();
 }
