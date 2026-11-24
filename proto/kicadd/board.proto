@@ -73,6 +73,16 @@ message BoardSummaryResponse
   Point  bbox_max   = 9;
   repeated string duplicate_refs = 10;   // "R22 x2": a reference on more than one footprint
   bool   agent_paused = 11;   // the user paused the agent's edits (desktop Co-pilot panel)
+  repeated ViaKind via_kinds = 12;   // the vias grouped by type, pad and drill, most first
+  int64  thickness_nm = 13;          // the board thickness (board setup's stackup)
+}
+
+message ViaKind
+{
+  string type     = 1;   // "through", "blind", "buried", "micro"
+  int64  size_nm  = 2;   // the pad on the outer (first) layer
+  int64  drill_nm = 3;
+  int32  count    = 4;
 }
 
 // Items whose bounding box intersects a circle.

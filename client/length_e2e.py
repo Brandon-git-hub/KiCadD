@@ -12,7 +12,10 @@ usage: python3 -I length_e2e.py --build BUILD --demos DEMOS_DIR --work DIR
               tracks shows as skew; globs that match nothing; bad limits refused
   stickhub    pairs with no class gap: each layer's median is the target; pair_gap finds U3D+/- (0.15 vs 0.17)
   vme-wren    the DDR4 clock pair routed at 0.12 mm against its class's 0.25
-  jetson      144 pairs in seconds; Default's 5 mm gap is not taken as a target; per layer medians
+  jetson      144 pairs in seconds; Default's 5 mm gap is not taken as a target; per layer medians;
+              review R1: the header counts only the sections shown (diff_pair brings length rows);
+              board_summary's via kinds and aspect ratio; the logos' REF** no duplicate; export names
+              the fitted parts excluded from the BOM; board_render to a missing folder says so
 """
 
 import argparse
@@ -214,6 +217,26 @@ def main():
         _, t = m.tool("audit", {"pair_gap": {"*": 0.02}})
         check(any(re.match(r"warning: pair_gap \* \(±0.02 mm\): 144 pair\(s\) judged, \d over", ln) for ln in section(t, "diff_pair")),
               "pair_gap over 144 pairs: a few off target")
+
+        # review run R1 (beta.13): the header counts only the sections shown; diff_pair brings length along
+        err, t = m.tool("audit", {"sections": ["diff_pair"], "length_match": {"*DP0*": 1}, "skew": {"*USBC?_D*": 1},
+                                  "length_limit": 25})
+        head = re.match(r"audit: (\d+) warning\(s\)", t)
+        shown = sum(1 for ln in t.splitlines() if ln.startswith("  warning:"))
+        check(not err and head and int(head.group(1)) == shown and section(t, "length"),
+              f"sections [diff_pair]: header {head and head.group(1)} warning(s), {shown} shown, length rows in")
+        err, t = m.tool("board_summary", {})
+        check(re.search(r"^vias \(pad/drill mm\): through 0\.45/0\.1 x\d+; board 1\.711 mm thick: through-via aspect ratio up to 17\.1:1",
+                        t, re.M), "board_summary: the via kinds and the through-via aspect ratio")
+        err, t = m.tool("run_drc", {"limit": 1})
+        check("REF**" not in t, "run_drc: the two logos (REF**, board only, no pads) are no duplicate reference")
+        out = os.path.join(work, "jfab")
+        err, t = m.tool("export", {"fab": {"dir": out, "drc": False, "refill": False}})
+        fit = re.search(r"check: \d+ of them are wired like fitted parts.*", t)
+        check(fit and all(re.search(r"\b%s\b" % q, fit.group(0)) for q in ("Q2", "Q9", "Q39")) and "REF**" not in t,
+              "export {fab}: Q2 / Q9 / Q39 named as excluded from the BOM though wired like fitted parts")
+        err, t = m.tool("board_render", {"size": 200, "path": os.path.join(work, "no", "such", "x.png")})
+        check(err and "does not exist" in t, "board_render to a missing folder: " + t.strip()[:70])
     finally:
         m.close()
         srv.stop()

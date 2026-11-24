@@ -68,6 +68,10 @@ TOOL NewProjectTool( std::shared_ptr<std::vector<TOOL>> aTable );
 /// "; board_diff: N change(s) since saved: ..." for a refusal over unsaved changes (open_board, close_kicad)
 std::string UnsavedBoardChanges( IPC_CLIENT& aIpc );
 
+/// "path: the folder X does not exist" when an absolute output path's folder is missing (a
+/// relative one is the server's to resolve), else empty
+std::string MissingFolder( const std::string& aPath );
+
 /// phase 4 item 3: launch_kicad / close_kicad (launch.cpp): start the server or the desktop
 /// editor on aIpc's socket, stop the one started here. aAllowed false (HTTP without
 /// --allow-launch): both refuse.

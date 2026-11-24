@@ -1,6 +1,6 @@
 # 交接：beta.13 的工作清單（2026-11-24）
 
-> **狀態（2026-11-24）：** v0.1.0-beta.12 已打 tag 並發布（pre-release）。階段 1、階段 2 完成，在本機 commit，尚未推送。下一步是階段 3（審查型盲測）。
+> **狀態（2026-11-24）：** v0.1.0-beta.12 已打 tag 並發布（pre-release）。階段 1、階段 2 完成，在本機 commit，尚未推送。階段 3 盲測 R1 已跑完（結果見文末），R1 之後的五項修正已完成；其餘留給 beta.14（`docs/NEXT_beta14.md`）。下一步：發布。
 
 beta.12 已發布（NEXT_beta10 第一優先 1–10 項、盲測 S1 的修正）。這份清單合併三個來源：
 - 盲測 S2（四層 RP2040 板）的回報；
@@ -188,3 +188,35 @@ beta.12 已發布（NEXT_beta10 第一優先 1–10 項、盲測 S1 的修正）
 - 舊名稱保留一版作為別名，回應時提示新名稱。
 - 更新 SKILL.md、TOOLS.md、MCP Resources / Prompts。
 - 更新所有 e2e 測試。
+
+## 階段 3 的結果：審查型盲測 R1（2026-11-24）
+
+- **板子：** Jetson AGX Thor baseboard（10 層、1125 個 footprint、0 unrouted），副本在 `run/exp/r1`。報告：`run/exp/r1-review.md`。
+- **調用：** audit 12、batch 11（內含 sch_part 33、sch_netlist 8）、sch_netlist 3、sch_part 3、query_area 3、board_render 3，以及 pdn、impedance、export、run_drc、run_erc、silk_tidy、set_rules、board_setup 各 1–2 次。
+- **沒用到：** simulate（零件沒有 LCSC 編號，模型都只是估計）、reflection（快速介面都是差分）、board_diff（只有一個版本）。
+- **用了而且有用：** audit impedance（外層差分對超出目標 +18 %，手算吻合）、plane / return_via、crosstalk、run_drc、export {fab}。
+- **誤導：**
+  - audit ir_drop 預設的 source / load 猜錯：把 INA219 的分流電阻當成負載、把 SoM 連接器當成電源。
+  - audit current 用 pour 上很細的 sense 線來判斷。
+  - pdn 停在 0R 跳線（R7），沒有走到穩壓器的輸出電容。
+- **已確認的 bug：** audit `sections:["diff_pair"]` 時，標頭的警告數算進了沒顯示的區段（16 個只印出 5 個）；length_match 和 length_limit 的列也不出現。
+- **缺的能力：**
+  - 無法依 DNP / exclude_from_bom 列出零件。export 只說「140 個不在 BOM」，沒有點名，也沒警告其中有實際裝上的件。
+  - 沒有 via 鑽孔 / 縱橫比的統計。
+  - sch_summary 沒有篩選（157 kB），而且沒列出它算到的 47 個未連接腳。
+- **小問題：**
+  - DRC 和 export 把兩個 logo 的 "REF**" 當成重複位號。
+  - board_render 寫到不存在的資料夾時，只回傳籠統的 AS_BAD_REQUEST。
+  - audit 參數叫 `currents`，對應的區段卻叫 `current`。
+  - impedance 把有具名 prepreg 的疊構稱為 "generic"。
+
+## 階段 3 之後的修正（beta.13，2026-11-24）
+
+1. **audit 標頭只計算顯示出來的區段：** `sections:["diff_pair"]` 時會一併顯示 length（length_match / max_length / length_limit 的列屬於 diff pair 的參數）。
+2. **export {fab}：**
+   - 列出 exclude-from-BOM 零件的位號。
+   - 標出其中「接線像已裝零件」（焊盤接 2 個以上網路、不是 net tie）卻不是 DNP 的零件。Jetson 上 Q2 / Q9 / Q39 都被點名。
+3. **重複位號：** board-only 且沒有焊盤的 footprint（logo）不計入。board_summary / run_drc / export 都適用。
+4. **board_render / sch_render 寫到不存在的資料夾：** 回「path: the folder X does not exist」，3D 存檔失敗時也一樣。
+5. **board_summary 多一行 via：** 列出種類（type、pad / drill），並依板厚算出 through via 的最大縱橫比。只量測，不下判斷。
+- **測試：** `length_e2e` [jetson] 加上 R1 的五項檢查。

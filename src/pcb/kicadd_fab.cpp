@@ -13,6 +13,7 @@
 #include <board.h>
 #include <board_design_settings.h>
 #include <footprint.h>
+#include <pad.h>
 #include <pcb_field.h>
 #include <pcb_plot_params.h>
 #include <pcb_plotter.h>
@@ -31,6 +32,7 @@
 #include <cmath>
 #include <cstdio>
 #include <map>
+#include <set>
 #include <tuple>
 
 namespace kicadd
@@ -116,7 +118,7 @@ std::vector<std::string> FabProblems( BOARD* aBoard )
     {
         std::string ref = str( fp->GetReference() );
 
-        if( ref.empty() || ref[0] == '#' )
+        if( ref.empty() || ref[0] == '#' || ( fp->IsBoardOnly() && fp->Pads().empty() ) )   // a logo: not a part
             continue;
 
         refCount[ref]++;   // any two footprints of one reference: one of them is not what it says
@@ -261,7 +263,7 @@ bool ExportFab( BOARD* aBoard, const wxString& aDir, bool aZip, kicadd::board::E
     std::map<std::tuple<std::string, std::string, std::string>, LINE> bom;
     std::vector<std::pair<std::string, std::string>>                   cpl;   // ref, row
     int                                                                tht = 0, noBom = 0;
-    std::vector<std::string>                                           dnp;
+    std::vector<std::string>                                           dnp, excluded, fitted;
 
     for( FOOTPRINT* fp : aBoard->Footprints() )
     {
@@ -295,6 +297,21 @@ bool ExportFab( BOARD* aBoard, const wxString& aDir, bool aZip, kicadd::board::E
         {
             // not bought, not placed: a CPL row JLCPCB has no BOM line for is an error there
             noBom++;
+            excluded.push_back( ref );
+
+            // ...yet wired like a part that is fitted (pads on two or more nets, not a net tie):
+            // a test point, hole, fiducial or logo has one net at most
+            std::set<int> nets;
+
+            for( PAD* pad : fp->Pads() )
+            {
+                if( pad->GetNetCode() > 0 )
+                    nets.insert( pad->GetNetCode() );
+            }
+
+            if( nets.size() >= 2 && !fp->IsNetTie() )
+                fitted.push_back( ref );
+
             continue;
         }
 
@@ -385,8 +402,25 @@ bool ExportFab( BOARD* aBoard, const wxString& aDir, bool aZip, kicadd::board::E
         aOut.add_notes( std::to_string( tht ) + " through-hole part(s) in the CPL: JLCPCB places them only with "
                         "through-hole assembly; remove their rows for SMT only" );
 
+    auto refList = [&]( std::vector<std::string>& aRefs, size_t aMax )
+    {
+        std::sort( aRefs.begin(), aRefs.end(), refLess );
+        std::string list;
+
+        for( size_t k = 0; k < aRefs.size() && k < aMax; ++k )
+            list += ( k ? " " : "" ) + aRefs[k];
+
+        return list + ( aRefs.size() > aMax ? " ... (" + std::to_string( aRefs.size() - aMax ) + " more)" : "" );
+    };
+
     if( noBom )
-        aOut.add_notes( std::to_string( noBom ) + " part(s) marked 'exclude from BOM' left out of the BOM and the CPL" );
+        aOut.add_notes( std::to_string( noBom ) + " part(s) marked 'exclude from BOM' left out of the BOM and the CPL: "
+                        + refList( excluded, 12 ) );
+
+    if( !fitted.empty() )
+        aOut.add_notes( "check: " + std::to_string( fitted.size() ) + " of them are wired like fitted parts (pads on 2+ nets) "
+                        "but are not DNP, so nobody buys or places them: " + refList( fitted, 40 )
+                        + "; mark them DNP if they stay empty, else clear exclude_from_bom" );
 
     if( !dnp.empty() )
     {

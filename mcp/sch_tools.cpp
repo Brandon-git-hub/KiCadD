@@ -2224,7 +2224,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "there; the nets that vary most from their own main Z. Header only by default; rows with "
             "z_limit n or z_nets [globs]. Targets: z_target {glob: ohm} (Z0 of nets), z_diff_target "
             "{glob: ohm} (Zdiff of pairs), z_tolerance (%, default 10), z_off_mm (default 1). "
-            "Run run_erc and run_drc too. sections [\"drc\", \"unrouted\", \"impedance\", ...] gives only those (the header line always; drc: a full DRC's counts, unrouted: the unrouted connections per net), e.g. while routing.",
+            "Run run_erc and run_drc too. sections [\"drc\", \"unrouted\", \"impedance\", ...] gives only those (the header line always, counting only the sections shown; diff_pair brings length along; drc: a full DRC's counts, unrouted: the unrouted connections per net), e.g. while routing.",
             obj( { { "max_decap_mm", { { "type", "number" } } },
                    { "currents", { { "type", "object" }, { "description", "net -> A" } } },
                    { "voltages", { { "type", "object" }, { "description", "net -> V" } } },
@@ -2571,19 +2571,42 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                         nearest[d.ic()] = { dist, d.cap().substr( 0, d.cap().find( '.' ) ) };
                 }
 
+                // sections: only these (the header line always); drc / unrouted: a full DRC's
+                // counts and the nets most left unrouted (the routing phase's three questions).
+                // diff_pair brings length along: length_match / max_length / length_limit rows
+                // are diff pair arguments. The header counts only the sections shown.
+                std::set<std::string> only;
+
+                for( const json& s : a.value( "sections", json::array() ) )
+                {
+                    if( s.is_string() )
+                        only.insert( s.get<std::string>() );
+                }
+
+                const bool onlyDiffPair = only.count( "diff_pair" ) > 0;
+
+                if( onlyDiffPair )
+                    only.insert( "length" );
+
+                auto shown = [&]( const std::string& c ) { return only.empty() || only.count( c ) > 0; };
+
                 int warnings = 0, infos = 0;
                 std::string body;
                 std::map<std::string, std::string> byCat;
 
                 for( const ks::SchAuditFinding& f : r.findings() )
                 {
-                    ( f.severity() == "warning" ? warnings : infos )++;
+                    if( shown( f.category() ) )
+                        ( f.severity() == "warning" ? warnings : infos )++;
+
                     byCat[f.category()] += "\n  " + f.severity() + ": " + f.message();
                 }
 
                 for( const kicadd::board::BoardAuditFinding& f : br.findings() )
                 {
-                    ( f.severity() == "warning" ? warnings : infos )++;
+                    if( shown( f.category() ) )
+                        ( f.severity() == "warning" ? warnings : infos )++;
+
                     byCat[f.category()] += "\n  " + f.severity() + ": " + f.message();
                 }
 
@@ -2600,7 +2623,8 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                     }
                 }
 
-                warnings += farCount;
+                if( shown( "decoupling" ) )
+                    warnings += farCount;
 
                 std::string t = "audit: " + std::to_string( warnings ) + " warning(s), " + std::to_string( infos ) + " note(s)";
 
@@ -2623,16 +2647,6 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                                      : std::string() );
                 else
                     t += "; no board (" + boardErr + "): schematic checks only";
-
-                // sections: only these (the header line always); drc / unrouted: a full DRC's
-                // counts and the nets most left unrouted (the routing phase's three questions)
-                std::set<std::string> only;
-
-                for( const json& s : a.value( "sections", json::array() ) )
-                {
-                    if( s.is_string() )
-                        only.insert( s.get<std::string>() );
-                }
 
                 static const std::vector<std::string> CATS = { "decoupling", "power", "esd", "net", "current", "voltage",
                                                                "silk", "testpoint", "plane", "return_via", "diff_pair",
@@ -3120,6 +3134,9 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                 req.set_size( a.value( "size", 0 ) );
                 req.set_margin( a.value( "margin", 0.0 ) );
                 req.set_path( str( a, "path" ) );
+
+                if( std::string why = MissingFolder( req.path() ); !why.empty() )
+                    return TOOL_RESULT{ why, true };
 
                 ks::SchRenderResponse r;
                 std::string           err;

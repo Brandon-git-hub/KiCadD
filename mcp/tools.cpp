@@ -459,6 +459,41 @@ TOOL_RESULT boardSummary( IPC_CLIENT& aIpc )
     else if( !ferr.empty() )
         rats = "ratsnest: not rebuilt now (" + ferr.substr( 0, ferr.find( ';' ) ) + ")\n";
 
+    // vias by kind (a fab's drill and aspect-ratio limits are the human's: measured, not judged)
+    std::string viaLine;
+
+    if( r.via_kinds_size() > 0 )
+    {
+        int minThrough = 0;
+
+        for( int k = 0; k < r.via_kinds_size(); ++k )
+        {
+            const kb::ViaKind& v = r.via_kinds( k );
+
+            if( k < 5 )
+                viaLine += std::string( k ? ", " : "" ) + v.type() + " " + mm( v.size_nm() ) + "/" + mm( v.drill_nm() )
+                           + " x" + std::to_string( v.count() );
+
+            if( v.type() == "through" && v.drill_nm() > 0 && ( !minThrough || v.drill_nm() < minThrough ) )
+                minThrough = (int) v.drill_nm();
+        }
+
+        if( r.via_kinds_size() > 5 )
+            viaLine += ", " + std::to_string( r.via_kinds_size() - 5 ) + " more kind(s)";
+
+        viaLine = "vias (pad/drill mm): " + viaLine;
+
+        if( minThrough && r.thickness_nm() > 0 )
+        {
+            char buf[32];
+            std::snprintf( buf, sizeof buf, "%.1f", (double) r.thickness_nm() / minThrough );
+            viaLine += "; board " + mm( r.thickness_nm() ) + " mm thick: through-via aspect ratio up to " + buf
+                       + ":1 (thickness / drill)";
+        }
+
+        viaLine += "\n";
+    }
+
     return { "file=" + file + " footprints=" + std::to_string( r.footprints() )
              + " tracks=" + std::to_string( r.tracks() ) + " vias=" + std::to_string( r.vias() )
              + " zones=" + std::to_string( r.zones() ) + " nets=" + std::to_string( r.nets() )
@@ -466,7 +501,7 @@ TOOL_RESULT boardSummary( IPC_CLIENT& aIpc )
              + " outline=" + pt( r.bbox_min() ) + ".." + pt( r.bbox_max() ) + "mm\n"
              + ( r.agent_paused() ? "note: the user paused the agent's edits (Co-pilot panel): edits are refused "
                                     "until resumed; reads work\n"
-                                  : "" ) + rats };
+                                  : "" ) + viaLine + rats };
 }
 
 
@@ -2740,7 +2775,12 @@ TOOL_RESULT boardRender( IPC_CLIENT& aIpc, const json& aArgs )
         req.set_margin( v );
 
     if( aArgs.contains( "path" ) && aArgs["path"].is_string() )
+    {
+        if( std::string why = MissingFolder( aArgs["path"].get<std::string>() ); !why.empty() )
+            return error( why );
+
         req.set_path( aArgs["path"].get<std::string>() );
+    }
 
     kb::RenderBoardResponse r;
     std::string             err;
@@ -2986,6 +3026,8 @@ static TOOL_RESULT boardRender3d( IPC_CLIENT& aIpc, const json& a )
 
         if( f && std::fwrite( r.png().data(), 1, r.png().size(), f ) == r.png().size() )
             text += "\nsaved " + p.string();
+        else if( std::string why = MissingFolder( p.string() ); !why.empty() )
+            text += "\nnot saved: " + why;
         else
             text += "\nnot saved: cannot write " + p.string();
 
@@ -2996,6 +3038,19 @@ static TOOL_RESULT boardRender3d( IPC_CLIENT& aIpc, const json& a )
     TOOL_RESULT out{ text + "\n", false };
     out.image = r.png();
     return out;
+}
+
+
+std::string MissingFolder( const std::string& aPath )
+{
+    namespace fs = std::filesystem;
+    fs::path        p( aPath );
+    std::error_code ec;
+
+    if( aPath.empty() || p.is_relative() || !p.has_parent_path() || fs::is_directory( p.parent_path(), ec ) )
+        return {};
+
+    return "path: the folder " + p.parent_path().string() + " does not exist (create it first)";
 }
 
 
@@ -3180,7 +3235,8 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
 
     tools.push_back( { "board_summary",
                        "Counts, layer count and board outline of the open PCB. Units: mm. KiCad's Y axis "
-                       "points down.",
+                       "points down. The vias by kind (type, pad / drill) and, with the board thickness, the "
+                       "worst through-via aspect ratio (thickness / drill; your fab's limit judges it).",
                        schema( json::object() ),
                        [&aIpc]( const json& ) { return boardSummary( aIpc ); } } );
 
@@ -3722,7 +3778,9 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                        "(Designator, Mid X, Mid Y, Layer, Rotation) as CSV. Refills the zones first "
                        "(refill=false skips it), then runs the full DRC and puts its error count first "
                        "(drc=false skips it). strict=true writes nothing when DRC has errors, a reference "
-                       "is on two footprints or a part is outside the outline. dir defaults to <project>/fab.",
+                       "is on two footprints or a part is outside the outline. dir defaults to <project>/fab. "
+                       "Notes name the DNP and exclude-from-BOM parts left out, and flag excluded parts wired "
+                       "like fitted ones (pads on 2+ nets): nobody buys or places them.",
                        schema( { { "dir", { { "type", "string" } } },
                                  { "drc", { { "type", "boolean" }, { "description", "default true" } } },
                                  { "strict", { { "type", "boolean" },

@@ -26,7 +26,7 @@ namespace
 
 const std::map<std::string, std::string> BRIEFS = {
     // the board
-    { "board_summary", "Counts, copper layers and outline of the open PCB (mm, Y down), and the full unrouted count. Start here." },
+    { "board_summary", "Counts, copper layers, outline, via kinds and aspect ratio of the open PCB (mm, Y down), and the full unrouted count. Start here." },
     { "project", "Open a .kicad_pcb / .kicad_pro, or make a new project, on the server (headless only); refused with unsaved changes unless discard." },
     { "query_area", "Items near a part or a point, nearest first (pads with their size). Use instead of dumping the board; via_net finds free via spots." },
     { "query_net", "Pads, tracks, vias and zones of one net." },

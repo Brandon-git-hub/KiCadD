@@ -40,6 +40,7 @@
 #include <view/view.h>
 #include <pad.h>
 #include <pcb_track.h>
+#include <tuple>
 #include <geometry/shape_circle.h>
 #include <geometry/shape_arc.h>
 #include <zone.h>
@@ -507,9 +508,42 @@ KICADD_HANDLER_PCB::handleGetBoardSummary( const HANDLER_CONTEXT<GetBoardSummary
     out.set_footprints( static_cast<int>( b->Footprints().size() ) );
 
     int tracks = 0, vias = 0;
+    std::map<std::tuple<std::string, int, int>, int> kinds;   // type, pad, drill -> vias
 
     for( const PCB_TRACK* t : b->Tracks() )
+    {
         ( t->Type() == PCB_VIA_T ? vias : tracks )++;
+
+        if( t->Type() != PCB_VIA_T )
+            continue;
+
+        const PCB_VIA* v = static_cast<const PCB_VIA*>( t );
+        std::string    type;
+
+        switch( v->GetViaType() )
+        {
+        case VIATYPE::THROUGH:  type = "through"; break;
+        case VIATYPE::MICROVIA: type = "micro"; break;
+        case VIATYPE::BLIND:    type = "blind"; break;
+        default:                type = "buried"; break;
+        }
+
+        kinds[{ type, v->GetWidth( v->TopLayer() ), v->GetDrillValue() }]++;
+    }
+
+    std::vector<std::pair<std::tuple<std::string, int, int>, int>> kindRows( kinds.begin(), kinds.end() );
+    std::stable_sort( kindRows.begin(), kindRows.end(), []( const auto& x, const auto& y ) { return x.second > y.second; } );
+
+    for( const auto& [k, n] : kindRows )
+    {
+        ViaKind* vk = out.add_via_kinds();
+        vk->set_type( std::get<0>( k ) );
+        vk->set_size_nm( std::get<1>( k ) );
+        vk->set_drill_nm( std::get<2>( k ) );
+        vk->set_count( n );
+    }
+
+    out.set_thickness_nm( b->GetDesignSettings().GetBoardThickness() );
 
     out.set_tracks( tracks );
     out.set_vias( vias );
@@ -525,6 +559,10 @@ KICADD_HANDLER_PCB::handleGetBoardSummary( const HANDLER_CONTEXT<GetBoardSummary
 
     for( const FOOTPRINT* fp : b->Footprints() )
     {
+        // a board-only footprint without pads (a logo, a graphic) is not a part: its REF** is no clash
+        if( fp->IsBoardOnly() && fp->Pads().empty() )
+            continue;
+
         if( !fp->GetReference().IsEmpty() && !fp->GetReference().StartsWith( wxS( "#" ) ) )
             refs[fp->GetReference()]++;
     }

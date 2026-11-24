@@ -60,7 +60,8 @@ jobs.
 
 ## Review a design
 
-1. `sch_summary` (parts, sheets, unconnected pins) and `board_summary`.
+1. `sch_summary` (parts, sheets, unconnected pins) and `board_summary` (its via line gives the drill
+   sizes and the worst through-via aspect ratio: compare them with the fab's limits).
 2. `audit`: decoupling caps measured on the board, supply sources, ESD on external connectors,
    one-pin nets; on the board, silkscreen text over pads and overlapping references, nets
    without a test point. Give what you know about the power: `currents {"VIN": 2}` (A) checks

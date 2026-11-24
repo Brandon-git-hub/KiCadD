@@ -2,7 +2,7 @@
      {{UPSTREAM}} is filled from patches/UPSTREAM_BASE; build info and SHA-256 are appended. -->
 KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修剪版 Windows x64 build，加上 Agent（MCP）協同設計。
 
-> ⚠️ Beta（pre-release）。已能走完整個設計流程，功能仍會持續加入。由 GitHub Actions 自動建置；40 個端到端測試在 Linux 上全部通過（含桌面版），Windows CI 跑 smoke test 與 headless 的出廠、貼片、電路圖文件、模擬、PDN / 反射、新專案、開關 KiCad、工具、設定、undo 歷史測試；桌面版在 Windows 上只有人工試用。
+> ⚠️ Beta（pre-release）。已能走完整個設計流程，功能仍會持續加入。由 GitHub Actions 自動建置；42 個端到端測試在 Linux 上全部通過（含桌面版），Windows CI 跑 smoke test 與 headless 的出廠、貼片、電路圖文件、模擬、PDN / 反射、新專案、開關 KiCad、工具、設定、undo 歷史測試；桌面版在 Windows 上只有人工試用。
 
 ## 使用前須知
 完整的使用說明（安裝、接上 Agent、skill、存檔格式、做得到 / 做不到）：[docs/GUIDE.md](https://github.com/Brandon-git-hub/KiCadD/blob/main/docs/GUIDE.md)。
@@ -13,7 +13,36 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 - **一次一個專案：** 一個服務同時只開一個專案（板子加電路圖），換專案請用 `project {open}`，新專案用 `project {new}`。
 - **目前不支援：** 差分對與等長佈線、全板自動佈線（`route` 只代替重複的手動佈線）、電路圖自動排版、多實例重複圖紙、STEP 匯出與 STEP 模型（3D 只有 VRML）、ODB++ / IPC-2581 / DXF。
 
-## 這一版（beta.12）
+## 這一版（beta.13）
+三部分：修正盲測 S2（四層 RP2040）回報的問題；收斂工具，從 68 個減為 58 個；跑一輪審查型盲測 R1（Jetson AGX Thor，10 層、1125 個零件），並修正它發現的問題。清單在 `docs/NEXT_beta13.md`。
+
+- **工具合併（舊名稱已移除，沒有別名）：**
+  - `undo {target, redo}` 取代 undo / redo / sch_undo / sch_redo。
+  - `set_rules {}` 取代 get_rules。
+  - `run_drc {refs, local: true}` 取代 check_drc。
+  - `board_summary` 的最後一行就是完整的未連線數，取代 flush_ratsnest。這一行不等待忙碌的編輯器。
+  - `project {open}` / `project {new}` 取代 open_board / new_project。
+  - `export {fab, assembly, schematic_pdf}` 一次輸出多份，取代 export_fab / export_assembly / sch_export_pdf。
+  - `board_render {view: "3d"}` 取代 board_render_3d。
+- **審查型盲測 R1 之後：**
+  - `board_summary` 列出 via 的種類（pad / drill），以及 through via 的最大縱橫比（板厚 / 鑽孔）。
+  - `export {fab}` 列出 exclude-from-BOM 的零件，並標出接線像已裝、卻不是 DNP 的零件（沒人採購，也沒人貼）。
+  - logo（board-only、沒有焊盤）的 `REF**` 不再被當成重複位號。
+  - `audit sections` 的標頭只計算顯示出來的區段，`diff_pair` 會一併顯示 length 的列。
+  - `board_render` 寫到不存在的資料夾時，會明確說明。
+- **S2 的修正：**
+  - `audit impedance` 標出沒耦合（uncoupled）的線段。
+  - `route to=zone` 在平面上只打一顆過孔。
+  - QFN 焊盤環內的過孔位置。
+  - `auto_place` 的細腳距逃線環（`escape_room`）。
+  - 從細腳距焊盤起線時自動縮窄線寬。
+  - EasyEDA 電源腳型別的修正，以及 `lcsc_fetch pin_types`。
+  - `sch_connect partial=true`。
+  - 沿板邊的排針方向。
+  - `board_render` 畫出 NPTH 孔。
+- **測試：** 新增 `escape_e2e` 和 `merge_e2e`，共 42 個。
+
+## beta.12
 通用改進：beta.10 之後清單（`docs/NEXT_beta10.md`）的第一優先 10 項，對任何板子都有用的部分。工具數不變（68 個）。
 
 - **`query_area` 的焊盤尺寸與過孔空位：**
