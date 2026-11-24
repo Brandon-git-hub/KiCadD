@@ -1,0 +1,3 @@
+// The kicadd-mcp.exe icon (Windows only; cmake/kicadd.cmake adds this file on WIN32).
+// kicadd.ico is made from kicadd.svg (16-256 px): a Top-layer and a Bottom-layer track joined by a via.
+1 ICON "kicadd.ico"

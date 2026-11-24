@@ -40,6 +40,7 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
   - `sch_connect partial=true`。
   - 沿板邊的排針方向。
   - `board_render` 畫出 NPTH 孔。
+- **圖示：** `kicadd-mcp.exe` 有了自己的圖示：兩層走線經一顆過孔相接。
 - **測試：** 新增 `escape_e2e` 和 `merge_e2e`，共 42 個。
 
 ## beta.12

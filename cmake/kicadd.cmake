@@ -153,6 +153,9 @@ add_executable( kicadd-mcp
     ${KICADD_DIR}/mcp/drc.cpp
     ${KICADD_DIR}/mcp/transports.cpp
     )
+if( WIN32 )
+    target_sources( kicadd-mcp PRIVATE ${KICADD_DIR}/resources/icon/kicadd-mcp.rc )   # the exe's icon
+endif()
 target_include_directories( kicadd-mcp PRIVATE ${KICADD_DIR}/mcp ${NNG_INCLUDE_DIR} )
 target_link_libraries( kicadd-mcp PRIVATE
     kicadd_proto

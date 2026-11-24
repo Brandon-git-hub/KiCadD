@@ -1,4 +1,4 @@
-# KiCadD
+# <img src="resources/icon/kicadd.svg" width="48" align="top" alt=""> KiCadD
 
 Headless, in-memory KiCad daemon for LLM (MCP) and human co-editing.
 Built as a thin extension of upstream `kicad-cli api-server`, not a fork of the core.
