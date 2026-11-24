@@ -506,7 +506,7 @@ TOOL_RESULT launch( IPC_CLIENT& aIpc, STATE& aState, const json& a )
     {
         return fail( "already running: the " + aState.child.mode + " started here (pid " + std::to_string( aState.child.id() )
                      + ", " + ( what( aIpc ).empty() ? "not answering" : what( aIpc ) )
-                     + "); open_board switches the server's board, close_kicad stops it" );
+                     + "); project {open} switches the server's board, close_kicad stops it" );
     }
 
     aState.child.forget();
@@ -515,7 +515,7 @@ TOOL_RESULT launch( IPC_CLIENT& aIpc, STATE& aState, const json& a )
     {
         return fail( "a KiCad already answers on " + sock + " (" + open
                      + ") and every tool works on it; it was not started here, so close it where it was started "
-                       "(open_board switches a server's board)" );
+                       "(project {open} switches a server's board)" );
     }
 
     // the project: a folder (its one .kicad_pro), a .kicad_pro, .kicad_pcb or .kicad_sch
@@ -551,7 +551,7 @@ TOOL_RESULT launch( IPC_CLIENT& aIpc, STATE& aState, const json& a )
             return fail( "path: a project folder, .kicad_pro, .kicad_pcb or .kicad_sch" );
 
         if( !fs::is_regular_file( project, ec ) )
-            return fail( "no such file: " + fromPath( project ) + ( ext == ".kicad_pro" ? " (new_project makes one)" : "" ) );
+            return fail( "no such file: " + fromPath( project ) + ( ext == ".kicad_pro" ? " (project {new} makes one)" : "" ) );
 
         board = fs::path( project ).replace_extension( ".kicad_pcb" );
 
@@ -673,7 +673,7 @@ TOOL_RESULT launch( IPC_CLIENT& aIpc, STATE& aState, const json& a )
     }
     else if( mode == "server" )
     {
-        out += "no board open (open_board / new_project)\n";
+        out += "no board open (project {open} / {new})\n";
     }
 
     ks::SchSummary sch;
@@ -775,7 +775,7 @@ void AddLaunchTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc, bool aAllowed 
 
     aTools.push_back( { "launch_kicad",
                         "Start KiCad for the agent on the socket kicadd-mcp uses, so every tool works on it at once: "
-                        "mode \"server\" (default: headless kicad-cli api-server; path optional, new_project / open_board "
+                        "mode \"server\" (default: headless kicad-cli api-server; path optional, project {new} / {open} "
                         "after) or \"desktop\" (the PCB editor with path's board, for a user to watch and route; needs a "
                         "display). path: a project folder (its one .kicad_pro), .kicad_pro, .kicad_pcb or .kicad_sch, "
                         "absolute on the server. Waits until it answers (wait_s, default 60 / 120 for the desktop) and "

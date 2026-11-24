@@ -427,7 +427,7 @@ def main():
             check(not err and t.startswith("0 footprint(s) added") and "1 footprint(s) changed" in t and r06[0] + " LCSC:R0603 -> " + other in t,
                   "a footprint swap is said as changed, not added: " + t.replace("\n", " | ")[:160])
             mcp.tool("undo")
-            mcp.tool("sch_undo")
+            mcp.tool("undo", {"target": "schematic"})
         else:
             check(False, f"two LCSC footprints to swap between: {fps}")
 
@@ -463,7 +463,7 @@ def main():
         err, t = mcp.tool("undo")
         err, q = mcp.tool("query_area", {"x": (x0 + x1) / 2, "y": (y0 + y1) / 2, "radius": 60, "kinds": ["footprint"]})
         check(not err and "FP U1" not in q, "undo takes the placement back (parts outside again)")
-        mcp.tool("redo")
+        mcp.tool("undo", {"redo": True})
 
         print("[auto_place: decoupling caps to the bottom side]")
         err, t = mcp.tool("auto_place", {"all": True, "back_decaps": True})
@@ -497,7 +497,7 @@ def main():
         check(not err, "board saved")
 
         print("[export_fab: the LCSC numbers reach the BOM]")
-        err, t = mcp.tool("export_fab")
+        err, t = mcp.tool("export", {"fab": {}})
         check(not err and "BOM: blank-bom.csv (4 lines, 5 parts)" in t, "export_fab: " + " | ".join(t.splitlines()[1:6])[:160])
         bom = open(os.path.join(proj, "fab", "blank-bom.csv"), encoding="utf-8").read()
         check('"C1,C2"' in bom and '"C14663"' in bom and '"C6186"' in bom and '"C25804"' in bom,

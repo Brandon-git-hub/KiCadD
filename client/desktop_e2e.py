@@ -188,9 +188,9 @@ def main():
               "board_render in the editor: a PNG of U3 (" + "".join(c.get("text", "") for c in r.get("content", [])).splitlines()[0][:60] + ")")
 
         # open_board is the server's: in the editor the user opens files, and nothing is closed
-        err, text = mcp.tool("open_board", {"path": os.path.join(board_dir, "nope", "x.kicad_pcb")})
+        err, text = mcp.tool("project", {"open": os.path.join(board_dir, "nope", "x.kicad_pcb")})
         check(err, "open_board in the editor: a missing file refused before anything")
-        err, text = mcp.tool("open_board", {"path": os.path.join(board_dir, "pic_programmer.kicad_pcb"), "discard": True})
+        err, text = mcp.tool("project", {"open": os.path.join(board_dir, "pic_programmer.kicad_pcb"), "discard": True})
         check(err and "open the file in pcbnew" in text, "open_board in the editor: refused (" + text.strip()[:70] + ")")
         err, text = mcp.tool("board_summary")
         check(not err and "footprints=63" in text, "the editor's board is still open")

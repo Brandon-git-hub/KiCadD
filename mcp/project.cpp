@@ -128,7 +128,7 @@ TOOL_RESULT newProject( std::shared_ptr<std::vector<TOOL>> aTable, const json& a
     for( const fs::path& f : { pro, pcb, sch } )
     {
         if( fs::exists( f, ec ) )
-            return fail( fromPath( f ) + " is there already: new_project writes over nothing (open_board opens it)" );
+            return fail( fromPath( f ) + " is there already: new_project writes over nothing (project {open} opens it)" );
     }
 
     // the layers asked for, checked before anything is written
@@ -203,7 +203,7 @@ TOOL_RESULT newProject( std::shared_ptr<std::vector<TOOL>> aTable, const json& a
         return fail( "cannot write the project's files in " + fromPath( path ) );
     }
 
-    TOOL_RESULT opened = call( "open_board", { { "path", fromPath( pcb ) }, { "discard", a.value( "discard", false ) } } );
+    TOOL_RESULT opened = call( "project", { { "open", fromPath( pcb ) }, { "discard", a.value( "discard", false ) } } );
 
     if( opened.isError )
     {
@@ -251,7 +251,7 @@ TOOL_RESULT newProject( std::shared_ptr<std::vector<TOOL>> aTable, const json& a
 
 std::string NewProjectDescription()
 {
-    return "Make a new KiCad project on the server and open it (replacing the open project, as open_board): path (the "
+    return "Make a new KiCad project on the server and open it (replacing the open project, as project {open}): path (the "
            "project's folder, absolute; made when missing) or its .kicad_pro, name (default the folder's name). Writes "
            "<name>.kicad_pro, an empty .kicad_pcb and .kicad_sch, refused when any of them is there (never written "
            "over). copper_layers (default 2), thickness (mm, 1.6) or stackup (a JLCPCB one, as board_setup), outline "

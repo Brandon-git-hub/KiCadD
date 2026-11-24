@@ -36,6 +36,7 @@ struct TOOL
     nlohmann::json                                    inputSchema;
     std::function<TOOL_RESULT( const nlohmann::json& )> run;
     std::string                                       details;   ///< the full description (tool_help); description is the brief
+    std::string                                       renamedTo; ///< an old name (one release): not in tools/list, still callable
 };
 
 /// Build the tool set bound to aIpc (which must outlive the tools). aAllowLaunch: launch_kicad /
@@ -48,6 +49,9 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc );
 /// phase 3 items 3 / 4: pdn (pdn.cpp), reflection (reflect.cpp)
 TOOL PdnTool( IPC_CLIENT& aIpc );
 TOOL ReflectionTool( IPC_CLIENT& aIpc );
+
+/// beta.13 phase 2 (merged.cpp): the merged tools; the old names become aliases (TOOL::renamedTo)
+void MergeTools( std::vector<TOOL>& aTools );
 
 /// tools/list sends briefs (tool_docs.cpp): each tool's registered description moves to details
 void ApplyBriefs( std::vector<TOOL>& aTools );

@@ -150,8 +150,8 @@ def main():
               and "partial: 2 connected, 1 not" in t and nl.get("/N7") == {f"{r8}.1"} and nl.get("/N10") == {f"{r8}.2"},
               f"partial: {r8}.1 / {r8}.2 connected, {c1}.1 (on /N1) said and left")
         check("undo takes them back one edit at a time (2 edits)" in t, "the undo steps said")
-        mcp.tool("sch_undo")
-        mcp.tool("sch_undo")
+        mcp.tool("undo", {"target": "schematic"})
+        mcp.tool("undo", {"target": "schematic"})
         check(netlist(mcp) == before, "two undos: as before")
         mcp.tool("sch_delete", {"refs": [r8]})
 
@@ -248,28 +248,28 @@ def main():
         print("[sch_undo / sch_redo]")
         err, t = mcp.tool("sch_add_part", {"lib_id": "Device:R", "value": "9k", "footprint": FP, "x": 177.8, "y": 177.8})
         r9 = re.match(r"added (\S+) ", t).group(1)
-        err, t = mcp.tool("sch_undo")
+        err, t = mcp.tool("undo", {"target": "schematic"})
         check(not err and t.startswith(f"undid: add {r9}"), "undo the add: " + t.splitlines()[0])
         err, t = mcp.tool("sch_part", {"ref": r9})
         check(err, f"{r9} gone")
-        err, t = mcp.tool("sch_redo")
+        err, t = mcp.tool("undo", {"target": "schematic", "redo": True})
         check(not err and t.startswith(f"redid: add {r9}"), "redo: " + t.splitlines()[0])
         err, t = mcp.tool("sch_part", {"ref": r9})
         check(not err, f"{r9} back")
         mcp.tool("sch_connect", {"nets": {"UNDO_ME": [f"{r9}.1", f"{r9}.2"]}})
         check("/UNDO_ME" in netlist(mcp) or "UNDO_ME" in netlist(mcp), "connected to UNDO_ME")
-        err, t = mcp.tool("sch_undo")
+        err, t = mcp.tool("undo", {"target": "schematic"})
         check(not err and "undid: connect" in t and not any("UNDO_ME" in n for n in netlist(mcp)), "undo the connect: " + t.splitlines()[0])
-        mcp.tool("sch_undo")   # the add
+        mcp.tool("undo", {"target": "schematic"})   # the add
         check(netlist(mcp) == after_wires, "undo the add again: the nets as before")
         err, t = mcp.tool("sch_disconnect", {"pins": [f"{c1}.1"]})
         check(f"{c1}.1" not in {p for ps in netlist(mcp).values() for p in ps}, "C1.1 off (its wire up to the junction)")
-        err, t = mcp.tool("sch_undo")
+        err, t = mcp.tool("undo", {"target": "schematic"})
         print("      ", t.splitlines()[0][:100])
         check(not err and netlist(mcp) == after_wires, "undo the disconnect: wires and junction back, the nets as before")
-        err, t = mcp.tool("sch_undo")
+        err, t = mcp.tool("undo", {"target": "schematic"})
         check(not err and "undid: delete" in t, "the edits before it are next: " + t.splitlines()[0][:60])
-        mcp.tool("sch_redo")
+        mcp.tool("undo", {"target": "schematic", "redo": True})
         check(netlist(mcp) == after_wires, "redo it: the nets as before")
 
         print("[sch_set_fields]")
@@ -290,7 +290,7 @@ def main():
         err, t = mcp.tool("sch_set_fields", {"parts": {"X99": {"Value": "1"}}})
         check(err and "no part X99" in t, "an unknown part is refused")
         for _ in range(3):
-            mcp.tool("sch_undo")
+            mcp.tool("undo", {"target": "schematic"})
         err, t = mcp.tool("sch_part", {"ref": c1})
         check(t == before_c1, "three sch_undo: C1 as it was")
 
@@ -314,13 +314,13 @@ def main():
         check(now == dense, "refused: the nets as before")
         p = pins_of(mcp, rb)
         check(abs(p["1"][0] - 254.0) < 0.01, f"refused: {rb} where it was {p['1'][:2]}")
-        err, t = mcp.tool("sch_undo")
+        err, t = mcp.tool("undo", {"target": "schematic"})
         check(not err and "undid: connect" in t, "the refused move is not in the history: " + t.splitlines()[0][:60])
-        mcp.tool("sch_redo")
+        mcp.tool("undo", {"target": "schematic", "redo": True})
         err, t = mcp.tool("sch_move", {"ref": rb, "x": 228.6, "y": 152.4, "allow_rewire": True})
         check(not err and "rewired" in t and f"{rb}.2: (none) -> /NA2" in t, "allow_rewire: done, the diff said")
         check(netlist(mcp) != dense, "allow_rewire: the nets changed")
-        mcp.tool("sch_undo")
+        mcp.tool("undo", {"target": "schematic"})
         check(netlist(mcp) == dense, "undo it")
         err, t = mcp.tool("sch_move", {"ref": rb, "dx": 25.4})
         check(not err and "rewired" not in t and netlist(mcp) == dense, "a move onto nothing goes through")
@@ -328,7 +328,7 @@ def main():
         print("      ", " ".join(t.split())[:200])
         check(not err and "joins named nets" in t and ("/NA1 -> /NB1" in t or "/NB1 -> /NA1" in t),
               f"sch_wire from {ra}.1 (NA1) to {rb}.1 (NB1): warned")
-        mcp.tool("sch_undo")
+        mcp.tool("undo", {"target": "schematic"})
         check(netlist(mcp) == dense, "undo the wire")
         err, t = mcp.tool("sch_add_part", {"lib_id": "Device:R", "value": "2k", "footprint": FP, "x": 228.6, "y": 152.4})
         print("      ", " ".join(t.split())[:200])
@@ -352,7 +352,7 @@ def main():
         check(err and "no free spot" in t and netlist(mcp).get("/MEET1") == {f"{rx}.2"},
               "the second alone: no room for its label there, said (not joined to MEET1)")
         for _ in range(8):   # the connect, the two adds; the add, the dx move, the connect, the two adds
-            mcp.tool("sch_undo")
+            mcp.tool("undo", {"target": "schematic"})
         check(netlist(mcp) == start, "undone: the nets as before")
 
         print("[run_erc]")
@@ -418,7 +418,7 @@ def main():
         check(int(re.search(r"footprints=(\d+)", s).group(1)) == 7, "two R77 on the board now")
         err, t = mcp.tool("run_drc")
         check("same reference on more than one footprint" in t and "R77 x2" in t, "run_drc says R77 is there twice")
-        err, t = mcp.tool("export_fab", {"dir": os.path.join(work, "fab")})
+        err, t = mcp.tool("export", {"fab": {"dir": os.path.join(work, "fab")}})
         check("warning: the same reference on more than one footprint" in t and "R77 x2" in t,
               "export_fab warns about R77 first: " + " | ".join(t.splitlines()[:4])[:300])
         check("outside the board outline" in t, "and about the parts outside the board: "
@@ -435,7 +435,7 @@ def main():
         err, s = mcp.tool("board_summary")
         check(int(re.search(r"footprints=(\d+)", s).group(1)) == 6, "undo takes the new R77 off the board")
         check(int(re.search(r"nets=(\d+)", s).group(1)) == nets0, f"and the net it made (nets={nets0})")
-        err, t = mcp.tool("redo")
+        err, t = mcp.tool("undo", {"redo": True})
         err, s = mcp.tool("board_summary")
         check(not err and int(re.search(r"footprints=(\d+)", s).group(1)) == 7, "redo puts it back")
         mcp.tool("undo")
@@ -454,7 +454,7 @@ def main():
         fab = os.path.join(work, "fab2")
 
         def bom_value():
-            mcp.tool("export_fab", {"dir": fab, "zip": False})
+            mcp.tool("export", {"fab": {"dir": fab, "zip": False}})
             bom = [f for f in os.listdir(fab) if f.endswith("-bom.csv")][0]
             line = next(ln for ln in open(os.path.join(fab, bom)) if "R77" in ln)
             return line.split(",")[0].strip('"')

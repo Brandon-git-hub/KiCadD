@@ -55,8 +55,8 @@ try:
     check(re.search(r"\(1uF 10V, 1005_C\)[^\n]*0402", t) is not None and "not a chip package" not in t.split("1005_C")[1][:60],
           "1005_C read as 0402")
     err, t = m.tool("lcsc_match", {"live": False, "apply": True})
-    check(not err and "sch_undo" in t, "applied: " + t.splitlines()[0][:100])
-    err, t = m.tool("sch_undo")
+    check(not err and "undo {target: schematic}" in t, "applied: " + t.splitlines()[0][:100])
+    err, t = m.tool("undo", {"target": "schematic"})
     check(not err and t.startswith("undid: set fields"), "sch_undo: " + t.splitlines()[0][:80])
 
     print("[fanout]")

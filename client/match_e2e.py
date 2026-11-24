@@ -142,9 +142,9 @@ def main():
         err, t = mcp.tool("lcsc_match", {"live": False})
         check(not err and t.startswith("3 group(s)") and "0 matched" in t, "again: only the 3 not matched are left (D3 R4 R5): " + t.splitlines()[0])
 
-        err, t = mcp.tool("sch_undo")
+        err, t = mcp.tool("undo", {"target": "schematic"})
         check(not err and lcsc_of(mcp).get("R1") is None, "one sch_undo takes them all back: " + t.splitlines()[0][:60])
-        mcp.tool("sch_redo")
+        mcp.tool("undo", {"target": "schematic", "redo": True})
         check(lcsc_of(mcp).get("C1") is not None, "sch_redo")
 
         err, t = mcp.tool("lcsc_match", {"refs": ["R1", "R6"], "replace": True, "live": False})

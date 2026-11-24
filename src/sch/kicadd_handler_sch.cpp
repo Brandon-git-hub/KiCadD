@@ -1432,7 +1432,7 @@ HANDLER_RESULT<SchPartResponse> KICADD_HANDLER_SCH::handleAddPart( const HANDLER
         if( !landed.empty() )
             note += std::string( note.empty() ? "" : "; " ) + "warning: placed on existing connections, "
                     + std::to_string( landed.size() ) + " pin net(s) set: " + listChanges( landed )
-                    + " (sch_undo, or sch_move it elsewhere, if not meant)";
+                    + " (undo {target: schematic}, or sch_move it elsewhere, if not meant)";
     }
 
     // nothing else checks a Footprint field until sync_pcb
@@ -3293,7 +3293,7 @@ HANDLER_RESULT<SchWireResponse> KICADD_HANDLER_SCH::handleWire( const HANDLER_CO
         if( !joined.empty() )
             note += std::string( note.empty() ? "" : "; " ) + "warning: the wire joins named nets, "
                     + std::to_string( joined.size() ) + " pin(s) changed: " + listChanges( joined )
-                    + " (sch_undo if not meant)";
+                    + " (undo {target: schematic} if not meant)";
     }
 
     if( !net.empty() )

@@ -252,17 +252,17 @@ std::optional<json> PromptGet( const std::string& aName, const json& aArgs )
         text = "Design a new board with the kicadd tools from this specification:\n\n" + spec + "\n\n";
 
         if( std::string p = arg( "path" ); !p.empty() )
-            text += "Make the project in " + p + " (new_project).\n\n";
+            text += "Make the project in " + p + " (project {new}).\n\n";
 
         text += "Work through the kicadd skill's sections as you go (read each when you get to it): "
-                "kicadd://skill/ground-rules, kicadd://skill/a-new-project-new-project, kicadd://skill/parts-lcsc-jlcpcb, "
+                "kicadd://skill/ground-rules, kicadd://skill/a-new-project-project-new, kicadd://skill/parts-lcsc-jlcpcb, "
                 "kicadd://skill/edit-a-schematic, kicadd://skill/a-new-board-outline-layers-rules-pours, "
                 "kicadd://skill/schematic-to-board-placement, kicadd://skill/routing-the-repetitive-part-not-an-autorouter, "
                 "kicadd://skill/rules-and-zones, kicadd://skill/manufacturing-jlcpcb.\n"
                 "Pick real LCSC parts (lcsc_search, prefer JLC basic parts), keep ERC clean, place with auto_place and check "
                 "it, route what route / route_short can, and leave the rest (differential pairs, length matching) for a "
-                "human to route, said in your summary. Save often (save_board, sch_save). End with export_fab, "
-                "export_assembly and a board_render_3d of each side, and a summary of what is done and what is left.";
+                "human to route, said in your summary. Save often (save_board, sch_save). End with export {fab, assembly, "
+                "schematic_pdf} and a board_render view=3d of each side, and a summary of what is done and what is left.";
     }
     else if( aName == "prepare_fab" )
     {
@@ -271,7 +271,7 @@ std::optional<json> PromptGet( const std::string& aName, const json& aArgs )
                "1. run_erc and audit; refill_zones and run_drc. Fix what is clearly a mistake and safe to fix; list the rest "
                "for me instead of guessing.\n"
                "2. Check that every part has an LCSC number (lcsc_match) and its footprint is placed on the board.\n"
-               "3. export_fab with strict=true, export_assembly, and board_render_3d of the top and the bottom.\n"
+               "3. export {fab: {strict: true}, assembly: {}}, and board_render view=3d of the top and the bottom.\n"
                "4. Tell me what was written, the DRC / ERC state, the parts without an LCSC number or a 3D model, and "
                "anything I should look at before ordering.";
     }

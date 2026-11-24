@@ -310,7 +310,7 @@ std::string renderUnconnected( int aCount, const google::protobuf::RepeatedPtrFi
         for( const std::string& n : aPending )
             s += " " + n;
 
-        s += "; call flush_ratsnest for the full count)";
+        s += "; board_summary gives the full count)";
     }
 
     return s;
@@ -448,6 +448,17 @@ TOOL_RESULT boardSummary( IPC_CLIENT& aIpc )
     if( size_t slash = file.find_last_of( "/\\" ); slash != std::string::npos )
         file = file.substr( slash + 1 );
 
+    // the full unrouted count (deferred large nets rebuilt), without waiting out a busy editor
+    // or a running auto_place: board_summary must answer at once
+    kb::FlushRatsnestResponse f;
+    std::string               ferr, rats;
+
+    if( aIpc.Call( kb::FlushRatsnest(), f, ferr, false ) )
+        rats = "ratsnest: " + std::string( f.nets_flushed() ? "rebuilt " + std::to_string( f.nets_flushed() ) + " deferred nets; " : "" )
+               + renderUnconnected( f.unconnected(), {}, f.large_included() ) + "\n";
+    else if( !ferr.empty() )
+        rats = "ratsnest: not rebuilt now (" + ferr.substr( 0, ferr.find( ';' ) ) + ")\n";
+
     return { "file=" + file + " footprints=" + std::to_string( r.footprints() )
              + " tracks=" + std::to_string( r.tracks() ) + " vias=" + std::to_string( r.vias() )
              + " zones=" + std::to_string( r.zones() ) + " nets=" + std::to_string( r.nets() )
@@ -455,7 +466,7 @@ TOOL_RESULT boardSummary( IPC_CLIENT& aIpc )
              + " outline=" + pt( r.bbox_min() ) + ".." + pt( r.bbox_max() ) + "mm\n"
              + ( r.agent_paused() ? "note: the user paused the agent's edits (Co-pilot panel): edits are refused "
                                     "until resumed; reads work\n"
-                                  : "" ) };
+                                  : "" ) + rats };
 }
 
 
@@ -2847,7 +2858,7 @@ TOOL_RESULT exportFab( IPC_CLIENT& aIpc, const json& aArgs )
 
         if( !why.empty() )
             return error( head + "nothing written (strict):\n" + why
-                          + "fix them, or export_fab without strict to write the files anyway" );
+                          + "fix them, or export {fab} without strict to write the files anyway" );
     }
 
     kb::ExportFab req;
@@ -3119,7 +3130,7 @@ TOOL_RESULT openBoard( IPC_CLIENT& aIpc, const json& aArgs )
         if( !before.file().empty() && openProject( fs::path( before.file() ), backErr, backNote ) )
             back = "; " + fs::path( before.file() ).filename().string() + " is open again (as saved)";
         else if( !before.file().empty() )
-            back = "; reopening " + before.file() + " failed too (" + backErr + "): open_board it";
+            back = "; reopening " + before.file() + " failed too (" + backErr + "): project {open} it";
 
         return error( "could not open " + pcb.string() + ": " + err + back );
     }
@@ -3854,6 +3865,10 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
     // new_project (phase 4 item 3, project.cpp) runs the tools above from the table (and batch can run it)
     tools.push_back( NewProjectTool( table ) );
     table->push_back( tools.back() );
+
+    // beta.13 phase 2: undo, set_rules, run_drc, board_summary, project, export, board_render
+    // take over the thin tools of their domain; the old names stay one release as aliases
+    MergeTools( tools );
 
     tools.push_back( { "batch",
                        "Run several tools in one call, in order: steps [{\"tool\": \"move_footprints\", "

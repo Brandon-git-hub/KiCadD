@@ -70,11 +70,12 @@ async def exercise(call, label):
     check("excl. deferred nets: GND" in text_of(r), f"{label}: large-net deferral is reported")
     await call("move_footprints", {"refs": ["C276"], "dx": -0.3})
 
-    r = await call("check_drc", {"refs": ["U78", "NOPE"]})
-    check(not r.is_error and "not found: NOPE" in text_of(r), f"{label}: check_drc reports unknown refs")
+    r = await call("run_drc", {"local": True, "refs": ["U78", "NOPE"]})
+    check(not r.is_error and "not found: NOPE" in text_of(r), f"{label}: run_drc local reports unknown refs")
 
-    r = await call("flush_ratsnest", {})
-    check(not r.is_error and "unconnected=" in text_of(r), f"{label}: flush_ratsnest -> {text_of(r).strip()}")
+    r = await call("board_summary", {})
+    check(not r.is_error and "\nratsnest: " in text_of(r) and "unconnected=" in text_of(r),
+          f"{label}: board_summary's ratsnest -> {text_of(r).strip().splitlines()[-1]}")
 
     r = await call("move_footprints", {"refs": ["U78"]})
     check(r.is_error, f"{label}: move without delta is a tool error (isError)")
@@ -95,7 +96,7 @@ async def test_http_sdk(url):
               and any(descr(t, "refs").startswith("Reference designators") for t in props),
               "nets / layers / ids described as what they are (not reference designators)")
         names = sorted(t.name for t in tools.tools)
-        check(len(names) == 68 and all(n in names for n in ("export_assembly", "board_render_3d", "launch_kicad", "close_kicad", "simulate", "tool_help", "pdn", "reflection", "new_project", "impedance", "sch_annotate", "sch_export_pdf", "silk_tidy", "board_diff", "sch_render", "stitch_vias", "teardrops", "board_render", "lcsc_match", "board_outline", "board_setup", "route", "route_short", "fanout", "sch_undo", "sch_redo", "sch_set_fields", "pcb_set_fields", "get_rules", "set_rules", "zones", "batch")) and all(n in names for n in ("delete_tracks", "sch_move", "sch_wire", "run_erc", "lib_register", "export_fab", "audit", "lcsc_search", "lib_create_symbol", "lib_create_footprint")) and "lcsc_fetch" in names and "sch_connect" in names and "auto_place" in names and "sch_add_sheet" in names, f"tools/list -> {names}")
+        check(len(names) == 58 and all(n in names for n in ("export", "project", "undo", "launch_kicad", "close_kicad", "simulate", "tool_help", "pdn", "reflection", "impedance", "sch_annotate", "silk_tidy", "board_diff", "sch_render", "stitch_vias", "teardrops", "board_render", "lcsc_match", "board_outline", "board_setup", "route", "route_short", "fanout", "sch_set_fields", "pcb_set_fields", "set_rules", "zones", "batch")) and all(n in names for n in ("delete_tracks", "sch_move", "sch_wire", "run_erc", "lib_register", "audit", "lcsc_search", "lib_create_symbol", "lib_create_footprint")) and "lcsc_fetch" in names and "sch_connect" in names and "auto_place" in names and "sch_add_sheet" in names, f"tools/list -> {names}")
         check(all(t.input_schema.get("type") == "object" for t in tools.tools), "every inputSchema is an object")
         await exercise(client.call_tool, "http")
 
@@ -135,7 +136,7 @@ async def resources_prompts(session, init):
     check(one.startswith("## Review a design") and one in whole and len(one) < len(whole) / 3,
           f"one section alone ({len(one)} chars)")
     tools_md = (await session.read_resource("kicadd://tools")).contents[0].text
-    check("## board_render_3d" in tools_md and "## export_assembly" in tools_md, "every tool's full description")
+    check("## board_render" in tools_md and "## export" in tools_md and "## Old names" in tools_md, "every tool's full description")
     tmpl = [t.uri_template for t in (await session.list_resource_templates()).resource_templates]
     check("kicadd://tool/{name}" in tmpl and "kicadd://skill/{section}" in tmpl, "templates: a tool, a section")
     one_tool = (await session.read_resource("kicadd://tool/auto_place")).contents[0].text

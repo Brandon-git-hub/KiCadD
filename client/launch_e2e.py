@@ -145,7 +145,7 @@ def main():
         pid = pid_of(t)
         started.append(pid)
         check(not err and "no board open" in t, "a server with no project (" + t.strip().splitlines()[-1][:60] + ")")
-        err, t = m.tool("new_project", {"path": os.path.join(work, "fresh"), "outline": [30, 20]})
+        err, t = m.tool("project", {"new": {"path": os.path.join(work, "fresh"), "outline": [30, 20]}})
         check(not err and "file=fresh.kicad_pcb" in t, "new_project on it")
         err, t = m.tool("close_kicad")
         check(not err and "dropped" not in t, "closed (all saved)")

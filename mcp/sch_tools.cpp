@@ -932,7 +932,7 @@ TOOL_RESULT lcscMatch( IPC_CLIENT& aIpc, const json& aArgs )
 
     if( !apply )
     {
-        t += "\ndry run: apply=true writes these LCSC numbers (one sch_undo); pick {\"R1\": \"C25804\"} uses "
+        t += "\ndry run: apply=true writes these LCSC numbers (one undo {target: schematic}); pick {\"R1\": \"C25804\"} uses "
              "another part for R1's group (or one for a group not matched)";
         return TOOL_RESULT{ t, false };
     }
@@ -945,7 +945,7 @@ TOOL_RESULT lcscMatch( IPC_CLIENT& aIpc, const json& aArgs )
     if( !aIpc.Call( set, r, err ) )
         return fail( t + "\nwriting them failed: " + err );
 
-    t += "\nLCSC number set on " + std::to_string( r.done() ) + " part(s) (sch_undo takes it back; sync_pcb "
+    t += "\nLCSC number set on " + std::to_string( r.done() ) + " part(s) (undo {target: schematic} takes it back; sync_pcb "
          "carries it to the board)";
 
     for( const std::string& e : r.errors() )
@@ -2892,7 +2892,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             } } );
 
     aTools.push_back( { "sch_set_fields",
-            "Change parts' fields and attributes as one edit (all units; sch_undo takes it back; "
+            "Change parts' fields and attributes as one edit (all units; undo {target: schematic} takes it back; "
             "sync_pcb carries it to the board). parts: {\"R1\": {\"Value\": \"10k\", \"LCSC\": "
             "\"C25804\", \"Footprint\": \"Lib:Name\", \"dnp\": true}}, or refs [...] with set {...} "
             "for the same change on many. Value, Footprint, Datasheet, Description are the symbol's own "
@@ -3197,7 +3197,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "Scope: all (default), sheet (a name or path, with the sheets below it) or refs. start: the "
             "first number (1); per_sheet \"100\" / \"1000\": page 2 gets R201.. / R2001... Units of a "
             "multi-unit part stay together; power symbols are not touched. dry_run lists the changes "
-            "only. One sch_undo step. The board keeps the old references until sync_pcb (parts are "
+            "only. One schematic undo step. The board keeps the old references until sync_pcb (parts are "
             "matched by their UUID, so placement and routing stay).",
             obj( { { "refs", { { "type", "array" }, { "items", { { "type", "string" } } } } },
                    { "sheet", { { "type", "string" } } },
@@ -3243,7 +3243,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                     t += "\nproblem: " + e;
 
                 if( !r.dry_run() && r.changes_size() )
-                    t += "\nsch_undo takes it back; sync_pcb gives the board the new references";
+                    t += "\nundo {target: schematic} takes it back; sync_pcb gives the board the new references";
 
                 return TOOL_RESULT{ t + "\n", false };
             } } );
@@ -3253,7 +3253,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "the same value and footprint are one group; resistors, capacitors, inductors, ferrite beads "
             "(FB) and LEDs (colour in the value) in chip packages (0402, 0603, ...) are matched in the "
             "parts index (basic first, then preferred, then stock; the chosen one checked live), the "
-            "others are listed. Dry run first: apply=true writes the LCSC fields as one sch_undo. pick "
+            "others are listed. Dry run first: apply=true writes the LCSC fields as one schematic undo. pick "
             "{\"R1\": \"C25804\"} sets the part for R1's group instead (also for a group not matched). "
             "The value may carry the rating: \"100nF 50V X7R\", \"10k 1%\". refs limits it to some "
             "parts; replace=true matches parts that have a number already. Then sync_pcb.",

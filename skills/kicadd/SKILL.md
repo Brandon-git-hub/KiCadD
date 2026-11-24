@@ -39,8 +39,8 @@ jobs.
 2. **Never write the design files while the editor has them open.** The editor would overwrite
    them, or the two would disagree. Edit through the tools. Direct file edits are for KiCad
    closed (bulk text changes), checked afterwards with the tools or `kicad-cli`.
-3. **Every edit is undoable, and the user's edits are safe.** PCB: `undo` / `redo`. Schematic:
-   `sch_undo` / `sch_redo`. They take back only the agent's own edits and leave alone what the
+3. **Every edit is undoable, and the user's edits are safe.** `undo` (the board; `redo:
+   true` redoes), `undo {target: "schematic"}` the schematic. They take back only the agent's own edits and leave alone what the
    user changed since. The user can also Ctrl+Z any agent edit in the editor.
 4. **"The editor is busy"** means the user is in a tool, a dialog or a progress window; the
    message says which. Do not hammer it: tell the user, or wait and try once more. kicadd-mcp
@@ -238,7 +238,7 @@ jobs.
    and footprint and picks one for each group of resistors, capacitors, inductors, ferrite
    beads (FB) and LEDs (colour in the value) in chip packages. Check the choices (capacitor
    voltage and dielectric: write them in the value, "100nF 50V X7R"), then `apply=true`
-   (one `sch_undo`); `pick {"R1": "C..."}` for another part or a group it could not match.
+   (one `undo {target: "schematic"}`); `pick {"R1": "C..."}` for another part or a group it could not match.
    Then `sync_pcb`.
 4. No suitable LCSC part: `lib_create_footprint` (chip, sot23, soic, so, qfn, qfp, header) and
    `lib_create_symbol` (a box symbol from a pin list, `footprint` set to the new one); libraries
@@ -328,13 +328,13 @@ not monotonic, which matters on a clock or strobe).
   (for a pair, each member).
 - Not in it: losses, via barrels, coupling to other nets (that is `audit` crosstalk), packages.
 
-## A new project (new_project)
+## A new project (project new)
 
-`new_project {path: "/abs/folder", copper_layers: 4, outline: [60, 40]}` writes
+`project {new: {path: "/abs/folder", copper_layers: 4, outline: [60, 40]}}` writes
 `<name>.kicad_pro`, `.kicad_pcb` and `.kicad_sch` in the folder (made when missing), opens
 them, sets the layers and a stackup (or `stackup: "JLC04161H-7628"`), draws the outline and
-saves. It never writes over a file: an existing project is opened with `open_board`. Like
-`open_board`, it is refused while the open board has unsaved changes (`discard=true` drops
+saves. It never writes over a file: an existing project is opened with `project {open:
+"/abs/board.kicad_pcb"}`. Both are refused while the open board has unsaved changes (`discard=true` drops
 them). KiCadD ships no symbol libraries: start the schematic with `lcsc_fetch` / `sch_add_part
 lcsc=...` or `lib_create_symbol`.
 
@@ -349,9 +349,9 @@ from there ("paused: ...", see the ground rules).
 
 When every tool fails with "is KiCadD running? ... launch_kicad starts one", nothing serves
 kicadd-mcp's socket. `launch_kicad {path: "/abs/project"}` starts the headless server there
-(no path: an empty one, then `new_project` / `open_board`); `mode: "desktop"` starts the PCB
+(no path: an empty one, then `project {new}` / `project {open}`); `mode: "desktop"` starts the PCB
 editor on the project's board instead, for a user to watch, review and route. It is refused
-while a KiCad already answers (use `open_board` to switch the server's board). `close_kicad`
+while a KiCad already answers (use `project {open}` to switch the server's board). `close_kicad`
 stops only what `launch_kicad` started, refused while the board or the schematic has unsaved
 changes: save (`save_board`, `sch_save`) or pass `discard=true`. Over HTTP both need
 kicadd-mcp's `--allow-launch`.
@@ -394,8 +394,8 @@ From a blank project, before placing parts:
    footprints land outside the outline. A warning that a reference "is already on the board"
    means a part placed by hand (`add_footprint`) has the same ref as a symbol: the sync adds a
    second one. Delete the board's one, or renumber it:
-   `pcb_set_fields parts={"R22": {"Reference": "R23"}}`. `run_drc` and `export_fab` also warn
-   about a reference used twice, and `export_fab` about parts outside the outline.
+   `pcb_set_fields parts={"R22": {"Reference": "R23"}}`. `run_drc` and `export {fab}` also warn
+   about a reference used twice, and `export {fab}` about parts outside the outline.
    Tidy numbering (R1, R2, ... in position order, or the "R?" of parts placed unnumbered):
    `sch_annotate dry_run=true` to see it, then `sch_annotate` (`reset=true` renumbers every
    part; `sheet` or `refs` limits it) and `sync_pcb`: the board's parts are renamed in place
@@ -432,7 +432,7 @@ From a blank project, before placing parts:
 4. After moving parts: `refill_zones`, then `run_drc`. Zones keep their old shape until
    refilled, and that shows up as clearance / soldermask errors that are not real.
 5. Fine-tune with `move_footprints` (every reply carries a local DRC of the moved parts) and
-   `check_drc`: by a delta (`refs`, `dx`, `dy`, `rotate`, `flip`), or to absolute places,
+   `run_drc {refs, local: true}` (the same check without moving): by a delta (`refs`, `dx`, `dy`, `rotate`, `flip`), or to absolute places,
    `parts {"U1": {"x": 105, "y": 120, "rotation": 90, "side": "bottom"}, "C3": {...}}`, many
    parts in one undoable edit. `query_area ref="U1" radius=1` gives the part's own position,
    side and rotation first, then its neighbours.
@@ -517,7 +517,7 @@ length matching, dense escapes).
    The `unconnected=` count of every tool reads the same way: moves leave large nets (GND,
    power) out until something rebuilds them ("excl. deferred nets: GND"); after route_short,
    fanout or stitch_vias they are in, with their share ("incl. GND 24"). A jump between two
-   replies is that, not something broken; `flush_ratsnest` gives the full count.
+   replies is that, not something broken; `board_summary` gives the full count (its last line).
 6. Pour ties: `route from="C12.2" to="zone"` ends on the net's own pour: on the pad's layer
    when the pour is there, else with a via down to the nearest layer that has it (not in the
    pad). It tries the nearest spots in the fill until one works. Use it for VBUS / power pads
@@ -543,7 +543,7 @@ length matching, dense escapes).
 
 ## Rules and zones
 
-- `get_rules` first. `set_rules` adds/changes net classes, assigns nets by pattern
+- `set_rules` with no arguments first: the rules as they are. With arguments it adds/changes net classes, assigns nets by pattern
   (`{"+5V": "Power", "/USB_D*": "USB"}`) and sets board minimums; it reports the DRC error
   count before and after. Existing tracks keep their width. A class for a current:
   `{"classes": {"VIN_2A": {"current": 2}}, "assign": {"VIN": "VIN_2A"}}` sets the IPC-2221 width
@@ -563,7 +563,7 @@ length matching, dense escapes).
 - `zones` lists copper zones; with `nets` / `layers` / `ids` / `all` and new values it changes
   clearance, minimum width, priority or pad connection and refills. `create` makes a new one
   (see "A new board").
-- After `undo` / `redo` of a zone, outline or layer edit, the fills are of the other state:
+- After `undo` (or redo) of a zone, outline or layer edit, the fills are of the other state:
   the response says so. `refill_zones` before reading `unconnected` or running DRC.
 
 ## Look at it
@@ -582,30 +582,31 @@ net's wires, labels and pins in blue, `sheet` / `area` / `frame=true` (the whole
 title block; refs / nets are still marked but not zoomed to). Look at it after a group of `sch_add_part` / `sch_connect` edits: overlapping
 symbols or text, labels away from their wires, a sheet that does not read well.
 
-`board_render_3d` is the assembled board in 3D (KiCad's raytracer, from the board in memory):
+`board_render {view: "3d"}` is the assembled board in 3D (KiCad's raytracer, from the board in memory):
 `side` top / bottom / front / back / left / right, `rot_x` etc. to tilt (`side: "top", rot_x:
--40` looks at it at an angle), `zoom`. Use it for connectors at the edge, tall parts, what is on
+-40` looks at it at an angle), `zoom` (a factor), `size` (the width; 4:3). Use it for connectors at the edge, tall parts, what is on
 the bottom. Only VRML models load in this build (the LCSC parts' are VRML): the answer lists the
 parts drawn without a body; that is not a fault of the board.
 
 ## Manufacturing (JLCPCB)
 
 1. `refill_zones` and a clean `run_drc` (or the user's agreement on what remains).
-   `export_fab` runs the DRC itself and puts the error count first; `strict=true` writes
+   `export {fab: {}}` runs the DRC itself and puts the error count first; `strict=true` writes
    nothing while there are DRC errors, a reference twice or parts off the board.
 2. Silkscreen: `silk_tidy dry_run=true` lists references over pads, over each other or off the
    board and where they would go; `silk_tidy` moves them (one undo), then `board_render
    layers=["silk"]` to look. It only moves the ones with a problem (all=true: every one asked).
 3. Parts not to be assembled: `sch_set_fields` / `pcb_set_fields` with `dnp` or
    `exclude_from_bom` (they leave both BOM and CPL).
-4. `export_fab`: Gerbers, drill, the upload zip, BOM and CPL in JLCPCB's columns, from the
+4. `export {fab: {}}`: Gerbers, drill, the upload zip, BOM and CPL in JLCPCB's columns, from the
    design in memory. Read its notes: BOM lines without an LCSC number, through-hole parts in
    the CPL, rotations to check in JLCPCB's preview.
-5. The schematic for the documents or a review: `sch_export_pdf` (every sheet in one PDF,
+5. The schematic for the documents or a review: `export {schematic_pdf: {}}` (every sheet in one PDF,
    unsaved edits included; default `<project>/<schematic>.pdf`).
-6. The assembly drawing for the assembler: `export_assembly` (a PDF in `<project>/fab`: the top,
-   and the bottom seen from below when parts are there; DNP parts crossed out). A
-   `board_render_3d` of each side shows the result to the user.
+6. The assembly drawing for the assembler: `export {assembly: {}}` (a PDF in `<project>/fab`: the top,
+   and the bottom seen from below when parts are there; DNP parts crossed out). One `export`
+   call can write all three: `{fab: {strict: true}, assembly: {}, schematic_pdf: {}}`. A
+   `board_render {view: "3d"}` of each side shows the result to the user.
 
 ## Repeated work
 

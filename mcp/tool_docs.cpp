@@ -26,32 +26,25 @@ namespace
 
 const std::map<std::string, std::string> BRIEFS = {
     // the board
-    { "board_summary", "Counts, copper layers and outline of the open PCB (mm, Y down). Start here." },
+    { "board_summary", "Counts, copper layers and outline of the open PCB (mm, Y down), and the full unrouted count. Start here." },
+    { "project", "Open a .kicad_pcb / .kicad_pro, or make a new project, on the server (headless only); refused with unsaved changes unless discard." },
     { "query_area", "Items near a part or a point, nearest first (pads with their size). Use instead of dumping the board; via_net finds free via spots." },
     { "query_net", "Pads, tracks, vias and zones of one net." },
     { "move_footprints", "Move parts by a delta or to absolute places (x, y, rotation, side), one undoable edit; returns a local DRC around them." },
-    { "check_drc", "Local DRC of parts against their surroundings, without moving them." },
-    { "flush_ratsnest", "Rebuild the ratsnest deferred during moves; returns the full unrouted count." },
     { "add_footprint", "Place a new footprint (library, LCSC number, or a copy of a part) with its pad nets, as one undoable edit." },
     { "delete_footprints", "Delete parts as one undoable edit (tracks stay)." },
     { "pcb_set_fields", "Change parts' fields, value, reference or attributes (DNP, BOM) on the board, as one undoable edit." },
-    { "undo", "Undo the agent's last board edit." },
-    { "redo", "Redo the agent's last undone board edit." },
+    { "undo", "Undo (redo=true: redo) the agent's last board edit, or with target=\"schematic\" its last schematic edit." },
     { "board_diff", "What changed since the board was saved (or against another .kicad_pcb). Use before save_board." },
-    { "board_render", "PNG of the board (layers, zoom to parts or nets, marks): to see silkscreen, crowding, routing." },
-    { "open_board", "Open another .kicad_pcb / .kicad_pro on the server (headless only); refused with unsaved changes unless discard." },
-    { "export_assembly", "Write the assembly drawing (PDF): top and bottom pages, outlines, pin 1, references, DNP crossed out." },
-    { "board_render_3d", "A 3D picture (PNG) of the board from KiCad's raytracer: any side or angle; lists the parts without a model." },
+    { "board_render", "PNG of the board (layers, zoom to parts or nets, marks): to see silkscreen, crowding, routing; view=\"3d\": raytraced from any side." },
     { "launch_kicad", "Start KiCad (headless server, or the desktop PCB editor) on this kicadd-mcp's socket; refused while one answers." },
     { "close_kicad", "Stop the KiCad launch_kicad started; refused with unsaved board / schematic changes unless discard." },
-    { "new_project", "Make a new project (.kicad_pro, empty board and schematic) on the server and open it; never writes over files." },
     { "save_board", "Write the board to its .kicad_pcb (KiCad 10.99 format: KiCad 9 / 10 may not open it)." },
     // layout setup and rules
     { "board_outline", "Draw the board outline (rect / circle), cut-outs and mounting holes, as one undoable edit." },
     { "board_setup", "Show or set copper layers and stackup (or a JLCPCB impedance stackup)." },
     { "impedance", "Track width for a Z0 / pair for a Zdiff (or the impedance of a width) per layer, from the stackup." },
-    { "get_rules", "Net classes, their net patterns and the board's minimum constraints." },
-    { "set_rules", "Change net classes (width, clearance, via, diff pair, current, impedance), assignments or fab presets, undoable." },
+    { "set_rules", "No arguments: the net classes, patterns and minimums. Else change classes (width, clearance, via, diff pair, current, impedance), assignments or fab presets, undoable." },
     { "zones", "List, create or change copper pours." },
     { "refill_zones", "Refill all pours (before judging connectivity, DRC or fabrication)." },
     // placement and routing
@@ -64,9 +57,9 @@ const std::map<std::string, std::string> BRIEFS = {
     { "delete_tracks", "Delete tracks / vias (all, by net, by part, or in an area), as one undoable edit." },
     { "silk_tidy", "Move silkscreen references off pads, other text and the board edge." },
     // checks and output
-    { "run_drc", "Full-board DRC (all KiCad checks), counts by type and the violations." },
+    { "run_drc", "Full-board DRC (all KiCad checks), counts by type and the violations; local=true: only around refs." },
+    { "export", "Write Gerbers / drill / BOM / CPL for JLCPCB (after refill and DRC), the assembly drawing PDF and / or the schematic PDF." },
     { "audit", "Design review measurements (decoupling, power, ESD, currents, planes, diff pairs, lengths, IR drop, crosstalk, impedance); verdicts only against limits you give." },
-    { "export_fab", "Gerbers, drill, BOM and CPL for JLCPCB, after refill and DRC." },
     // parts
     { "lcsc_fetch", "Get an LCSC part's footprint, symbol and 3D model into the project libraries, with stock and price." },
     { "lcsc_search", "Find JLCPCB / LCSC parts by value, package, specs or electrical parameters." },
@@ -89,9 +82,6 @@ const std::map<std::string, std::string> BRIEFS = {
     { "sch_annotate", "Number the parts (fill R? or renumber in position order)." },
     { "run_erc", "Electrical Rules Check of the schematic." },
     { "sch_render", "PNG of a schematic sheet, optionally zoomed to parts or nets." },
-    { "sch_export_pdf", "The whole schematic as one linked PDF." },
-    { "sch_undo", "Undo the agent's last schematic edit." },
-    { "sch_redo", "Redo the agent's last undone schematic edit." },
     { "sch_save", "Write the schematic files (KiCad 10.99 format: KiCad 9 / 10 may not open them)." },
     { "sync_pcb", "Update the PCB from the schematic (new footprints, nets, values)." },
     // simulation and integrity
@@ -129,6 +119,8 @@ const std::map<std::string, std::string> PARAM_BRIEFS = {
     { "board_render.layers", "front, back, copper, silk, fab, assembly, or layer names" },
     { "export_fab.strict", "write nothing on DRC or placement errors" },
     { "open_board.discard", "drop the open board's unsaved changes" },
+    { "project.discard", "drop the open board's unsaved changes" },
+    { "export.fab.strict", "write nothing on DRC or placement errors" },
     { "sch_add_part.sheet", "name or path (default the root)" },
     { "sch_connect.ports", "nets that are sheet ports: \"VOUT\" or \"VOUT:output\"" },
     { "sch_connect.power", "nets drawn as power symbols" },
@@ -171,11 +163,21 @@ void ApplyBriefs( std::vector<TOOL>& aTools )
     {
         auto brief = BRIEFS.find( t.name );
 
-        if( brief == BRIEFS.end() )
-            throw std::logic_error( "tool " + t.name + " has no brief in tool_docs.cpp" );
+        if( !t.renamedTo.empty() )
+        {
+            if( brief != BRIEFS.end() )
+                throw std::logic_error( "tool " + t.name + " is an old name: its brief in tool_docs.cpp goes" );
 
-        t.details = t.description;
-        t.description = brief->second;
+            t.details = "an old name (goes in the next release): use " + t.renamedTo + ". As it was: " + t.description;
+            t.description = "Old name of " + t.renamedTo + ".";
+        }
+        else if( brief == BRIEFS.end() )
+            throw std::logic_error( "tool " + t.name + " has no brief in tool_docs.cpp" );
+        else
+        {
+            t.details = t.description;
+            t.description = brief->second;
+        }
 
         // long parameter descriptions: the brief here, the full text to details
         std::string params;
@@ -246,7 +248,10 @@ TOOL ToolHelpTool( std::shared_ptr<std::vector<TOOL>> aTable )
                  std::string names;
 
                  for( const TOOL& t : *aTable )
-                     names += ( names.empty() ? "" : ", " ) + t.name;
+                 {
+                     if( t.renamedTo.empty() )
+                         names += ( names.empty() ? "" : ", " ) + t.name;
+                 }
 
                  return { "tool_help: no tool " + name + "; the tools: " + names, true };
              } };
@@ -259,8 +264,16 @@ std::string ToolDocsMarkdown( const std::vector<TOOL>& aTools )
                       "Generated by `kicadd-mcp --tool-docs` (do not edit: the text lives with each tool in mcp/*.cpp). "
                       "The MCP tools/list sends only the first line of each; `tool_help {name}` returns the rest.\n";
 
+    std::string renamed;
+
     for( const TOOL& t : aTools )
     {
+        if( !t.renamedTo.empty() )
+        {
+            renamed += "- `" + t.name + "` → `" + t.renamedTo + "`\n";
+            continue;
+        }
+
         out += "\n## " + t.name + "\n\n" + t.description + "\n";
 
         if( !t.details.empty() && t.details != t.description )
@@ -295,6 +308,9 @@ std::string ToolDocsMarkdown( const std::vector<TOOL>& aTools )
             out += "\nArguments:\n\n" + args;
         }
     }
+
+    if( !renamed.empty() )
+        out += "\n## Old names\n\nStill accepted for one release (not in tools/list); the answer ends with the new form.\n\n" + renamed;
 
     return out;
 }

@@ -101,7 +101,7 @@ json MCP_SERVER::handleInitialize( const json& aParams )
                "KiCadD: a KiCad PCB held in memory on the server. Coordinates in mm, Y axis down. "
                "Footprints are addressed by reference (U5), pads by REF.PAD (U5.3). Prefer "
                "query_area / query_net over broad queries; move_footprints returns a local DRC, so "
-               "iterate with it and call flush_ratsnest / save_board when done. Tool descriptions are "
+               "iterate with it and call board_summary (the full unrouted count) / save_board when done. Tool descriptions are "
                "short: tool_help {name} gives one tool's full description (examples, defaults, limits). How to use the "
                "tools together: the resource kicadd://skill (or one section, kicadd://skill/{section}; resources/list "
                "names them)." } };
@@ -155,6 +155,9 @@ json MCP_SERVER::handleToolsList() const
 
     for( const TOOL& t : m_tools )
     {
+        if( !t.renamedTo.empty() )
+            continue;   // an old name: still callable, not listed
+
         tools.push_back( { { "name", t.name },
                            { "description", t.description },
                            { "inputSchema", t.inputSchema } } );

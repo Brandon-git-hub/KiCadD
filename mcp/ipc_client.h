@@ -33,11 +33,11 @@ public:
     /**
      * Send aRequest wrapped in an ApiRequest envelope and unpack the reply into aResponse.
      * Calls are serialised (one REQ socket). Retries briefly while the server reports
-     * AS_NOT_READY / AS_BUSY.
+     * AS_NOT_READY / AS_BUSY (aWaitBusy false: answers at once, the busy message as the error).
      * @return false with aError set on transport failure or a non-OK API status.
      */
     bool Call( const google::protobuf::Message& aRequest, google::protobuf::Message& aResponse,
-               std::string& aError );
+               std::string& aError, bool aWaitBusy = true );
 
     const std::string& Url() const { return m_url; }
     int                TimeoutMs() const { return m_timeoutMs; }

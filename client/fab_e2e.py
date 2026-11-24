@@ -41,7 +41,7 @@ srv = Server(build, sock, pcb, env, os.path.join(work, "server.log")); assert sr
 try:
     m = Mcp([kicadd_mcp, "--socket", sock, "--stdio"], env)
     print("[export_fab]")
-    err, t = m.tool("export_fab", {"refill": False})     # the fills as saved, as kicad-cli plots them
+    err, t = m.tool("export", {"fab": {"refill": False}})     # the fills as saved, as kicad-cli plots them
     print("      ", " | ".join(t.splitlines()[1:6]))
     fab = os.path.join(work, "p", "fab")
     check(not err and "9 layer file(s)" in t and "56 placements" in t, "9 Gerbers, 56 placements (63 parts, 7 not in the BOM)")
@@ -65,7 +65,7 @@ try:
 
     print("[an unsaved move]")
     m.tool("move_footprints", {"refs": ["U1"], "dx": 5, "dy": 0})
-    err, t = m.tool("export_fab")
+    err, t = m.tool("export", {"fab": {}})
     check(t.startswith("all zones refilled"), "refills the zones by default")
     rows = {r[0]: r for r in csv.reader(open(os.path.join(fab, "pic_programmer-cpl.csv"), encoding="utf-8"))}
     check(abs(float(rows["U1"][1].rstrip("mm")) - x0 - 5) < 1e-3, f"CPL U1 x {x0} -> {rows['U1'][1]}")
@@ -76,17 +76,17 @@ try:
     check(re.match(r"warning: DRC: \d+ error\(s\) \(.*\): the board would be made with them", first) is not None,
           "the moved U1's DRC errors come right after the refill")
     cplf = os.path.join(fab, "pic_programmer-cpl.csv"); before = os.path.getmtime(cplf)
-    err, t = m.tool("export_fab", {"strict": True, "refill": False})
+    err, t = m.tool("export", {"fab": {"strict": True, "refill": False}})
     print("      ", " | ".join(t.splitlines()[:3])[:200])
     check(err and "nothing written (strict)" in t and "- DRC:" in t and os.path.getmtime(cplf) == before,
           "strict: refused, the files left as they were")
-    err, t = m.tool("export_fab", {"drc": False, "refill": False})
+    err, t = m.tool("export", {"fab": {"drc": False, "refill": False}})
     check(not err and "DRC" not in t, "drc=false: no DRC")
     m.tool("undo")
-    err, t = m.tool("export_fab", {"strict": True})
+    err, t = m.tool("export", {"fab": {"strict": True}})
     print("      ", " | ".join(t.splitlines()[:3])[:200])
     check(not err and "\nDRC: no errors" in t, "U1 back: strict writes the files")
-    m.tool("redo")
+    m.tool("undo", {"redo": True})
 
     print("[board_render]")
     import base64
@@ -188,7 +188,7 @@ try:
     err, t = m.tool("undo")
     err, t2 = m.tool("query_net", {"net": "TESTNET1"})
     check(not err and nets() == nets0 + 1 and "R30" in t2, "undo: R30 back on TESTNET1: " + t2.strip().replace("\n", " | ")[:100])
-    err, t = m.tool("redo")
+    err, t = m.tool("undo", {"redo": True})
     check(not err and "removed: TESTNET1" in t and nets() == nets0, "redo: the net goes again")
     m.tool("undo")
     m.tool("undo")
@@ -220,7 +220,7 @@ try:
 
     print("[pcb_set_fields]")
     def bom_of():
-        m.tool("export_fab", {"refill": False})
+        m.tool("export", {"fab": {"refill": False}})
         return list(csv.reader(open(os.path.join(fab, "pic_programmer-bom.csv"), encoding="utf-8")))
     err, t = m.tool("pcb_set_fields", {"parts": {"R1": {"LCSC": "C25804", "MPN": "RC0603FR-0710KL"}, "R2": {"dnp": True}}})
     check(not err and "set fields of 2 footprint(s)" in t, "set: " + t.splitlines()[0])
@@ -243,13 +243,13 @@ try:
     m.tool("undo")
     err, t = m.tool("undo")
     check(not err and "R1 is now R100" in t, "undo: " + t.splitlines()[0])
-    err, t = m.tool("check_drc", {"refs": ["R1", "R100"]})
+    err, t = m.tool("run_drc", {"local": True, "refs": ["R1", "R100"]})
     check(t.startswith("not found: R100\n"), "R1 is R1 again")
     m.tool("undo"); m.tool("undo")
     bom = bom_of()
     r1 = next((r for r in bom if "R1" in r[1].split(",")), None)
     check(r1 is not None and r1[3] == "" and any("R2" in r[1].split(",") for r in bom), "two undo: R1 without LCSC, R2 back in the BOM")
-    err, t = m.tool("redo")
+    err, t = m.tool("undo", {"redo": True})
     check(not err and "set fields" in t, "redo: " + t.splitlines()[0])
     print("[board_diff]")
     err, t = m.tool("save_board")
@@ -315,7 +315,7 @@ try:
     print("[export_assembly]")
     def pages(path):
         return len(re.findall(rb"/Type\s*/Page(?![s\w])", open(path, "rb").read()))
-    err, t = m.tool("export_assembly")
+    err, t = m.tool("export", {"assembly": {}})
     print("      ", t.strip())
     f = os.path.join(work, "p", "fab", "pic_programmer-assembly.pdf")
     nb = re.search(r"(\d+) on the bottom", t)
@@ -325,7 +325,7 @@ try:
           f"a PDF in <project>/fab, a page per side with parts ({pages(f) if os.path.isfile(f) else 0} pages, {nb} on the bottom)")
     m.tool("move_footprints", {"refs": ["R1"], "flip": True})
     m.tool("pcb_set_fields", {"parts": {"R3": {"dnp": True}}})
-    err, t = m.tool("export_assembly", {"path": "asm.pdf", "values": True})
+    err, t = m.tool("export", {"assembly": {"path": "asm.pdf", "values": True}})
     print("      ", t.strip())
     f2 = os.path.join(work, "p", "asm.pdf")
     check(not err and os.path.isfile(f2) and pages(f2) == 2 and f", {nb + 1} on the bottom" in t,

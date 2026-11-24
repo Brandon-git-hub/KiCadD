@@ -112,21 +112,21 @@ try:
           "undo sync_pcb: the parts put back, none reported as moved, no local DRC of parts that did not move")
     m.tool("undo")   # the pcb_set_fields
 
-    err, t = m.tool("sch_undo")
+    err, t = m.tool("undo", {"target": "schematic"})
     check(not err and t.startswith("undid: annotate") and "already" not in t, "sch_undo: " + t.splitlines()[0])
     err, t = m.tool("sch_part", {"ref": first_old})
     check(not err and first_value in t, f"{first_old} is {first_value} again")
-    err, t = m.tool("sch_redo")
+    err, t = m.tool("undo", {"target": "schematic", "redo": True})
     check(not err and t.startswith("redid: annotate"), "sch_redo")
     err, t = m.tool("sch_part", {"ref": first_new})
     check(not err and first_value in t, f"{first_new} is {first_value} again")
-    m.tool("sch_undo")
+    m.tool("undo", {"target": "schematic"})
 
     err, t = m.tool("sch_annotate", {"refs": ["R1", "nope"], "reset": True, "start": 50})
     one = changes(t)
     check(not err and len(one) == 1 and one[0][0] == "R1" and int(one[0][1][1:]) >= 50 and "no part nope" in t,
           "refs + start 50: " + (" ".join(one[0][:2]) if one else t.strip()[:80]))
-    m.tool("sch_undo")
+    m.tool("undo", {"target": "schematic"})
 
     err, t = m.tool("sch_annotate", {"reset": True, "per_sheet": "100", "dry_run": True})
     nums = [(c[3], int(re.sub(r"\D", "", c[1]) or 0)) for c in changes(t)]
@@ -139,7 +139,7 @@ try:
     check(err and "not both" in t, "refs and sheet: refused")
 
     print("[sch_export_pdf]")
-    err, t = m.tool("sch_export_pdf")
+    err, t = m.tool("export", {"schematic_pdf": {}})
     print("      ", t.strip().replace("\n", " | "))
     path = os.path.join(proj, "pic_programmer.pdf")
     data = open(path, "rb").read() if os.path.exists(path) else b""
@@ -149,18 +149,18 @@ try:
 
     err, t = m.tool("sch_set_fields", {"parts": {"R1": {"Value": "47k-KICADD"}}})
     check(not err, "an unsaved value on R1")
-    err, t = m.tool("sch_export_pdf", {"path": "docs/review"})
+    err, t = m.tool("export", {"schematic_pdf": {"path": "docs/review"}})
     path2 = os.path.join(proj, "docs", "review.pdf")
     data2 = open(path2, "rb").read() if os.path.exists(path2) else b""
     check(not err and data2.startswith(b"%PDF"), "relative path: docs/review.pdf in the project (folder made)")
     check(b"47k-KICADD" in data2 and b"47k-KICADD" not in data, "the unsaved value is in the new PDF")
     check("47k-KICADD" not in open(sch_file, encoding="utf-8").read(), "and not in the file on disk")
 
-    err, t = m.tool("sch_export_pdf", {"path": "bw.pdf", "black_and_white": True})
+    err, t = m.tool("export", {"schematic_pdf": {"path": "bw.pdf", "black_and_white": True}})
     bw = open(os.path.join(proj, "bw.pdf"), "rb").read() if os.path.exists(os.path.join(proj, "bw.pdf")) else b""
     colour = rb"0.517647 0 0 rg"   # the frame's dark red
     check(not err and colour in pdf_streams(data) and colour not in pdf_streams(bw), "black_and_white: no colour")
-    m.tool("sch_undo")
+    m.tool("undo", {"target": "schematic"})
     m.close()
 finally:
     srv.stop()

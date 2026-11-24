@@ -1,4 +1,4 @@
-"""A new project from MCP (new_project), headless.
+"""A new project from MCP (project {new}), headless.
 
 usage: python3 -I project_e2e.py --build BUILD --kicad KICAD_SRC --work DIR
 
@@ -28,6 +28,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from m5_e2e import FAILS, Mcp, Server, binaries, check  # noqa: E402
 
 
+def new_project(m, args):
+    """project {new: ...}, discard beside it (new_project's arguments)."""
+    args = dict(args)
+    call = {"new": args}
+    if "discard" in args:
+        call["discard"] = args.pop("discard")
+    return m.tool("project", call)
+
+
 def main():
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser()
@@ -47,7 +56,7 @@ def main():
     try:
         print("[new]")
         one = os.path.join(work, "projects", "alpha")
-        err, t = m.tool("new_project", {"path": one, "copper_layers": 4, "outline": [60, 40]})
+        err, t = new_project(m, {"path": one, "copper_layers": 4, "outline": [60, 40]})
         print("      ", "\n       ".join(t.splitlines()))
         files = {e: os.path.join(one, "alpha" + e) for e in (".kicad_pro", ".kicad_pcb", ".kicad_sch")}
         check(not err and all(os.path.isfile(f) for f in files.values()), "alpha.kicad_pro / .kicad_pcb / .kicad_sch written")
@@ -75,7 +84,7 @@ def main():
                            ({"path": os.path.join(work, "projects", "x"), "name": "a/b"}, "name:"),
                            ({"path": files[".kicad_pcb"]}, "a folder or a .kicad_pro"),
                            ({"path": os.path.join(work, "projects", "odd"), "copper_layers": 3}, "copper_layers")):
-            err, t = m.tool("new_project", args)
+            err, t = new_project(m, args)
             check(err and want in t, f"refused: {want} ({t.strip()[:90]})")
         check(sorted(os.listdir(one)) == before and not os.path.exists(os.path.join(work, "projects", "odd"))
               and not os.path.exists(os.path.join(work, "projects", "x")), "nothing written by a refusal")
@@ -83,14 +92,14 @@ def main():
         print("[unsaved]")
         m.tool("board_outline", {"rect": [100, 100, 170, 150]})
         two = os.path.join(work, "projects", "beta")
-        err, t = m.tool("new_project", {"path": two})
+        err, t = new_project(m, {"path": two})
         check(err and "unsaved changes" in t and not os.path.exists(two), "an unsaved edit: refused, beta not made")
-        err, t = m.tool("new_project", {"path": two, "discard": True})
+        err, t = new_project(m, {"path": two, "discard": True})
         check(not err and "file=beta.kicad_pcb" in t and "cu_layers=2" in t, "discard=true: beta made and open (2 layers by default)")
 
         print("[stackup, a .kicad_pro path]")
         three = os.path.join(work, "projects", "gamma", "board-x.kicad_pro")
-        err, t = m.tool("new_project", {"path": three, "stackup": "JLC04161H-7628"})
+        err, t = new_project(m, {"path": three, "stackup": "JLC04161H-7628"})
         check(not err and "file=board-x.kicad_pcb" in t and os.path.isfile(three), "a .kicad_pro path: its name, its folder")
         err, t = m.tool("board_setup", {})
         check("JLC04161H-7628" in t or "7628" in t, "the fab's stackup set: " + t.splitlines()[0][:80])
@@ -98,7 +107,7 @@ def main():
         print("[route to a pour]")
         # on the 4-layer alpha: a capacitor GND / VCC, GND as a plane on In1.Cu, VCC as a pour on
         # F.Cu beside the part: GND reaches its plane through a via, VCC its pour on its own layer
-        err, t = m.tool("open_board", {"path": files[".kicad_pro"], "discard": True})
+        err, t = m.tool("project", {"open": files[".kicad_pro"], "discard": True})
         m.tool("sch_add_part", {"lib_id": "power:PWR_FLAG", "x": 101.6, "y": 50.8})
         m.tool("sch_connect", {"nets": {"VBUF": ["#FLG01.1", "U1.1"]}})
         err, t = m.tool("sch_move", {"ref": "#FLG01", "x": 127, "y": 76.2})
@@ -135,7 +144,7 @@ def main():
         check("unconnected_items" not in t, "after a refill both are connected: " + t.splitlines()[0][:80])
 
         print("[open_board]")
-        err, t = m.tool("open_board", {"path": files[".kicad_pro"], "discard": True})
+        err, t = m.tool("project", {"open": files[".kicad_pro"], "discard": True})
         check(not err and "file=alpha.kicad_pcb" in t and "cu_layers=4" in t, "alpha opens again from disk")
     finally:
         m.close()

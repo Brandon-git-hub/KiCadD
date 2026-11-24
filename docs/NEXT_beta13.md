@@ -1,6 +1,6 @@
 # 交接：beta.13 的工作清單（2026-11-24）
 
-> **狀態（2026-11-24）：** v0.1.0-beta.12 已打 tag 並發布（pre-release）。階段 1 完成，在本機 commit，等使用者確認後開始階段 2。
+> **狀態（2026-11-24）：** v0.1.0-beta.12 已打 tag 並發布（pre-release）。階段 1、階段 2 完成，在本機 commit，尚未推送。下一步是階段 3（審查型盲測）。
 
 beta.12 已發布（NEXT_beta10 第一優先 1–10 項、盲測 S1 的修正）。這份清單合併三個來源：
 - 盲測 S2（四層 RP2040 板）的回報；
@@ -60,6 +60,24 @@ beta.12 已發布（NEXT_beta10 第一優先 1–10 項、盲測 S1 的修正）
 - **第 8 項：** edge 規則 `along: true` 與每個邊緣零件的方向；`sch_connect partial=true`（對半重試，只列出有問題的腳）；`lcsc_fetch pin_types={...}`；沒有編號的外殼焊盤（`unnumbered_pads`）；`run_drc` 的 starved thermal 建議；`board_render` 畫出 NPTH 孔的外框（原因：孔用背景色畫，沒有鋪銅時看不見）；`hole_inset` 量到孔中心，寫進說明，太小會拒絕。
 - **新測試：** `escape_e2e`（第 2、3、4、7 項與 starved thermal），run_all 變成 41 個。
 - **新發現（尚未處理）：** `set_rules` 先依名稱 pattern 指定 class、之後才用 `add_footprint` 加入的零件，從它的焊盤起線時寬度是板子最小值（0.09 mm，「board setup constraints」），不是 class 的寬度；同一個網路從另一個零件起線卻正確。sync_pcb 的流程（S2）沒有這個問題。先用 `add_footprint` 再 `set_rules` 就正常。
+
+## 階段 2 的結果（2026-11-24，本機 commit，尚未推送）
+
+工具從 68 個減為 58 個（tools/list）。合併的程式在 `mcp/merged.cpp`，由原本的工具組成，行為不變。`board_summary` 的未連線數不等待忙碌的編輯器：auto_place 執行中會寫「not rebuilt now」，馬上回應（desktop_autoplace 測試要求 1 秒內）。
+
+| 之後 | 取代 |
+|---|---|
+| `undo {target: "board" \| "schematic", redo: true}` | undo / redo / sch_undo / sch_redo |
+| `set_rules` 不帶參數 | get_rules（不跑 DRC） |
+| `run_drc {refs, local: true}` | check_drc（local 只收 refs、detail） |
+| `board_summary` 最後一行 `ratsnest: ...` | flush_ratsnest（先重建延後的大網路） |
+| `project {open: path}` / `project {new: {...}}`，`discard` 兩者共用 | open_board / new_project |
+| `export {fab, assembly, schematic_pdf}`，每項給 `{}` 即用預設值，可一次多份；一項失敗不影響其他項 | export_fab / export_assembly / sch_export_pdf |
+| `board_render {view: "3d"}`：side、rot_x/y/z、zoom（倍率）、size（寬，4:3）、quality、floor、perspective；`back=true` 等於 side bottom | board_render_3d |
+
+- **舊名稱：** 保留一版。不列在 tools/list（否則工具數沒有減少），但 tools/call、batch、tool_help 都還接受，照舊執行，回應最後加一行 `note: X is now Y {...}; the old name goes in the next release`。tool_help 查舊名稱會指向新工具；TOOLS.md 最後有〈Old names〉對照表。
+- **一起更新：** SKILL.md（含章節 slug `a-new-project-project-new`，new_board prompt 已改）、TOOLS.md、README 工具表、MCP instructions、prompts（new_board / prepare_fab）、工具訊息裡提到舊名稱的地方，以及 e2e 測試。
+- **測試：** 新的 `merge_e2e`，涵蓋每個新形式、錯誤參數的拒絕、tools/list 不含舊名稱，以及每個舊名稱仍可用（batch 也可以）。其他測試改用新名稱，`mcp_e2e` 的工具數改為 58。run_all 變成 42 個。
 
 ## 盲測 S2 的結果
 

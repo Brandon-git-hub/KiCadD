@@ -59,7 +59,7 @@ try:
     check(not err and t.startswith("undid") and counts(m)[:2] == (tr0, vi0), "undo puts them back")
     u_back = unconnected(t)
     check(u_back < u1, f"unconnected {u1} -> {u_back}")
-    err, t = m.tool("redo"); print("       redo:", t.splitlines()[0][:80])
+    err, t = m.tool("undo", {"redo": True}); print("       redo:", t.splitlines()[0][:80])
     check(not err and counts(m)[:2] == (tr1, vi1), "redo removes them again")
     err, t = m.tool("undo")
     check(not err and counts(m)[:2] == (tr0, vi0), "undo again")
@@ -91,7 +91,7 @@ try:
     check(not err and len(moved) == 5 and re.search(r"^\.\.\. \d+ more part\(s\) moved \(detail=true", u, re.M),
           f"undo: {len(moved)} positions, then a count")
     check(re.search(r"^drc: ", u, re.M) is not None, "the DRC line is still there")
-    err, u = m.tool("redo", {"detail": True})
+    err, u = m.tool("undo", {"redo": True, "detail": True})
     check(not err and len(re.findall(r"^\S+ @", u, re.M)) > 50, "redo detail=true: every part")
     refs = sorted(set(re.findall(r'\(property "Reference" "([^"#]+)"', open(os.path.join(work, "p", "pic_programmer.kicad_pcb")).read())))
     err, t = m.tool("move_footprints", {"refs": refs, "dx": 1})
@@ -102,7 +102,7 @@ try:
     check(len(re.findall(r"^\S+ @", t, re.M)) == 3 and "more part" not in t, "three parts: all three listed")
 
     print("[6] get_rules / set_rules")
-    err, r0 = m.tool("get_rules")
+    err, r0 = m.tool("set_rules")
     print("      ", " | ".join(r0.splitlines()[:3])[:160])
     check(not err and "Default:" in r0 and "constraints:" in r0, "get_rules answers")
     err, t = m.tool("set_rules", {"classes": {"Power": {"track_width": 0.6, "clearance": 0.3}},
@@ -119,9 +119,9 @@ try:
     err, t = m.tool("set_rules", {"assign": {"X": "Nope"}, "drc": False})
     check(err and "no net class Nope" in t, "an assignment to a missing class is refused")
     m.tool("undo"); m.tool("undo")
-    err, r1 = m.tool("get_rules")
+    err, r1 = m.tool("set_rules")
     check(r1 == r0, "two undo: the rules as before")
-    err, t = m.tool("redo")
+    err, t = m.tool("undo", {"redo": True})
     check(not err and "set rules" in t, "redo: " + t.splitlines()[0])
     err, t = m.tool("save_board")
     pro = open(os.path.join(work, "p", "pic_programmer.kicad_pro")).read()
@@ -142,7 +142,7 @@ try:
     err, t = m.tool("undo")
     err, z1 = m.tool("zones")
     check(not err and z1 == z0, "undo: the zones as before")
-    err, t = m.tool("redo")
+    err, t = m.tool("undo", {"redo": True})
     check(not err and "zone settings" in t, "redo: " + t.splitlines()[0])
 
     print("[8] batch")

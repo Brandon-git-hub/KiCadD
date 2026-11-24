@@ -174,7 +174,7 @@ def main():
             except Exception:
                 ok = False
             check(ok, f"the agent's sch_set_fields on {ref} reloads the sheet with the new value")
-            mcp_call(base, "sch_undo", {})
+            mcp_call(base, "undo", {"target": "schematic"})
             page.click("#tabs button[data-tab=board]")
 
         print("[chart]")

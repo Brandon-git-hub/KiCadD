@@ -110,7 +110,7 @@ async def main(base, restart):
     await a.settle()
     check(not err and text.startswith("undid: move U78") and "history:" in text, f"MCP undo: {text.splitlines()[0]}")
     check(a.pos("U78") == p0, "browser sees the agent's undo")
-    text, err = await asyncio.to_thread(mcp, base, "redo")
+    text, err = await asyncio.to_thread(mcp, base, "undo", {"redo": True})
     await a.settle()
     check(not err and text.startswith("redid:"), "MCP redo")
     check(a.history["undo"] == 1 and a.history["redo"] == 1, f"browser history updated by MCP edits: {a.history['undo']}/{a.history['redo']}")

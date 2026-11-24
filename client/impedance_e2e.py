@@ -140,14 +140,14 @@ def main():
         check("In1.Cu has no copper zone yet" in t, "and that In1.Cu is not poured")
         m = re.search(r"pairs ([\d.]+) mm wide, 0\.150 mm apart for 90 ohm", t)
         check(m is not None and "the width at the gap given" in t, "USB: the width at the 0.15 mm gap")
-        err, r = mcp.tool("get_rules")
+        err, r = mcp.tool("set_rules")
         rf, usb = rule_class(r, "RF"), rule_class(r, "USB")
         check(f"track {f[0]:.3f}".rstrip("0") in rf or f"track {f[0]:g}" in rf, "get_rules: RF's track width: " + rf[:80])
         check(m and f"diff pair {float(m.group(1)):g} gap 0.15" in usb, "get_rules: USB's pair: " + usb[:100])
 
         err, t = mcp.tool("undo")
         check(not err and t.startswith("undid: set rules"), "undo: " + t.splitlines()[0])
-        err, r = mcp.tool("get_rules")
+        err, r = mcp.tool("set_rules")
         check(not rule_class(r, "RF") and not rule_class(r, "USB"), "the classes are gone")
 
         cl = re.search(r"Default: clearance ([\d.]+)", r)

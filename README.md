@@ -181,19 +181,24 @@ Python or Node runtime is needed.
 
 | Tool | |
 |---|---|
-| `board_summary` | counts, layers, outline |
+| `board_summary` | counts, layers, outline; the full unconnected count (deferred large nets rebuilt) |
 | `query_area` | items near `ref` or `x,y` within `radius` (mm), nearest first; `kinds`, `limit` |
 | `query_net` | pads / tracks / vias / zones of one net |
 | `move_footprints` | `refs`, `dx`, `dy` (mm), `rotate` (deg); returns positions, unconnected count, local DRC |
-| `check_drc` | local DRC for `refs` without moving |
-| `flush_ratsnest` | rebuild deferred large nets, full unconnected count |
-| `open_board` / `save_board` | switch to another project (board + schematic; `discard=true` drops unsaved changes) / write the in-memory board to disk |
+| `run_drc` | full DRC; `local=true` with `refs`: local DRC for those parts without moving |
+| `project` / `save_board` | `open` another project or make a `new` one (board + schematic; `discard=true` drops unsaved changes) / write the in-memory board to disk |
+
+beta.13 merged thin tools (the old names stay one release as aliases, not listed): `undo
+{target, redo}` (was undo / redo / sch_undo / sch_redo), `set_rules` with no arguments (get_rules),
+`run_drc {local}` (check_drc), `board_summary` (flush_ratsnest), `project {open | new}`
+(open_board, new_project), `export {fab, assembly, schematic_pdf}` (export_fab, export_assembly,
+sch_export_pdf), `board_render {view: "3d"}` (board_render_3d).
 
 Output is compact text, e.g. a move that creates violations (~266 tokens for 14 violations):
 
 ```
 C216 @152.5,107.5 r180
-unconnected=0 (excl. deferred nets: GND +1V8; call flush_ratsnest for the full count)
+unconnected=0 (excl. deferred nets: GND +1V8; board_summary gives the full count)
 drc: 14
 SHORT C216.2[+1V8] x C356.2[+3V3] F.Cu need0.1 have0 @152,107.328
 COURTYARD C216 x C356 F.Courtyard @152,107.5

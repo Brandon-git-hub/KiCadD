@@ -55,7 +55,7 @@ def main():
                                                 "nets": {"1": "GND", "2": "VCC"}})
             check(not err and t.startswith(ref), f"{ref} placed: " + t.splitlines()[0][:60])
 
-        err, t = mcp.tool("get_rules")
+        err, t = mcp.tool("set_rules")
         check(re.search(r"POWER: .*\[2 net\(s\)\]", t) is not None,
               "the new nets GND and VCC are in their net class (POWER, by pattern) at once")
 
@@ -70,7 +70,7 @@ def main():
         check(m and 1490 < float(m.group(1)) < 1500, f"area less the rounded corners: {m and m.group(1)}")
         check(all(f"H{i} @" in t for i in range(1, 5)) and "H1 @3.5,3.5 d3.2" in t, "4 M3 holes at the corners")
         check("not (wholly) inside" not in t, "R1, R2 are on the board")
-        err, t = mcp.tool("export_fab", {"dir": os.path.join(work, "fab0"), "zip": False})
+        err, t = mcp.tool("export", {"fab": {"dir": os.path.join(work, "fab0"), "zip": False}})
         bom = open(os.path.join(work, "fab0", [f for f in os.listdir(os.path.join(work, "fab0")) if f.endswith("-bom.csv")][0])).read()
         check("H1" not in bom and "R1" in bom, "the holes are not in the BOM")
         err, t = mcp.tool("undo")
@@ -79,7 +79,7 @@ def main():
         check("H1" not in q, "the holes are gone with it")
         err, s = mcp.tool("board_summary")
         check("outline=99.95,99.95..160.05,140.05mm" in s, "the old outline is back: " + s.splitlines()[0][:120])
-        err, t = mcp.tool("redo")
+        err, t = mcp.tool("undo", {"redo": True})
         check(not err and t.startswith("redid: board outline"), "redo")
         err, q = mcp.tool("query_area", {"x": 3.5, "y": 3.5, "radius": 0.5, "kinds": ["footprint"]})
         check("H1" in q, "the holes are back with it")
@@ -134,7 +134,7 @@ def main():
         err, t = mcp.tool("undo")
         err, z = mcp.tool("zones")
         check(not err and z.startswith("0 copper zone"), "undo takes the zone away")
-        mcp.tool("redo")
+        mcp.tool("undo", {"redo": True})
         err, t = mcp.tool("zones", {"create": {"net": "NOPE"}})
         check(err and "no net NOPE" in t, "an unknown net is refused")
 
@@ -168,7 +168,7 @@ def main():
         err, t = mcp.tool("set_rules", {"preset": "nope"})
         check(err and "jlcpcb_2layer" in t, "an unknown preset lists the ones there are")
         err, t = mcp.tool("undo")
-        err, r = mcp.tool("get_rules")
+        err, r = mcp.tool("set_rules")
         check("track 0.127" not in r.split("constraints")[1], "undo puts the old minimums back")
 
         print("[board_setup]")
@@ -206,8 +206,8 @@ def main():
         err, t = mcp.tool("set_rules", {"classes": {"Power": {"current": 2, "track_width": 1}}})
         check(err and "not both" in t, "current and track_width together: refused")
         err, t = mcp.tool("undo")
-        check(not err and "Power" not in mcp.tool("get_rules")[1], "undo: the class is gone")
-        err, t = mcp.tool("export_fab", {"dir": os.path.join(work, "fab4"), "zip": False})
+        check(not err and "Power" not in mcp.tool("set_rules")[1], "undo: the class is gone")
+        err, t = mcp.tool("export", {"fab": {"dir": os.path.join(work, "fab4"), "zip": False}})
         files = os.listdir(os.path.join(work, "fab4"))
         check(any("In1_Cu" in f for f in files) and any("In2_Cu" in f for f in files), "Gerbers of the inner layers")
         err, t = mcp.tool("save_board")
