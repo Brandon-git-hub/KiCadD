@@ -31,7 +31,7 @@ beta.12 已發布（NEXT_beta10 第一優先 1–10 項、盲測 S1 的修正）
   - open_board + new_project → project；
   - 三個 export 合成一個。
 - **board_render_3d：** 若很容易，也併入 `board_render {view: "3d"}`。
-- **舊名稱：** 保留一版作為別名，回應時提示新名稱。
+- **舊名稱：** 原定保留一版作為別名；已改為直接移除（beta 不需相容，使用者 2026-11-24 決定）。
 - **一起更新：** SKILL.md、TOOLS.md、MCP Resources / Prompts、e2e 測試。
 - **不動：** simulate、pdn、reflection、board_diff、teardrops。launch_kicad / close_kicad 也維持獨立。
 
@@ -75,9 +75,9 @@ beta.12 已發布（NEXT_beta10 第一優先 1–10 項、盲測 S1 的修正）
 | `export {fab, assembly, schematic_pdf}`，每項給 `{}` 即用預設值，可一次多份；一項失敗不影響其他項 | export_fab / export_assembly / sch_export_pdf |
 | `board_render {view: "3d"}`：side、rot_x/y/z、zoom（倍率）、size（寬，4:3）、quality、floor、perspective；`back=true` 等於 side bottom | board_render_3d |
 
-- **舊名稱：** 保留一版。不列在 tools/list（否則工具數沒有減少），但 tools/call、batch、tool_help 都還接受，照舊執行，回應最後加一行 `note: X is now Y {...}; the old name goes in the next release`。tool_help 查舊名稱會指向新工具；TOOLS.md 最後有〈Old names〉對照表。
+- **舊名稱：** 原本計畫保留一版當別名；使用者決定 beta 期間不需要相容，舊名稱直接移除（呼叫會是 unknown tool，tool_help 也查不到）。
 - **一起更新：** SKILL.md（含章節 slug `a-new-project-project-new`，new_board prompt 已改）、TOOLS.md、README 工具表、MCP instructions、prompts（new_board / prepare_fab）、工具訊息裡提到舊名稱的地方，以及 e2e 測試。
-- **測試：** 新的 `merge_e2e`，涵蓋每個新形式、錯誤參數的拒絕、tools/list 不含舊名稱，以及每個舊名稱仍可用（batch 也可以）。其他測試改用新名稱，`mcp_e2e` 的工具數改為 58。run_all 變成 42 個。
+- **測試：** 新的 `merge_e2e`，涵蓋每個新形式、錯誤參數的拒絕，以及舊名稱不在 tools/list、呼叫時是 unknown tool。其他測試改用新名稱，`mcp_e2e` 的工具數改為 58。run_all 變成 42 個。
 
 ## 盲測 S2 的結果
 

@@ -155,9 +155,6 @@ json MCP_SERVER::handleToolsList() const
 
     for( const TOOL& t : m_tools )
     {
-        if( !t.renamedTo.empty() )
-            continue;   // an old name: still callable, not listed
-
         tools.push_back( { { "name", t.name },
                            { "description", t.description },
                            { "inputSchema", t.inputSchema } } );

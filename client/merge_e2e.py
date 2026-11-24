@@ -1,10 +1,10 @@
-"""The merged tools (beta.13 phase 2) and their old names, headless on pic_programmer.
+"""The merged tools (beta.13 phase 2), headless on pic_programmer.
 
 usage: python3 -I merge_e2e.py --build BUILD --kicad KICAD_SRC --work DIR
 
   list        tools/list has undo, project, export and not the old names (redo, sch_undo, sch_redo,
               get_rules, check_drc, flush_ratsnest, open_board, new_project, export_fab,
-              export_assembly, sch_export_pdf, board_render_3d); tool_help on an old name says the new
+              export_assembly, sch_export_pdf, board_render_3d), and calling one is an unknown tool
   undo        a board move undone and redone with undo {redo}; a schematic edit with
               undo {target: "schematic"} (and redo); a bad target refused
   rules       set_rules {} answers the rules (as get_rules did, no DRC run)
@@ -14,7 +14,6 @@ usage: python3 -I merge_e2e.py --build BUILD --kicad KICAD_SRC --work DIR
   render      board_render {view: "3d"} renders (size sets the width, 4:3); 2d-only arguments
               refused in 3d and 3d-only ones in 2d; a numeric zoom refused in 2d
   project     project {new} makes and opens a project, project {open} goes back; both or neither refused
-  aliases     each old name still works (batch too) and ends "note: X is now Y"
 """
 
 import argparse
@@ -58,10 +57,10 @@ def main():
               "the merged tools are listed")
         listed = [n for n in OLD if n in names]
         check(not listed, f"no old name listed ({len(names)} tools)" + (": " + ", ".join(listed) if listed else ""))
+        gone = [n for n in OLD if "error" not in m.rpc("tools/call", {"name": n, "arguments": {}})]
+        check(not gone, "calling an old name is an unknown tool" + (": " + ", ".join(gone) if gone else ""))
         err, t = m.tool("tool_help", {"name": "check_drc"})
-        check(not err and "use run_drc" in t, "tool_help on an old name names the new tool")
-        err, t = m.tool("tool_help", {"name": "nope"})
-        check(err and "check_drc" not in t and "run_drc" in t, "tool_help's list of tools leaves out the old names")
+        check(err and "no tool check_drc" in t, "tool_help does not know the old names")
 
         print("[undo]")
         err, t = m.tool("move_footprints", {"refs": ["R1"], "dx": 1.0})
@@ -85,8 +84,7 @@ def main():
 
         print("[drc]")
         err, t = m.tool("run_drc", {"refs": ["R1"], "local": True})
-        _, old = m.tool("check_drc", {"refs": ["R1"]})
-        check(not err and first(t) == first(old), "run_drc {refs, local}: the local DRC (as check_drc): " + first(t)[:80])
+        check(not err and first(t).startswith("drc: "), "run_drc {refs, local}: the local DRC: " + first(t)[:80])
         err, t = m.tool("run_drc", {"local": True})
         check(err and "refs" in t, "local without refs refused")
         err, t = m.tool("run_drc", {"refs": ["R1"], "local": True, "types": ["clearance"]})
@@ -117,10 +115,8 @@ def main():
         print("[render]")
         err, t, imgs = m.tool_images("board_render", {"view": "3d", "size": 400, "side": "bottom"})
         dims = png_pixels(imgs[0])[:2] if imgs else None
-        _, old, oimgs = m.tool_images("board_render_3d", {"width": 400, "height": 300, "side": "bottom"})
-        odims = png_pixels(oimgs[0])[:2] if oimgs else None
-        check(not err and imgs and t.startswith("3D bottom") and dims == odims,
-              f"board_render view=3d, size 400: as board_render_3d 400 x 300: {first(t)[:40]} {dims}")
+        check(not err and imgs and t.startswith("3D bottom") and dims and dims[0] <= 400 and abs(dims[0] / dims[1] - 4 / 3) < 0.05,
+              f"board_render view=3d, size 400: about 4:3, at most 400 wide: {first(t)[:40]} {dims}")
         err, t, imgs = m.tool_images("board_render", {"view": "3d", "size": 320, "back": True})
         check(not err and t.startswith("3D bottom"), "back=true in 3d is the bottom side")
         err, t = m.tool("board_render", {"view": "3d", "refs": ["R1"]})
@@ -144,17 +140,6 @@ def main():
         err, t = m.tool("project", {"open": pcb, "new": {"path": one}})
         check(err, "both open and new refused")
 
-        print("[aliases]")
-        for name, args in (("get_rules", {}), ("check_drc", {"refs": ["R1"]}), ("flush_ratsnest", {}),
-                           ("open_board", {"path": pcb, "discard": True}), ("export_assembly", {"dir": fab}),
-                           ("sch_export_pdf", {"path": sch_pdf})):
-            err, t = m.tool(name, args)
-            check(not err and re.search(r"note: " + name + r" is now \S", t), f"{name} still works and names the new form")
-        err, t = m.tool("move_footprints", {"refs": ["R1"], "dx": 1.0})
-        err, t = m.tool("batch", {"steps": [{"tool": "check_drc", "args": {"refs": ["R1"]}}, {"tool": "redo"}]})
-        check(not err or "nothing to redo" in t, "batch takes old names: " + t.strip().splitlines()[0][:80])
-        err, t = m.tool("sch_undo", {})
-        check("note: sch_undo is now undo {target: \"schematic\"}" in t, "sch_undo still works and names the new form")
     finally:
         m.close()
         srv.stop()

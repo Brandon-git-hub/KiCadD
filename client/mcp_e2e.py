@@ -136,7 +136,7 @@ async def resources_prompts(session, init):
     check(one.startswith("## Review a design") and one in whole and len(one) < len(whole) / 3,
           f"one section alone ({len(one)} chars)")
     tools_md = (await session.read_resource("kicadd://tools")).contents[0].text
-    check("## board_render" in tools_md and "## export" in tools_md and "## Old names" in tools_md, "every tool's full description")
+    check("## board_render" in tools_md and "## export" in tools_md and "## Old names" not in tools_md, "every tool's full description")
     tmpl = [t.uri_template for t in (await session.list_resource_templates()).resource_templates]
     check("kicadd://tool/{name}" in tmpl and "kicadd://skill/{section}" in tmpl, "templates: a tool, a section")
     one_tool = (await session.read_resource("kicadd://tool/auto_place")).contents[0].text

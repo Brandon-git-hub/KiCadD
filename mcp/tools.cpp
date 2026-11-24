@@ -3867,7 +3867,7 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
     table->push_back( tools.back() );
 
     // beta.13 phase 2: undo, set_rules, run_drc, board_summary, project, export, board_render
-    // take over the thin tools of their domain; the old names stay one release as aliases
+    // take over the thin tools of their domain (which go)
     MergeTools( tools );
 
     tools.push_back( { "batch",

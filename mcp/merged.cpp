@@ -10,8 +10,7 @@
  *   export_fab / export_assembly / sch_export_pdf -> export {fab, assembly, schematic_pdf}
  *   board_render_3d                            -> board_render {view: "3d"}
  *
- * The old names stay one release as aliases: not in tools/list, but tools/call, batch and
- * tool_help take them, run the old tool as it was and say the new form at the end.
+ * The old tools go: the merged ones run their implementations (no aliases while in beta).
  *
  * This file is part of KiCadD and is licensed GPL-3.0-or-later, like KiCad.
  */
@@ -79,22 +78,17 @@ public:
         return *it;
     }
 
-    /// aOld stays callable under its name, out of tools/list; its answers end with the new form
-    void alias( const std::string& aOld, const std::string& aNewName, const std::string& aNewForm )
+    /// aOld goes once the merged tools are made (at the end: references into the list stay good)
+    void drop( const std::string& aOld )
     {
-        TOOL& t = get( aOld );
-        t.renamedTo = aNewName;
-        t.run = [run = t.run, note = "note: " + aOld + " is now " + aNewForm + "; the old name goes in the next release"](
-                        const json& a )
-        {
-            TOOL_RESULT r = run( a );
+        get( aOld );
+        m_drop.push_back( aOld );
+    }
 
-            while( !r.text.empty() && r.text.back() == '\n' )
-                r.text.pop_back();
-
-            r.text += "\n" + note + "\n";
-            return r;
-        };
+    void finish()
+    {
+        std::erase_if( m_tools, [&]( const TOOL& t )
+                       { return std::find( m_drop.begin(), m_drop.end(), t.name ) != m_drop.end(); } );
     }
 
     /// a tool's properties (each one's schema) for a nested object
@@ -116,7 +110,8 @@ public:
     }
 
 private:
-    std::vector<TOOL>& m_tools;
+    std::vector<TOOL>&       m_tools;
+    std::vector<std::string> m_drop;
 };
 
 
@@ -172,10 +167,10 @@ void MergeTools( std::vector<TOOL>& aTools )
                 return ( redo ? boardRedo : boardUndo )( rest );
             } };
 
-        // the old undo's name is the new tool's: only the other three are aliases
-        m.alias( "redo", "undo", "undo {redo: true}" );
-        m.alias( "sch_undo", "undo", "undo {target: \"schematic\"}" );
-        m.alias( "sch_redo", "undo", "undo {target: \"schematic\", redo: true}" );
+        // the old undo's name is the new tool's: the other three go
+        m.drop( "redo" );
+        m.drop( "sch_undo" );
+        m.drop( "sch_redo" );
         m.put( undo, "" );
     }
 
@@ -188,7 +183,7 @@ void MergeTools( std::vector<TOOL>& aTools )
                           "name pattern; the board's minimum constraints; mm). With arguments: "
                           + set.description + " The answer ends with the rules as they are now.";
         set.run = [get, run = set.run]( const json& a ) { return a.empty() ? get( a ) : run( a ); };
-        m.alias( "get_rules", "set_rules", "set_rules with no arguments" );
+        m.drop( "get_rules" );
     }
 
     // --- run_drc {refs, local: true}: check_drc
@@ -219,7 +214,7 @@ void MergeTools( std::vector<TOOL>& aTools )
             rest.erase( "local" );
             return local( rest );
         };
-        m.alias( "check_drc", "run_drc", "run_drc {refs, local: true}" );
+        m.drop( "check_drc" );
     }
 
     // --- board_summary: with the full unrouted count (flush_ratsnest)
@@ -229,7 +224,7 @@ void MergeTools( std::vector<TOOL>& aTools )
         TOOL& sum = m.get( "board_summary" );
         sum.description += " Then the complete unrouted-connection count: the ratsnest of large nets deferred "
                            "during moves is rebuilt first (not while the editor is busy or auto_place runs: said so).";
-        m.alias( "flush_ratsnest", "board_summary", "board_summary (its last line)" );
+        m.drop( "flush_ratsnest" );
     }
 
     // --- project {open} / {new}
@@ -270,8 +265,8 @@ void MergeTools( std::vector<TOOL>& aTools )
                 return ( isOpen ? open : make )( args );
             } };
 
-        m.alias( "open_board", "project", "project {open: path}" );
-        m.alias( "new_project", "project", "project {new: {path, ...}}" );
+        m.drop( "open_board" );
+        m.drop( "new_project" );
         m.put( project, "open_board" );
     }
 
@@ -336,9 +331,9 @@ void MergeTools( std::vector<TOOL>& aTools )
                 return { out, failed };
             } };
 
-        m.alias( "export_fab", "export", "export {fab: {...}}" );
-        m.alias( "export_assembly", "export", "export {assembly: {...}}" );
-        m.alias( "sch_export_pdf", "export", "export {schematic_pdf: {...}}" );
+        m.drop( "export_fab" );
+        m.drop( "export_assembly" );
+        m.drop( "sch_export_pdf" );
         m.put( exp, "export_fab" );
     }
 
@@ -415,8 +410,10 @@ void MergeTools( std::vector<TOOL>& aTools )
             return solid( args );
         };
 
-        m.alias( "board_render_3d", "board_render", "board_render {view: \"3d\"} (size for width; height is 3/4 of it)" );
+        m.drop( "board_render_3d" );
     }
+
+    m.finish();
 }
 
 } // namespace kicadd::mcp

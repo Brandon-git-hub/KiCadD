@@ -956,20 +956,3 @@ A tool's full description: examples, defaults, formulas, limits. Use when a shor
 Arguments:
 
 - `name` (string): a tool's name
-
-## Old names
-
-Still accepted for one release (not in tools/list); the answer ends with the new form.
-
-- `get_rules` → `set_rules`
-- `redo` → `undo`
-- `check_drc` → `run_drc`
-- `flush_ratsnest` → `board_summary`
-- `board_render_3d` → `board_render`
-- `export_assembly` → `export`
-- `export_fab` → `export`
-- `open_board` → `project`
-- `sch_export_pdf` → `export`
-- `sch_undo` → `undo`
-- `sch_redo` → `undo`
-- `new_project` → `project`
