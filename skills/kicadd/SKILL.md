@@ -287,6 +287,16 @@ op-amp's GBW when missing), and parts without a model are listed as left out, th
 - An LDO's PSRR has one number in the data (usually at 100 Hz - 1 kHz). Over frequency it is
   assumed: flat to `psrr_f` (loop_bw / 10), then 20 dB/dec worse to `psrr_hf` (20 dB). For ripple
   from a switcher (100 kHz - 2 MHz), read the datasheet's PSRR curve and set those two.
+- `model check:` lines (after op / tran / dc) flag a result physics does not allow: a
+  regulator's output over its input or stuck at Vin - dropout, current backwards through a pass
+  element / an off MOSFET / a diode, an op-amp past its rails or driving unpowered, a source
+  absorbing current, a source feeding only regulators delivering far more than they are rated
+  for. Each gives its numbers and fixed limit. It means "this may be the model, not the
+  circuit": check the stimulus you gave (a source holding a regulator's output, two sources on
+  one net) and the part's data before you report it as a design finding.
+- `not modelled:` lists, per model kind, what the built-in model leaves out (thermal shutdown,
+  saturation, temperature ...); `tool_help simulate` says what each does to the result and which
+  `models` key fills it in. Mention the ones that matter for your question when you report.
 
 ## PDN impedance (pdn)
 
