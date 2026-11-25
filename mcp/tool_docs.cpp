@@ -209,11 +209,7 @@ void ApplyBriefs( std::vector<TOOL>& aTools )
 
 TOOL ToolHelpTool( std::shared_ptr<std::vector<TOOL>> aTable )
 {
-    json schema = { { "type", "object" },
-                    { "properties", { { "name", { { "type", "string" }, { "description", "a tool's name" } } } } },
-                    { "required", { "name" } } };
-
-    return { "tool_help", "", schema,
+    return { "tool_help", "", json::object(),
              [aTable]( const json& a ) -> TOOL_RESULT
              {
                  const std::string name = a.value( "name", std::string() );
@@ -222,16 +218,9 @@ TOOL ToolHelpTool( std::shared_ptr<std::vector<TOOL>> aTable )
                  {
                      if( t.name == name )
                      {
-                         std::string args;
-
-                         if( t.inputSchema.contains( "properties" ) )
-                         {
-                             for( auto& [k, v] : t.inputSchema["properties"].items() )
-                                 args += ( args.empty() ? "" : ", " ) + k;
-                         }
-
-                         return { name + ": " + ( t.details.empty() ? t.description : t.details ) + "\nArguments: "
-                                  + ( args.empty() ? "none" : args ) + "\n" };
+                         const std::string args = params::Docs( t.params );
+                         return { name + ": " + ( t.details.empty() ? t.description : t.details ) + "\nArguments:"
+                                  + ( args.empty() ? std::string( " none\n" ) : "\n" + args ) };
                      }
                  }
 
@@ -241,7 +230,8 @@ TOOL ToolHelpTool( std::shared_ptr<std::vector<TOOL>> aTable )
                      names += ( names.empty() ? "" : ", " ) + t.name;
 
                  return { "tool_help: no tool " + name + "; the tools: " + names, true };
-             } };
+             }, "", std::vector<params::PARAM>{
+                   params::String( "name", "a tool's name" ).Required() }};
 }
 
 
@@ -273,19 +263,8 @@ std::string ToolDocsMarkdown( const std::vector<TOOL>& aTools )
             out += "\n" + d + "\n";
         }
 
-        if( t.inputSchema.contains( "properties" ) && !t.inputSchema["properties"].empty() )
-        {
-            std::string args;
-
-            for( auto& [k, v] : t.inputSchema["properties"].items() )
-            {
-                std::string type = v.contains( "type" ) ? ( v["type"].is_string() ? v["type"].get<std::string>() : v["type"].dump() ) : "";
-                args += "- `" + k + "`" + ( type.empty() ? "" : " (" + type + ")" )
-                        + ( v.contains( "description" ) ? ": " + v["description"].get<std::string>() : "" ) + "\n";
-            }
-
-            out += "\nArguments:\n\n" + args;
-        }
+        if( !t.params.empty() )
+            out += "\nArguments:\n\n" + params::Docs( t.params );
     }
 
     return out;

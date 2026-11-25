@@ -29,7 +29,7 @@ namespace kicadd::mcp
 
 /// the simulate tool's description and input schema, and its run
 std::string    SimulateDescription();
-nlohmann::json SimulateSchema();
+std::vector<params::PARAM> SimulateParams();   ///< its arguments (params.h)
 TOOL_RESULT    Simulate( IPC_CLIENT& aIpc, const nlohmann::json& aArgs );
 
 namespace sim

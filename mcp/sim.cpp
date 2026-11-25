@@ -472,15 +472,11 @@ struct PART
     double      vmin = 0;                                  // a polarised one: its lowest + to -
     bool        tolAssumed = false;
 
-    mutable std::set<std::string> read;   // the models[ref] keys its model looked at
-
     double ilim = 0;   // a regulator's current limit as modelled (0: none)
 };
 
 double param( const PART& aP, const std::string& aId, double aDefault = 0 )
 {
-    aP.read.insert( aId );
-
     if( aP.over.contains( aId ) )
     {
         double v = 0;
@@ -502,7 +498,6 @@ double param( const PART& aP, const std::string& aId, double aDefault = 0 )
 
 bool hasParam( const PART& aP, const std::string& aId )
 {
-    aP.read.insert( aId );
     return aP.over.contains( aId ) || ( aP.hit && aP.hit->values().count( aId ) );
 }
 
@@ -637,9 +632,10 @@ struct UNMODELLED
 /// reads are registered here too (2b)
 struct MODEL_DEF
 {
-    const char*             kind;
-    const char*             title;
-    std::vector<UNMODELLED> unmodelled;
+    const char*              kind;
+    const char*              title;
+    std::vector<UNMODELLED>  unmodelled;
+    std::vector<std::string> keys;   ///< the models keys this model reads
 };
 
 const std::vector<MODEL_DEF>& modelDefs()
@@ -647,46 +643,46 @@ const std::vector<MODEL_DEF>& modelDefs()
     static const std::vector<MODEL_DEF> defs = {
         { "R", "resistor",
           { { "tempco", "the value is the same at any temperature", "" },
-            { "parasitic L / C", "flat to any frequency", "" } } },
+            { "parasitic L / C", "flat to any frequency", "" } }, { "r", "tol" } },
         { "C", "capacitor",
           { { "temperature", "C, ESR and the DC bias loss at 25 °C", "" },
             { "ageing", "class 2 MLCCs lose C over time (a few % per decade of hours)", "" },
             { "bias in tran / ac", "C_eff is set once from the op (or the window's average) and stays fixed while the voltage moves", "dc_bias" },
             { "ESR vs frequency", "one ESR at every frequency", "esr" },
-            { "leakage, reverse bias", "a polarised capacitor is a capacitor either way round (reverse bias is said)", "" } } },
+            { "leakage, reverse bias", "a polarised capacitor is a capacitor either way round (reverse bias is said)", "" } }, { "c", "esr", "esl", "dc_bias", "tol" } },
         { "L", "inductor",
           { { "saturation", "the inductance holds at any current (Isat is said with the peak)", "" },
             { "core loss", "only the DCR dissipates", "dcr" },
-            { "temperature", "DCR at 25 °C", "" } } },
+            { "temperature", "DCR at 25 °C", "" } }, { "l", "dcr", "srf", "i_sat", "i_rated", "tol" } },
         { "FB", "ferrite bead",
           { { "impedance curve", "a resistor at its DCR: no filtering at any frequency", "kind l + l, dcr" },
-            { "DC saturation", "", "" } } },
+            { "DC saturation", "", "" } }, { "l", "dcr", "srf", "tol" } },
         { "D", "diode",
           { { "junction capacitance", "switches instantly apart from trr", "" },
             { "reverse recovery shape", "trr (when given) as a transit time only", "trr" },
             { "reverse leakage", "no Ir: reverse current is the model's IS only", "" },
-            { "temperature", "Vf at 25 °C", "" } } },
+            { "temperature", "Vf at 25 °C", "" } }, { "vf", "if", "rs", "trr" } },
         { "Z", "Zener",
           { { "knee shape", "breakdown is exponential at Izt, then Zzt per amp", "izt, zzt" },
             { "junction capacitance", "", "" },
-            { "temperature", "Vz at 25 °C (its tempco not applied)", "" } } },
+            { "temperature", "Vz at 25 °C (its tempco not applied)", "" } }, { "vf", "if", "rs", "trr", "vz", "zzt", "izt" } },
         { "M", "MOSFET",
           { { "level 1", "square law; no subthreshold conduction, Rds(on) set at one Vgs", "rds_on, vgs_th" },
             { "temperature", "Rds(on) at 25 °C (it rises about 1.5-2 x hot)", "" },
             { "avalanche", "no breakdown at Vds(max)", "" },
-            { "capacitance vs voltage", "Ciss / Coss / Crss fixed", "" } } },
+            { "capacitance vs voltage", "Ciss / Coss / Crss fixed", "" } }, { "vgs_th", "rds_on", "ciss", "coss", "crss" } },
         { "LDO", "LDO",
           { { "thermal shutdown", "an overload stays at the current limit indefinitely", "" },
             { "output discharge", "off, the output decays through the load only", "" },
             { "reverse current", "output above input: leakage only (a part without reverse protection conducts through its body diode)", "" },
             { "dropout vs load", "one dropout at every current", "dropout" },
-            { "noise", "", "" } } },
+            { "noise", "", "" } }, { "vout", "vref", "dropout", "iq", "iout", "psrr", "psrr_f", "psrr_hf", "loop_bw", "rout", "ilim", "soft_start", "uvlo" } },
         { "OPAMP", "op-amp",
           { { "input common-mode range", "the inputs work from rail to rail", "" },
             { "output current limit", "25 Ω output resistance only", "" },
             { "phase reversal", "", "" },
             { "second pole", "one pole: no phase margin, no ringing from it", "gbw" },
-            { "CMRR / PSRR, noise", "", "" } } },
+            { "CMRR / PSRR, noise", "", "" } }, { "gbw", "slew", "vos", "ib", "iq", "iout", "rr_out", "input_clamp" } },
     };
 
     return defs;
@@ -824,11 +820,8 @@ void passiveValues( PART& aP, std::string& aNote )
     const kb::LcscHit*    h = aP.hit;
     auto                  over = [&]( const char* k, double& aOut )
     {
-        aP.read.insert( k );
         return aP.over.contains( k ) && jsonSI( aP.over[k], aOut );
     };
-
-    aP.read.insert( "tol" );
 
     if( h && h->tolerance() > 0 )
         aP.tol = h->tolerance() / 100;
@@ -2093,31 +2086,57 @@ std::string SimulateDescription()
 }
 
 
-json SimulateSchema()
+std::vector<params::PARAM> SimulateParams()
 {
-    json strArr = { { "type", "array" }, { "items", { { "type", "string" } } } };
-    json anyMap = { { "type", "object" } };
+    using namespace params;
 
-    return { { "type", "object" },
-             { "properties",
-               { { "refs", strArr },
-                 { "sheet", { { "type", "string" } } },
-                 { "around", strArr },
-                 { "hops", { { "type", "integer" } } },
-                 { "sources", anyMap },
-                 { "loads", anyMap },
-                 { "analysis", { { "type", "string" }, { "enum", { "op", "tran", "ac", "dc" } } } },
-                 { "tran", { { "type", "object" }, { "description", "{stop: \"2m\", step?: \"1u\", window?: \"0.4m\"}" } } },
-                 { "ac", { { "type", "object" }, { "description", "{from: \"10\", to: \"10Meg\", points?: 20}" } } },
-                 { "dc", { { "type", "object" }, { "description", "{source: \"VIN\", from: 0, to: 5, step: \"10m\"}" } } },
-                 { "plot", { { "type", "boolean" } } },
-                 { "probes", strArr },
-                 { "settle_pct", { { "type", "number" } } },
-                 { "corners", { { "type", "boolean" } } },
-                 { "dc_bias", { { "type", "boolean" } } },
-                 { "models", anyMap },
-                 { "netlist", { { "type", "boolean" } } },
-                 { "timeout_s", { { "type", "integer" } } } } } };
+    // models {ref: {key: value}}: every key some built-in model reads (modelDefs), and the structural ones
+    static const std::map<std::string, std::string> unitOf = {
+        { "c", "F" }, { "esr", "Ω" }, { "esl", "H" }, { "r", "Ω" }, { "l", "H" }, { "dcr", "Ω" }, { "srf", "Hz" }, { "i_sat", "A" },
+        { "i_rated", "A" }, { "vf", "V" }, { "if", "A" }, { "rs", "Ω" }, { "trr", "s" }, { "vz", "V" }, { "zzt", "Ω" }, { "izt", "A" },
+        { "vgs_th", "V" }, { "rds_on", "Ω" }, { "ciss", "F" }, { "coss", "F" }, { "crss", "F" }, { "vout", "V" }, { "vref", "V" },
+        { "dropout", "V" }, { "iq", "A" }, { "iout", "A" }, { "psrr", "dB" }, { "psrr_f", "Hz" }, { "psrr_hf", "dB" }, { "loop_bw", "Hz" },
+        { "rout", "Ω" }, { "ilim", "A" }, { "soft_start", "s" }, { "uvlo", "V" }, { "gbw", "Hz" }, { "slew", "V/µs" }, { "vos", "V" },
+        { "ib", "A" }, { "rr_out", "1 / 0" }, { "input_clamp", "1 / 0" }
+    };
+    std::vector<PARAM> keys = { Boolean( "exclude", "leave the part out" ),
+                                String( "kind", "a built-in model: ldo, opamp, r, c, l, d, zener, mosfet, bead" ).Check( []( json& v )
+                                {
+                                    static const std::set<std::string> ok = { "r", "c", "l", "d", "zener", "z", "mosfet", "m", "bead", "fb", "ldo", "opamp" };
+                                    std::string k = v.get<std::string>();
+                                    std::transform( k.begin(), k.end(), k.begin(), ::tolower );
+                                    return ok.count( k ) ? std::string() : std::string( "r, c, l, d, zener, mosfet, bead, ldo or opamp" );
+                                } ),
+                                String( "subckt", "the subckt's name (with lib, pins)" ), String( "lib", ".lib / .cir, relative to the project" ),
+                                Array( "pins", Any( "", { "string", "integer" } ), "the subckt's pin order: numbers or names" ),
+                                Boolean( "dc_bias", "MLCC DC bias (default true)" ), Number( "tol", "tolerance", "%" ).Range( 0, 100 ) };
+    std::set<std::string> seen = { "dc_bias", "tol" };
+
+    for( const MODEL_DEF& d : modelDefs() )
+    {
+        for( const std::string& k : d.keys )
+        {
+            if( seen.insert( k ).second )
+                keys.push_back( Si( k, "", unitOf.count( k ) ? unitOf.at( k ) : "" ) );
+        }
+    }
+
+    auto source = Any( "", {} ).Check( []( json& v )
+    {
+        return v.is_null() || v.is_number() || v.is_string() ? std::string() : std::string( "a number, a SPICE source string, or null" );
+    } );
+
+    return { Strings( "refs" ), String( "sheet" ), Strings( "around" ), Integer( "hops" ).Range( 1, 20 ).Default( 1 ),
+             Map( "sources", source ), Map( "loads", source ), Enum( "analysis", { "op", "tran", "ac", "dc" } ),
+             Object( "tran", { Si( "stop", "", "s" ).Positive().Required(), Si( "step", "", "s" ).Positive(), Si( "window", "", "s" ).Positive() },
+                     "{stop: \"2m\", step?: \"1u\", window?: \"0.4m\"}" ).Flat().Shorthand( "stop" ),
+             Object( "ac", { Si( "from", "", "Hz" ).Positive(), Si( "to", "", "Hz" ).Positive(), Integer( "points" ).Doc( "per decade" ).Range( 1, 200 ).Default( 20 ) },
+                     "{from: \"10\", to: \"10Meg\", points?: 20}" ).Flat(),
+             Object( "dc", { String( "source" ).Required(), Si( "from" ).Required(), Si( "to" ).Required(), Si( "step" ).Positive() },
+                     "{source: \"VIN\", from: 0, to: 5, step: \"10m\"}" ).Flat(),
+             Boolean( "plot" ), Strings( "probes" ), Number( "settle_pct" ).Range( 0.01, 50 ).Default( 2 ), Boolean( "corners" ),
+             Boolean( "dc_bias" ), Map( "models", Object( "", keys ).Flat() ), Boolean( "netlist" ),
+             Integer( "timeout_s" ).Range( 1, 600 ).Default( 60 ) };
 }
 
 
@@ -2351,11 +2370,14 @@ TOOL_RESULT Simulate( IPC_CLIENT& aIpc, const json& a )
     {
         std::string unused;
 
+        // (the keys are known to some model: params checked that; this part's model may not read them)
+        const MODEL_DEF* def = modelDef( p.kind );
+
         for( const auto& [key, v] : p.over.items() )
         {
             static const std::set<std::string> structural = { "exclude", "subckt", "lib", "pins", "kind" };
 
-            if( !structural.count( key ) && !p.read.count( key ) )
+            if( !structural.count( key ) && !( def && std::count( def->keys.begin(), def->keys.end(), key ) ) )
                 unused += ( unused.empty() ? "" : ", " ) + key;
         }
 

@@ -125,7 +125,7 @@ def main():
         check(any("2 signal via(s) change" in ln for ln in rv), "plane_nets globs: the D0 pair only")
         check(any("no net matches NOPE*" in ln for ln in pl), "a glob that matches nothing is said")
         err, t = m.tool("audit", {"return_via": {"*": "near"}})
-        check(err and "mm, a number" in t, "a limit that is not a number is refused")
+        check(err and 'return_via.*: a number in mm; got "near"' in t, "a limit that is not a number is refused")
     finally:
         m.close()
         srv.stop()

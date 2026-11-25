@@ -55,16 +55,6 @@ std::string num( double aMm )
     return s == "-0" ? "0" : s;
 }
 
-json obj( json aProps, std::vector<std::string> aRequired = {} )
-{
-    json s = { { "type", "object" }, { "properties", std::move( aProps ) } };
-
-    if( !aRequired.empty() )
-        s["required"] = aRequired;
-
-    return s;
-}
-
 std::string str( const json& a, const char* k )
 {
     auto it = a.find( k );
@@ -959,14 +949,11 @@ TOOL_RESULT lcscMatch( IPC_CLIENT& aIpc, const json& aArgs )
 
 void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
 {
-    const json pinList = { { "type", "array" }, { "items", { { "type", "string" } } },
-                           { "description", "Pins as \"REF.PIN\", e.g. [\"R1.2\", \"U1.VDD\"]" } };
 
     aTools.push_back( { "sch_summary",
             "The open schematic: its hierarchical sheets (with their pins and the nets on them), its "
             "parts (ref, value, symbol, footprint, position, sheet), net count and unconnected pins. "
-            "with_pins lists every pin with its net.",
-            obj( { { "with_pins", { { "type", "boolean" } } } } ),
+            "with_pins lists every pin with its net.", json::object(),
             [&aIpc]( const json& a )
             {
                 ks::GetSchSummary req;
@@ -991,7 +978,8 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                     t += "\n" + symbolLine( s ) + ( req.with_pins() ? pinLines( s ) : "" );
 
                 return TOOL_RESULT{ t, false };
-            } } );
+            }, "", std::vector<params::PARAM>{
+                              params::Boolean( "with_pins" ) }} );
 
     aTools.push_back( { "sch_add_part",
             "Place a symbol on the schematic: an LCSC part (lcsc \"C25804\": fetched from the "
@@ -1003,18 +991,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "or empty is numbered automatically. Without x/y it goes to the next free spot. Returns "
             "its pins (number, name, type, side) to connect with sch_connect. block names the "
             "functional block the part belongs to (\"LDO\", \"MCU\", \"USB\"): auto_place keeps "
-            "each block's parts together on the board.",
-            obj( { { "lib_id", { { "type", "string" } } },
-                   { "lcsc", { { "type", "string" } } },
-                   { "ref", { { "type", "string" } } },
-                   { "value", { { "type", "string" }, { "description", "e.g. 10k, 100nF" } } },
-                   { "footprint", { { "type", "string" }, { "description", "Library:Footprint, overrides the symbol's" } } },
-                   { "x", { { "type", "number" }, { "description", "mm" } } },
-                   { "y", { { "type", "number" }, { "description", "mm, down is +" } } },
-                   { "rotation", { { "type", "integer" }, { "enum", { 0, 90, 180, 270 } } } },
-                   { "unit", { { "type", "integer" }, { "description", "Multi-unit parts: which unit (default 1)" } } },
-                   { "block", { { "type", "string" }, { "description", "functional block, e.g. LDO" } } },
-                   { "sheet", { { "type", "string" }, { "description", "sheet to put it on (name or path; default the root)" } } } } ),
+            "each block's parts together on the board.", json::object(),
             [&aIpc]( const json& a )
             {
                 ks::SchAddPart req;
@@ -1069,11 +1046,21 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                 }
 
                 return TOOL_RESULT{ t, false };
-            } } );
+            }, "", std::vector<params::PARAM>{
+                              params::String( "block", "functional block, e.g. LDO" ),
+                              params::String( "footprint", "Library:Footprint, overrides the symbol's" ),
+                              params::String( "lcsc" ),
+                              params::String( "lib_id" ),
+                              params::String( "ref" ),
+                              params::Integer( "rotation" ).Allowed( { 0, 90, 180, 270 } ),
+                              params::String( "sheet", "sheet to put it on (name or path; default the root)" ),
+                              params::Integer( "unit", "Multi-unit parts: which unit (default 1)" ).Range( 1 ),
+                              params::String( "value", "e.g. 10k, 100nF" ),
+                              params::Number( "x", "mm" ).Unit( "mm" ),
+                              params::Number( "y", "mm, down is +" ).Unit( "mm" ) }} );
 
     aTools.push_back( { "sch_part",
-            "One part of the schematic with all its pins and their nets.",
-            obj( { { "ref", { { "type", "string" } } } }, { "ref" } ),
+            "One part of the schematic with all its pins and their nets.", json::object(),
             [&aIpc]( const json& a )
             {
                 ks::SchGetPart req;
@@ -1085,7 +1072,8 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                     return fail( err );
 
                 return TOOL_RESULT{ symbolLine( r.symbol() ) + pinLines( r.symbol() ), false };
-            } } );
+            }, "", std::vector<params::PARAM>{
+                              params::String( "ref" ).Required() }} );
 
     aTools.push_back( { "sch_connect",
             "Connect pins to nets, as {\"nets\": {\"GND\": [\"R1.2\", \"C1.2\"], \"VCC\": [\"U1.VDD\"]}}. "
@@ -1100,18 +1088,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "e.g. {\"+5V\": [\"Power.VOUT\", \"U2.3\"]}. global uses global labels instead (every "
             "sheet sees the net by name). Nets in power get a power symbol instead of a label (GND, "
             "+3V3, VCC: global on every sheet, the usual way for supplies; ground-like names get a "
-            "ground symbol).",
-            obj( { { "nets", { { "type", "object" },
-                               { "additionalProperties", pinList },
-                               { "description", "net name -> pins" } } },
-                   { "global", { { "type", "boolean" } } },
-                   { "partial", { { "type", "boolean" }, { "description", "connect what fits, list the pins at fault (default: all or none)" } } },
-                   { "ports", { { "type", "array" }, { "items", { { "type", "string" } } },
-                                { "description", "nets that are ports of their sheet: \"VOUT\" or \"VOUT:output\" "
-                                                 "(input, output, bidirectional, tri_state, passive)" } } },
-                   { "power", { { "type", "array" }, { "items", { { "type", "string" } } },
-                                { "description", "nets connected with a power symbol, e.g. [\"GND\", \"+3V3\"]" } } } },
-                 { "nets" } ),
+            "ground symbol).", json::object(),
             [&aIpc]( const json& a )
             {
                 ks::SchConnect req;
@@ -1157,13 +1134,17 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                     return fail( err );
 
                 return connectResult( r, "pin(s) connected" );
-            } } );
+            }, "", std::vector<params::PARAM>{
+                              params::Boolean( "global" ),
+                              params::Map( "nets", params::Strings( "", "Pins as \"REF.PIN\", e.g. [\"R1.2\", \"U1.VDD\"]" ), "net name -> pins" ).ItemSchema().Required(),
+                              params::Boolean( "partial", "connect what fits, list the pins at fault (default: all or none)" ),
+                              params::Strings( "ports", "nets that are ports of their sheet: \"VOUT\" or \"VOUT:output\" (input, output, bidirectional, tri_state, passive)" ),
+                              params::Strings( "power", "nets connected with a power symbol, e.g. [\"GND\", \"+3V3\"]" ) }} );
 
     aTools.push_back( { "sch_disconnect",
             "Take pins off their nets: removes the wire from the pin (through its bends, up to where it "
             "meets another pin, a junction, a label or another wire) with a label left on nothing, "
-            "or the no-connect flag.",
-            obj( { { "pins", pinList } }, { "pins" } ),
+            "or the no-connect flag.", json::object(),
             [&aIpc]( const json& a )
             {
                 ks::SchDisconnect req;
@@ -1183,12 +1164,12 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                     return fail( err );
 
                 return connectResult( r, "pin(s) disconnected" );
-            } } );
+            }, "", std::vector<params::PARAM>{
+                              params::Strings( "pins", "Pins as \"REF.PIN\", e.g. [\"R1.2\", \"U1.VDD\"]" ).Required() }} );
 
     aTools.push_back( { "sch_netlist",
             "Nets of the schematic with their pins (\"REF.PIN\"), the pins on no net (unconnected) and "
-            "the ones marked no-connect (X) on purpose. net filters to one net.",
-            obj( { { "net", { { "type", "string" } } } } ),
+            "the ones marked no-connect (X) on purpose. net filters to one net.", json::object(),
             [&aIpc]( const json& a )
             {
                 ks::GetSchNetlist req;
@@ -1226,21 +1207,14 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                 }
 
                 return TOOL_RESULT{ t, false };
-            } } );
+            }, "", std::vector<params::PARAM>{
+                              params::String( "net" ) }} );
 
     aTools.push_back( { "sch_add_sheet",
             "Add a hierarchical sheet (a new .kicad_sch file) on a sheet (default the root). Then put "
             "parts on it with sch_add_part sheet, connect them there with sch_connect, and make the "
             "nets that leave the sheet ports (sch_connect ports): they become sheet pins, wired on "
-            "the parent as SHEET.PIN.",
-            obj( { { "name", { { "type", "string" }, { "description", "e.g. Power; unique among its siblings" } } },
-                   { "file", { { "type", "string" }, { "description", "default <name>.kicad_sch" } } },
-                   { "parent", { { "type", "string" }, { "description", "sheet name or path (default the root)" } } },
-                   { "x", { { "type", "number" }, { "description", "top left, mm (default: a free spot)" } } },
-                   { "y", { { "type", "number" } } },
-                   { "width", { { "type", "number" }, { "description", "mm, default 50.8" } } },
-                   { "height", { { "type", "number" }, { "description", "mm, default 25.4; grows with its pins" } } } },
-                 { "name" } ),
+            "the parent as SHEET.PIN.", json::object(),
             [&aIpc]( const json& a )
             {
                 ks::SchAddSheet req;
@@ -1272,20 +1246,21 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                     t += "\n  " + r.note();
 
                 return TOOL_RESULT{ t, false };
-            } } );
+            }, "", std::vector<params::PARAM>{
+                              params::String( "file", "default <name>.kicad_sch" ),
+                              params::Number( "height", "mm, default 25.4; grows with its pins" ).Unit( "mm" ).Positive(),
+                              params::String( "name", "e.g. Power; unique among its siblings" ).Required(),
+                              params::String( "parent", "sheet name or path (default the root)" ),
+                              params::Number( "width", "mm, default 50.8" ).Unit( "mm" ).Positive(),
+                              params::Number( "x", "top left, mm (default: a free spot)" ).Unit( "mm" ),
+                              params::Number( "y" ).Unit( "mm" ) }} );
 
     aTools.push_back( { "sch_delete",
             "Delete from the schematic: refs (parts, with their wire stubs and labels; a sheet's "
             "name deletes the sheet with everything on it, its file stays on disk), wires (a point "
             "[x, y] on a wire deletes that wire: its segments through bends, up to where it meets a "
             "pin, junction, label or another wire; labels and junctions left on nothing go with it), "
-            "dangling=true (every wire with an end on nothing). sheet: for wires / dangling.",
-            obj( { { "refs", { { "type", "array" }, { "items", { { "type", "string" } } } } },
-                   { "wires", { { "type", "array" },
-                                { "items", { { "type", "array" }, { "items", { { "type", "number" } } } } } } },
-                   { "dangling", { { "type", "boolean" } } },
-                   { "sheet", { { "type", "string" } } } },
-                 {} ),
+            "dangling=true (every wire with an end on nothing). sheet: for wires / dangling.", json::object(),
             [&aIpc]( const json& a )
             {
                 ks::SchDeleteParts req;
@@ -1321,7 +1296,11 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                 // "delete 1 part(s), 2 wire(s)" -> "deleted 1 part(s), 2 wire(s)"
                 const std::string& label = r.history_label();
                 return connectResult( r, label.rfind( "delete ", 0 ) == 0 ? "deleted: " + label.substr( 7 ) : "deleted" );
-            } } );
+            }, "", std::vector<params::PARAM>{
+                              params::Boolean( "dangling" ),
+                              params::Strings( "refs" ),
+                              params::String( "sheet" ),
+                              params::Array( "wires", params::Array( "", params::Number( "" ) ) ) }} );
 
     aTools.push_back( { "sync_pcb",
             "Update PCB from Schematic: brings the board in line with the schematic (the open "
@@ -1330,12 +1309,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "New footprints land outside the board outline until placed (auto_place). dry_run "
             "reports without changing anything; delete_extra removes footprints the schematic no "
             "longer has. A reference already on the board but not linked to its symbol (placed "
-            "by hand) is warned about: the sync would add it a second time. One undoable edit.",
-            obj( { { "dry_run", { { "type", "boolean" } } },
-                   { "delete_extra", { { "type", "boolean" } } },
-                   { "detail", { { "type", "boolean" }, { "description", "list every change line (default: the first 25)" } } },
-                   { "update_footprints", { { "type", "boolean" },
-                                            { "description", "Replace footprints whose library link changed" } } } } ),
+            "by hand) is warned about: the sync would add it a second time. One undoable edit.", json::object(),
             [&aIpc]( const json& a )
             {
                 std::string err;
@@ -1517,7 +1491,11 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
 
                 // a dry run's errors are what it found, not a failure of the call
                 return TOOL_RESULT{ t, r.errors() > 0 && !req.dry_run() };
-            } } );
+            }, "", std::vector<params::PARAM>{
+                              params::Boolean( "delete_extra" ),
+                              params::Boolean( "detail", "list every change line (default: the first 25)" ),
+                              params::Boolean( "dry_run" ),
+                              params::Boolean( "update_footprints", "Replace footprints whose library link changed" ) }} );
 
     aTools.push_back( { "auto_place",
             "Place parts automatically inside the board outline: each part goes near what it "
@@ -1543,55 +1521,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "When every part is already placed (no overlaps, no rules), a result that is not better "
             "than the current placement is not applied (force applies it anyway). Moving parts "
             "leaves the board's tracks behind and copper zones in their old shape: refill_zones "
-            "before run_drc.",
-            obj( { { "refs", { { "type", "array" }, { "items", { { "type", "string" } } } } },
-                   { "all", { { "type", "boolean" } } },
-                   { "fixed", { { "type", "array" }, { "items", { { "type", "string" } } } } },
-                   { "spacing", { { "type", "number" }, { "description", "courtyard gap, mm (default 0.25)" } } },
-                   { "edge", { { "type", "number" }, { "description", "courtyard to board edge, mm (default 0.5)" } } },
-                   { "rotate", { { "type", "boolean" }, { "description", "try 90/180/270 (default true)" } } },
-                   { "silk_room", { { "type", "boolean" }, { "description", "room for silkscreen (default true)" } } },
-                   { "groups", { { "description", "{\"LDO\": [\"U2\", \"C3\"], ...} blocks to keep together, "
-                                                   "\"sheets\", or false: no blocks" } } },
-                   { "group_weight", { { "type", "number" },
-                                       { "description", "pull to the block's centre, 1 = like a two-pin net (default 3)" } } },
-                   { "back", { { "type", "array" }, { "items", { { "type", "string" } } },
-                               { "description", "parts that may go to the bottom side, e.g. [\"C*\", \"R12\"]" } } },
-                   { "back_decaps", { { "type", "boolean" },
-                                      { "description", "decoupling caps may go to the bottom, under their IC pin" } } },
-                   { "time_limit", { { "type", "number" },
-                                     { "description", "seconds for improving the wire length after every part "
-                                                      "has a legal spot (default 10, -1 no limit); the "
-                                                      "placement is legal either way" } } },
-                   { "force", { { "type", "boolean" },
-                                { "description", "apply the result even when the current placement is better" } } },
-                   { "measure_only", { { "type", "boolean" },
-                                       { "description", "move nothing, report the numbers for the parts as they are" } } },
-                   { "track_room", { { "type", "number" },
-                                     { "description", "mm a pad keeps from existing tracks / vias beyond clearance "
-                                                      "(default one track + clearance; 0 none)" } } },
-                   { "escape_room", { { "type", "number" },
-                                      { "description", "mm kept free past a fine-pitch IC's pads (QFN / QFP / BGA, "
-                                                       "0.65 mm pitch or less) for its escape (default 2 pitches + a "
-                                                       "track; 0 none)" } } },
-                   { "keepout", { { "type", "array" },
-                                  { "description", "areas no part may go: [[x0, y0, x1, y1], ...] or "
-                                                   "[{\"area\": [...], \"side\": \"top\"|\"bottom\"|\"both\"}]" } } },
-                   { "detail", { { "type", "boolean" }, { "description", "list every moved part (default: the first 15)" } } },
-                   { "rules", { { "type", "object" },
-                                { "description",
-                                  "placement rules; refs may be patterns (\"J*\"). edge: {\"J1\": \"left\"} "
-                                  "(left/right/top/bottom/any: the courtyard at that board edge); a connector "
-                                  "(USB, RJ45, DC jack: its courtyard well past its pads on one side) is turned "
-                                  "to open over that edge, the footprint's own \"PCB Edge\" line on the edge "
-                                  "(else its front flush with it); {\"J1\": {\"side\": \"left\", "
-                                  "\"overhang\": 1}} puts its front 1 mm past the edge, \"inside\": true keeps "
-                                  "it inside like any part, \"along\": true its long side along the edge (a pin "
-                                  "header's row parallel to it; inside the board); region: "
-                                  "{\"U1\": [x0, y0, x1, y1]} (mm, the courtyard inside); rotation: "
-                                  "{\"J1\": 90}; near: [{\"refs\": [\"Y1\", \"U1\"], \"max\": 5}] (mm "
-                                  "between the centres of their pads). edge/region/rotation are hard, near is reported when "
-                                  "it can't be met" } } } } ),
+            "before run_drc.", json::object(),
             [&aIpc]( const json& a )
             {
                 kicadd::board::AutoPlace req;
@@ -1994,7 +1924,26 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
 
                 return TOOL_RESULT{ t, r.moved() == 0 && r.unplaced_size() > 0 && !r.kept_current()
                                                && !a.value( "measure_only", false ) };
-            } } );
+            }, "", std::vector<params::PARAM>{
+                              params::Boolean( "all" ),
+                              params::Strings( "back", "parts that may go to the bottom side, e.g. [\"C*\", \"R12\"]" ),
+                              params::Boolean( "back_decaps", "decoupling caps may go to the bottom, under their IC pin" ),
+                              params::Boolean( "detail", "list every moved part (default: the first 15)" ),
+                              params::Number( "edge", "courtyard to board edge, mm (default 0.5)" ).Unit( "mm" ).Range( 0 ),
+                              params::Number( "escape_room", "mm kept free past a fine-pitch IC's pads (QFN / QFP / BGA, 0.65 mm pitch or less) for its escape (default 2 pitches + a track; 0 none)" ).Unit( "mm" ).Range( 0 ),
+                              params::Strings( "fixed" ),
+                              params::Boolean( "force", "apply the result even when the current placement is better" ),
+                              params::Number( "group_weight", "pull to the block's centre, 1 = like a two-pin net (default 3)" ).Range( 0 ),
+                              params::Any( "groups", {}, "{\"LDO\": [\"U2\", \"C3\"], ...} blocks to keep together, \"sheets\", or false: no blocks" ),
+                              params::Array( "keepout", params::Any( "", {} ), "areas no part may go: [[x0, y0, x1, y1], ...] or [{\"area\": [...], \"side\": \"top\"|\"bottom\"|\"both\"}]" ),
+                              params::Boolean( "measure_only", "move nothing, report the numbers for the parts as they are" ),
+                              params::Strings( "refs" ),
+                              params::Boolean( "rotate", "try 90/180/270 (default true)" ),
+                              params::Map( "rules", params::Any( "", {} ), "placement rules; refs may be patterns (\"J*\"). edge: {\"J1\": \"left\"} (left/right/top/bottom/any: the courtyard at that board edge); a connector (USB, RJ45, DC jack: its courtyard well past its pads on one side) is turned to open over that edge, the footprint's own \"PCB Edge\" line on the edge (else its front flush with it); {\"J1\": {\"side\": \"left\", \"overhang\": 1}} puts its front 1 mm past the edge, \"inside\": true keeps it inside like any part, \"along\": true its long side along the edge (a pin header's row parallel to it; inside the board); region: {\"U1\": [x0, y0, x1, y1]} (mm, the courtyard inside); rotation: {\"J1\": 90}; near: [{\"refs\": [\"Y1\", \"U1\"], \"max\": 5}] (mm between the centres of their pads). edge/region/rotation are hard, near is reported when it can't be met" ),
+                              params::Boolean( "silk_room", "room for silkscreen (default true)" ),
+                              params::Number( "spacing", "courtyard gap, mm (default 0.25)" ).Unit( "mm" ).Range( 0 ),
+                              params::Number( "time_limit", "seconds for improving the wire length after every part has a legal spot (default 10, -1 no limit); the placement is legal either way" ).Unit( "s" ).Range( -1 ),
+                              params::Number( "track_room", "mm a pad keeps from existing tracks / vias beyond clearance (default one track + clearance; 0 none)" ).Unit( "mm" ).Range( 0 ) }} );
 
     aTools.push_back( { "sch_move",
             "Move and/or rotate a placed part on the schematic: x/y (mm, the new anchor) or dx/dy, "
@@ -2003,17 +1952,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "ending on its pins are dragged along. unit picks one unit of a multi-unit part (needed "
             "with x/y; dx/dy moves all units). A move that would change any pin's net (a pin, stub "
             "or label landing on another net) is refused and undone, with the per-pin diff, unless "
-            "allow_rewire. Returns the part's pins at their new place.",
-            obj( { { "ref", { { "type", "string" } } },
-                   { "x", { { "type", "number" } } },
-                   { "y", { { "type", "number" } } },
-                   { "dx", { { "type", "number" } } },
-                   { "dy", { { "type", "number" } } },
-                   { "rotation", { { "type", "integer" }, { "enum", { 0, 90, 180, 270 } } } },
-                   { "unit", { { "type", "integer" } } },
-                   { "allow_rewire", { { "type", "boolean" },
-                                       { "description", "do it even if pin nets change (default false)" } } } },
-                 { "ref" } ),
+            "allow_rewire. Returns the part's pins at their new place.", json::object(),
             [&aIpc]( const json& a )
             {
                 ks::SchMove req;
@@ -2051,18 +1990,22 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                     t += "\n  " + r.note();
 
                 return TOOL_RESULT{ t, false };
-            } } );
+            }, "", std::vector<params::PARAM>{
+                              params::Boolean( "allow_rewire", "do it even if pin nets change (default false)" ),
+                              params::Number( "dx" ).Unit( "mm" ),
+                              params::Number( "dy" ).Unit( "mm" ),
+                              params::String( "ref" ).Required(),
+                              params::Integer( "rotation" ).Allowed( { 0, 90, 180, 270 } ),
+                              params::Integer( "unit" ).Range( 1 ),
+                              params::Number( "x" ).Unit( "mm" ),
+                              params::Number( "y" ).Unit( "mm" ) }} );
 
     aTools.push_back( { "sch_wire",
             "Draw a wire through points [[x, y], ...] (mm, snapped to the 1.27 mm grid), one segment "
             "per pair; give corner points for right angles. A point on a pin, label or wire connects "
             "there: junction dots are added where three or more meet and wires it lands on are split. "
             "Use it for readable schematics; sch_connect (stub + label) needs no routing. Returns the "
-            "net the wire is on and its pins.",
-            obj( { { "points", { { "type", "array" },
-                                 { "items", { { "type", "array" }, { "items", { { "type", "number" } } } } } } },
-                   { "sheet", { { "type", "string" } } } },
-                 { "points" } ),
+            "net the wire is on and its pins.", json::object(),
             [&aIpc]( const json& a )
             {
                 ks::SchWire req;
@@ -2099,14 +2042,15 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                     t += "\n  " + r.note();
 
                 return TOOL_RESULT{ t, false };
-            } } );
+            }, "", std::vector<params::PARAM>{
+                              params::Array( "points", params::Array( "", params::Number( "" ) ) ).Required(),
+                              params::String( "sheet" ) }} );
 
     aTools.push_back( { "run_erc",
             "Electrical Rules Check on the schematic as it is now (unsaved edits included): pins of "
             "different drivers on one net, power inputs not driven (a PWR_FLAG or a regulator output "
             "is missing), unconnected pins, labels on one pin only, duplicate references... Errors "
-            "listed, warnings counted (warnings=true lists them too).",
-            obj( { { "warnings", { { "type", "boolean" } } } } ),
+            "listed, warnings counted (warnings=true lists them too).", json::object(),
             [&aIpc]( const json& a )
             {
                 ks::SchRunErc req;
@@ -2176,7 +2120,8 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                     t += "\n  ignored by KiCad's defaults: " + names( r.ignored_default() );
 
                 return TOOL_RESULT{ t, false };
-            } } );
+            }, "", std::vector<params::PARAM>{
+                              params::Boolean( "warnings" ) }} );
 
     aTools.push_back( { "audit",
             "Design review by rules, for you to judge (not a sign-off). Schematic: decoupling (each IC "
@@ -2224,293 +2169,82 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "there; the nets that vary most from their own main Z. Header only by default; rows with "
             "z_limit n or z_nets [globs]. Targets: z_target {glob: ohm} (Z0 of nets), z_diff_target "
             "{glob: ohm} (Zdiff of pairs), z_tolerance (%, default 10), z_off_mm (default 1). "
-            "Run run_erc and run_drc too. sections [\"drc\", \"unrouted\", \"impedance\", ...] gives only those (the header line always, counting only the sections shown; diff_pair brings length along; drc: a full DRC's counts, unrouted: the unrouted connections per net), e.g. while routing.",
-            obj( { { "max_decap_mm", { { "type", "number" } } },
-                   { "currents", { { "type", "object" }, { "description", "net -> A" } } },
-                   { "voltages", { { "type", "object" }, { "description", "net -> V" } } },
-                   { "temp_rise", { { "type", "number" }, { "description", "C over ambient (10)" } } },
-                   { "plane_nets", { { "type", "array" }, { "items", { { "type", "string" } } } } },
-                   { "plane_gap", { { "type", "object" }, { "description", "net glob -> mm" } } },
-                   { "return_via", { { "type", "object" }, { "description", "net glob -> mm" } } },
-                   { "two_sided", { { "type", "array" }, { "items", { { "type", "string" } } } } },
-                   { "bga_return_via_mm", { { "type", "number" } } },
-                   { "plane_limit", { { "type", "integer" } } },
-                   { "pairs_only", { { "type", "boolean" } } },
-                   { "length_nets", { { "type", "array" }, { "items", { { "type", "string" } } } } },
-                   { "skew", { { "type", "object" }, { "description", "net glob -> mm" } } },
-                   { "uncoupled", { { "type", "object" }, { "description", "net glob -> mm" } } },
-                   { "pair_gap", { { "type", "object" }, { "description", "net glob -> mm tolerance" } } },
-                   { "length_match", { { "type", "object" }, { "description", "net glob -> mm" } } },
-                   { "max_length", { { "type", "object" }, { "description", "net glob -> mm" } } },
-                   { "min_length", { { "type", "object" }, { "description", "net glob -> mm" } } },
-                   { "length_limit", { { "type", "integer" } } },
-                   { "ir_nets", { { "type", "array" }, { "items", { { "type", "string" } } } } },
-                   { "ir_source", { { "type", "object" }, { "description", "net glob -> \"U1\" / \"U1.5,U1.6\"" } } },
-                   { "ir_loads", { { "type", "object" }, { "description", "net glob -> \"U5:0.5,U7\" (A per part)" } } },
-                   { "ir_drop", { { "type", "object" }, { "description", "net glob -> mV" } } },
-                   { "via_current", { { "type", "object" }, { "description", "net glob -> A per via" } } },
-                   { "ir_limit", { { "type", "integer" } } },
-                   { "ir_mesh_mm", { { "type", "number" }, { "description", "cell size (default 0.1, coarser on big pours)" } } },
-                   { "xtalk_nets", { { "type", "array" }, { "items", { { "type", "string" } } } } },
-                   { "xtalk_length", { { "type", "object" }, { "description", "net glob -> mm coupled" } } },
-                   { "xtalk_spacing", { { "type", "number" }, { "description", "the gap limit in H (default 3)" } } },
-                   { "xtalk_limit", { { "type", "integer" } } },
-                   { "z_target", { { "type", "object" }, { "description", "net glob -> ohm (Z0)" } } },
-                   { "z_diff_target", { { "type", "object" }, { "description", "diff pair glob -> ohm (Zdiff)" } } },
-                   { "z_tolerance", { { "type", "number" }, { "description", "percent (default 10)" } } },
-                   { "z_off_mm", { { "type", "number" }, { "description", "mm off target allowed (default 1)" } } },
-                   { "z_nets", { { "type", "array" }, { "items", { { "type", "string" } } } } },
-                   { "z_limit", { { "type", "integer" } } },
-                   { "sections", { { "type", "array" }, { "items", { { "type", "string" } } },
-                                   { "description", "only these, e.g. [\"drc\", \"unrouted\", \"impedance\"]" } } } } ),
+            "Run run_erc and run_drc too. sections [\"drc\", \"unrouted\", \"impedance\", ...] gives only those (the header line always, counting only the sections shown; diff_pair brings length along; drc: a full DRC's counts, unrouted: the unrouted connections per net), e.g. while routing.", json::object(),
             [&aIpc]( const json& a )
             {
                 kicadd::board::BoardAudit boardReq;
 
-                for( const char* key : { "currents", "voltages" } )
+                // (the parameter table checked every value: types, units, ranges)
+                auto numbers = [&]( const char* aKey, google::protobuf::Map<std::string, double>* aOut )
                 {
-                    if( !a.contains( key ) )
-                        continue;
+                    const json m = a.value( aKey, json::object() );   // (a copy: items() of a temporary dangles)
 
-                    if( !a[key].is_object() )
-                        return fail( std::string( key ) + " is {\"NET\": number}" );
+                    for( const auto& [k, v] : m.items() )
+                        ( *aOut )[k] = v.get<double>();
+                };
+                auto strings = [&]( const char* aKey, google::protobuf::Map<std::string, std::string>* aOut )
+                {
+                    const json m = a.value( aKey, json::object() );
 
-                    for( const auto& [net, v] : a[key].items() )
-                    {
-                        if( !v.is_number() )
-                            return fail( std::string( key ) + "." + net + ": a number" );
+                    for( const auto& [k, v] : m.items() )
+                        ( *aOut )[k] = v.get<std::string>();
+                };
+                auto globs = [&]( const char* aKey, google::protobuf::RepeatedPtrField<std::string>* aOut )
+                {
+                    const json l = a.value( aKey, json::array() );
 
-                        ( std::string( key ) == "currents" ? *boardReq.mutable_currents()
-                                                           : *boardReq.mutable_voltages() )[net] = v.get<double>();
-                    }
-                }
+                    for( const json& n : l )
+                        *aOut->Add() = n.get<std::string>();
+                };
 
-                if( a.contains( "temp_rise" ) && a["temp_rise"].is_number() )
+                numbers( "currents", boardReq.mutable_currents() );
+                numbers( "voltages", boardReq.mutable_voltages() );
+                numbers( "skew", boardReq.mutable_skew() );
+                numbers( "uncoupled", boardReq.mutable_uncoupled() );
+                numbers( "pair_gap", boardReq.mutable_pair_gap() );
+                numbers( "length_match", boardReq.mutable_length_match() );
+                numbers( "max_length", boardReq.mutable_max_length() );
+                numbers( "min_length", boardReq.mutable_min_length() );
+                numbers( "ir_drop", boardReq.mutable_ir_drop() );
+                numbers( "via_current", boardReq.mutable_via_current() );
+                numbers( "xtalk_length", boardReq.mutable_xtalk_length() );
+                numbers( "z_target", boardReq.mutable_z_target() );
+                numbers( "z_diff_target", boardReq.mutable_z_diff_target() );
+                numbers( "plane_gap", boardReq.mutable_plane_gap() );
+                numbers( "return_via", boardReq.mutable_return_via() );
+                strings( "ir_source", boardReq.mutable_ir_source() );
+                strings( "ir_loads", boardReq.mutable_ir_loads() );
+                globs( "length_nets", boardReq.mutable_length_nets() );
+                globs( "ir_nets", boardReq.mutable_ir_nets() );
+                globs( "xtalk_nets", boardReq.mutable_xtalk_nets() );
+                globs( "z_nets", boardReq.mutable_z_nets() );
+                globs( "plane_nets", boardReq.mutable_plane_nets() );
+                globs( "two_sided", boardReq.mutable_two_sided() );
+
+                if( a.contains( "temp_rise" ) )
                     boardReq.set_temp_rise( a["temp_rise"].get<double>() );
 
-                if( a.contains( "length_nets" ) )
-                {
-                    if( !a["length_nets"].is_array() )
-                        return fail( "length_nets is [\"glob\", ...]" );
-
-                    for( const json& n : a["length_nets"] )
-                    {
-                        if( n.is_string() )
-                            boardReq.add_length_nets( n.get<std::string>() );
-                    }
-                }
-
-                for( const char* key : { "skew", "uncoupled", "pair_gap", "length_match", "max_length", "min_length" } )
-                {
-                    if( !a.contains( key ) )
-                        continue;
-
-                    if( !a[key].is_object() )
-                        return fail( std::string( key ) + " is {\"glob\": mm}" );
-
-                    const std::string k = key;
-                    auto& m = k == "skew"           ? *boardReq.mutable_skew()
-                              : k == "uncoupled"    ? *boardReq.mutable_uncoupled()
-                              : k == "pair_gap"     ? *boardReq.mutable_pair_gap()
-                              : k == "length_match" ? *boardReq.mutable_length_match()
-                              : k == "max_length"   ? *boardReq.mutable_max_length()
-                                                    : *boardReq.mutable_min_length();
-
-                    for( const auto& [glob, v] : a[key].items() )
-                    {
-                        if( !v.is_number() || v.get<double>() < 0 )
-                            return fail( k + "." + glob + ": mm, a number" );
-
-                        m[glob] = v.get<double>();
-                    }
-                }
-
-                if( a.contains( "length_limit" ) && a["length_limit"].is_number_integer() )
-                    boardReq.set_length_limit( a["length_limit"].get<int>() );
-
-                if( a.contains( "ir_nets" ) )
-                {
-                    if( !a["ir_nets"].is_array() )
-                        return fail( "ir_nets is [\"glob\", ...]" );
-
-                    for( const json& n : a["ir_nets"] )
-                    {
-                        if( n.is_string() )
-                            boardReq.add_ir_nets( n.get<std::string>() );
-                    }
-                }
-
-                for( const char* key : { "ir_source", "ir_loads" } )
-                {
-                    if( !a.contains( key ) )
-                        continue;
-
-                    if( !a[key].is_object() )
-                        return fail( std::string( key ) + " is {\"glob\": \"REF.PAD,...\"}" );
-
-                    for( const auto& [glob, v] : a[key].items() )
-                    {
-                        if( !v.is_string() )
-                            return fail( std::string( key ) + "." + glob + ": a string (\"U1.5\", \"U5:0.5,U7\")" );
-
-                        ( std::string( key ) == "ir_source" ? *boardReq.mutable_ir_source()
-                                                            : *boardReq.mutable_ir_loads() )[glob] = v.get<std::string>();
-                    }
-                }
-
-                for( const char* key : { "ir_drop", "via_current" } )
-                {
-                    if( !a.contains( key ) )
-                        continue;
-
-                    if( !a[key].is_object() )
-                        return fail( std::string( key ) + " is {\"glob\": number}" );
-
-                    for( const auto& [glob, v] : a[key].items() )
-                    {
-                        if( !v.is_number() || v.get<double>() < 0 )
-                            return fail( std::string( key ) + "." + glob + ( std::string( key ) == "ir_drop" ? ": mV, a number" : ": A, a number" ) );
-
-                        ( std::string( key ) == "ir_drop" ? *boardReq.mutable_ir_drop()
-                                                          : *boardReq.mutable_via_current() )[glob] = v.get<double>();
-                    }
-                }
-
-                if( a.contains( "ir_limit" ) && a["ir_limit"].is_number_integer() )
-                    boardReq.set_ir_limit( a["ir_limit"].get<int>() );
-
-                if( a.contains( "xtalk_nets" ) )
-                {
-                    if( !a["xtalk_nets"].is_array() )
-                        return fail( "xtalk_nets is [\"glob\", ...]" );
-
-                    for( const json& n : a["xtalk_nets"] )
-                    {
-                        if( n.is_string() )
-                            boardReq.add_xtalk_nets( n.get<std::string>() );
-                    }
-                }
-
-                if( a.contains( "xtalk_length" ) )
-                {
-                    if( !a["xtalk_length"].is_object() )
-                        return fail( "xtalk_length is {\"glob\": mm}" );
-
-                    for( const auto& [glob, v] : a["xtalk_length"].items() )
-                    {
-                        if( !v.is_number() || v.get<double>() < 0 )
-                            return fail( "xtalk_length." + glob + ": mm, a number" );
-
-                        ( *boardReq.mutable_xtalk_length() )[glob] = v.get<double>();
-                    }
-                }
-
                 if( a.contains( "xtalk_spacing" ) )
-                {
-                    if( !a["xtalk_spacing"].is_number() || a["xtalk_spacing"].get<double>() <= 0 )
-                        return fail( "xtalk_spacing: a positive number (in H)" );
-
                     boardReq.set_xtalk_spacing( a["xtalk_spacing"].get<double>() );
-                }
 
-                if( a.contains( "xtalk_limit" ) && a["xtalk_limit"].is_number_integer() )
-                    boardReq.set_xtalk_limit( a["xtalk_limit"].get<int>() );
+                if( a.contains( "z_tolerance" ) )
+                    boardReq.set_z_tolerance( a["z_tolerance"].get<double>() );
 
-                for( const char* key : { "z_target", "z_diff_target" } )
-                {
-                    if( !a.contains( key ) )
-                        continue;
-
-                    if( !a[key].is_object() )
-                        return fail( std::string( key ) + " is {\"glob\": ohm}" );
-
-                    for( const auto& [glob, v] : a[key].items() )
-                    {
-                        if( !v.is_number() || v.get<double>() <= 0 )
-                            return fail( std::string( key ) + "." + glob + ": ohm, a positive number" );
-
-                        auto* m = std::string( key ) == "z_target" ? boardReq.mutable_z_target() : boardReq.mutable_z_diff_target();
-                        ( *m )[glob] = v.get<double>();
-                    }
-                }
-
-                for( const char* key : { "z_tolerance", "z_off_mm" } )
-                {
-                    if( !a.contains( key ) )
-                        continue;
-
-                    if( !a[key].is_number() || a[key].get<double>() <= 0 )
-                        return fail( std::string( key ) + ": a positive number" );
-
-                    if( std::string( key ) == "z_tolerance" )
-                        boardReq.set_z_tolerance( a[key].get<double>() );
-                    else
-                        boardReq.set_z_off_mm( a[key].get<double>() );
-                }
-
-                if( a.contains( "z_nets" ) )
-                {
-                    if( !a["z_nets"].is_array() )
-                        return fail( "z_nets is [\"glob\", ...]" );
-
-                    for( const json& n : a["z_nets"] )
-                        if( n.is_string() )
-                            boardReq.add_z_nets( n.get<std::string>() );
-                }
-
-                if( a.contains( "z_limit" ) && a["z_limit"].is_number_integer() )
-                    boardReq.set_z_limit( a["z_limit"].get<int>() );
+                if( a.contains( "z_off_mm" ) )
+                    boardReq.set_z_off_mm( a["z_off_mm"].get<double>() );
 
                 if( a.contains( "ir_mesh_mm" ) )
-                {
-                    if( !a["ir_mesh_mm"].is_number() || a["ir_mesh_mm"].get<double>() <= 0 )
-                        return fail( "ir_mesh_mm: mm, a positive number" );
-
                     boardReq.set_ir_mesh_mm( a["ir_mesh_mm"].get<double>() );
-                }
 
-                for( const char* key : { "plane_nets", "two_sided" } )
-                {
-                    if( !a.contains( key ) )
-                        continue;
-
-                    if( !a[key].is_array() )
-                        return fail( std::string( key ) + " is [\"glob\", ...]" );
-
-                    for( const json& n : a[key] )
-                    {
-                        if( n.is_string() )
-                            ( std::string( key ) == "plane_nets" ? boardReq.add_plane_nets( n.get<std::string>() )
-                                                                 : boardReq.add_two_sided( n.get<std::string>() ) );
-                    }
-                }
-
-                for( const char* key : { "plane_gap", "return_via" } )
-                {
-                    if( !a.contains( key ) )
-                        continue;
-
-                    if( !a[key].is_object() )
-                        return fail( std::string( key ) + " is {\"glob\": mm}" );
-
-                    for( const auto& [glob, v] : a[key].items() )
-                    {
-                        if( !v.is_number() || v.get<double>() < 0 )
-                            return fail( std::string( key ) + "." + glob + ": mm, a number" );
-
-                        ( std::string( key ) == "plane_gap" ? *boardReq.mutable_plane_gap()
-                                                            : *boardReq.mutable_return_via() )[glob] = v.get<double>();
-                    }
-                }
-
-                if( a.contains( "bga_return_via_mm" ) && a["bga_return_via_mm"].is_number() )
+                if( a.contains( "bga_return_via_mm" ) )
                     boardReq.set_bga_return_via_mm( a["bga_return_via_mm"].get<double>() );
 
-                if( a.contains( "pairs_only" ) && a["pairs_only"].is_boolean() )
-                    boardReq.set_pairs_only( a["pairs_only"].get<bool>() );
-
-                if( a.contains( "plane_limit" ) && a["plane_limit"].is_number_integer() )
-                    boardReq.set_plane_limit( a["plane_limit"].get<int>() );
+                boardReq.set_pairs_only( a.value( "pairs_only", false ) );
+                boardReq.set_length_limit( a.value( "length_limit", 0 ) );
+                boardReq.set_ir_limit( a.value( "ir_limit", 0 ) );
+                boardReq.set_xtalk_limit( a.value( "xtalk_limit", 0 ) );
+                boardReq.set_z_limit( a.value( "z_limit", 0 ) );
+                boardReq.set_plane_limit( a.value( "plane_limit", 0 ) );
 
                 ks::SchAudit           req;
                 ks::SchAuditResponse   r;
@@ -2753,7 +2487,44 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                 }
 
                 return TOOL_RESULT{ t, false };
-            } } );
+            }, "", std::vector<params::PARAM>{
+                              params::Number( "bga_return_via_mm" ).Unit( "mm" ).Range( 0 ),
+                              params::Map( "currents", params::Number( "", "", "A" ).Range( 0 ), "net -> A" ),
+                              params::Map( "ir_drop", params::Number( "", "", "mV" ).Range( 0 ), "net glob -> mV" ),
+                              params::Integer( "ir_limit" ).Range( 0 ),
+                              params::Map( "ir_loads", params::String( "" ), "net glob -> \"U5:0.5,U7\" (A per part)" ),
+                              params::Number( "ir_mesh_mm", "cell size (default 0.1, coarser on big pours)" ).Unit( "mm" ).Positive(),
+                              params::Strings( "ir_nets" ),
+                              params::Map( "ir_source", params::String( "" ), "net glob -> \"U1\" / \"U1.5,U1.6\"" ),
+                              params::Integer( "length_limit" ).Range( 0 ),
+                              params::Map( "length_match", params::Number( "", "", "mm" ).Range( 0 ), "net glob -> mm" ),
+                              params::Strings( "length_nets" ),
+                              params::Number( "max_decap_mm" ).Unit( "mm" ).Positive(),
+                              params::Map( "max_length", params::Number( "", "", "mm" ).Range( 0 ), "net glob -> mm" ),
+                              params::Map( "min_length", params::Number( "", "", "mm" ).Range( 0 ), "net glob -> mm" ),
+                              params::Map( "pair_gap", params::Number( "", "", "mm" ).Range( 0 ), "net glob -> mm tolerance" ),
+                              params::Boolean( "pairs_only" ),
+                              params::Map( "plane_gap", params::Number( "", "", "mm" ).Range( 0 ), "net glob -> mm" ),
+                              params::Integer( "plane_limit" ).Range( 0 ),
+                              params::Strings( "plane_nets" ),
+                              params::Map( "return_via", params::Number( "", "", "mm" ).Range( 0 ), "net glob -> mm" ),
+                              params::Strings( "sections", "only these, e.g. [\"drc\", \"unrouted\", \"impedance\"]" ),
+                              params::Map( "skew", params::Number( "", "", "mm" ).Range( 0 ), "net glob -> mm" ),
+                              params::Number( "temp_rise", "C over ambient (10)" ).Unit( "°C" ).Positive().Default( 10 ),
+                              params::Strings( "two_sided" ),
+                              params::Map( "uncoupled", params::Number( "", "", "mm" ).Range( 0 ), "net glob -> mm" ),
+                              params::Map( "via_current", params::Number( "", "", "A" ).Range( 0 ), "net glob -> A per via" ),
+                              params::Map( "voltages", params::Number( "", "", "V" ), "net -> V" ),
+                              params::Map( "xtalk_length", params::Number( "", "", "mm" ).Range( 0 ), "net glob -> mm coupled" ),
+                              params::Integer( "xtalk_limit" ).Range( 0 ),
+                              params::Strings( "xtalk_nets" ),
+                              params::Number( "xtalk_spacing", "the gap limit in H (default 3)" ).Positive().Default( 3 ),
+                              params::Map( "z_diff_target", params::Number( "", "", "Ω" ).Positive(), "diff pair glob -> ohm (Zdiff)" ),
+                              params::Integer( "z_limit" ).Range( 0 ),
+                              params::Strings( "z_nets" ),
+                              params::Number( "z_off_mm", "mm off target allowed (default 1)" ).Unit( "mm" ).Positive().Default( 1 ),
+                              params::Map( "z_target", params::Number( "", "", "Ω" ).Positive(), "net glob -> ohm (Z0)" ),
+                              params::Number( "z_tolerance", "percent (default 10)" ).Unit( "%" ).Positive().Default( 10 ) }} );
 
     aTools.push_back( { "lib_create_symbol",
             "Make a box symbol from a pin list and save it to the project library \"kicadd\" "
@@ -2762,23 +2533,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "bidirectional / tri_state / passive / power_in / power_out / open_collector / no_connect "
             "(default passive), side left / right / top / bottom (default: inputs and power inputs left, "
             "the rest right; in the order given, top to bottom). Prefer lcsc_fetch / sch_add_part lcsc "
-            "when the part is at LCSC.",
-            obj( { { "name", { { "type", "string" } } },
-                   { "reference", { { "type", "string" }, { "description", "prefix, default U" } } },
-                   { "value", { { "type", "string" } } },
-                   { "footprint", { { "type", "string" } } },
-                   { "datasheet", { { "type", "string" } } },
-                   { "description", { { "type", "string" } } },
-                   { "lcsc", { { "type", "string" } } },
-                   { "pins", { { "type", "array" },
-                               { "items", obj( { { "number", { { "type", "string" } } },
-                                                 { "name", { { "type", "string" } } },
-                                                 { "type", { { "type", "string" } } },
-                                                 { "side", { { "type", "string" } } },
-                                                 { "hidden", { { "type", "boolean" } } } },
-                                               { "number" } ) } } },
-                   { "replace", { { "type", "boolean" } } } },
-                 { "name", "pins" } ),
+            "when the part is at LCSC.", json::object(),
             [&aIpc]( const json& a )
             {
                 ks::SchCreateSymbol req;
@@ -2819,7 +2574,21 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                     t += "\n  " + r.note();
 
                 return TOOL_RESULT{ t, false };
-            } } );
+            }, "", std::vector<params::PARAM>{
+                              params::String( "datasheet" ),
+                              params::String( "description" ),
+                              params::String( "footprint" ),
+                              params::String( "lcsc" ),
+                              params::String( "name" ).Required(),
+                              params::Array( "pins", params::Object( "",
+                                      { params::Boolean( "hidden" ),
+                                      params::String( "name" ),
+                                      params::String( "number" ).Required(),
+                                      params::String( "side" ),
+                                      params::String( "type" ) } ) ).Required(),
+                              params::String( "reference", "prefix, default U" ),
+                              params::Boolean( "replace" ),
+                              params::String( "value" ) }} );
 
     aTools.push_back( { "lib_create_footprint",
             "Make a footprint for a common package from a few numbers, saved to the project library "
@@ -2827,19 +2596,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "prefix R/C/L/LED), sot23 (pins 3/5/6), soic (pins, pitch 1.27, body 3.9 or 7.5), so (pins, "
             "pitch, body, span: TSSOP / MSOP), qfn (pins, pitch, body, ep), qfp (pins, pitch, body, span), "
             "header (pins, rows 1/2, pitch). Pads by IPC-7351-like margins on nominal leads; check them "
-            "against the datasheet's land pattern. Odd shapes: the Footprint Editor.",
-            obj( { { "kind", { { "type", "string" } } },
-                   { "size", { { "type", "string" } } },
-                   { "prefix", { { "type", "string" } } },
-                   { "pins", { { "type", "integer" } } },
-                   { "pitch", { { "type", "number" } } },
-                   { "body", { { "type", "number" } } },
-                   { "span", { { "type", "number" } } },
-                   { "ep", { { "type", "number" } } },
-                   { "rows", { { "type", "integer" } } },
-                   { "name", { { "type", "string" } } },
-                   { "replace", { { "type", "boolean" } } } },
-                 { "kind" } ),
+            "against the datasheet's land pattern. Odd shapes: the Footprint Editor.", json::object(),
             [&aIpc]( const json& a )
             {
                 kicadd::board::FpCreate req;
@@ -2875,14 +2632,24 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                     t += "\n  " + r.note();
 
                 return TOOL_RESULT{ t, false };
-            } } );
+            }, "", std::vector<params::PARAM>{
+                              params::Number( "body" ).Unit( "mm" ).Positive(),
+                              params::Number( "ep" ).Unit( "mm" ).Range( 0 ),
+                              params::String( "kind" ).Required(),
+                              params::String( "name" ),
+                              params::Integer( "pins" ).Range( 1 ),
+                              params::Number( "pitch" ).Unit( "mm" ).Positive(),
+                              params::String( "prefix" ),
+                              params::Boolean( "replace" ),
+                              params::Integer( "rows" ).Range( 1 ),
+                              params::Any( "size", { "string", "number" } ).Doc( "\"0402\" or 402, \"SOD-123\" ..." ),
+                              params::Number( "span" ).Unit( "mm" ).Positive() }} );
 
     aTools.push_back( { "lib_register",
             "Add a library that is already on disk to the project: a symbol library (.kicad_sym) to "
             "sym-lib-table, a footprint library (.pretty folder) to fp-lib-table, so sch_add_part / "
             "add_footprint can use \"Nickname:Item\". path absolute or relative to the project; nickname "
-            "defaults to the file name.",
-            obj( { { "path", { { "type", "string" } } }, { "nickname", { { "type", "string" } } } }, { "path" } ),
+            "defaults to the file name.", json::object(),
             [&aIpc]( const json& a )
             {
                 ks::RegisterLibrary req;
@@ -2903,7 +2670,9 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                     t += "\n  " + r.note();
 
                 return TOOL_RESULT{ t, false };
-            } } );
+            }, "", std::vector<params::PARAM>{
+                              params::String( "nickname" ),
+                              params::String( "path" ).Required() }} );
 
     aTools.push_back( { "sch_set_fields",
             "Change parts' fields and attributes as one edit (all units; undo {target: schematic} takes it back; "
@@ -2912,11 +2681,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "for the same change on many. Value, Footprint, Datasheet, Description are the symbol's own "
             "fields; any other name is a user field (added hidden when missing; null removes it). "
             "Attributes: dnp, exclude_from_bom, exclude_from_board, exclude_from_sim, exclude_from_pos "
-            "(true / false). Refs that are not found are listed; the other parts are changed anyway.",
-            obj( { { "parts", { { "type", "object" }, { "additionalProperties", { { "type", "object" } } } } },
-                   { "refs", { { "type", "array" }, { "items", { { "type", "string" } } } } },
-                   { "set", { { "type", "object" } } } },
-                 {} ),
+            "(true / false). Refs that are not found are listed; the other parts are changed anyway.", json::object(),
             [&aIpc]( const json& a )
             {
                 ks::SchSetFields req;
@@ -3081,7 +2846,10 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                                 "LCSC number (Supplier / Manufacturer Part, a Description or Datasheet naming the old one)";
 
                 return res;
-            } } );
+            }, "", std::vector<params::PARAM>{
+                              params::Map( "parts", params::Map( "", params::Any( "", {} ) ) ).ItemSchema(),
+                              params::Strings( "refs" ),
+                              params::Map( "set", params::Any( "", {} ) ) }} );
 
     aTools.push_back( { "sch_render",
             "A picture (PNG) of one schematic sheet as it is now, to see what the coordinates do not "
@@ -3091,17 +2859,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "sheet of the first ref. sheet: a name or path (default the root); area [x0, y0, x1, y1] "
             "mm; frame=true the whole page with its title block (refs / nets still marked, no zoom). mm rulers on the top and left. size: "
             "pixels on the long side (default 1600). path also saves the PNG (relative: the project "
-            "folder).",
-            obj( { { "sheet", { { "type", "string" } } },
-                   { "refs", { { "type", "array" }, { "items", { { "type", "string" } } } } },
-                   { "nets", { { "type", "array" }, { "items", { { "type", "string" } } } } },
-                   { "area", { { "type", "array" }, { "items", { { "type", "number" } } },
-                               { "description", "[x0, y0, x1, y1] mm" } } },
-                   { "zoom", { { "type", "boolean" } } },
-                   { "frame", { { "type", "boolean" } } },
-                   { "size", { { "type", "integer" } } },
-                   { "margin", { { "type", "number" }, { "description", "mm around a zoom (5)" } } },
-                   { "path", { { "type", "string" } } } } ),
+            "folder).", json::object(),
             [&aIpc]( const json& a )
             {
                 ks::SchRender req;
@@ -3175,15 +2933,22 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                 TOOL_RESULT out{ t, false };
                 out.image = r.png();
                 return out;
-            } } );
+            }, "", std::vector<params::PARAM>{
+                              params::Array( "area", params::Number( "" ), "[x0, y0, x1, y1] mm" ),
+                              params::Boolean( "frame" ),
+                              params::Number( "margin", "mm around a zoom (5)" ).Unit( "mm" ).Range( 0 ),
+                              params::Strings( "nets" ),
+                              params::String( "path" ),
+                              params::Strings( "refs" ),
+                              params::String( "sheet" ),
+                              params::Integer( "size" ).Range( 0 ),
+                              params::Boolean( "zoom" ) }} );
 
     aTools.push_back( { "sch_export_pdf",
             "The whole schematic as one PDF for review or the fab's documents: every sheet in page "
             "order with its frame and title block, sheets linked (click a sheet symbol to go to it). "
             "From the schematic as it is now, unsaved edits included. path: default the project folder, "
-            "<schematic name>.pdf (relative: the project folder); black_and_white for printing.",
-            obj( { { "path", { { "type", "string" } } },
-                   { "black_and_white", { { "type", "boolean" } } } } ),
+            "<schematic name>.pdf (relative: the project folder); black_and_white for printing.", json::object(),
             [&aIpc]( const json& a )
             {
                 ks::SchExportPdf req;
@@ -3202,10 +2967,12 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                     t += "\n  page " + p;
 
                 return TOOL_RESULT{ t + "\n", false };
-            } } );
+            }, "", std::vector<params::PARAM>{
+                              params::Boolean( "black_and_white" ),
+                              params::String( "path" ) }} );
 
-    aTools.push_back( { "simulate", SimulateDescription(), SimulateSchema(),
-            [&aIpc]( const json& a ) { return Simulate( aIpc, a ); } } );
+    aTools.push_back( { "simulate", SimulateDescription(), json::object(),
+            [&aIpc]( const json& a ) { return Simulate( aIpc, a ); }, "", SimulateParams() } );
 
     aTools.push_back( { "sch_annotate",
             "Number the parts (the editor's Annotate). Parts without a number (\"R?\") get the first "
@@ -3215,14 +2982,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "first number (1); per_sheet \"100\" / \"1000\": page 2 gets R201.. / R2001... Units of a "
             "multi-unit part stay together; power symbols are not touched. dry_run lists the changes "
             "only. One schematic undo step. The board keeps the old references until sync_pcb (parts are "
-            "matched by their UUID, so placement and routing stay).",
-            obj( { { "refs", { { "type", "array" }, { "items", { { "type", "string" } } } } },
-                   { "sheet", { { "type", "string" } } },
-                   { "reset", { { "type", "boolean" } } },
-                   { "order", { { "type", "string" }, { "enum", json::array( { "x", "y" } ) } } },
-                   { "start", { { "type", "integer" } } },
-                   { "per_sheet", { { "type", "string" }, { "enum", json::array( { "100", "1000" } ) } } },
-                   { "dry_run", { { "type", "boolean" } } } } ),
+            "matched by their UUID, so placement and routing stay).", json::object(),
             [&aIpc]( const json& a )
             {
                 ks::SchAnnotate req;
@@ -3263,7 +3023,14 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                     t += "\nundo {target: schematic} takes it back; sync_pcb gives the board the new references";
 
                 return TOOL_RESULT{ t + "\n", false };
-            } } );
+            }, "", std::vector<params::PARAM>{
+                              params::Boolean( "dry_run" ),
+                              params::Enum( "order", { "x", "y" } ),
+                              params::Enum( "per_sheet", { "100", "1000" } ),
+                              params::Strings( "refs" ),
+                              params::Boolean( "reset" ),
+                              params::String( "sheet" ),
+                              params::Integer( "start" ).Range( 0 ) }} );
 
     aTools.push_back( { "lcsc_match",
             "Find LCSC / JLCPCB numbers for the schematic's parts that have none, many at once: parts of "
@@ -3273,15 +3040,14 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "others are listed. Dry run first: apply=true writes the LCSC fields as one schematic undo. pick "
             "{\"R1\": \"C25804\"} sets the part for R1's group instead (also for a group not matched). "
             "The value may carry the rating: \"100nF 50V X7R\", \"10k 1%\". refs limits it to some "
-            "parts; replace=true matches parts that have a number already. Then sync_pcb.",
-            obj( { { "apply", { { "type", "boolean" }, { "description", "write them (default: dry run)" } } },
-                   { "pick", { { "type", "object" }, { "additionalProperties", { { "type", "string" } } },
-                               { "description", "ref -> LCSC number for that ref's group" } } },
-                   { "refs", { { "type", "array" }, { "items", { { "type", "string" } } } } },
-                   { "basic_only", { { "type", "boolean" } } },
-                   { "replace", { { "type", "boolean" } } },
-                   { "live", { { "type", "boolean" }, { "description", "check today's stock (default true)" } } } } ),
-            [&aIpc]( const json& a ) { return lcscMatch( aIpc, a ); } } );
+            "parts; replace=true matches parts that have a number already. Then sync_pcb.", json::object(),
+            [&aIpc]( const json& a ) { return lcscMatch( aIpc, a ); }, "", std::vector<params::PARAM>{
+                              params::Boolean( "apply", "write them (default: dry run)" ),
+                              params::Boolean( "basic_only" ),
+                              params::Boolean( "live", "check today's stock (default true)" ),
+                              params::Map( "pick", params::String( "" ), "ref -> LCSC number for that ref's group" ).ItemSchema(),
+                              params::Strings( "refs" ),
+                              params::Boolean( "replace" ) }} );
 
     for( bool redo : { false, true } )
     {
@@ -3290,8 +3056,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                      : "Undo the agent's last schematic edit (sch_add_part, sch_connect, sch_wire, sch_move, "
                        "sch_delete, ...; not the user's). What the user changed since is left as it is and "
                        "counted; an edit the user already undid in the editor (Ctrl+Z) is said so. The "
-                       "agent keeps its last 50 edits; PCB edits have undo / redo.",
-                obj( json::object() ),
+                       "agent keeps its last 50 edits; PCB edits have undo / redo.", json::object(),
                 [&aIpc, redo]( const json& )
                 {
                     ks::SchUndo req;
@@ -3329,14 +3094,13 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                         t += "; next undo: " + r.next_undo();
 
                     return TOOL_RESULT{ t, false };
-                } } );
+                }, "", std::vector<params::PARAM>{}} );
     }
 
     aTools.push_back( { "sch_save",
             "Write the schematic to its .kicad_sch file(s), every sheet. They are written in this "
             "build's file format (KiCad nightly, 10.99): files from KiCad 9 / 10 are upgraded and "
-            "those versions may not open them any more (as when KiCad itself saves them).",
-            obj( json::object() ),
+            "those versions may not open them any more (as when KiCad itself saves them).", json::object(),
             [&aIpc]( const json& )
             {
                 ks::SchSave            req;
@@ -3347,7 +3111,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                     return fail( err );
 
                 return TOOL_RESULT{ r.history_label(), false };
-            } } );
+            }, "", std::vector<params::PARAM>{}} );
 }
 
 } // namespace kicadd::mcp

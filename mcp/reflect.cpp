@@ -447,30 +447,19 @@ std::string reflectionDescription()
 }
 
 
-json reflectionSchema()
+std::vector<params::PARAM> reflectionParams()
 {
-    json num = { { "type", { "number", "string" } } };
-    return { { "type", "object" },
-             { "properties",
-               { { "net", { { "type", "string" } } },
-                 { "driver", { { "type", "string" } } },
-                 { "rise", num },
-                 { "rout", num },
-                 { "vdd", num },
-                 { "cin", num },
-                 { "rs", { { "type", "array" }, { "items", num } } },
-                 { "plot", { { "type", "boolean" } } },
-                 { "netlist", { { "type", "boolean" } } } } },
-             { "required", { "net" } } };
+    using namespace params;
+    return { String( "net" ).Required(), String( "driver" ).Doc( "REF.PIN (default: the net's output pin)" ),
+             Si( "rise", "", "s" ).Positive().Default( "1n" ), Si( "rout", "", "Ω" ).Range( 0 ).Default( 30 ),
+             Si( "vdd", "", "V" ).Positive().Default( 3.3 ), Si( "cin", "", "F" ).Range( 0 ).Default( "3p" ),
+             Array( "rs", Si( "", "", "Ω" ).Range( 0 ) ).Doc( "series resistors to try (up to 4)" ), Boolean( "plot" ), Boolean( "netlist" ) };
 }
 
 
 TOOL_RESULT reflection( IPC_CLIENT& aIpc, const json& a )
 {
     auto fail = []( const std::string& m ) { return TOOL_RESULT{ m, true }; };
-
-    if( !a.contains( "net" ) || !a["net"].is_string() )
-        return fail( "net: the signal (\"CLK\")" );
 
     const std::string exe = sim::FindNgspice();
 
@@ -489,32 +478,22 @@ TOOL_RESULT reflection( IPC_CLIENT& aIpc, const json& a )
             return true;
         }
 
-        return jsonSI( a[k], aOut ) && aOut >= 0;
+        aOut = a[k].get<double>();   // (the parameter table checked it: a number, in range)
+        return true;
     };
 
     double rise = 0, rout = 0, vdd = 0, cin = 0;
-
-    if( !param( "rise", 1e-9, "s", rise ) || rise <= 0 || !param( "rout", 30, "Ω", rout ) || !param( "vdd", 3.3, "V", vdd ) || vdd <= 0
-        || !param( "cin", 3e-12, "F", cin ) )
-        return fail( "rise (s), rout (ohm), vdd (V), cin (F): numbers or SI strings, above 0" );
+    param( "rise", 1e-9, "s", rise );
+    param( "rout", 30, "Ω", rout );
+    param( "vdd", 3.3, "V", vdd );
+    param( "cin", 3e-12, "F", cin );
 
     std::vector<double> tryRs;
 
-    if( a.contains( "rs" ) )
+    for( const json& v : a.value( "rs", json::array() ) )
     {
-        if( !a["rs"].is_array() )
-            return fail( "rs: [ohm, ...]" );
-
-        for( const json& v : a["rs"] )
-        {
-            double r = 0;
-
-            if( !jsonSI( v, r ) || r < 0 )
-                return fail( "rs: [ohm, ...]" );
-
-            if( tryRs.size() < 4 )
-                tryRs.push_back( r );
-        }
+        if( tryRs.size() < 4 )
+            tryRs.push_back( v.get<double>() );
     }
 
     // the net
@@ -1066,7 +1045,8 @@ TOOL_RESULT reflection( IPC_CLIENT& aIpc, const json& a )
 
 TOOL ReflectionTool( IPC_CLIENT& aIpc )
 {
-    return { "reflection", reflectionDescription(), reflectionSchema(), [&aIpc]( const json& a ) { return reflection( aIpc, a ); } };
+    return { "reflection", reflectionDescription(), json::object(), [&aIpc]( const json& a ) { return reflection( aIpc, a ); }, "",
+             reflectionParams() };
 }
 
 } // namespace kicadd::mcp

@@ -817,16 +817,18 @@ void AddLaunchTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc, bool aAllowed 
                         ".kicad_pcb with no .kicad_pro opens in the PCB editor alone, board tools only). path: a project folder (its one .kicad_pro), .kicad_pro, .kicad_pcb or .kicad_sch, "
                         "absolute on the server. Waits until it answers (wait_s, default 60 / 120 for the desktop) and "
                         "returns what is open and the log file. Refused while a KiCad already answers there. Only "
-                        "KiCadD's own programs next to kicadd-mcp. HTTP mode: only with --allow-launch.",
-                        launchSchema, [&aIpc, state]( const json& a ) { return launch( aIpc, *state, a ); } } );
+                        "KiCadD's own programs next to kicadd-mcp. HTTP mode: only with --allow-launch.", json::object(), [&aIpc, state]( const json& a ) { return launch( aIpc, *state, a ); }, "", std::vector<params::PARAM>{
+                              params::Enum( "mode", { "server", "desktop" } ),
+                              params::String( "path", "absolute: folder, .kicad_pro, .kicad_pcb or .kicad_sch" ),
+                              params::Number( "wait_s" ).Unit( "s" ).Range( 0 ) }} );
 
     json closeSchema = { { "type", "object" }, { "properties", { { "discard", { { "type", "boolean" } } } } } };
 
     aTools.push_back( { "close_kicad",
                         "Stop the KiCad that launch_kicad started (server or desktop editor); one started any other way "
                         "is left alone (refused). Refused while the board or the schematic has unsaved changes (listed, "
-                        "with board_diff) unless discard=true. HTTP mode: only with --allow-launch.",
-                        closeSchema, [&aIpc, state]( const json& a ) { return close( aIpc, *state, a ); } } );
+                        "with board_diff) unless discard=true. HTTP mode: only with --allow-launch.", json::object(), [&aIpc, state]( const json& a ) { return close( aIpc, *state, a ); }, "", std::vector<params::PARAM>{
+                              params::Boolean( "discard" ) }} );
 }
 
 } // namespace kicadd::mcp

@@ -94,7 +94,7 @@ try:
           + next((l for l in t.splitlines() if l.startswith("assign")), t)[:160])
     m.tool("undo")
     err, t = m.tool("set_rules", {"classes": [{"name": "USB"}]})
-    check(err and "classes is an object" in t, "set_rules: a list for classes refused, not ignored")
+    check(err and "classes: an object; got [" in t, "set_rules: a list for classes refused, not ignored")
     err, t = m.tool("set_rules", {"classes": {"USB": {"track": 0.2}}})
     check(err and "the values are clearance, track_width" in t, "set_rules: an unknown class value lists the right ones")
     # a class set now reaches the router at once (blind run S1: power routed at the board minimum)

@@ -17,6 +17,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "params.h"
+
 namespace kicadd::mcp
 {
 
@@ -36,7 +38,12 @@ struct TOOL
     nlohmann::json                                    inputSchema;
     std::function<TOOL_RESULT( const nlohmann::json& )> run;
     std::string                                       details;   ///< the full description (tool_help); description is the brief
+    std::vector<params::PARAM>                        params;    ///< declared once: makes inputSchema and the check before run (2b)
 };
+
+/// a tool's parameters made its inputSchema, and its run checking the arguments first (so tools/call
+/// and batch check alike)
+void ApplyParams( TOOL& aTool );
 
 /// Build the tool set bound to aIpc (which must outlive the tools). aAllowLaunch: launch_kicad /
 /// close_kicad may start and stop programs (stdio; HTTP only with --allow-launch).

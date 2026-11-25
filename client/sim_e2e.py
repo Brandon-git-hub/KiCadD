@@ -193,9 +193,19 @@ def main():
         check(not err and pk and pk < 160 and "soft start 1 ms" in t and "current limit" in t and "at its current limit" not in t,
               f"soft_start 1 ms: peak {pk} mA (100 mA load + C x 3.3 V / 1 ms), not at the limit")
         check(rise and 0.6e-3 < si(rise.group(1)) < 1.0e-3, f"soft_start 1 ms: +3V3 rises 10-90% in {rise and rise.group(1)}s (0.8 ms for a ramp)")
-        err, t = sim({"around": [u1], "sources": {"VIN": 5, "+3V3": None}, "models": {u1: {"exclude": True, "foo": 1}, c1: {"bar": 2}}})
+        err, t = sim({"around": [u1], "sources": {"VIN": 5, "+3V3": None}, "models": {u1: {"exclude": True, "vout": 3}, c1: {"vf": 2}}})
         check(not err and "+3V3 none (sources: null)" in t and "from its name" not in t, "sources {+3V3: null}: no source there, not even from its name")
-        check(f"models.{u1}: foo unused, {u1} is left out" in t and f"models.{c1}: bar not used by its model (C)" in t, "keys that did nothing: said")
+        check(f"models.{u1}: vout unused, {u1} is left out" in t and f"models.{c1}: vf not used by its model (C)" in t,
+              "keys some model reads but this part's does not: said")
+        # (the parameter table, 2b: a key no model reads, a bad value, a value in extra quotes)
+        err, t = sim({"around": [u1], "sources": {"VIN": 5}, "models": {c1: {"foo": 2}}})
+        check(err and f"models.{c1}.foo: unknown key" in t and "esr" in t, "a key no model reads: refused, with the keys: " + t[:120])
+        err, t = sim({"around": [u1], "sources": {"VIN": 5}, "tran": {"stop": "\"4n\""}})
+        check(err and "tran.stop:" in t and "(in extra quotes)" in t, "tran.stop in extra quotes: said so: " + t[:140])
+        err, t = sim({"around": [u1], "sources": {"VIN": 5}, "tran": {"stop": "-1m"}})
+        check(err and "tran.stop: > 0 s; got -0.001" in t, "tran.stop -1m: out of range: " + t[:100])
+        err, t = sim({"around": [u1], "sources": {"VIN": 5}, "tran": "1m", "probes": ["+3V3"]})
+        check(not err and "simulate tran 1 ms" in t, "tran \"1m\" (the stop alone) still taken: " + t[:60])
 
         print("[RC]")
         err, t = sim({"around": [r2], "sources": {"SIG": "dc 0 ac 1"}, "ac": {"from": 10, "to": "1Meg"}, "probes": ["OUT"]})

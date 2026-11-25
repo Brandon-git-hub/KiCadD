@@ -91,8 +91,20 @@ public:
                        { return std::find( m_drop.begin(), m_drop.end(), t.name ) != m_drop.end(); } );
     }
 
-    /// a tool's properties (each one's schema) for a nested object
-    json props( const std::string& aName ) { return get( aName ).inputSchema.value( "properties", json::object() ); }
+    /// a tool's parameters (for a nested object of a merged tool)
+    std::vector<params::PARAM> params( const std::string& aName ) { return get( aName ).params; }
+
+    /// one of a tool's parameters
+    params::PARAM param( const std::string& aTool, const std::string& aName )
+    {
+        for( const params::PARAM& p : get( aTool ).params )
+        {
+            if( p.name == aName )
+                return p;
+        }
+
+        throw std::logic_error( "merged.cpp: " + aTool + " has no parameter " + aName );
+    }
 
     /// aTool replaces the one of its name, or goes in before aBefore
     void put( TOOL aTool, const std::string& aBefore )
@@ -115,16 +127,6 @@ private:
 };
 
 
-json schemaOf( json aProps, std::vector<std::string> aRequired = {} )
-{
-    json s = { { "type", "object" }, { "properties", std::move( aProps ) } };
-
-    if( !aRequired.empty() )
-        s["required"] = aRequired;
-
-    return s;
-}
-
 } // namespace
 
 
@@ -136,7 +138,7 @@ void MergeTools( std::vector<TOOL>& aTools )
     {
         RUN boardUndo = m.get( "undo" ).run, boardRedo = m.get( "redo" ).run;
         RUN schUndo = m.get( "sch_undo" ).run, schRedo = m.get( "sch_redo" ).run;
-        json detail = m.get( "undo" ).inputSchema["properties"]["detail"];
+        params::PARAM detail = m.param( "undo", "detail" );
 
         TOOL undo = {
             "undo",
@@ -147,9 +149,7 @@ void MergeTools( std::vector<TOOL>& aTools )
             "...; the agent keeps its last 50. On either side the user's own edits are not undone: parts the user "
             "changed since are left alone and counted, and an edit the user already undid in the editor (Ctrl+Z) is "
             "said so.",
-            schemaOf( { { "target", { { "type", "string" }, { "enum", { "board", "schematic" } } } },
-                        { "redo", { { "type", "boolean" } } },
-                        { "detail", detail } } ),
+            json::object(),
             [=]( const json& a ) -> TOOL_RESULT
             {
                 const std::string target = a.value( "target", std::string( "board" ) );
@@ -165,7 +165,9 @@ void MergeTools( std::vector<TOOL>& aTools )
                     return fail( "target: \"board\" (default) or \"schematic\"" );
 
                 return ( redo ? boardRedo : boardUndo )( rest );
-            } };
+            },
+            "",
+            { params::Enum( "target", { "board", "schematic" } ), params::Boolean( "redo" ), detail } };
 
         // the old undo's name is the new tool's: the other three go
         m.drop( "redo" );
@@ -192,8 +194,8 @@ void MergeTools( std::vector<TOOL>& aTools )
         RUN   local = m.get( "check_drc" ).run;
         drc.description += " local=true with refs: only those parts against their surroundings, at once (the "
                            "local DRC move_footprints returns, without moving them).";
-        drc.inputSchema["properties"]["local"] = { { "type", "boolean" } };
-        drc.inputSchema["properties"]["detail"] = m.get( "check_drc" ).inputSchema["properties"]["detail"];
+        drc.params.push_back( params::Boolean( "local" ) );
+        drc.params.push_back( m.param( "check_drc", "detail" ) );
         drc.run = [local, run = drc.run]( const json& a ) -> TOOL_RESULT
         {
             if( !( a.contains( "local" ) && a["local"].is_boolean() && a["local"].get<bool>() ) )
@@ -230,8 +232,8 @@ void MergeTools( std::vector<TOOL>& aTools )
     // --- project {open} / {new}
     {
         RUN  open = m.get( "open_board" ).run, make = m.get( "new_project" ).run;
-        json newProps = m.props( "new_project" );
-        newProps.erase( "discard" );
+        std::vector<params::PARAM> newProps = m.params( "new_project" );
+        std::erase_if( newProps, []( const params::PARAM& p ) { return p.name == "discard"; } );
 
         TOOL project = {
             "project",
@@ -244,9 +246,7 @@ void MergeTools( std::vector<TOOL>& aTools )
             "never written over), opens and saves them. Both are refused while the open board has unsaved changes, "
             "unless discard=true (the refusal lists what board_diff finds changed). Not with the desktop editor: "
             "there the user opens and makes projects.",
-            schemaOf( { { "open", { { "type", "string" }, { "description", "a .kicad_pcb / .kicad_pro, absolute" } } },
-                        { "new", { { "type", "object" }, { "properties", newProps }, { "required", { "path" } } } },
-                        { "discard", { { "type", "boolean" }, { "description", "Drop the open board's unsaved changes (default false)" } } } } ),
+            json::object(),
             [=]( const json& a ) -> TOOL_RESULT
             {
                 const bool isOpen = a.contains( "open" ), isNew = a.contains( "new" );
@@ -263,7 +263,10 @@ void MergeTools( std::vector<TOOL>& aTools )
                     args["discard"] = a["discard"];
 
                 return ( isOpen ? open : make )( args );
-            } };
+            },
+            "",
+            { params::String( "open", "a .kicad_pcb / .kicad_pro, absolute" ), params::Object( "new", newProps ),
+              params::Boolean( "discard", "Drop the open board's unsaved changes (default false)" ) } };
 
         m.drop( "open_board" );
         m.drop( "new_project" );
@@ -274,9 +277,7 @@ void MergeTools( std::vector<TOOL>& aTools )
     {
         RUN fab = m.get( "export_fab" ).run, assembly = m.get( "export_assembly" ).run, pdf = m.get( "sch_export_pdf" ).run;
 
-        auto part = [&]( const std::string& aName ) {
-            return json{ { "type", "object" }, { "properties", m.props( aName ) } };
-        };
+        auto part = [&]( const std::string& aKey, const std::string& aName ) { return params::Object( aKey, m.params( aName ) ); };
 
         TOOL exp = {
             "export",
@@ -294,9 +295,7 @@ void MergeTools( std::vector<TOOL>& aTools )
             "file. schematic_pdf: the whole schematic as one PDF, every sheet in page order with its frame and "
             "title block, sheets linked; path default <project>/<schematic name>.pdf (relative: the project "
             "folder); black_and_white for printing. One failing does not stop the others.",
-            schemaOf( { { "fab", part( "export_fab" ) },
-                        { "assembly", part( "export_assembly" ) },
-                        { "schematic_pdf", part( "sch_export_pdf" ) } } ),
+            json::object(),
             [=]( const json& a ) -> TOOL_RESULT
             {
                 std::string out;
@@ -329,7 +328,9 @@ void MergeTools( std::vector<TOOL>& aTools )
                     return fail( "give fab, assembly and / or schematic_pdf, e.g. {\"fab\": {\"strict\": true}, \"assembly\": {}}" );
 
                 return { out, failed };
-            } };
+            },
+            "",
+            { part( "fab", "export_fab" ), part( "assembly", "export_assembly" ), part( "schematic_pdf", "sch_export_pdf" ) } };
 
         m.drop( "export_fab" );
         m.drop( "export_assembly" );
@@ -341,7 +342,7 @@ void MergeTools( std::vector<TOOL>& aTools )
     {
         TOOL& render = m.get( "board_render" );
         RUN   flat = render.run, solid = m.get( "board_render_3d" ).run;
-        json& p = render.inputSchema["properties"];
+        std::vector<params::PARAM>& p = render.params;
 
         render.description += " view=\"3d\": KiCad's raytracer instead (as kicad-cli pcb render; unsaved edits "
                               "included): the assembled board, connectors at the edge, tall parts. side top (default), "
@@ -350,15 +351,22 @@ void MergeTools( std::vector<TOOL>& aTools )
                               "4:3); quality basic or high (reflections, shadows: slower); floor; perspective. Only "
                               "VRML models load in this build: the parts drawn without a body are listed. In the "
                               "desktop editor the window waits while it renders (seconds).";
-        p["view"] = { { "type", "string" }, { "enum", { "2d", "3d" } } };
-        p["zoom"] = { { "description", "2d: true / false; 3d: a factor (1)" } };
-        p["side"] = { { "type", "string" }, { "enum", { "top", "bottom", "front", "back", "left", "right" } } };
-        p["rot_x"] = { { "type", "number" } };
-        p["rot_y"] = { { "type", "number" } };
-        p["rot_z"] = { { "type", "number" } };
-        p["quality"] = { { "type", "string" }, { "enum", { "basic", "high" } } };
-        p["floor"] = { { "type", "boolean" } };
-        p["perspective"] = { { "type", "boolean" } };
+        // zoom: true / false in 2d, a factor in 3d (in the place 2d's had)
+        for( params::PARAM& z : p )
+        {
+            if( z.name == "zoom" )
+                z = params::Any( "zoom", {}, "2d: true / false; 3d: a factor (1)" ).Check( []( json& v )
+                    { return v.is_boolean() || v.is_number() ? std::string() : std::string( "true / false (2d) or a factor (3d)" ); } );
+        }
+
+        p.push_back( params::Enum( "view", { "2d", "3d" } ) );
+        p.push_back( params::Enum( "side", { "top", "bottom", "front", "back", "left", "right" } ) );
+        p.push_back( params::Number( "rot_x" ) );
+        p.push_back( params::Number( "rot_y" ) );
+        p.push_back( params::Number( "rot_z" ) );
+        p.push_back( params::Enum( "quality", { "basic", "high" } ) );
+        p.push_back( params::Boolean( "floor" ) );
+        p.push_back( params::Boolean( "perspective" ) );
 
         render.run = [flat, solid]( const json& a ) -> TOOL_RESULT
         {

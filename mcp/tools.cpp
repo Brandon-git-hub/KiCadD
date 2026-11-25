@@ -199,10 +199,6 @@ bool detailOf( const json& aArgs )
 }
 
 
-const json DETAIL_PROP = { { "type", "boolean" },
-                           { "description", "List every part / violation (default: long lists cut short)" } };
-
-
 std::string renderDrc( const google::protobuf::RepeatedPtrField<kb::DrcViolation>& aDrc, bool aDetail = false )
 {
     if( aDrc.empty() )
@@ -3200,69 +3196,38 @@ TOOL_RESULT openBoard( IPC_CLIENT& aIpc, const json& aArgs )
 }
 
 
-json schema( json aProps, std::vector<std::string> aRequired = {} )
-{
-    json s = { { "type", "object" }, { "properties", std::move( aProps ) } };
-
-    if( !aRequired.empty() )
-        s["required"] = aRequired;
-
-    return s;
-}
-
 } // namespace
 
 
 std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
 {
-    const json kinds = { { "type", "array" },
-                         { "items", { { "type", "string" },
-                                      { "enum", { "footprint", "pad", "track", "arc", "via", "zone" } } } },
-                         { "description", "Item kinds to include (default: footprint, pad, track, arc, via)" } };
-
-    const json refs = { { "type", "array" }, { "items", { { "type", "string" } } },
-                        { "description", "Reference designators, e.g. [\"U5\", \"C12\"]" } };
-
-    // a list of strings with its own description (nets, layers, ids: not reference designators)
-    auto strings = []( const char* aDescription )
-    {
-        return json{ { "type", "array" }, { "items", { { "type", "string" } } }, { "description", aDescription } };
-    };
-
-    const json nets = strings( "Net names, e.g. [\"GND\", \"/USB_D+\"]" );
-
     std::vector<TOOL> tools;
 
     tools.push_back( { "board_summary",
                        "Counts, layer count and board outline of the open PCB. Units: mm. KiCad's Y axis "
                        "points down. The vias by kind (type, pad / drill) and, with the board thickness, the "
-                       "worst through-via aspect ratio (thickness / drill; your fab's limit judges it).",
-                       schema( json::object() ),
-                       [&aIpc]( const json& ) { return boardSummary( aIpc ); } } );
+                       "worst through-via aspect ratio (thickness / drill; your fab's limit judges it).", json::object(),
+                       [&aIpc]( const json& ) { return boardSummary( aIpc ); }, "", std::vector<params::PARAM>{}} );
 
     tools.push_back( { "query_area",
                        "Items near a footprint (ref: the part itself first, then what is around it) or a point (x,y), nearest first. Lines: KIND handle [net] "
                        "layer @x,y (pads are REF.PADNUM WxH, the copper as placed; tracks start>end wWIDTH; ~DIST from the centre). "
                        "via_net=NET lists free via spots instead (off pads; in a QFN's pad ring too, marked *). "
-                       "Use this instead of dumping the board.",
-                       schema( { { "ref", { { "type", "string" }, { "description", "Centre on this footprint" } } },
-                                 { "x", { { "type", "number" }, { "description", "Centre X, mm" } } },
-                                 { "y", { { "type", "number" }, { "description", "Centre Y, mm" } } },
-                                 { "radius", { { "type", "number" }, { "description", "Radius, mm" } } },
-                                 { "kinds", kinds },
-                                 { "limit", { { "type", "integer" }, { "description", "Max items (default 64; via spots 8)" } } },
-                                 { "via_net", { { "type", "string" },
-                                                { "description", "Instead of items: free spots for a through via of this net "
-                                                                 "(its class's size) within the radius, nearest first" } } } },
-                               { "radius" } ),
-                       [&aIpc]( const json& a ) { return queryArea( aIpc, a ); } } );
+                       "Use this instead of dumping the board.", json::object(),
+                       [&aIpc]( const json& a ) { return queryArea( aIpc, a ); }, "", std::vector<params::PARAM>{
+                             params::Array( "kinds", params::Enum( "", { "footprint", "pad", "track", "arc", "via", "zone" } ), "Item kinds to include (default: footprint, pad, track, arc, via)" ),
+                             params::Integer( "limit", "Max items (default 64; via spots 8)" ).Range( 0 ),
+                             params::Number( "radius", "Radius, mm" ).Unit( "mm" ).Positive().Required(),
+                             params::String( "ref", "Centre on this footprint" ),
+                             params::String( "via_net", "Instead of items: free spots for a through via of this net (its class's size) within the radius, nearest first" ),
+                             params::Number( "x", "Centre X, mm" ).Unit( "mm" ),
+                             params::Number( "y", "Centre Y, mm" ).Unit( "mm" ) }} );
 
     tools.push_back( { "query_net",
-                       "Pads, tracks, vias and zones on one net (topology of a single net).",
-                       schema( { { "net", { { "type", "string" }, { "description", "Net name, e.g. GND or /USB/D+" } } },
-                                 { "limit", { { "type", "integer" }, { "description", "Max items (default 256)" } } } },
-                               { "net" } ),
-                       [&aIpc]( const json& a ) { return queryNet( aIpc, a ); } } );
+                       "Pads, tracks, vias and zones on one net (topology of a single net).", json::object(),
+                       [&aIpc]( const json& a ) { return queryNet( aIpc, a ); }, "", std::vector<params::PARAM>{
+                             params::Integer( "limit", "Max items (default 256)" ).Range( 0 ),
+                             params::String( "net", "Net name, e.g. GND or /USB/D+" ).Required() }} );
 
     tools.push_back( { "move_footprints",
                        "Move/rotate/flip footprints as one undoable edit: refs with dx / dy / rotate / flip "
@@ -3272,19 +3237,16 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                        "it, side top / bottom; what is left out stays). Returns new positions (B.Cu = bottom side), the "
                        "unrouted-connection count and a local DRC of the moved parts (clearance, shorts, "
                        "hole clearance, courtyard overlap, board-edge clearance, copper outside the board). "
-                       "Large nets (GND, power) skip ratsnest updates while you iterate; the count says which.",
-                       schema( { { "refs", refs },
-                                 { "dx", { { "type", "number" }, { "description", "Delta X, mm" } } },
-                                 { "dy", { { "type", "number" }, { "description", "Delta Y, mm (down is +)" } } },
-                                 { "rotate", { { "type", "number" }, { "description", "Rotation delta, degrees CCW" } } },
-                                 { "flip", { { "type", "boolean" },
-                                             { "description", "Move to the other side (F.Cu <-> B.Cu), mirrored left-right" } } },
-                                 { "pivot", { { "type", "string" }, { "enum", { "each", "group" } },
-                                              { "description", "Rotate/flip each part around its own anchor (default) or "
-                                                               "the parts as one group around their common centre" } } },
-                                 { "parts", { { "type", "object" }, { "description", "{ref: {x, y, rotation, side}}, absolute" } } },
-                                 { "detail", DETAIL_PROP } } ),
-                       [&aIpc]( const json& a ) { return moveFootprints( aIpc, a ); } } );
+                       "Large nets (GND, power) skip ratsnest updates while you iterate; the count says which.", json::object(),
+                       [&aIpc]( const json& a ) { return moveFootprints( aIpc, a ); }, "", std::vector<params::PARAM>{
+                             params::Boolean( "detail", "List every part / violation (default: long lists cut short)" ),
+                             params::Number( "dx", "Delta X, mm" ).Unit( "mm" ),
+                             params::Number( "dy", "Delta Y, mm (down is +)" ).Unit( "mm" ),
+                             params::Boolean( "flip", "Move to the other side (F.Cu <-> B.Cu), mirrored left-right" ),
+                             params::Map( "parts", params::Any( "", {} ), "{ref: {x, y, rotation, side}}, absolute" ),
+                             params::Enum( "pivot", { "each", "group" }, "Rotate/flip each part around its own anchor (default) or the parts as one group around their common centre" ),
+                             params::Strings( "refs", "Reference designators, e.g. [\"U5\", \"C12\"]" ),
+                             params::Number( "rotate", "Rotation delta, degrees CCW" ).Unit( "°" ) }} );
 
     tools.push_back( { "lcsc_fetch",
                        "Get the footprint and schematic symbol of an LCSC part (e.g. C8734) from the "
@@ -3298,16 +3260,13 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                        "typed bidirectional too (said); pin_types {pin number or name: type} sets others (input, "
                        "output, bidirectional, tri_state, passive, power_in, power_out, open_collector, no_connect ...) "
                        "in the library symbol. Copper pads with no number (a USB-C shell) take the symbol's one pin with "
-                       "no pad (EH), or unnumbered_pads=<pin>; said.",
-                       schema( { { "lcsc", { { "type", "string" }, { "description", "LCSC part number, e.g. C8734" } } },
-                                 { "refresh", { { "type", "boolean" }, { "description", "Fetch again even if cached" } } },
-                                 { "model", { { "type", "boolean" }, { "description", "the 3D model too (default true)" } } },
-                                 { "unnumbered_pads", { { "type", "string" },
-                                                        { "description", "number shell pads with no number as this pin" } } },
-                                 { "pin_types", { { "type", "object" },
-                                                  { "description", "set pin types: {\"VREG_VOUT\": \"power_out\", \"12\": \"input\"}" } } } },
-                               { "lcsc" } ),
-                       [&aIpc]( const json& a ) { return lcscFetch( aIpc, a ); } } );
+                       "no pad (EH), or unnumbered_pads=<pin>; said.", json::object(),
+                       [&aIpc]( const json& a ) { return lcscFetch( aIpc, a ); }, "", std::vector<params::PARAM>{
+                             params::String( "lcsc", "LCSC part number, e.g. C8734" ).Required(),
+                             params::Boolean( "model", "the 3D model too (default true)" ),
+                             params::Map( "pin_types", params::Any( "", {} ), "set pin types: {\"VREG_VOUT\": \"power_out\", \"12\": \"input\"}" ),
+                             params::Boolean( "refresh", "Fetch again even if cached" ),
+                             params::String( "unnumbered_pads", "number shell pads with no number as this pin" ) }} );
 
     tools.push_back( { "add_footprint",
                        "Place a new footprint as one undoable edit: from a library (footprint = "
@@ -3315,27 +3274,26 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                        "number (lcsc = \"C8734\", fetched and saved to the project library), or as a copy "
                        "of a part already on the board (like = \"C12\"). ref \"C?\" takes the next free number. "
                        "nets maps pad numbers to nets; unknown nets are created and reported. Returns the "
-                       "placement, unrouted count and local DRC.",
-                       schema( { { "footprint", { { "type", "string" }, { "description", "Library:Name" } } },
-                                 { "lcsc", { { "type", "string" }, { "description", "LCSC part number, e.g. C8734 (instead of footprint)" } } },
-                                 { "like", { { "type", "string" }, { "description", "Copy the footprint of this ref instead" } } },
-                                 { "ref", { { "type", "string" }, { "description", "Reference, e.g. C301 or C? (default: prefix of like)" } } },
-                                 { "value", { { "type", "string" }, { "description", "Value, e.g. 100nF" } } },
-                                 { "x", { { "type", "number" }, { "description", "Position X, mm" } } },
-                                 { "y", { { "type", "number" }, { "description", "Position Y, mm" } } },
-                                 { "rotate", { { "type", "number" }, { "description", "Orientation, degrees CCW" } } },
-                                 { "back", { { "type", "boolean" }, { "description", "Place on the bottom side" } } },
-                                 { "nets", { { "type", "object" }, { "additionalProperties", { { "type", "string" } } },
-                                             { "description", "Pad number -> net name, e.g. {\"1\": \"+3V3\", \"2\": \"GND\"}" } } },
-                                 { "detail", DETAIL_PROP } },
-                               { "x", "y" } ),
-                       [&aIpc]( const json& a ) { return addFootprint( aIpc, a ); } } );
+                       "placement, unrouted count and local DRC.", json::object(),
+                       [&aIpc]( const json& a ) { return addFootprint( aIpc, a ); }, "", std::vector<params::PARAM>{
+                             params::Boolean( "back", "Place on the bottom side" ),
+                             params::Boolean( "detail", "List every part / violation (default: long lists cut short)" ),
+                             params::String( "footprint", "Library:Name" ),
+                             params::String( "lcsc", "LCSC part number, e.g. C8734 (instead of footprint)" ),
+                             params::String( "like", "Copy the footprint of this ref instead" ),
+                             params::Map( "nets", params::String( "" ), "Pad number -> net name, e.g. {\"1\": \"+3V3\", \"2\": \"GND\"}" ).ItemSchema(),
+                             params::String( "ref", "Reference, e.g. C301 or C? (default: prefix of like)" ),
+                             params::Number( "rotate", "Orientation, degrees CCW" ).Unit( "°" ),
+                             params::String( "value", "Value, e.g. 100nF" ),
+                             params::Number( "x", "Position X, mm" ).Unit( "mm" ).Required(),
+                             params::Number( "y", "Position Y, mm" ).Unit( "mm" ).Required() }} );
 
     tools.push_back( { "delete_footprints",
                        "Delete footprints as one undoable edit (undo restores them with their nets). "
-                       "Tracks and vias stay; a net nothing else is on goes with them. Returns the new unrouted count.",
-                       schema( { { "refs", refs }, { "detail", DETAIL_PROP } }, { "refs" } ),
-                       [&aIpc]( const json& a ) { return deleteFootprints( aIpc, a ); } } );
+                       "Tracks and vias stay; a net nothing else is on goes with them. Returns the new unrouted count.", json::object(),
+                       [&aIpc]( const json& a ) { return deleteFootprints( aIpc, a ); }, "", std::vector<params::PARAM>{
+                             params::Boolean( "detail", "List every part / violation (default: long lists cut short)" ),
+                             params::Strings( "refs", "Reference designators, e.g. [\"U5\", \"C12\"]" ).Required() }} );
 
     tools.push_back( { "delete_tracks",
                        "Delete routing (tracks, arcs, vias) as one undoable edit, e.g. before auto_place "
@@ -3343,15 +3301,15 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                        "from these parts' pads up to the next pad (rip up their connections); region: "
                        "[x0, y0, x1, y1] mm, anything crossing it. Given together, nets / refs / region narrow each "
                        "other (GND in this box). The answer lists what went per net. Locked tracks stay unless include_locked. "
-                       "Zones are not touched (refill_zones afterwards). Returns the new unrouted count.",
-                       schema( { { "all", { { "type", "boolean" } } },
-                                 { "nets", nets },
-                                 { "refs", refs },
-                                 { "region", { { "type", "array" }, { "items", { { "type", "number" } } } } },
-                                 { "include_locked", { { "type", "boolean" } } },
-                                 { "keep_vias", { { "type", "boolean" } } },
-                                 { "detail", DETAIL_PROP } } ),
-                       [&aIpc]( const json& a ) { return deleteTracks( aIpc, a ); } } );
+                       "Zones are not touched (refill_zones afterwards). Returns the new unrouted count.", json::object(),
+                       [&aIpc]( const json& a ) { return deleteTracks( aIpc, a ); }, "", std::vector<params::PARAM>{
+                             params::Boolean( "all" ),
+                             params::Boolean( "detail", "List every part / violation (default: long lists cut short)" ),
+                             params::Boolean( "include_locked" ),
+                             params::Boolean( "keep_vias" ),
+                             params::Strings( "nets", "Net names, e.g. [\"GND\", \"/USB_D+\"]" ),
+                             params::Strings( "refs", "Reference designators, e.g. [\"U5\", \"C12\"]" ),
+                             params::Array( "region", params::Number( "" ) ) }} );
 
     tools.push_back( { "route",
                        "Draw one connection the way the interactive router does (45-degree tracks around "
@@ -3370,17 +3328,16 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                        "length vs the straight line, segments, vias and the narrowest gap; when blocked, how "
                        "far it got and what is in the way, and how far it leaves the box between two waypoints "
                        "(strict=true refuses that). One undoable edit; dry_run reports without "
-                       "drawing. Mm, Y down.",
-                       schema( { { "from", { { "description", "\"U1.5\" or [x, y] (a point inside a pad: the track leaves the pad there, not at its centre)" } } },
-                                 { "to", { { "description", "\"C3.1\", [x, y], or \"zone\" (the net's pour); omit: ratsnest" } } },
-                                 { "waypoints", { { "type", "array" } } },
-                                 { "via", { { "type", "array" }, { "items", { { "type", "number" } } } } },
-                                 { "layer", { { "type", "string" } } },
-                                 { "width", { { "type", "number" } } },
-                                 { "dry_run", { { "type", "boolean" } } },
-                                 { "strict", { { "type", "boolean" }, { "description", "refuse a route that strays off the waypoints" } } } },
-                               { "from" } ),
-                       [&aIpc]( const json& a ) { return routeTrack( aIpc, a ); } } );
+                       "drawing. Mm, Y down.", json::object(),
+                       [&aIpc]( const json& a ) { return routeTrack( aIpc, a ); }, "", std::vector<params::PARAM>{
+                             params::Boolean( "dry_run" ),
+                             params::Any( "from", {}, "\"U1.5\" or [x, y] (a point inside a pad: the track leaves the pad there, not at its centre)" ).Required(),
+                             params::String( "layer" ),
+                             params::Boolean( "strict", "refuse a route that strays off the waypoints" ),
+                             params::Any( "to", {}, "\"C3.1\", [x, y], or \"zone\" (the net's pour); omit: ratsnest" ),
+                             params::Array( "via", params::Number( "" ) ),
+                             params::Array( "waypoints", params::Any( "", {} ) ),
+                             params::Number( "width" ).Unit( "mm" ).Positive() }} );
 
     tools.push_back( { "route_short",
                        "Route the unrouted connections (ratsnest lines) of refs and / or nets, shortest "
@@ -3394,16 +3351,16 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                        "the spots along the straight line tried in turn, none inside the pads of an IC with an exposed / thermal "
                        "pad (a QFN: allow_under_ic=true allows it; an LQFP's body is free). The failures say how far they got and what is in the way "
                        "(delete_tracks or move the part). All of it is one undoable edit; dry_run reports "
-                       "what would and would not route without drawing.",
-                       schema( { { "refs", refs },
-                                 { "nets", nets },
-                                 { "max_length", { { "type", "number" } } },
-                                 { "layer", { { "type", "string" } } },
-                                 { "dry_run", { { "type", "boolean" } } },
-                                 { "vias", { { "type", "boolean" }, { "description", "default true" } } },
-                                 { "allow_under_ic", { { "type", "boolean" }, { "description", "vias under a QFN's body too (default false)" } } },
-                                 { "detail", DETAIL_PROP } } ),
-                       [&aIpc]( const json& a ) { return routeShort( aIpc, a ); } } );
+                       "what would and would not route without drawing.", json::object(),
+                       [&aIpc]( const json& a ) { return routeShort( aIpc, a ); }, "", std::vector<params::PARAM>{
+                             params::Boolean( "allow_under_ic", "vias under a QFN's body too (default false)" ),
+                             params::Boolean( "detail", "List every part / violation (default: long lists cut short)" ),
+                             params::Boolean( "dry_run" ),
+                             params::String( "layer" ),
+                             params::Number( "max_length" ).Unit( "mm" ).Positive(),
+                             params::Strings( "nets", "Net names, e.g. [\"GND\", \"/USB_D+\"]" ),
+                             params::Strings( "refs", "Reference designators, e.g. [\"U5\", \"C12\"]" ),
+                             params::Boolean( "vias", "default true" ) }} );
 
     tools.push_back( { "fanout",
                        "Fan out SMD pads of nets (e.g. GND, +3V3) to a copper zone of the same net on "
@@ -3412,15 +3369,14 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                        "Through-hole pads are skipped (they reach every layer), and so are pads already "
                        "joined to the zone; a net without such a zone gets a warning, not dangling vias. "
                        "refs: only these parts; layer: the zone's layer. One undoable edit; the zones are "
-                       "refilled afterwards (refill=false to skip); dry_run reports without drawing.",
-                       schema( { { "nets", nets },
-                                 { "refs", refs },
-                                 { "layer", { { "type", "string" } } },
-                                 { "dry_run", { { "type", "boolean" } } },
-                                 { "refill", { { "type", "boolean" } } },
-                                 { "detail", DETAIL_PROP } },
-                               { "nets" } ),
-                       [&aIpc]( const json& a ) { return fanout( aIpc, a ); } } );
+                       "refilled afterwards (refill=false to skip); dry_run reports without drawing.", json::object(),
+                       [&aIpc]( const json& a ) { return fanout( aIpc, a ); }, "", std::vector<params::PARAM>{
+                             params::Boolean( "detail", "List every part / violation (default: long lists cut short)" ),
+                             params::Boolean( "dry_run" ),
+                             params::String( "layer" ),
+                             params::Strings( "nets", "Net names, e.g. [\"GND\", \"/USB_D+\"]" ).Required(),
+                             params::Boolean( "refill" ),
+                             params::Strings( "refs", "Reference designators, e.g. [\"U5\", \"C12\"]" ) }} );
 
     tools.push_back( { "stitch_vias",
                        "Stitching vias for a net's pours (default GND): through vias on a grid (spacing, "
@@ -3430,38 +3386,37 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                        "areas, and outside the parts' courtyards (under_parts=true allows them there). Then "
                        "one via in each island of the net's copper that has none (islands=false skips it). "
                        "Net class via size. The zones are refilled before and after; one undoable edit; "
-                       "dry_run counts without adding.",
-                       schema( { { "net", { { "type", "string" } } },
-                                 { "spacing", { { "type", "number" }, { "description", "mm" } } },
-                                 { "area", { { "type", "array" }, { "items", { { "type", "number" } } } } },
-                                 { "under_parts", { { "type", "boolean" } } },
-                                 { "islands", { { "type", "boolean" } } },
-                                 { "max", { { "type", "integer" } } },
-                                 { "dry_run", { { "type", "boolean" } } },
-                                 { "refill", { { "type", "boolean" } } } } ),
-                       [&aIpc]( const json& a ) { return stitchVias( aIpc, a ); } } );
+                       "dry_run counts without adding.", json::object(),
+                       [&aIpc]( const json& a ) { return stitchVias( aIpc, a ); }, "", std::vector<params::PARAM>{
+                             params::Array( "area", params::Number( "" ) ),
+                             params::Boolean( "dry_run" ),
+                             params::Boolean( "islands" ),
+                             params::Integer( "max" ).Range( 0 ),
+                             params::String( "net" ),
+                             params::Boolean( "refill" ),
+                             params::Number( "spacing", "mm" ).Unit( "mm" ).Positive(),
+                             params::Boolean( "under_parts" ) }} );
 
     tools.push_back( { "teardrops",
                        "Teardrops (KiCad's own: copper that widens a track into its pad or via) on every "
                        "via and through-hole pad, or remove=true to take them off. smd=true adds SMD pads; "
                        "vias=false / pth=false leave those out; nets / refs narrow it (refs alone: those "
                        "parts' pads only). They follow later edits as in the editor. One undoable edit; the "
-                       "zones are refilled.",
-                       schema( { { "remove", { { "type", "boolean" } } },
-                                 { "vias", { { "type", "boolean" } } },
-                                 { "pth", { { "type", "boolean" } } },
-                                 { "smd", { { "type", "boolean" } } },
-                                 { "nets", nets },
-                                 { "refs", refs },
-                                 { "dry_run", { { "type", "boolean" } } } } ),
-                       [&aIpc]( const json& a ) { return teardrops( aIpc, a ); } } );
+                       "zones are refilled.", json::object(),
+                       [&aIpc]( const json& a ) { return teardrops( aIpc, a ); }, "", std::vector<params::PARAM>{
+                             params::Boolean( "dry_run" ),
+                             params::Strings( "nets", "Net names, e.g. [\"GND\", \"/USB_D+\"]" ),
+                             params::Boolean( "pth" ),
+                             params::Strings( "refs", "Reference designators, e.g. [\"U5\", \"C12\"]" ),
+                             params::Boolean( "remove" ),
+                             params::Boolean( "smd" ),
+                             params::Boolean( "vias" ) }} );
 
     tools.push_back( { "get_rules",
                        "The design rules: net classes (clearance, track width, via, diff pair; unset values "
                        "come from Default) with how many nets each has, the net class assignments by net name "
-                       "pattern, and the board's minimum constraints. Lengths in mm.",
-                       schema( json::object() ),
-                       [&aIpc]( const json& ) { return getRules( aIpc ); } } );
+                       "pattern, and the board's minimum constraints. Lengths in mm.", json::object(),
+                       [&aIpc]( const json& ) { return getRules( aIpc ); }, "", std::vector<params::PARAM>{}} );
 
     tools.push_back( { "set_rules",
                        "Change the design rules as one undoable edit (undo / redo; save_board writes them "
@@ -3482,14 +3437,14 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                        "\"min_silk_text_thickness\"} (mm). preset: a fab's standard process as the board minimums "
                        "(and the Default class raised to them): jlcpcb_2layer, jlcpcb_4layer, jlcpcb_6layer; the "
                        "rest of the call goes on top. Existing tracks keep their width. "
-                       "drc (default true) runs DRC before and after and reports the change in errors.",
-                       schema( { { "preset", { { "type", "string" }, { "enum", { "jlcpcb_2layer", "jlcpcb_4layer", "jlcpcb_6layer" } } } },
-                                 { "classes", { { "type", "object" } } },
-                                 { "remove_classes", strings( "Net class names to remove, e.g. [\"USB\"]" ) },
-                                 { "assign", { { "type", "object" } } },
-                                 { "constraints", { { "type", "object" } } },
-                                 { "drc", { { "type", "boolean" } } } } ),
-                       [&aIpc]( const json& a ) { return setRules( aIpc, a ); } } );
+                       "drc (default true) runs DRC before and after and reports the change in errors.", json::object(),
+                       [&aIpc]( const json& a ) { return setRules( aIpc, a ); }, "", std::vector<params::PARAM>{
+                             params::Map( "assign", params::Any( "", {} ) ),
+                             params::Map( "classes", params::Any( "", {} ) ),
+                             params::Map( "constraints", params::Any( "", {} ) ),
+                             params::Boolean( "drc" ),
+                             params::Enum( "preset", { "jlcpcb_2layer", "jlcpcb_4layer", "jlcpcb_6layer" } ),
+                             params::Strings( "remove_classes", "Net class names to remove, e.g. [\"USB\"]" ) }} );
 
     tools.push_back( { "zones",
                        "Copper zones (pours): list, create, or change them. No arguments: the list (id, net, "
@@ -3502,36 +3457,29 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                        "Change settings: choose with nets, layers, ids (from the list) or all=true, and give "
                        "clearance, min_width (mm), priority, connection (solid / thermal / none / thermal_tht), "
                        "thermal_gap, thermal_spoke (mm). Each is one undoable edit, refilled afterwards unless "
-                       "refill=false.",
-                       schema( { { "nets", nets },
-                                 { "layers", strings( "Layer names, e.g. [\"F.Cu\", \"In1.Cu\"]" ) },
-                                 { "ids", strings( "Zone ids from the list" ) },
-                                 { "all", { { "type", "boolean" } } },
-                                 { "clearance", { { "type", "number" } } },
-                                 { "min_width", { { "type", "number" } } },
-                                 { "priority", { { "type", "integer" } } },
-                                 { "connection", { { "type", "string" }, { "enum", { "solid", "thermal", "none", "thermal_tht" } } } },
-                                 { "thermal_gap", { { "type", "number" } } },
-                                 { "thermal_spoke", { { "type", "number" } } },
-                                 { "create",
-                                   { { "type", "object" },
-                                     { "description", "a new zone (not together with nets / layers / ids / all)" },
-                                     { "properties",
-                                       { { "net", { { "type", "string" }, { "description", "e.g. GND" } } },
-                                         { "layers", { { "type", "array" }, { "items", { { "type", "string" } } },
-                                                       { "description", "default [\"F.Cu\", \"B.Cu\"]; [\"all\"]: every copper layer" } } },
-                                         { "rect", { { "type", "array" }, { "items", { { "type", "number" } } },
-                                                     { "description", "[x0, y0, x1, y1] in mm: a rectangle" } } },
-                                         { "outline", { { "type", "array" },
-                                                        { "description", "[[x, y], ...] in mm; default the board outline" } } },
-                                         { "priority", { { "type", "integer" },
-                                                         { "description", "default 0, or above the bigger zones it lies in" } } },
-                                         { "clearance", { { "type", "number" } } },
-                                         { "min_width", { { "type", "number" } } },
-                                         { "connection", { { "type", "string" }, { "enum", { "solid", "thermal", "none", "thermal_tht" } } } },
-                                         { "name", { { "type", "string" } } } } } } },
-                                 { "refill", { { "type", "boolean" } } } } ),
-                       [&aIpc]( const json& a ) { return zonesTool( aIpc, a ); } } );
+                       "refill=false.", json::object(),
+                       [&aIpc]( const json& a ) { return zonesTool( aIpc, a ); }, "", std::vector<params::PARAM>{
+                             params::Boolean( "all" ),
+                             params::Number( "clearance" ).Unit( "mm" ).Range( 0 ),
+                             params::Enum( "connection", { "solid", "thermal", "none", "thermal_tht" } ),
+                             params::Object( "create",
+                                 { params::Number( "clearance" ).Unit( "mm" ).Range( 0 ),
+                                 params::Enum( "connection", { "solid", "thermal", "none", "thermal_tht" } ),
+                                 params::Strings( "layers", "default [\"F.Cu\", \"B.Cu\"]; [\"all\"]: every copper layer" ),
+                                 params::Number( "min_width" ).Unit( "mm" ).Positive(),
+                                 params::String( "name" ),
+                                 params::String( "net", "e.g. GND" ),
+                                 params::Array( "outline", params::Any( "", {} ), "[[x, y], ...] in mm; default the board outline" ),
+                                 params::Integer( "priority", "default 0, or above the bigger zones it lies in" ).Range( 0 ),
+                                 params::Array( "rect", params::Number( "" ), "[x0, y0, x1, y1] in mm: a rectangle" ) }, "a new zone (not together with nets / layers / ids / all)" ),
+                             params::Strings( "ids", "Zone ids from the list" ),
+                             params::Strings( "layers", "Layer names, e.g. [\"F.Cu\", \"In1.Cu\"]" ),
+                             params::Number( "min_width" ).Unit( "mm" ).Positive(),
+                             params::Strings( "nets", "Net names, e.g. [\"GND\", \"/USB_D+\"]" ),
+                             params::Integer( "priority" ).Range( 0 ),
+                             params::Boolean( "refill" ),
+                             params::Number( "thermal_gap" ).Unit( "mm" ).Range( 0 ),
+                             params::Number( "thermal_spoke" ).Unit( "mm" ).Positive() }} );
 
     tools.push_back( { "board_outline",
                        "Draw the board outline on Edge.Cuts (the old board-level Edge.Cuts shapes are "
@@ -3544,16 +3492,16 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                        "they become footprints H1, H2 ... out of the BOM and the CPL; one where a part already has "
                        "a hole is left out. Reports the size, area, the parts now outside or on a cut-out, and "
                        "warns of holes on parts or tracks and of tracks a cut-out or the outline cuts. One "
-                       "undoable edit. Then zones create for a pour.",
-                       schema( { { "rect", { { "type", "array" }, { "items", { { "type", "number" } } } } },
-                                 { "circle", { { "type", "array" }, { "items", { { "type", "number" } } } } },
-                                 { "corner_radius", { { "type", "number" } } },
-                                 { "cutouts", { { "type", "array" } } },
-                                 { "holes", { { "type", "array" } } },
-                                 { "hole_inset", { { "type", "number" } } },
-                                 { "hole_diameter", { { "type", "number" } } },
-                                 { "keep_old", { { "type", "boolean" } } } } ),
-                       [&aIpc]( const json& a ) { return boardOutline( aIpc, a ); } } );
+                       "undoable edit. Then zones create for a pour.", json::object(),
+                       [&aIpc]( const json& a ) { return boardOutline( aIpc, a ); }, "", std::vector<params::PARAM>{
+                             params::Array( "circle", params::Number( "" ) ),
+                             params::Number( "corner_radius" ).Unit( "mm" ).Range( 0 ),
+                             params::Array( "cutouts", params::Any( "", {} ) ),
+                             params::Number( "hole_diameter" ).Unit( "mm" ).Positive(),
+                             params::Number( "hole_inset" ).Unit( "mm" ).Range( 0 ),
+                             params::Array( "holes", params::Any( "", {} ) ),
+                             params::Boolean( "keep_old" ),
+                             params::Array( "rect", params::Number( "" ) ) }} );
 
     tools.push_back( { "board_setup",
                        "The board's layers and stackup. No arguments: what they are (copper layers, thickness, "
@@ -3563,13 +3511,13 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                        "stackups, 4 and 6 layers, nominal 1.6 mm, though the layers in JLCPCB's tables add up to 1.45-1.65 mm; stackup=\"list\" names them) sets the fab's own: "
                        "layer count, prepreg / core thicknesses and dielectric constants, for controlled-"
                        "impedance widths. Fewer layers only when the ones that go are empty. One undoable edit. "
-                       "Pair with set_rules preset (e.g. jlcpcb_4layer) and zones create on the inner layers.",
-                       schema( { { "stackup", { { "type", "string" } } },
-                                 { "copper_layers", { { "type", "integer" } } },
-                                 { "thickness", { { "type", "number" } } },
-                                 { "outer_copper_oz", { { "type", "number" } } },
-                                 { "inner_copper_oz", { { "type", "number" } } } } ),
-                       [&aIpc]( const json& a ) { return boardSetup( aIpc, a ); } } );
+                       "Pair with set_rules preset (e.g. jlcpcb_4layer) and zones create on the inner layers.", json::object(),
+                       [&aIpc]( const json& a ) { return boardSetup( aIpc, a ); }, "", std::vector<params::PARAM>{
+                             params::Integer( "copper_layers" ).Range( 1, 32 ),
+                             params::Number( "inner_copper_oz" ).Unit( "oz" ).Positive(),
+                             params::Number( "outer_copper_oz" ).Unit( "oz" ).Positive(),
+                             params::String( "stackup" ),
+                             params::Number( "thickness" ).Unit( "mm" ).Positive() }} );
 
     tools.push_back( { "impedance",
                        "Controlled impedance from the board's stackup, per copper layer; changes nothing (set_rules "
@@ -3585,15 +3533,14 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                        "2-layer board's way to a lower Z0 at a usable width; pairs with a pour beside them are not "
                        "worked out). layers: default all. Uses "
                        "KiCad's transmission line calculations (as pcb_calculator); set board_setup stackup=... "
-                       "first for a fab's dielectrics, and check with the fab's calculator before ordering.",
-                       schema( { { "z", { { "type", "number" } } },
-                                 { "z_diff", { { "type", "number" } } },
-                                 { "width", { { "type", "number" } } },
-                                 { "gap", { { "type", "number" } } },
-                                 { "ground_gap", { { "type", "number" }, { "description", "mm to ground copper beside it (CPWG)" } } },
-                                 { "layers", { { "type", "array" }, { "items", { { "type", "string" } } },
-                                               { "description", "copper layers, e.g. [\"F.Cu\", \"In2.Cu\"]; default all" } } } } ),
-                       [&aIpc]( const json& a ) { return impedanceTool( aIpc, a ); } } );
+                       "first for a fab's dielectrics, and check with the fab's calculator before ordering.", json::object(),
+                       [&aIpc]( const json& a ) { return impedanceTool( aIpc, a ); }, "", std::vector<params::PARAM>{
+                             params::Number( "gap" ).Unit( "mm" ).Positive(),
+                             params::Number( "ground_gap", "mm to ground copper beside it (CPWG)" ).Unit( "mm" ).Positive(),
+                             params::Strings( "layers", "copper layers, e.g. [\"F.Cu\", \"In2.Cu\"]; default all" ),
+                             params::Number( "width" ).Unit( "mm" ).Positive(),
+                             params::Number( "z" ).Unit( "Ω" ).Positive(),
+                             params::Number( "z_diff" ).Unit( "Ω" ).Positive() }} );
 
     tools.push_back( { "pcb_set_fields",
                        "Change footprints' fields and attributes on the board as one undoable edit. parts: "
@@ -3604,55 +3551,52 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                        "hand). Attributes: dnp, exclude_from_bom, exclude_from_pos. The footprint is not "
                        "changed here. A board made from a schematic takes its fields and references from it: "
                        "change them there (sch_set_fields), then sync_pcb. Refs that are not found are listed; "
-                       "the other parts are changed anyway.",
-                       schema( { { "parts", { { "type", "object" }, { "additionalProperties", { { "type", "object" } } } } },
-                                 { "refs", refs },
-                                 { "set", { { "type", "object" } } } } ),
-                       [&aIpc]( const json& a ) { return pcbSetFields( aIpc, a ); } } );
+                       "the other parts are changed anyway.", json::object(),
+                       [&aIpc]( const json& a ) { return pcbSetFields( aIpc, a ); }, "", std::vector<params::PARAM>{
+                             params::Map( "parts", params::Map( "", params::Any( "", {} ) ) ).ItemSchema(),
+                             params::Strings( "refs", "Reference designators, e.g. [\"U5\", \"C12\"]" ),
+                             params::Map( "set", params::Any( "", {} ) ) }} );
 
     tools.push_back( { "undo",
                        "Undo the last KiCadD edit (move/rotate/flip/add/delete/auto_place/delete_tracks), restoring the exact previous "
                        "state. Parts the user changed since are left alone; an edit the user already undid "
                        "in the editor (Ctrl+Z) is reported as such. Tracks, zones or the outline put back: the zones are refilled. "
-                       "Returns what was undone, new positions and local DRC (around moved parts).",
-                       schema( { { "detail", DETAIL_PROP } } ),
-                       [&aIpc]( const json& a ) { return history( aIpc, true, detailOf( a ) ); } } );
+                       "Returns what was undone, new positions and local DRC (around moved parts).", json::object(),
+                       [&aIpc]( const json& a ) { return history( aIpc, true, detailOf( a ) ); }, "", std::vector<params::PARAM>{
+                             params::Boolean( "detail", "List every part / violation (default: long lists cut short)" ) }} );
 
     tools.push_back( { "redo",
-                       "Redo the last undone edit.",
-                       schema( { { "detail", DETAIL_PROP } } ),
-                       [&aIpc]( const json& a ) { return history( aIpc, false, detailOf( a ) ); } } );
+                       "Redo the last undone edit.", json::object(),
+                       [&aIpc]( const json& a ) { return history( aIpc, false, detailOf( a ) ); }, "", std::vector<params::PARAM>{
+                             params::Boolean( "detail", "List every part / violation (default: long lists cut short)" ) }} );
 
     tools.push_back( { "check_drc",
-                       "Local DRC for the given footprints against their surroundings, without moving them.",
-                       schema( { { "refs", refs }, { "detail", DETAIL_PROP } }, { "refs" } ),
-                       [&aIpc]( const json& a ) { return checkDrc( aIpc, a ); } } );
+                       "Local DRC for the given footprints against their surroundings, without moving them.", json::object(),
+                       [&aIpc]( const json& a ) { return checkDrc( aIpc, a ); }, "", std::vector<params::PARAM>{
+                             params::Boolean( "detail", "List every part / violation (default: long lists cut short)" ),
+                             params::Strings( "refs", "Reference designators, e.g. [\"U5\", \"C12\"]" ).Required() }} );
 
     tools.push_back( { "flush_ratsnest",
                        "Rebuild the ratsnest of large nets deferred during moves; returns the complete "
-                       "unrouted-connection count.",
-                       schema( json::object() ),
-                       [&aIpc]( const json& ) { return flushRatsnest( aIpc ); } } );
+                       "unrouted-connection count.", json::object(),
+                       [&aIpc]( const json& ) { return flushRatsnest( aIpc ); }, "", std::vector<params::PARAM>{}} );
 
     tools.push_back( { "run_drc",
                        "Full-board DRC (all KiCad checks: clearance, shorts, unconnected, courtyards, "
                        "silk, edge, holes, ...). Takes seconds on large boards. Output: whole-board counts by type, "
                        "then (with types/refs/include_warnings=false) the counts matching the filter, "
                        "then violations (errors first) as 'E|W type itemA[net] x itemB[net] layer @x,y "
-                       "detail'. Refill zones first if parts moved.",
-                       schema( { { "limit", { { "type", "integer" }, { "description", "Max violations listed (default 40)" } } },
-                                 { "include_warnings", { { "type", "boolean" }, { "description", "Default true" } } },
-                                 { "types", { { "type", "array" }, { "items", { { "type", "string" } } },
-                                              { "description", "Only these types, e.g. [\"clearance\", \"shorting_items\"]" } } },
-                                 { "refs", { { "type", "array" }, { "items", { { "type", "string" } } },
-                                             { "description", "Only violations involving these footprints" } } } } ),
-                       [&aIpc]( const json& a ) { return runDrc( aIpc, a ); } } );
+                       "detail'. Refill zones first if parts moved.", json::object(),
+                       [&aIpc]( const json& a ) { return runDrc( aIpc, a ); }, "", std::vector<params::PARAM>{
+                             params::Boolean( "include_warnings", "Default true" ),
+                             params::Integer( "limit", "Max violations listed (default 40)" ).Range( 0 ),
+                             params::Strings( "refs", "Only violations involving these footprints" ),
+                             params::Strings( "types", "Only these types, e.g. [\"clearance\", \"shorting_items\"]" ) }} );
 
     tools.push_back( { "refill_zones",
                        "Refill all copper zones. Fills go stale when parts move; refill before judging "
-                       "copper connectivity, running full DRC or saving for fabrication.",
-                       schema( json::object() ),
-                       [&aIpc]( const json& ) { return refillZones( aIpc ); } } );
+                       "copper connectivity, running full DRC or saving for fabrication.", json::object(),
+                       [&aIpc]( const json& ) { return refillZones( aIpc ); }, "", std::vector<params::PARAM>{}} );
 
     tools.push_back( { "lcsc_search",
                        "Find JLCPCB / LCSC parts by specification, e.g. value \"100nF\", package \"0402\", "
@@ -3667,23 +3611,21 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                        "SI units, prefixes allowed; a part without the parameter does not match (a bad name "
                        "lists them). Inductor Isat is in the data for about half the inductors and for no "
                        "basic / preferred one: with where i_sat leave basic_only off (or filter on i_rated). "
-                       "Then sch_add_part lcsc=... places one.",
-                       schema( { { "keyword", { { "type", "string" } } },
-                                 { "category", { { "type", "string" },
-                                                 { "description", "resistor, capacitor, inductor, or a JLCPCB category word (\"LDO\", \"MOSFET\")" } } },
-                                 { "value", { { "type", "string" }, { "description", "100nF, 10k, 4k7, 2.2uH" } } },
-                                 { "package", { { "type", "string" } } },
-                                 { "tolerance", { { "type", "number" }, { "description", "%, at most" } } },
-                                 { "voltage_min", { { "type", "number" }, { "description", "V rating, at least" } } },
-                                 { "dielectric", { { "type", "string" } } },
-                                 { "basic_only", { { "type", "boolean" } } },
-                                 { "min_stock", { { "type", "integer" } } },
-                                 { "limit", { { "type", "integer" } } },
-                                 { "live", { { "type", "integer" } } },
-                                 { "update", { { "type", "boolean" }, { "description", "fetch the index again now" } } },
-                                 { "where", { { "type", "object" },
-                                              { "description", "parameter -> condition: \"<=20m\", \">=30V\", \"1u..10u\", \"3.3\"" } } } } ),
-                       [&aIpc]( const json& a ) { return lcscSearch( aIpc, a ); } } );
+                       "Then sch_add_part lcsc=... places one.", json::object(),
+                       [&aIpc]( const json& a ) { return lcscSearch( aIpc, a ); }, "", std::vector<params::PARAM>{
+                             params::Boolean( "basic_only" ),
+                             params::String( "category", "resistor, capacitor, inductor, or a JLCPCB category word (\"LDO\", \"MOSFET\")" ),
+                             params::String( "dielectric" ),
+                             params::String( "keyword" ),
+                             params::Integer( "limit" ).Range( 0 ),
+                             params::Integer( "live" ),
+                             params::Integer( "min_stock" ).Range( 0 ),
+                             params::String( "package" ),
+                             params::Number( "tolerance", "%, at most" ).Unit( "%" ).Range( 0 ),
+                             params::Boolean( "update", "fetch the index again now" ),
+                             params::String( "value", "100nF, 10k, 4k7, 2.2uH" ),
+                             params::Number( "voltage_min", "V rating, at least" ).Unit( "V" ).Range( 0 ),
+                             params::Map( "where", params::Any( "", {} ), "parameter -> condition: \"<=20m\", \">=30V\", \"1u..10u\", \"3.3\"" ) }} );
 
     tools.push_back( { "board_render",
                        "A picture (PNG) of the board as it is now, to look at what coordinates do not "
@@ -3694,24 +3636,20 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                        "keeps the whole board); marks [[x, y, \"label\"], ...] mm rings points (audit's IR "
                        "hotspots: the worst load, the busiest via) and zooms to them too; area [x0, y0, x1, y1] mm for a region. Rulers in mm on the "
                        "top and left. size: pixels on the long side (default 1200). labels=true writes every "
-                       "part's reference. path also saves the PNG (relative: in the project folder).",
-                       schema( { { "layers", { { "type", "array" }, { "items", { { "type", "string" } } },
-                                               { "description", "front, back, copper, silk, fab, assembly, or "
-                                                                "layer names (F.Cu, In1.Cu, F.Silkscreen, F.Fab, ...)" } } },
-                                 { "refs", { { "type", "array" }, { "items", { { "type", "string" } } } } },
-                                 { "nets", { { "type", "array" }, { "items", { { "type", "string" } } } } },
-                                 { "area", { { "type", "array" }, { "items", { { "type", "number" } } },
-                                             { "description", "[x0, y0, x1, y1] mm" } } },
-                                 { "marks", { { "type", "array" }, { "items", { { "type", "array" } } },
-                                              { "description", "[[x, y, \"label\"], ...] mm" } } },
-                                 { "zoom", { { "type", "boolean" } } },
-                                 { "size", { { "type", "integer" } } },
-                                 { "margin", { { "type", "number" }, { "description", "mm around a zoom (3)" } } },
-                                 { "ratsnest", { { "type", "boolean" }, { "description", "default true" } } },
-                                 { "labels", { { "type", "boolean" } } },
-                                 { "back", { { "type", "boolean" } } },
-                                 { "path", { { "type", "string" } } } } ),
-                       [&aIpc]( const json& a ) { return boardRender( aIpc, a ); } } );
+                       "part's reference. path also saves the PNG (relative: in the project folder).", json::object(),
+                       [&aIpc]( const json& a ) { return boardRender( aIpc, a ); }, "", std::vector<params::PARAM>{
+                             params::Array( "area", params::Number( "" ), "[x0, y0, x1, y1] mm" ),
+                             params::Boolean( "back" ),
+                             params::Boolean( "labels" ),
+                             params::Strings( "layers", "front, back, copper, silk, fab, assembly, or layer names (F.Cu, In1.Cu, F.Silkscreen, F.Fab, ...)" ),
+                             params::Number( "margin", "mm around a zoom (3)" ).Unit( "mm" ).Range( 0 ),
+                             params::Array( "marks", params::Array( "", params::Any( "", {} ) ), "[[x, y, \"label\"], ...] mm" ),
+                             params::Strings( "nets" ),
+                             params::String( "path" ),
+                             params::Boolean( "ratsnest", "default true" ),
+                             params::Strings( "refs" ),
+                             params::Integer( "size" ).Range( 0 ),
+                             params::Boolean( "zoom" ) }} );
 
     tools.push_back( { "board_render_3d",
                        "A 3D picture (PNG) of the board as it is now (unsaved edits included), from KiCad's own "
@@ -3722,19 +3660,19 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                        "or high (reflections, shadows: slower); floor; perspective. Only VRML models load in this "
                        "build: the parts drawn without a body are listed (no model, file not found, STEP). "
                        "In the desktop editor the window waits while it renders (seconds). path also saves the "
-                       "PNG (relative: in the project folder).",
-                       schema( { { "side", { { "type", "string" }, { "enum", { "top", "bottom", "front", "back", "left", "right" } } } },
-                                 { "rot_x", { { "type", "number" } } },
-                                 { "rot_y", { { "type", "number" } } },
-                                 { "rot_z", { { "type", "number" } } },
-                                 { "zoom", { { "type", "number" } } },
-                                 { "width", { { "type", "integer" } } },
-                                 { "height", { { "type", "integer" } } },
-                                 { "quality", { { "type", "string" }, { "enum", { "basic", "high" } } } },
-                                 { "floor", { { "type", "boolean" } } },
-                                 { "perspective", { { "type", "boolean" } } },
-                                 { "path", { { "type", "string" } } } } ),
-                       [&aIpc]( const json& a ) { return boardRender3d( aIpc, a ); } } );
+                       "PNG (relative: in the project folder).", json::object(),
+                       [&aIpc]( const json& a ) { return boardRender3d( aIpc, a ); }, "", std::vector<params::PARAM>{
+                             params::Boolean( "floor" ),
+                             params::Integer( "height" ).Positive(),
+                             params::String( "path" ),
+                             params::Boolean( "perspective" ),
+                             params::Enum( "quality", { "basic", "high" } ),
+                             params::Number( "rot_x" ),
+                             params::Number( "rot_y" ),
+                             params::Number( "rot_z" ),
+                             params::Enum( "side", { "top", "bottom", "front", "back", "left", "right" } ),
+                             params::Integer( "width" ).Positive(),
+                             params::Number( "zoom" ).Positive() }} );
 
     tools.push_back( { "export_assembly",
                        "Write the assembly drawing (PDF) from the board as it is now: a page for the top and, when "
@@ -3742,10 +3680,7 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                        "scaled to the page. KiCad's plot of the Fab layer (outlines, reference text, pads sketched) and "
                        "the outline; parts with no Fab drawing (LCSC / EasyEDA footprints) get their outline, pin 1 and "
                        "reference from the courtyard; DNP parts are crossed out. values=true adds the values. dir "
-                       "defaults to <project>/fab (<board>-assembly.pdf), path names the file.",
-                       schema( { { "dir", { { "type", "string" } } },
-                                 { "path", { { "type", "string" } } },
-                                 { "values", { { "type", "boolean" } } } } ),
+                       "defaults to <project>/fab (<board>-assembly.pdf), path names the file.", json::object(),
                        [&aIpc]( const json& a ) -> TOOL_RESULT
                        {
                            kb::ExportAssembly req;
@@ -3769,7 +3704,10 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                                t += "; " + std::to_string( r.dnp() ) + " DNP crossed out";
 
                            return { t + "\n", false };
-                       } } );
+                       }, "", std::vector<params::PARAM>{
+                             params::String( "dir" ),
+                             params::String( "path" ),
+                             params::Boolean( "values" ) }} );
 
     tools.push_back( { "export_fab",
                        "Write the fabrication files for JLCPCB from the board as it is now (unsaved edits "
@@ -3780,34 +3718,29 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                        "(drc=false skips it). strict=true writes nothing when DRC has errors, a reference "
                        "is on two footprints or a part is outside the outline. dir defaults to <project>/fab. "
                        "Notes name the DNP and exclude-from-BOM parts left out, and flag excluded parts wired "
-                       "like fitted ones (pads on 2+ nets): nobody buys or places them.",
-                       schema( { { "dir", { { "type", "string" } } },
-                                 { "drc", { { "type", "boolean" }, { "description", "default true" } } },
-                                 { "strict", { { "type", "boolean" },
-                                               { "description", "refuse to write when DRC has errors or a "
-                                                                "reference / placement problem is found" } } },
-                                 { "zip", { { "type", "boolean" }, { "description", "default true" } } },
-                                 { "refill", { { "type", "boolean" }, { "description", "default true" } } } } ),
-                       [&aIpc]( const json& a ) { return exportFab( aIpc, a ); } } );
+                       "like fitted ones (pads on 2+ nets): nobody buys or places them.", json::object(),
+                       [&aIpc]( const json& a ) { return exportFab( aIpc, a ); }, "", std::vector<params::PARAM>{
+                             params::String( "dir" ),
+                             params::Boolean( "drc", "default true" ),
+                             params::Boolean( "refill", "default true" ),
+                             params::Boolean( "strict", "refuse to write when DRC has errors or a reference / placement problem is found" ),
+                             params::Boolean( "zip", "default true" ) }} );
 
     tools.push_back( { "open_board",
                        "Open a .kicad_pcb (or .kicad_pro) on the server (kicad-cli api-server), replacing the current "
                        "project: the board, its schematic when there is one, the project's rules. Reopening the same "
                        "file reloads it from disk. The agent history starts over. Refused when the open board has "
                        "unsaved changes, unless discard=true (the refusal lists what board_diff finds changed). Not available with the desktop editor: there the user "
-                       "opens the file in pcbnew.",
-                       schema( { { "path", { { "type", "string" }, { "description", "Absolute path on the server" } } },
-                                 { "discard", { { "type", "boolean" },
-                                                { "description", "Drop the open board's unsaved changes (default false)" } } } },
-                               { "path" } ),
-                       [&aIpc]( const json& a ) { return openBoard( aIpc, a ); } } );
+                       "opens the file in pcbnew.", json::object(),
+                       [&aIpc]( const json& a ) { return openBoard( aIpc, a ); }, "", std::vector<params::PARAM>{
+                             params::Boolean( "discard", "Drop the open board's unsaved changes (default false)" ),
+                             params::String( "path", "Absolute path on the server" ).Required() }} );
 
     tools.push_back( { "save_board",
                        "Write the in-memory board back to its .kicad_pcb file. It is written in this build's "
                        "file format (KiCad nightly, 10.99): a file from KiCad 9 / 10 is upgraded and those "
-                       "versions may not open it any more (as when KiCad itself saves it).",
-                       schema( json::object() ),
-                       [&aIpc]( const json& ) { return saveBoard( aIpc ); } } );
+                       "versions may not open it any more (as when KiCad itself saves it).", json::object(),
+                       [&aIpc]( const json& ) { return saveBoard( aIpc ); }, "", std::vector<params::PARAM>{}} );
 
     tools.push_back( { "silk_tidy",
                        "Move silkscreen references that are over an exposed pad (within 0.15 mm), over another "
@@ -3816,13 +3749,7 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                        "horizontal or vertical as the part reads. refs: only these parts (default all); "
                        "all=true places them all, not just the ones with a problem; values=true does visible "
                        "values too; gap mm between texts (0.1); dry_run=true only says what would move. One "
-                       "undoable edit. Look at it with board_render layers=[\"silk\"].",
-                       schema( { { "refs", refs },
-                                 { "all", { { "type", "boolean" } } },
-                                 { "values", { { "type", "boolean" } } },
-                                 { "gap", { { "type", "number" } } },
-                                 { "dry_run", { { "type", "boolean" } } },
-                                 { "detail", { { "type", "boolean" }, { "description", "every move (default: 15)" } } } } ),
+                       "undoable edit. Look at it with board_render layers=[\"silk\"].", json::object(),
                        [&aIpc]( const json& a ) -> TOOL_RESULT
                        {
                            kb::SilkTidy req;
@@ -3867,7 +3794,13 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                                t += "\nleft as is: " + s;
 
                            return { t + "\n" };
-                       } } );
+                       }, "", std::vector<params::PARAM>{
+                             params::Boolean( "all" ),
+                             params::Boolean( "detail", "every move (default: 15)" ),
+                             params::Boolean( "dry_run" ),
+                             params::Number( "gap" ).Unit( "mm" ).Range( 0 ),
+                             params::Strings( "refs", "Reference designators, e.g. [\"U5\", \"C12\"]" ),
+                             params::Boolean( "values" ) }} );
 
     tools.push_back( { "board_diff",
                        "What changed since the board was last saved (or against another .kicad_pcb, file; "
@@ -3876,8 +3809,7 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                        "pads that changed net; nets added and "
                        "removed; tracks per net (segments, length, vias); zones; outline, layers, graphics. "
                        "Footprints are paired by UUID, else by reference. Read only. limit: lines per "
-                       "section (20). Zone fills and net classes are not compared.",
-                       schema( { { "file", { { "type", "string" } } }, { "limit", { { "type", "integer" } } } } ),
+                       "section (20). Zone fills and net classes are not compared.", json::object(),
                        [&aIpc]( const json& a ) -> TOOL_RESULT
                        {
                            kb::BoardDiff req;
@@ -3909,7 +3841,9 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                            }
 
                            return { t + "\n" };
-                       } } );
+                       }, "", std::vector<params::PARAM>{
+                             params::String( "file" ),
+                             params::Integer( "limit" ).Range( 0 ) }} );
 
     AddSchematicTools( tools, aIpc );     // M5a, sch_tools.cpp
     tools.push_back( PdnTool( aIpc ) );           // phase 3 item 3, pdn.cpp
@@ -3934,16 +3868,7 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                        "first line and its warnings (show=\"full\": everything; \"last\": everything of the last step only). "
                        "Stops at the first error unless stop_on_error=false. At most 500 calls. For repeated "
                        "or routine work (the same edit on many parts, edit-check loops); a step's answer "
-                       "cannot feed the next one's arguments.",
-                       schema( { { "steps", { { "type", "array" },
-                                              { "items", { { "type", "object" },
-                                                           { "properties", { { "tool", { { "type", "string" } } },
-                                                                             { "args", { { "type", "object" } } } } },
-                                                           { "required", { "tool" } } } } } },
-                                 { "repeat", { { "type", "integer" } } },
-                                 { "stop_on_error", { { "type", "boolean" } } },
-                                 { "show", { { "type", "string" }, { "enum", { "line", "last", "full" } } } } },
-                               { "steps" } ),
+                       "cannot feed the next one's arguments.", json::object(),
                        [table]( const json& a ) -> TOOL_RESULT
                        {
                            const json& steps = a.value( "steps", json::array() );
@@ -4039,11 +3964,21 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                                out += "--- last step in full:\n" + lastText;
 
                            return { out, failed > 0 && stop };
-                       } } );
+                       }, "", std::vector<params::PARAM>{
+                             params::Integer( "repeat" ).Range( 1 ),
+                             params::Enum( "show", { "line", "last", "full" } ),
+                             params::Array( "steps", params::Object( "",
+                                     { params::Map( "args", params::Any( "", {} ) ),
+                                     params::String( "tool" ).Required() } ) ).Required(),
+                             params::Boolean( "stop_on_error" ) }} );
 
     // tool_help (tool_docs.cpp); then each tool's brief for tools/list, its full text kept in
     // details, and the table batch / new_project / tool_help run from made the same
     tools.push_back( ToolHelpTool( table ) );
+
+    for( TOOL& t : tools )
+        ApplyParams( t );
+
     ApplyBriefs( tools );
     *table = tools;
 

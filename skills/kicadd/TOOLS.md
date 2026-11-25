@@ -21,13 +21,13 @@ Parameter notes:
 
 Arguments:
 
-- `kinds` (array): default footprint, pad, track, arc, via
-- `limit` (integer): Max items (default 64; via spots 8)
-- `radius` (number): Radius, mm
+- `kinds` (array): Item kinds to include (default: footprint, pad, track, arc, via)
+- `limit` (integer, >= 0): Max items (default 64; via spots 8)
+- `radius` (number, mm, > 0, required): Radius, mm
 - `ref` (string): Centre on this footprint
-- `via_net` (string): free through-via spots of this net instead of items
-- `x` (number): Centre X, mm
-- `y` (number): Centre Y, mm
+- `via_net` (string): Instead of items: free spots for a through via of this net (its class's size) within the radius, nearest first
+- `x` (number, mm): Centre X, mm
+- `y` (number, mm): Centre Y, mm
 
 ## query_net
 
@@ -37,8 +37,8 @@ Pads, tracks, vias and zones on one net (topology of a single net).
 
 Arguments:
 
-- `limit` (integer): Max items (default 256)
-- `net` (string): Net name, e.g. GND or /USB/D+
+- `limit` (integer, >= 0): Max items (default 256)
+- `net` (string, required): Net name, e.g. GND or /USB/D+
 
 ## move_footprints
 
@@ -53,14 +53,14 @@ Parameter notes:
 
 Arguments:
 
-- `detail` (boolean): list everything (default: long lists cut short)
-- `dx` (number): Delta X, mm
-- `dy` (number): Delta Y, mm (down is +)
-- `flip` (boolean): to the other side (mirrored)
-- `parts` (object): {ref: {x, y, rotation, side}}, absolute
-- `pivot` (string): each part around itself (default), or the group
-- `refs` (array): Reference designators, e.g. ["U5", "C12"]
-- `rotate` (number): Rotation delta, degrees CCW
+- `detail` (boolean): List every part / violation (default: long lists cut short)
+- `dx` (number, mm): Delta X, mm
+- `dy` (number, mm): Delta Y, mm (down is +)
+- `flip` (boolean): Move to the other side (F.Cu <-> B.Cu), mirrored left-right
+- `parts` (map): {ref: {x, y, rotation, side}}, absolute
+- `pivot` (one of each, group): Rotate/flip each part around its own anchor (default) or the parts as one group around their common centre
+- `refs` (strings): Reference designators, e.g. ["U5", "C12"]
+- `rotate` (number, °): Rotation delta, degrees CCW
 
 ## lcsc_fetch
 
@@ -70,9 +70,9 @@ Get the footprint and schematic symbol of an LCSC part (e.g. C8734) from the JLC
 
 Arguments:
 
-- `lcsc` (string): LCSC part number, e.g. C8734
+- `lcsc` (string, required): LCSC part number, e.g. C8734
 - `model` (boolean): the 3D model too (default true)
-- `pin_types` (object): set pin types: {"VREG_VOUT": "power_out", "12": "input"}
+- `pin_types` (map): set pin types: {"VREG_VOUT": "power_out", "12": "input"}
 - `refresh` (boolean): Fetch again even if cached
 - `unnumbered_pads` (string): number shell pads with no number as this pin
 
@@ -91,16 +91,16 @@ Parameter notes:
 Arguments:
 
 - `back` (boolean): Place on the bottom side
-- `detail` (boolean): list everything (default: long lists cut short)
+- `detail` (boolean): List every part / violation (default: long lists cut short)
 - `footprint` (string): Library:Name
-- `lcsc` (string): LCSC number, e.g. C8734
+- `lcsc` (string): LCSC part number, e.g. C8734 (instead of footprint)
 - `like` (string): Copy the footprint of this ref instead
-- `nets` (object): {pad: net}
-- `ref` (string): e.g. C301, or C? for the next free
-- `rotate` (number): Orientation, degrees CCW
+- `nets` (map): Pad number -> net name, e.g. {"1": "+3V3", "2": "GND"}
+- `ref` (string): Reference, e.g. C301 or C? (default: prefix of like)
+- `rotate` (number, °): Orientation, degrees CCW
 - `value` (string): Value, e.g. 100nF
-- `x` (number): Position X, mm
-- `y` (number): Position Y, mm
+- `x` (number, mm, required): Position X, mm
+- `y` (number, mm, required): Position Y, mm
 
 ## delete_footprints
 
@@ -110,8 +110,8 @@ Delete footprints as one undoable edit (undo restores them with their nets). Tra
 
 Arguments:
 
-- `detail` (boolean): list everything (default: long lists cut short)
-- `refs` (array): Reference designators, e.g. ["U5", "C12"]
+- `detail` (boolean): List every part / violation (default: long lists cut short)
+- `refs` (strings, required): Reference designators, e.g. ["U5", "C12"]
 
 ## delete_tracks
 
@@ -122,11 +122,11 @@ Delete routing (tracks, arcs, vias) as one undoable edit, e.g. before auto_place
 Arguments:
 
 - `all` (boolean)
-- `detail` (boolean): list everything (default: long lists cut short)
+- `detail` (boolean): List every part / violation (default: long lists cut short)
 - `include_locked` (boolean)
 - `keep_vias` (boolean)
-- `nets` (array): Net names, e.g. ["GND", "/USB_D+"]
-- `refs` (array): Reference designators, e.g. ["U5", "C12"]
+- `nets` (strings): Net names, e.g. ["GND", "/USB_D+"]
+- `refs` (strings): Reference designators, e.g. ["U5", "C12"]
 - `region` (array)
 
 ## route
@@ -142,13 +142,13 @@ Parameter notes:
 Arguments:
 
 - `dry_run` (boolean)
-- `from`: "U1.5" or [x, y]
+- `from` (any, required): "U1.5" or [x, y] (a point inside a pad: the track leaves the pad there, not at its centre)
 - `layer` (string)
 - `strict` (boolean): refuse a route that strays off the waypoints
-- `to`: "C3.1", [x, y], or "zone" (the net's pour); omit: ratsnest
+- `to` (any): "C3.1", [x, y], or "zone" (the net's pour); omit: ratsnest
 - `via` (array)
 - `waypoints` (array)
-- `width` (number)
+- `width` (number, mm, > 0)
 
 ## route_short
 
@@ -159,12 +159,12 @@ Route the unrouted connections (ratsnest lines) of refs and / or nets, shortest 
 Arguments:
 
 - `allow_under_ic` (boolean): vias under a QFN's body too (default false)
-- `detail` (boolean): list everything (default: long lists cut short)
+- `detail` (boolean): List every part / violation (default: long lists cut short)
 - `dry_run` (boolean)
 - `layer` (string)
-- `max_length` (number)
-- `nets` (array): Net names, e.g. ["GND", "/USB_D+"]
-- `refs` (array): Reference designators, e.g. ["U5", "C12"]
+- `max_length` (number, mm, > 0)
+- `nets` (strings): Net names, e.g. ["GND", "/USB_D+"]
+- `refs` (strings): Reference designators, e.g. ["U5", "C12"]
 - `vias` (boolean): default true
 
 ## fanout
@@ -175,12 +175,12 @@ Fan out SMD pads of nets (e.g. GND, +3V3) to a copper zone of the same net on an
 
 Arguments:
 
-- `detail` (boolean): list everything (default: long lists cut short)
+- `detail` (boolean): List every part / violation (default: long lists cut short)
 - `dry_run` (boolean)
 - `layer` (string)
-- `nets` (array): Net names, e.g. ["GND", "/USB_D+"]
+- `nets` (strings, required): Net names, e.g. ["GND", "/USB_D+"]
 - `refill` (boolean)
-- `refs` (array): Reference designators, e.g. ["U5", "C12"]
+- `refs` (strings): Reference designators, e.g. ["U5", "C12"]
 
 ## stitch_vias
 
@@ -193,10 +193,10 @@ Arguments:
 - `area` (array)
 - `dry_run` (boolean)
 - `islands` (boolean)
-- `max` (integer)
+- `max` (integer, >= 0)
 - `net` (string)
 - `refill` (boolean)
-- `spacing` (number): mm
+- `spacing` (number, mm, > 0): mm
 - `under_parts` (boolean)
 
 ## teardrops
@@ -208,9 +208,9 @@ Teardrops (KiCad's own: copper that widens a track into its pad or via) on every
 Arguments:
 
 - `dry_run` (boolean)
-- `nets` (array): Net names, e.g. ["GND", "/USB_D+"]
+- `nets` (strings): Net names, e.g. ["GND", "/USB_D+"]
 - `pth` (boolean)
-- `refs` (array): Reference designators, e.g. ["U5", "C12"]
+- `refs` (strings): Reference designators, e.g. ["U5", "C12"]
 - `remove` (boolean)
 - `smd` (boolean)
 - `vias` (boolean)
@@ -223,12 +223,12 @@ With no arguments: the design rules (net classes with clearance, track width, vi
 
 Arguments:
 
-- `assign` (object)
-- `classes` (object)
-- `constraints` (object)
+- `assign` (map)
+- `classes` (map)
+- `constraints` (map)
 - `drc` (boolean)
-- `preset` (string)
-- `remove_classes` (array): Net class names to remove, e.g. ["USB"]
+- `preset` (one of jlcpcb_2layer, jlcpcb_4layer, jlcpcb_6layer)
+- `remove_classes` (strings): Net class names to remove, e.g. ["USB"]
 
 ## zones
 
@@ -244,17 +244,26 @@ Parameter notes:
 Arguments:
 
 - `all` (boolean)
-- `clearance` (number)
-- `connection` (string)
-- `create` (object): a new zone
-- `ids` (array): Zone ids from the list
-- `layers` (array): Layer names, e.g. ["F.Cu", "In1.Cu"]
-- `min_width` (number)
-- `nets` (array): Net names, e.g. ["GND", "/USB_D+"]
-- `priority` (integer)
+- `clearance` (number, mm, >= 0)
+- `connection` (one of solid, thermal, none, thermal_tht)
+- `create` (object): a new zone (not together with nets / layers / ids / all)
+  - `create.clearance` (number, mm, >= 0)
+  - `create.connection` (one of solid, thermal, none, thermal_tht)
+  - `create.layers` (strings): default ["F.Cu", "B.Cu"]; ["all"]: every copper layer
+  - `create.min_width` (number, mm, > 0)
+  - `create.name` (string)
+  - `create.net` (string): e.g. GND
+  - `create.outline` (array): [[x, y], ...] in mm; default the board outline
+  - `create.priority` (integer, >= 0): default 0, or above the bigger zones it lies in
+  - `create.rect` (array): [x0, y0, x1, y1] in mm: a rectangle
+- `ids` (strings): Zone ids from the list
+- `layers` (strings): Layer names, e.g. ["F.Cu", "In1.Cu"]
+- `min_width` (number, mm, > 0)
+- `nets` (strings): Net names, e.g. ["GND", "/USB_D+"]
+- `priority` (integer, >= 0)
 - `refill` (boolean)
-- `thermal_gap` (number)
-- `thermal_spoke` (number)
+- `thermal_gap` (number, mm, >= 0)
+- `thermal_spoke` (number, mm, > 0)
 
 ## board_outline
 
@@ -265,10 +274,10 @@ Draw the board outline on Edge.Cuts (the old board-level Edge.Cuts shapes are re
 Arguments:
 
 - `circle` (array)
-- `corner_radius` (number)
+- `corner_radius` (number, mm, >= 0)
 - `cutouts` (array)
-- `hole_diameter` (number)
-- `hole_inset` (number)
+- `hole_diameter` (number, mm, > 0)
+- `hole_inset` (number, mm, >= 0)
 - `holes` (array)
 - `keep_old` (boolean)
 - `rect` (array)
@@ -281,11 +290,11 @@ The board's layers and stackup. No arguments: what they are (copper layers, thic
 
 Arguments:
 
-- `copper_layers` (integer)
-- `inner_copper_oz` (number)
-- `outer_copper_oz` (number)
+- `copper_layers` (integer, 1 - 32)
+- `inner_copper_oz` (number, oz, > 0)
+- `outer_copper_oz` (number, oz, > 0)
 - `stackup` (string)
-- `thickness` (number)
+- `thickness` (number, mm, > 0)
 
 ## impedance
 
@@ -299,12 +308,12 @@ Parameter notes:
 
 Arguments:
 
-- `gap` (number)
-- `ground_gap` (number): mm to ground copper beside it (CPWG)
-- `layers` (array): default all
-- `width` (number)
-- `z` (number)
-- `z_diff` (number)
+- `gap` (number, mm, > 0)
+- `ground_gap` (number, mm, > 0): mm to ground copper beside it (CPWG)
+- `layers` (strings): copper layers, e.g. ["F.Cu", "In2.Cu"]; default all
+- `width` (number, mm, > 0)
+- `z` (number, Ω, > 0)
+- `z_diff` (number, Ω, > 0)
 
 ## pcb_set_fields
 
@@ -314,9 +323,9 @@ Change footprints' fields and attributes on the board as one undoable edit. part
 
 Arguments:
 
-- `parts` (object)
-- `refs` (array): Reference designators, e.g. ["U5", "C12"]
-- `set` (object)
+- `parts` (map)
+- `refs` (strings): Reference designators, e.g. ["U5", "C12"]
+- `set` (map)
 
 ## undo
 
@@ -326,9 +335,9 @@ Undo (or with redo=true redo) the agent's last edit, restoring the exact previou
 
 Arguments:
 
-- `detail` (boolean): list everything (default: long lists cut short)
+- `target` (one of board, schematic)
 - `redo` (boolean)
-- `target` (string)
+- `detail` (boolean): List every part / violation (default: long lists cut short)
 
 ## run_drc
 
@@ -342,12 +351,12 @@ Parameter notes:
 
 Arguments:
 
-- `detail` (boolean): list everything (default: long lists cut short)
 - `include_warnings` (boolean): Default true
-- `limit` (integer): Max violations listed (default 40)
+- `limit` (integer, >= 0): Max violations listed (default 40)
+- `refs` (strings): Only violations involving these footprints
+- `types` (strings): Only these types, e.g. ["clearance", "shorting_items"]
 - `local` (boolean)
-- `refs` (array): Only violations involving these footprints
-- `types` (array): only these violation types
+- `detail` (boolean): List every part / violation (default: long lists cut short)
 
 ## refill_zones
 
@@ -369,18 +378,18 @@ Parameter notes:
 Arguments:
 
 - `basic_only` (boolean)
-- `category` (string): resistor, capacitor, inductor, LDO, MOSFET ...
+- `category` (string): resistor, capacitor, inductor, or a JLCPCB category word ("LDO", "MOSFET")
 - `dielectric` (string)
 - `keyword` (string)
-- `limit` (integer)
+- `limit` (integer, >= 0)
 - `live` (integer)
-- `min_stock` (integer)
+- `min_stock` (integer, >= 0)
 - `package` (string)
-- `tolerance` (number): %, at most
+- `tolerance` (number, %, >= 0): %, at most
 - `update` (boolean): fetch the index again now
 - `value` (string): 100nF, 10k, 4k7, 2.2uH
-- `voltage_min` (number): V rating, at least
-- `where` (object): {param: "<=20m" | ">=30" | "1..2.5"}
+- `voltage_min` (number, V, >= 0): V rating, at least
+- `where` (map): parameter -> condition: "<=20m", ">=30V", "1u..10u", "3.3"
 
 ## board_render
 
@@ -396,24 +405,24 @@ Arguments:
 
 - `area` (array): [x0, y0, x1, y1] mm
 - `back` (boolean)
-- `floor` (boolean)
 - `labels` (boolean)
-- `layers` (array): front, back, copper, silk, fab, assembly, or layer names
-- `margin` (number): mm around a zoom (3)
+- `layers` (strings): front, back, copper, silk, fab, assembly, or layer names (F.Cu, In1.Cu, F.Silkscreen, F.Fab, ...)
+- `margin` (number, mm, >= 0): mm around a zoom (3)
 - `marks` (array): [[x, y, "label"], ...] mm
-- `nets` (array)
+- `nets` (strings)
 - `path` (string)
-- `perspective` (boolean)
-- `quality` (string)
 - `ratsnest` (boolean): default true
-- `refs` (array)
+- `refs` (strings)
+- `size` (integer, >= 0)
+- `zoom` (any): 2d: true / false; 3d: a factor (1)
+- `view` (one of 2d, 3d)
+- `side` (one of top, bottom, front, back, left, right)
 - `rot_x` (number)
 - `rot_y` (number)
 - `rot_z` (number)
-- `side` (string)
-- `size` (integer)
-- `view` (string)
-- `zoom`: 2d: true / false; 3d: a factor (1)
+- `quality` (one of basic, high)
+- `floor` (boolean)
+- `perspective` (boolean)
 
 ## export
 
@@ -427,9 +436,19 @@ Parameter notes:
 
 Arguments:
 
-- `assembly` (object)
 - `fab` (object)
+  - `fab.dir` (string)
+  - `fab.drc` (boolean): default true
+  - `fab.refill` (boolean): default true
+  - `fab.strict` (boolean): refuse to write when DRC has errors or a reference / placement problem is found
+  - `fab.zip` (boolean): default true
+- `assembly` (object)
+  - `assembly.dir` (string)
+  - `assembly.path` (string)
+  - `assembly.values` (boolean)
 - `schematic_pdf` (object)
+  - `schematic_pdf.black_and_white` (boolean)
+  - `schematic_pdf.path` (string)
 
 ## project
 
@@ -443,9 +462,16 @@ Parameter notes:
 
 Arguments:
 
-- `discard` (boolean): drop the open board's unsaved changes
-- `new` (object)
 - `open` (string): a .kicad_pcb / .kicad_pro, absolute
+- `new` (object)
+  - `new.copper_layers` (integer, 1 - 32)
+  - `new.corner_radius` (number, mm, >= 0)
+  - `new.name` (string)
+  - `new.outline` (array): [width, height] mm
+  - `new.path` (string, required): Absolute: the folder, or the .kicad_pro
+  - `new.stackup` (string)
+  - `new.thickness` (number, mm, > 0)
+- `discard` (boolean): Drop the open board's unsaved changes (default false)
 
 ## save_board
 
@@ -462,10 +488,10 @@ Move silkscreen references that are over an exposed pad (within 0.15 mm), over a
 Arguments:
 
 - `all` (boolean)
-- `detail` (boolean): list everything (default: long lists cut short)
+- `detail` (boolean): every move (default: 15)
 - `dry_run` (boolean)
-- `gap` (number)
-- `refs` (array): Reference designators, e.g. ["U5", "C12"]
+- `gap` (number, mm, >= 0)
+- `refs` (strings): Reference designators, e.g. ["U5", "C12"]
 - `values` (boolean)
 
 ## board_diff
@@ -477,7 +503,7 @@ What changed since the board was last saved (or against another .kicad_pcb, file
 Arguments:
 
 - `file` (string)
-- `limit` (integer)
+- `limit` (integer, >= 0)
 
 ## sch_summary
 
@@ -507,11 +533,11 @@ Arguments:
 - `lib_id` (string)
 - `ref` (string)
 - `rotation` (integer)
-- `sheet` (string): name or path (default the root)
-- `unit` (integer): Multi-unit parts: which unit (default 1)
+- `sheet` (string): sheet to put it on (name or path; default the root)
+- `unit` (integer, >= 1): Multi-unit parts: which unit (default 1)
 - `value` (string): e.g. 10k, 100nF
-- `x` (number): mm
-- `y` (number): mm, down is +
+- `x` (number, mm): mm
+- `y` (number, mm): mm, down is +
 
 ## sch_part
 
@@ -521,7 +547,7 @@ One part of the schematic with all its pins and their nets.
 
 Arguments:
 
-- `ref` (string)
+- `ref` (string, required)
 
 ## sch_connect
 
@@ -538,10 +564,10 @@ Parameter notes:
 Arguments:
 
 - `global` (boolean)
-- `nets` (object): net name -> pins
-- `partial` (boolean): connect what fits, list the pins at fault
-- `ports` (array): nets that are sheet ports: "VOUT" or "VOUT:output"
-- `power` (array): nets drawn as power symbols
+- `nets` (map, required): net name -> pins
+- `partial` (boolean): connect what fits, list the pins at fault (default: all or none)
+- `ports` (strings): nets that are ports of their sheet: "VOUT" or "VOUT:output" (input, output, bidirectional, tri_state, passive)
+- `power` (strings): nets connected with a power symbol, e.g. ["GND", "+3V3"]
 
 ## sch_disconnect
 
@@ -551,7 +577,7 @@ Take pins off their nets: removes the wire from the pin (through its bends, up t
 
 Arguments:
 
-- `pins` (array): Pins as "REF.PIN", e.g. ["R1.2", "U1.VDD"]
+- `pins` (strings, required): Pins as "REF.PIN", e.g. ["R1.2", "U1.VDD"]
 
 ## sch_netlist
 
@@ -572,12 +598,12 @@ Add a hierarchical sheet (a new .kicad_sch file) on a sheet (default the root). 
 Arguments:
 
 - `file` (string): default <name>.kicad_sch
-- `height` (number): mm, default 25.4; grows with its pins
-- `name` (string): e.g. Power; unique among its siblings
+- `height` (number, mm, > 0): mm, default 25.4; grows with its pins
+- `name` (string, required): e.g. Power; unique among its siblings
 - `parent` (string): sheet name or path (default the root)
-- `width` (number): mm, default 50.8
-- `x` (number): top left, mm (default: a free spot)
-- `y` (number)
+- `width` (number, mm, > 0): mm, default 50.8
+- `x` (number, mm): top left, mm (default: a free spot)
+- `y` (number, mm)
 
 ## sch_delete
 
@@ -588,7 +614,7 @@ Delete from the schematic: refs (parts, with their wire stubs and labels; a shee
 Arguments:
 
 - `dangling` (boolean)
-- `refs` (array)
+- `refs` (strings)
 - `sheet` (string)
 - `wires` (array)
 
@@ -601,7 +627,7 @@ Update PCB from Schematic: brings the board in line with the schematic (the open
 Arguments:
 
 - `delete_extra` (boolean)
-- `detail` (boolean): list everything (default: long lists cut short)
+- `detail` (boolean): list every change line (default: the first 25)
 - `dry_run` (boolean)
 - `update_footprints` (boolean): Replace footprints whose library link changed
 
@@ -628,24 +654,24 @@ Parameter notes:
 Arguments:
 
 - `all` (boolean)
-- `back` (array): parts allowed on the bottom (patterns)
-- `back_decaps` (boolean): decoupling caps may go under their IC
-- `detail` (boolean): list everything (default: long lists cut short)
-- `edge` (number): courtyard to board edge, mm (default 0.5)
-- `escape_room` (number): mm kept free past fine-pitch IC pads for the escape (0 none)
-- `fixed` (array)
-- `force` (boolean): apply even when worse than now
-- `group_weight` (number): pull to the block's centre (default 3)
-- `groups`: {name: [refs]}, "sheets", or false
-- `keepout` (array): areas no part may go, [[x0, y0, x1, y1], ...]
-- `measure_only` (boolean): report only, move nothing
-- `refs` (array)
+- `back` (strings): parts that may go to the bottom side, e.g. ["C*", "R12"]
+- `back_decaps` (boolean): decoupling caps may go to the bottom, under their IC pin
+- `detail` (boolean): list every moved part (default: the first 15)
+- `edge` (number, mm, >= 0): courtyard to board edge, mm (default 0.5)
+- `escape_room` (number, mm, >= 0): mm kept free past a fine-pitch IC's pads (QFN / QFP / BGA, 0.65 mm pitch or less) for its escape (default 2 pitches + a track; 0 none)
+- `fixed` (strings)
+- `force` (boolean): apply the result even when the current placement is better
+- `group_weight` (number, >= 0): pull to the block's centre, 1 = like a two-pin net (default 3)
+- `groups` (any): {"LDO": ["U2", "C3"], ...} blocks to keep together, "sheets", or false: no blocks
+- `keepout` (array): areas no part may go: [[x0, y0, x1, y1], ...] or [{"area": [...], "side": "top"|"bottom"|"both"}]
+- `measure_only` (boolean): move nothing, report the numbers for the parts as they are
+- `refs` (strings)
 - `rotate` (boolean): try 90/180/270 (default true)
-- `rules` (object): edge / region / rotation / near (tool_help auto_place)
+- `rules` (map): placement rules; refs may be patterns ("J*"). edge: {"J1": "left"} (left/right/top/bottom/any: the courtyard at that board edge); a connector (USB, RJ45, DC jack: its courtyard well past its pads on one side) is turned to open over that edge, the footprint's own "PCB Edge" line on the edge (else its front flush with it); {"J1": {"side": "left", "overhang": 1}} puts its front 1 mm past the edge, "inside": true keeps it inside like any part, "along": true its long side along the edge (a pin header's row parallel to it; inside the board); region: {"U1": [x0, y0, x1, y1]} (mm, the courtyard inside); rotation: {"J1": 90}; near: [{"refs": ["Y1", "U1"], "max": 5}] (mm between the centres of their pads). edge/region/rotation are hard, near is reported when it can't be met
 - `silk_room` (boolean): room for silkscreen (default true)
-- `spacing` (number): courtyard gap, mm (default 0.25)
-- `time_limit` (number): seconds of improving (default 10, -1 none)
-- `track_room` (number): mm pads keep from existing tracks beyond clearance
+- `spacing` (number, mm, >= 0): courtyard gap, mm (default 0.25)
+- `time_limit` (number, s, >= -1): seconds for improving the wire length after every part has a legal spot (default 10, -1 no limit); the placement is legal either way
+- `track_room` (number, mm, >= 0): mm a pad keeps from existing tracks / vias beyond clearance (default one track + clearance; 0 none)
 
 ## sch_move
 
@@ -656,13 +682,13 @@ Move and/or rotate a placed part on the schematic: x/y (mm, the new anchor) or d
 Arguments:
 
 - `allow_rewire` (boolean): do it even if pin nets change (default false)
-- `dx` (number)
-- `dy` (number)
-- `ref` (string)
+- `dx` (number, mm)
+- `dy` (number, mm)
+- `ref` (string, required)
 - `rotation` (integer)
-- `unit` (integer)
-- `x` (number)
-- `y` (number)
+- `unit` (integer, >= 1)
+- `x` (number, mm)
+- `y` (number, mm)
 
 ## sch_wire
 
@@ -672,7 +698,7 @@ Draw a wire through points [[x, y], ...] (mm, snapped to the 1.27 mm grid), one 
 
 Arguments:
 
-- `points` (array)
+- `points` (array, required)
 - `sheet` (string)
 
 ## run_erc
@@ -693,43 +719,43 @@ Design review by rules, for you to judge (not a sign-off). Schematic: decoupling
 
 Arguments:
 
-- `bga_return_via_mm` (number)
-- `currents` (object): net -> A
-- `ir_drop` (object): net glob -> mV
-- `ir_limit` (integer)
-- `ir_loads` (object): net glob -> "U5:0.5,U7" (A per part)
-- `ir_mesh_mm` (number): cell size (default 0.1, coarser on big pours)
-- `ir_nets` (array)
-- `ir_source` (object): net glob -> "U1" / "U1.5,U1.6"
-- `length_limit` (integer)
-- `length_match` (object): net glob -> mm
-- `length_nets` (array)
-- `max_decap_mm` (number)
-- `max_length` (object): net glob -> mm
-- `min_length` (object): net glob -> mm
-- `pair_gap` (object): net glob -> mm tolerance
+- `bga_return_via_mm` (number, mm, >= 0)
+- `currents` (map): net -> A
+- `ir_drop` (map): net glob -> mV
+- `ir_limit` (integer, >= 0)
+- `ir_loads` (map): net glob -> "U5:0.5,U7" (A per part)
+- `ir_mesh_mm` (number, mm, > 0): cell size (default 0.1, coarser on big pours)
+- `ir_nets` (strings)
+- `ir_source` (map): net glob -> "U1" / "U1.5,U1.6"
+- `length_limit` (integer, >= 0)
+- `length_match` (map): net glob -> mm
+- `length_nets` (strings)
+- `max_decap_mm` (number, mm, > 0)
+- `max_length` (map): net glob -> mm
+- `min_length` (map): net glob -> mm
+- `pair_gap` (map): net glob -> mm tolerance
 - `pairs_only` (boolean)
-- `plane_gap` (object): net glob -> mm
-- `plane_limit` (integer)
-- `plane_nets` (array)
-- `return_via` (object): net glob -> mm
-- `sections` (array): only these, e.g. ["drc", "unrouted", "impedance"]
-- `skew` (object): net glob -> mm
-- `temp_rise` (number): C over ambient (10)
-- `two_sided` (array)
-- `uncoupled` (object): net glob -> mm
-- `via_current` (object): net glob -> A per via
-- `voltages` (object): net -> V
-- `xtalk_length` (object): net glob -> mm coupled
-- `xtalk_limit` (integer)
-- `xtalk_nets` (array)
-- `xtalk_spacing` (number): the gap limit in H (default 3)
-- `z_diff_target` (object): diff pair glob -> ohm (Zdiff)
-- `z_limit` (integer)
-- `z_nets` (array)
-- `z_off_mm` (number): mm off target allowed (default 1)
-- `z_target` (object): net glob -> ohm (Z0)
-- `z_tolerance` (number): percent (default 10)
+- `plane_gap` (map): net glob -> mm
+- `plane_limit` (integer, >= 0)
+- `plane_nets` (strings)
+- `return_via` (map): net glob -> mm
+- `sections` (strings): only these, e.g. ["drc", "unrouted", "impedance"]
+- `skew` (map): net glob -> mm
+- `temp_rise` (number, °C, > 0, default 10): C over ambient (10)
+- `two_sided` (strings)
+- `uncoupled` (map): net glob -> mm
+- `via_current` (map): net glob -> A per via
+- `voltages` (map): net -> V
+- `xtalk_length` (map): net glob -> mm coupled
+- `xtalk_limit` (integer, >= 0)
+- `xtalk_nets` (strings)
+- `xtalk_spacing` (number, > 0, default 3): the gap limit in H (default 3)
+- `z_diff_target` (map): diff pair glob -> ohm (Zdiff)
+- `z_limit` (integer, >= 0)
+- `z_nets` (strings)
+- `z_off_mm` (number, mm, > 0, default 1): mm off target allowed (default 1)
+- `z_target` (map): net glob -> ohm (Z0)
+- `z_tolerance` (number, %, > 0, default 10): percent (default 10)
 
 ## lib_create_symbol
 
@@ -743,8 +769,8 @@ Arguments:
 - `description` (string)
 - `footprint` (string)
 - `lcsc` (string)
-- `name` (string)
-- `pins` (array)
+- `name` (string, required)
+- `pins` (array, required)
 - `reference` (string): prefix, default U
 - `replace` (boolean)
 - `value` (string)
@@ -757,17 +783,17 @@ Make a footprint for a common package from a few numbers, saved to the project l
 
 Arguments:
 
-- `body` (number)
-- `ep` (number)
-- `kind` (string)
+- `body` (number, mm, > 0)
+- `ep` (number, mm, >= 0)
+- `kind` (string, required)
 - `name` (string)
-- `pins` (integer)
-- `pitch` (number)
+- `pins` (integer, >= 1)
+- `pitch` (number, mm, > 0)
 - `prefix` (string)
 - `replace` (boolean)
-- `rows` (integer)
-- `size` (string)
-- `span` (number)
+- `rows` (integer, >= 1)
+- `size` (string): "0402" or 402, "SOD-123" ...
+- `span` (number, mm, > 0)
 
 ## lib_register
 
@@ -778,7 +804,7 @@ Add a library that is already on disk to the project: a symbol library (.kicad_s
 Arguments:
 
 - `nickname` (string)
-- `path` (string)
+- `path` (string, required)
 
 ## sch_set_fields
 
@@ -788,9 +814,9 @@ Change parts' fields and attributes as one edit (all units; undo {target: schema
 
 Arguments:
 
-- `parts` (object)
-- `refs` (array)
-- `set` (object)
+- `parts` (map)
+- `refs` (strings)
+- `set` (map)
 
 ## sch_render
 
@@ -802,12 +828,12 @@ Arguments:
 
 - `area` (array): [x0, y0, x1, y1] mm
 - `frame` (boolean)
-- `margin` (number): mm around a zoom (5)
-- `nets` (array)
+- `margin` (number, mm, >= 0): mm around a zoom (5)
+- `nets` (strings)
 - `path` (string)
-- `refs` (array)
+- `refs` (strings)
 - `sheet` (string)
-- `size` (integer)
+- `size` (integer, >= 0)
 - `zoom` (boolean)
 
 ## simulate
@@ -818,24 +844,34 @@ Simulate a region of the schematic with ngspice (headless): the parts named, a s
 
 Arguments:
 
-- `ac` (object): {from: "10", to: "10Meg", points?: 20}
-- `analysis` (string)
-- `around` (array)
-- `corners` (boolean)
-- `dc` (object): {source: "VIN", from: 0, to: 5, step: "10m"}
-- `dc_bias` (boolean)
-- `hops` (integer)
-- `loads` (object)
-- `models` (object)
-- `netlist` (boolean)
-- `plot` (boolean)
-- `probes` (array)
-- `refs` (array)
-- `settle_pct` (number)
+- `refs` (strings)
 - `sheet` (string)
-- `sources` (object)
-- `timeout_s` (integer)
+- `around` (strings)
+- `hops` (integer, 1 - 20, default 1)
+- `sources` (map)
+- `loads` (map)
+- `analysis` (one of op, tran, ac, dc)
 - `tran` (object): {stop: "2m", step?: "1u", window?: "0.4m"}
+  - `tran.stop` (SI value, s, > 0, required)
+  - `tran.step` (SI value, s, > 0)
+  - `tran.window` (SI value, s, > 0)
+- `ac` (object): {from: "10", to: "10Meg", points?: 20}
+  - `ac.from` (SI value, Hz, > 0)
+  - `ac.to` (SI value, Hz, > 0)
+  - `ac.points` (integer, 1 - 200, default 20): per decade
+- `dc` (object): {source: "VIN", from: 0, to: 5, step: "10m"}
+  - `dc.source` (string, required)
+  - `dc.from` (SI value, required)
+  - `dc.to` (SI value, required)
+  - `dc.step` (SI value, > 0)
+- `plot` (boolean)
+- `probes` (strings)
+- `settle_pct` (number, 0.01 - 50, default 2)
+- `corners` (boolean)
+- `dc_bias` (boolean)
+- `models` (map)
+- `netlist` (boolean)
+- `timeout_s` (integer, 1 - 600, default 60)
 
 ## sch_annotate
 
@@ -846,12 +882,12 @@ Number the parts (the editor's Annotate). Parts without a number ("R?") get the 
 Arguments:
 
 - `dry_run` (boolean)
-- `order` (string)
-- `per_sheet` (string)
-- `refs` (array)
+- `order` (one of x, y)
+- `per_sheet` (one of 100, 1000)
+- `refs` (strings)
 - `reset` (boolean)
 - `sheet` (string)
-- `start` (integer)
+- `start` (integer, >= 0)
 
 ## lcsc_match
 
@@ -864,8 +900,8 @@ Arguments:
 - `apply` (boolean): write them (default: dry run)
 - `basic_only` (boolean)
 - `live` (boolean): check today's stock (default true)
-- `pick` (object): ref -> LCSC number for that ref's group
-- `refs` (array)
+- `pick` (map): ref -> LCSC number for that ref's group
+- `refs` (strings)
 - `replace` (boolean)
 
 ## sch_save
@@ -882,19 +918,21 @@ A rail's impedance Z(f) at its load, from the board: each capacitor between the 
 
 Arguments:
 
-- `add` (array)
-- `at` (string): the load's reference
-- `dc_bias` (boolean)
-- `detail` (boolean)
-- `from` (["number","string"])
+- `net` (string, required)
 - `ground` (string)
-- `models` (object)
-- `net` (string)
-- `plot` (boolean)
-- `target` (["number","string"]): ohm
-- `to` (["number","string"])
-- `volts` (number)
+- `at` (string): the load's reference
+- `from` (SI value, Hz, > 0, default 10k)
+- `to` (SI value, Hz, > 0, default 1G)
+- `target` (SI value, Ω, > 0): ohm
+- `volts` (number, V)
 - `vrm` (object): {r: "2m", l: "20n"}
+  - `vrm.r` (SI value, Ω, >= 0, default 2m)
+  - `vrm.l` (SI value, H, >= 0, default 20n)
+- `dc_bias` (boolean)
+- `models` (map)
+- `add` (array)
+- `detail` (boolean)
+- `plot` (boolean)
 
 ## reflection
 
@@ -904,15 +942,15 @@ A net's edge as routed, simulated (ngspice): every track piece a lossless transm
 
 Arguments:
 
-- `cin` (["number","string"])
-- `driver` (string)
-- `net` (string)
-- `netlist` (boolean)
+- `net` (string, required)
+- `driver` (string): REF.PIN (default: the net's output pin)
+- `rise` (SI value, s, > 0, default 1n)
+- `rout` (SI value, Ω, >= 0, default 30)
+- `vdd` (SI value, V, > 0, default 3.3)
+- `cin` (SI value, F, >= 0, default 3p)
+- `rs` (array): series resistors to try (up to 4)
 - `plot` (boolean)
-- `rise` (["number","string"])
-- `rout` (["number","string"])
-- `rs` (array)
-- `vdd` (["number","string"])
+- `netlist` (boolean)
 
 ## launch_kicad
 
@@ -922,9 +960,9 @@ Start KiCad for the agent on the socket kicadd-mcp uses, so every tool works on 
 
 Arguments:
 
-- `mode` (string)
+- `mode` (one of server, desktop)
 - `path` (string): absolute: folder, .kicad_pro, .kicad_pcb or .kicad_sch
-- `wait_s` (number)
+- `wait_s` (number, s, >= 0)
 
 ## close_kicad
 
@@ -944,9 +982,9 @@ Run several tools in one call, in order: steps [{"tool": "move_footprints", "arg
 
 Arguments:
 
-- `repeat` (integer)
-- `show` (string)
-- `steps` (array)
+- `repeat` (integer, >= 1)
+- `show` (one of line, last, full)
+- `steps` (array, required)
 - `stop_on_error` (boolean)
 
 ## tool_help
@@ -955,4 +993,4 @@ A tool's full description: examples, defaults, formulas, limits. Use when a shor
 
 Arguments:
 
-- `name` (string): a tool's name
+- `name` (string, required): a tool's name

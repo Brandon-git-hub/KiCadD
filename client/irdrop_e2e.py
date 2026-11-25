@@ -126,7 +126,7 @@ def main():
         _, t = m.tool("audit", {"ir_nets": ["+5V"], "ir_loads": {"+5V": "U702:x"}})
         check('ir_loads U702:x: not "REF:A"' in row(section(t), "+5V"), "ir_loads with a bad current")
         err, t = m.tool("audit", {"ir_drop": {"*": "big"}})
-        check(err and "mV, a number" in t, "an ir_drop limit that is not a number is refused")
+        check(err and 'ir_drop.*: a number in mV; got "big"' in t, "an ir_drop limit that is not a number is refused")
         err, t = m.tool("audit", {"ir_source": {"*": 5}})
         check(err and "a string" in t, "an ir_source that is not a string is refused")
 
@@ -135,7 +135,7 @@ def main():
         print("       +5V at 0.05 mm:", drop(r))
         check("mesh 0.05 mm" in r and abs(drop(r) - 3.56) < 0.15, "ir_mesh_mm 0.05: within a few % of the 0.1 mm mesh")
         err, t = m.tool("audit", {"ir_mesh_mm": 0})
-        check(err and "a positive number" in t, "ir_mesh_mm 0 refused")
+        check(err and "ir_mesh_mm: > 0 mm; got 0" in t, "ir_mesh_mm 0 refused")
 
         _, t = m.tool("audit", {"ir_nets": ["GND"]})
         r = row(section(t), "GND")

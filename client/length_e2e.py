@@ -134,7 +134,7 @@ def main():
         _, t = m.tool("audit", {"length_match": {"NOPE*": 1}})
         check("warning: no net matches NOPE*" in section(t, "length"), "a glob that matches nothing is said")
         err, t = m.tool("audit", {"skew": {"*": "small"}})
-        check(err and "mm, a number" in t, "a limit that is not a number is refused")
+        check(err and 'skew.*: a number in mm; got "small"' in t, "a limit that is not a number is refused")
     finally:
         m.close()
         srv.stop()

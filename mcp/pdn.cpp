@@ -93,34 +93,33 @@ std::string pdnDescription()
 }
 
 
-json pdnSchema()
+std::vector<params::PARAM> pdnParams()
 {
-    json anyMap = { { "type", "object" } };
-    return { { "type", "object" },
-             { "properties",
-               { { "net", { { "type", "string" } } },
-                 { "ground", { { "type", "string" } } },
-                 { "at", { { "type", "string" }, { "description", "the load's reference" } } },
-                 { "from", { { "type", { "number", "string" } } } },
-                 { "to", { { "type", { "number", "string" } } } },
-                 { "target", { { "type", { "number", "string" } }, { "description", "ohm" } } },
-                 { "volts", { { "type", "number" } } },
-                 { "vrm", { { "type", "object" }, { "description", "{r: \"2m\", l: \"20n\"}" } } },
-                 { "dc_bias", { { "type", "boolean" } } },
-                 { "models", anyMap },
-                 { "add", { { "type", "array" }, { "items", anyMap } } },
-                 { "detail", { { "type", "boolean" } } },
-                 { "plot", { { "type", "boolean" } } } } },
-             { "required", { "net" } } };
+    using namespace params;
+    const std::vector<PARAM> capKeys = { Si( "c", "", "F" ).Positive(), Si( "esr", "", "Ω" ).Range( 0 ), Si( "esl", "", "H" ).Range( 0 ),
+                                         Si( "mount", "replaces the board's", "H" ).Range( 0 ), Boolean( "exclude" ), Boolean( "dc_bias" ) };
+    std::vector<PARAM>       addKeys = capKeys;
+    addKeys[0].Required();
+    addKeys.pop_back();   // (no exclude / dc_bias for an added one: it is only data)
+    addKeys.pop_back();
+    addKeys.push_back( Integer( "count" ).Range( 1, 200 ).Default( 1 ) );
+    addKeys.push_back( String( "name" ) );
+    addKeys.push_back( String( "package", "\"0402\"" ) );
+    addKeys.push_back( String( "dielectric", "\"X5R\"" ) );
+
+    return { String( "net" ).Required(), String( "ground" ), String( "at", "the load's reference" ),
+             Si( "from", "", "Hz" ).Positive().Default( "10k" ), Si( "to", "", "Hz" ).Positive().Default( "1G" ),
+             Si( "target", "ohm", "Ω" ).Positive(), Number( "volts", "", "V" ),
+             Object( "vrm", { Si( "r", "", "Ω" ).Range( 0 ).Default( "2m" ), Si( "l", "", "H" ).Range( 0 ).Default( "20n" ) },
+                     "{r: \"2m\", l: \"20n\"}" ).Flat(),
+             Boolean( "dc_bias" ), Map( "models", Object( "", capKeys ).Flat() ), Array( "add", Object( "", addKeys ).Flat() ),
+             Boolean( "detail" ), Boolean( "plot" ) };
 }
 
 
 TOOL_RESULT pdn( IPC_CLIENT& aIpc, const json& a )
 {
     auto fail = []( const std::string& m ) { return TOOL_RESULT{ m, true }; };
-
-    if( !a.contains( "net" ) || !a["net"].is_string() )
-        return fail( "net: the rail (\"+3V3\")" );
 
     kb::PdnGeometry req;
     req.set_net( a["net"].get<std::string>() );
@@ -135,17 +134,13 @@ TOOL_RESULT pdn( IPC_CLIENT& aIpc, const json& a )
 
     double f0 = 10e3, f1 = 1e9, target = 0;
 
-    if( a.contains( "from" ) && !jsonSI( a["from"], f0 ) )
-        return fail( "from: Hz" );
+    // (the parameter table checked the values: numbers, in range)
+    f0 = a.value( "from", f0 );
+    f1 = a.value( "to", f1 );
+    target = a.value( "target", 0.0 );
 
-    if( a.contains( "to" ) && !jsonSI( a["to"], f1 ) )
-        return fail( "to: Hz" );
-
-    if( f0 <= 0 || f1 <= f0 * 1.01 )
+    if( f1 <= f0 * 1.01 )
         return fail( "from < to, Hz" );
-
-    if( a.contains( "target" ) && ( !jsonSI( a["target"], target ) || target <= 0 ) )
-        return fail( "target: ohm, above 0" );
 
     // the rail's voltage (DC bias)
     double      volts = 0;
@@ -175,8 +170,6 @@ TOOL_RESULT pdn( IPC_CLIENT& aIpc, const json& a )
         if( !on )
             return fail( "models: " + ref + " is not one of " + geo.net() + "'s capacitors to " + geo.ground() );
 
-        if( !m.is_object() )
-            return fail( "models." + ref + ": {c, esr, esl, mount, exclude}" );
     }
 
     // the VRM
@@ -188,8 +181,8 @@ TOOL_RESULT pdn( IPC_CLIENT& aIpc, const json& a )
         const json& v = a["vrm"];
         vrmGiven = true;
 
-        if( ( v.contains( "r" ) && !jsonSI( v["r"], vr ) ) || ( v.contains( "l" ) && !jsonSI( v["l"], vl ) ) || vr < 0 || vl < 0 )
-            return fail( "vrm: {r: ohm, l: H} (SI)" );
+        vr = v.value( "r", vr );
+        vl = v.value( "l", vl );
     }
 
     // the parts' data
@@ -279,12 +272,8 @@ TOOL_RESULT pdn( IPC_CLIENT& aIpc, const json& a )
 
         for( const json& x : a["add"] )
         {
-            double cval = 0;
-
-            if( !x.is_object() || !x.contains( "c" ) || !jsonSI( x["c"], cval ) || cval <= 0 )
-                return fail( "add: [{c: \"10u\", esr?, esl?, mount?, count?, name?, package?: \"0402\", dielectric?: \"X5R\"}]" );
-
-            const int count = std::clamp( x.value( "count", 1 ), 1, 200 );
+            const double cval = x["c"].get<double>();
+            const int    count = x.value( "count", 1 );
             const std::string name = x.value( "name", "added " + si( cval, "F" ) );
             std::string text = si( cval, "F" ) + " " + x.value( "package", std::string() ) + " " + x.value( "dielectric", std::string() );
 
@@ -626,7 +615,7 @@ TOOL_RESULT pdn( IPC_CLIENT& aIpc, const json& a )
 
 TOOL PdnTool( IPC_CLIENT& aIpc )
 {
-    return { "pdn", pdnDescription(), pdnSchema(), [&aIpc]( const json& a ) { return pdn( aIpc, a ); } };
+    return { "pdn", pdnDescription(), json::object(), [&aIpc]( const json& a ) { return pdn( aIpc, a ); }, "", pdnParams() };
 }
 
 } // namespace kicadd::mcp

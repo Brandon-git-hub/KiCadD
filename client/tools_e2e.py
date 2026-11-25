@@ -149,7 +149,7 @@ try:
         walk(x["name"], x["inputSchema"])
     check(not params, "parameter descriptions one line (60 characters): " + ", ".join(params))
     err, t = m.tool("tool_help", {"name": "pdn"})
-    check(not err and "mounting" in t and "Arguments: " in t and len(t) > 600, "tool_help pdn: the full description")
+    check(not err and "mounting" in t and "Arguments:" in t and len(t) > 600, "tool_help pdn: the full description")
     err, t = m.tool("tool_help", {"name": "nope"})
     check(err and "no tool nope" in t, "tool_help of no tool: the names")
     err, t = m.tool("query_net", {"net": "NO_SUCH_NET"})

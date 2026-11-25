@@ -159,9 +159,9 @@ try:
 
     print("[unknown arguments, add_footprint like]")
     err, t = m.tool("board_render", {"zom": True})
-    check(err and "unknown argument(s) zom" in t and "zoom" in t, "an unknown argument is an error, with the ones there are")
+    check(err and "zom: unknown argument; the arguments are:" in t and "zoom" in t, "an unknown argument is an error, with the ones there are")
     err, t = m.tool("zones", {"create": {"net": "GND", "area": [100, 60, 120, 80]}})
-    check(err and "unknown argument(s) create.area" in t and "in create" in t and "rect" in t, "create.area: " + t[:120])
+    check(err and "create.area: unknown key; the keys of create are:" in t and "rect" in t, "create.area: " + t[:120])
     err, t = m.tool("zones", {"create": {"net": "GND", "layers": ["F.Cu"], "rect": [100, 60, 120, 80]}})
     check(not err and "new zone GND on F.Cu" in t, "create.rect: a rectangle")
     err, z = m.tool("zones")

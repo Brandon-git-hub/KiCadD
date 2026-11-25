@@ -96,9 +96,9 @@ def main():
         check(len(x) == 2 and x[1].startswith("info: /CM5/HDMI_PI.CEC: "), "z_nets: that net's row")
 
         err, t = m.tool("audit", {"z_target": {"*": 0}})
-        check(err and "ohm, a positive number" in t, "a 0 ohm target refused")
+        check(err and "z_target.*: > 0 Ω; got 0" in t, "a 0 ohm target refused")
         err, t = m.tool("audit", {"z_tolerance": -1})
-        check(err and "a positive number" in t, "a negative tolerance refused")
+        check(err and "z_tolerance: > 0 %; got -1" in t, "a negative tolerance refused")
     finally:
         m.close()
         srv.stop()

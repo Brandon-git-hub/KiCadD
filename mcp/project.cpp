@@ -274,7 +274,15 @@ TOOL NewProjectTool( std::shared_ptr<std::vector<TOOL>> aTable )
                         { "discard", { { "type", "boolean" } } } } },
                     { "required", { "path" } } };
 
-    return { "new_project", NewProjectDescription(), schema, [aTable]( const json& a ) { return newProject( aTable, a ); } };
+    return { "new_project", NewProjectDescription(), json::object(), [aTable]( const json& a ) { return newProject( aTable, a ); }, "", std::vector<params::PARAM>{
+                   params::Integer( "copper_layers" ).Range( 1, 32 ),
+                   params::Number( "corner_radius" ).Unit( "mm" ).Range( 0 ),
+                   params::Boolean( "discard" ),
+                   params::String( "name" ),
+                   params::Array( "outline", params::Number( "" ), "[width, height] mm" ),
+                   params::String( "path", "Absolute: the folder, or the .kicad_pro" ).Required(),
+                   params::String( "stackup" ),
+                   params::Number( "thickness" ).Unit( "mm" ).Positive() }};
 }
 
 } // namespace kicadd::mcp

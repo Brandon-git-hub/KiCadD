@@ -144,9 +144,9 @@ def main():
         check(section(t)[0].startswith("info: 2 net pair(s)"), "undo: back")
 
         err, t = m.tool("audit", {"xtalk_spacing": 0})
-        check(err and "a positive number" in t, "xtalk_spacing 0 refused")
+        check(err and "xtalk_spacing: > 0; got 0" in t, "xtalk_spacing 0 refused")
         err, t = m.tool("audit", {"xtalk_length": {"*": "long"}})
-        check(err and "mm, a number" in t, "an xtalk_length that is not a number refused")
+        check(err and 'xtalk_length.*: a number in mm; got "long"' in t, "an xtalk_length that is not a number refused")
     finally:
         m.close()
         srv.stop()

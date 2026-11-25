@@ -81,7 +81,7 @@ async def exercise(call, label):
     check(r.is_error, f"{label}: move without delta is a tool error (isError)")
 
     r = await call("query_area", {"ref": "U78", "radius": 1, "kinds": ["bogus"]})
-    check(r.is_error and "unknown kind" in text_of(r), f"{label}: bad enum -> isError with message")
+    check(r.is_error and "kinds[0]: one of" in text_of(r) and "bogus" in text_of(r), f"{label}: bad enum -> isError with message")
     print(f"       total {label} sequence: {(time.perf_counter() - t0) * 1000:.0f} ms")
 
 

@@ -143,6 +143,7 @@ add_executable( kicadd-mcp
     ${KICADD_DIR}/mcp/tools.cpp
     ${KICADD_DIR}/mcp/sch_tools.cpp
     ${KICADD_DIR}/mcp/sim.cpp
+    ${KICADD_DIR}/mcp/params.cpp
     ${KICADD_DIR}/mcp/plot.cpp
     ${KICADD_DIR}/mcp/pdn.cpp
     ${KICADD_DIR}/mcp/reflect.cpp
