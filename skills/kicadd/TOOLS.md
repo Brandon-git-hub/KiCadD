@@ -918,7 +918,7 @@ Arguments:
 
 Start KiCad (headless server, or the desktop PCB editor) on this kicadd-mcp's socket; refused while one answers.
 
-Start KiCad for the agent on the socket kicadd-mcp uses, so every tool works on it at once: mode "server" (default: headless kicad-cli api-server; path optional, project {new} / {open} after) or "desktop" (the PCB editor with path's board, for a user to watch and route; needs a display). path: a project folder (its one .kicad_pro), .kicad_pro, .kicad_pcb or .kicad_sch, absolute on the server. Waits until it answers (wait_s, default 60 / 120 for the desktop) and returns what is open and the log file. Refused while a KiCad already answers there. Only KiCadD's own programs next to kicadd-mcp. HTTP mode: only with --allow-launch.
+Start KiCad for the agent on the socket kicadd-mcp uses, so every tool works on it at once: mode "server" (default: headless kicad-cli api-server; path optional, project {new} / {open} after) or "desktop" (for a user to watch and edit too; needs a display: a project opens in the KiCad project window with its PCB and Schematic Editors, board and sch_* tools both; a .kicad_pcb with no .kicad_pro opens in the PCB editor alone, board tools only). path: a project folder (its one .kicad_pro), .kicad_pro, .kicad_pcb or .kicad_sch, absolute on the server. Waits until it answers (wait_s, default 60 / 120 for the desktop) and returns what is open and the log file. Refused while a KiCad already answers there. Only KiCadD's own programs next to kicadd-mcp. HTTP mode: only with --allow-launch.
 
 Arguments:
 
