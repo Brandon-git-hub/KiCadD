@@ -18,6 +18,8 @@
  */
 
 #include "sim.h"
+
+#include "common/kicadd_names.h"
 #include "plot.h"
 #include "ipc_client.h"
 
@@ -2287,31 +2289,24 @@ TOOL_RESULT Simulate( IPC_CLIENT& aIpc, const json& a )
             base.grounds.insert( n.name() );
     }
 
+    // a net of the region by the agent's name (common/kicadd_names.h: exact, "/" added or taken
+    // off, a unique leaf, blind to case); "" with aErr naming the candidates or the closest
+    std::vector<std::string> regionNets;
+
+    for( const auto& [name, n] : netByName )
+        regionNets.push_back( name );
+
     auto findNet = [&]( const std::string& aName, std::string& aErr ) -> std::string
     {
-        if( netByName.count( aName ) )
-            return aName;
+        kicadd::names::RESOLVED r = kicadd::names::Resolve( regionNets, aName );
 
-        std::string hit;
-
-        for( const auto& [name, n] : netByName )
+        if( r.index < 0 )
         {
-            if( bare( name ) == aName || name == "/" + aName )
-            {
-                if( !hit.empty() )
-                {
-                    aErr = aName + ": which, " + hit + " or " + name + "?";
-                    return {};
-                }
-
-                hit = name;
-            }
+            aErr = r.error + " in the region";
+            return {};
         }
 
-        if( hit.empty() )
-            aErr = "no net " + aName + " in the region";
-
-        return hit;
+        return regionNets[r.index];
     };
 
     // --- passives' values, then the models (to know which nets they drive)

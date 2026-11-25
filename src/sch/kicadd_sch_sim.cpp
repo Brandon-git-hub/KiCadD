@@ -14,6 +14,7 @@
  */
 
 #include "sch/kicadd_handler_sch.h"
+#include "common/kicadd_names.h"
 
 #include <api/sch_context.h>
 #include <connection_graph.h>
@@ -214,25 +215,17 @@ HANDLER_RESULT<SchSimRegionResponse> KICADD_HANDLER_SCH::handleSimRegion( const 
     std::set<std::string> region;
     SchSimRegionResponse  out;
 
-    auto findNet = [&]( const std::string& aName ) -> std::string
+    // a net by the agent's name (common/kicadd_names.h); "" with aErr
+    auto findNet = [&]( const std::string& aName, std::string& aErr ) -> std::string
     {
-        if( netRefs.count( aName ) )
-            return aName;
-
-        std::string hit;
+        std::vector<std::string> names;
 
         for( const auto& [net, refs] : netRefs )
-        {
-            if( bareOf( net ) == aName || net == "/" + aName )
-            {
-                if( !hit.empty() )
-                    return "?" + hit + " or " + net;
+            names.push_back( net );
 
-                hit = net;
-            }
-        }
-
-        return hit;
+        kicadd::names::RESOLVED r = kicadd::names::Resolve( names, aName, "part or net" );
+        aErr = r.error;
+        return r.index < 0 ? std::string() : names[r.index];
     };
 
     if( req.refs_size() > 0 )
@@ -275,13 +268,11 @@ HANDLER_RESULT<SchSimRegionResponse> KICADD_HANDLER_SCH::handleSimRegion( const 
                 continue;
             }
 
-            std::string net = findNet( a );
+            std::string why;
+            std::string net = findNet( a, why );
 
             if( net.empty() )
-                return tl::unexpected( simError( ApiStatusCode::AS_BAD_REQUEST, "around: no part or net " + a ) );
-
-            if( net[0] == '?' )
-                return tl::unexpected( simError( ApiStatusCode::AS_BAD_REQUEST, "around " + a + ": which, " + net.substr( 1 ) + "?" ) );
+                return tl::unexpected( simError( ApiStatusCode::AS_BAD_REQUEST, "around: " + why ) );
 
             frontier.insert( net );
         }

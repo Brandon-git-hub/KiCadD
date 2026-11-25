@@ -303,7 +303,7 @@ def qfn(a, work):
         print("       allow_under_ic vias", vias)
         check(not err and vias, "allow_under_ic=true: routed (the spots under U9 tried too)")
         err, t = mcp.tool("route_short", {"nets": ["SIGG"], "dry_run": True})
-        check(err and "no net SIGG" in t and "did you mean SIG" in t, "a net not on the board: refused, with the close names: "
+        check(err and "no net SIGG" in t and "(closest: SIG" in t, "a net not on the board: refused, with the close names: "
               + t.strip().splitlines()[0][:90])
     finally:
         mcp.close()

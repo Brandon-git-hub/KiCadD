@@ -156,7 +156,7 @@ add_executable( kicadd-mcp
 if( WIN32 )
     target_sources( kicadd-mcp PRIVATE ${KICADD_DIR}/resources/icon/kicadd-mcp.rc )   # the exe's icon
 endif()
-target_include_directories( kicadd-mcp PRIVATE ${KICADD_DIR}/mcp ${NNG_INCLUDE_DIR} )
+target_include_directories( kicadd-mcp PRIVATE ${KICADD_DIR}/mcp ${KICADD_DIR}/src ${NNG_INCLUDE_DIR} )   # src: common/ headers
 target_link_libraries( kicadd-mcp PRIVATE
     kicadd_proto
     kiapi

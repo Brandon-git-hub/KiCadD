@@ -7,6 +7,7 @@
 #include "sch/kicadd_handler_sch.h"
 #include "common/kicadd_copilot.h"
 #include "common/kicadd_events.h"
+#include "common/kicadd_names.h"
 
 #include <api/sch_context.h>
 #include <base_units.h>
@@ -2244,9 +2245,28 @@ HANDLER_RESULT<SchNetlist> KICADD_HANDLER_SCH::handleGetNetlist( const HANDLER_C
         }
     }
 
+    // one net asked for: by the shared rules (common/kicadd_names.h), refused with the candidates
+    // or the closest names when it resolves to none
+    std::string only;
+
+    if( !aCtx.Request.net().empty() )
+    {
+        std::vector<std::string> names;
+
+        for( const auto& [name, pins] : nets )
+            names.push_back( name );
+
+        kicadd::names::RESOLVED r = kicadd::names::Resolve( names, aCtx.Request.net() );
+
+        if( r.index < 0 )
+            return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, r.error ) );
+
+        only = names[r.index];
+    }
+
     for( auto& [name, pins] : nets )
     {
-        if( !aCtx.Request.net().empty() && name != aCtx.Request.net() && name != "/" + aCtx.Request.net() )
+        if( !only.empty() && name != only )
             continue;
 
         SchNet* n = out.add_nets();

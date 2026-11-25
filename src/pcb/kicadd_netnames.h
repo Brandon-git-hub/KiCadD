@@ -7,8 +7,11 @@
 
 #pragma once
 
+#include "common/kicadd_names.h"
+
 #include <cctype>
 #include <cstring>
+#include <algorithm>
 #include <regex>
 #include <string>
 #include <vector>
@@ -54,14 +57,13 @@ inline bool NegativeMember( const std::string& aName )
 
 
 /// Net name globs with a number each ({"*PCIE*TX*": 1.0, "*": 3}). For a net, an exact name wins,
-/// then the glob with the most literal characters. A glob matches the whole name or the part after
-/// a sheet path ("USB_D+" matches "/USB/USB_D+"), case blind.
+/// then the glob with the most literal characters. A glob matches as names::GlobMatch: the whole
+/// name or the part after a sheet path ("USB_D+" matches "/USB/USB_D+"), case blind.
 struct GLOBS
 {
     struct GLOB
     {
         std::string pattern;
-        std::regex  re;
         int         rank;
         double      value;
         double      value2 = 0;
@@ -71,25 +73,9 @@ struct GLOBS
 
     void add( const std::string& aPattern, double aValue, double aValue2 = 0 )
     {
-        std::string re;
-        int         literal = 0;
-
-        for( char ch : aPattern )
-        {
-            if( ch == '*' )
-                re += ".*";
-            else if( ch == '?' )
-                re += ".";
-            else
-            {
-                literal++;
-                re += std::strchr( "\\^$.|+()[]{}", ch ) ? std::string( "\\" ) + ch : std::string( 1, ch );
-            }
-        }
-
+        const int  literal = (int) std::count_if( aPattern.begin(), aPattern.end(), []( char ch ) { return ch != '*' && ch != '?'; } );
         const bool exact = aPattern.find_first_of( "*?" ) == std::string::npos;
-        list.push_back( { aPattern, std::regex( "^(.*/)?" + re + "$", std::regex::icase ), literal + ( exact ? 100000 : 0 ),
-                          aValue, aValue2 } );
+        list.push_back( { aPattern, literal + ( exact ? 100000 : 0 ), aValue, aValue2 } );
     }
 
     bool empty() const { return list.empty(); }
@@ -101,7 +87,7 @@ struct GLOBS
 
         for( const GLOB& g : list )
         {
-            if( ( !best || g.rank > best->rank ) && std::regex_match( aName, g.re ) )
+            if( ( !best || g.rank > best->rank ) && names::GlobMatch( g.pattern, aName ) )
                 best = &g;
         }
 
@@ -109,7 +95,7 @@ struct GLOBS
     }
 
     /// Whether this one glob matches the name (for groups: each glob on its own).
-    static bool matches( const GLOB& aGlob, const std::string& aName ) { return std::regex_match( aName, aGlob.re ); }
+    static bool matches( const GLOB& aGlob, const std::string& aName ) { return names::GlobMatch( aGlob.pattern, aName ); }
 };
 
 } // namespace kicadd::netnames

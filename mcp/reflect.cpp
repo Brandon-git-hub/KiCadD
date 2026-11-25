@@ -32,6 +32,8 @@
 #include <kicadd/board.pb.h>
 #include <kicadd/schematic.pb.h>
 
+#include "pintypes.h"
+
 namespace kb = kicadd::board;
 namespace ks = kicadd::schematic;
 using json = nlohmann::json;
@@ -546,37 +548,15 @@ TOOL_RESULT reflection( IPC_CLIENT& aIpc, const json& a )
     // aBidi: bidirectional pins too (an MCU's GPIO / USB pin), when no output pin is found
     bool bidiDriver = false;
 
-    // a board made elsewhere may carry no pin types: the open schematic's, by reference and pin
-    std::map<std::string, std::map<std::string, std::string>> schTypes;   // ref -> pin -> type
-    bool                                                      typesFromSch = false;
+    // a board made elsewhere may carry no pin types: the open schematic's (pintypes.h)
+    PIN_TYPES pinTypes( aIpc );
 
     auto fillTypes = [&]( kb::NetTopologyResponse& aT )
     {
         for( kb::TopoPad& p : *aT.mutable_pads() )
         {
-            if( !p.pin_type().empty() || p.pads() <= 2 )
-                continue;
-
-            if( !schTypes.count( p.ref() ) )
-            {
-                auto&              pins = schTypes[p.ref()];
-                ks::SchGetPart     q;
-                ks::SchPartResponse r;
-                std::string        e;
-                q.set_ref( p.ref() );
-
-                if( aIpc.Call( q, r, e ) )
-                {
-                    for( const ks::SchPin& sp : r.symbol().pins() )
-                        pins[sp.number()] = sp.type();
-                }
-            }
-
-            if( auto it = schTypes[p.ref()].find( p.pin() ); it != schTypes[p.ref()].end() && !it->second.empty() )
-            {
-                p.set_pin_type( it->second );
-                typesFromSch = true;
-            }
+            if( p.pin_type().empty() && p.pads() > 2 )
+                p.set_pin_type( pinTypes.Of( p.ref(), p.pin() ) );
         }
     };
 
@@ -943,7 +923,7 @@ TOOL_RESULT reflection( IPC_CLIENT& aIpc, const json& a )
     // --- the answer
     std::string out = "reflection " + b.net() + ": driver " + dp.ref() + "." + dp.pin() + ( dp.pin_type().empty() ? "" : " (" + dp.pin_type() + ")" )
                       + ( bidiDriver ? " (no output pin: this bidirectional one taken as the driver; driver chooses)" : "" )
-                      + ( typesFromSch ? " (pin types from the schematic: the board has none)" : "" )
+                      + ( pinTypes.FromSchematic() ? " (pin types from the schematic: the board has none)" : "" )
                       + ( chained ? " on " + aside.net() + " through " + seriesRef + " " + si( seriesR, "Ω" ) : "" ) + ", rout " + si( rout, "Ω" )
                       + ", rise " + si( rise, "s" ) + ", " + si( vdd, "V" ) + "; " + std::to_string( rx.size() ) + " receiver(s) at " + si( cin, "F" )
                       + "; ngspice " + g( spent, 2 ) + " s";

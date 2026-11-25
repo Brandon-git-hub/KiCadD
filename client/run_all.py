@@ -180,6 +180,7 @@ def tests(a):
          lambda w: py + [c("search_e2e.py")] + b + d + ["--work", w, "--index", a.index_gz] + ([] if a.live else ["--no-live"])),
         ("sim", "headless", ["index_gz", "ngspice"],
          lambda w: py + [c("sim_e2e.py")] + b + k + ["--work", w, "--index", a.index_gz, "--ngspice", a.ngspice]),
+        ("names", "headless", [], lambda w: py + [c("names_e2e.py")] + b + d + ["--work", w] + (["--ngspice", a.ngspice] if os.path.isfile(a.ngspice) else [])),
         ("simmodel", "headless", ["index_gz", "ngspice"],
          lambda w: py + [c("simmodel_e2e.py")] + b + k + ["--work", w, "--index", a.index_gz, "--ngspice", a.ngspice]),
         ("si", "headless", ["ngspice"], lambda w: py + [c("si_e2e.py")] + b + d + ["--work", w, "--ngspice", a.ngspice]),

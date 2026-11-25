@@ -1,44 +1,66 @@
 /*
- * KiCadD: a board net by the name an agent gives.
- *
- * The schematic tools name a root-sheet local net "/USB_D_P"; a board may hold it as "USB_D_P" (a
- * global label, an older or imported board) or the other way round. Board tools that look a net
- * up by name accept either: the exact name first, then the same name with the leading "/" added
- * or taken off.
+ * KiCadD: a board net by the name an agent gives (the rules in common/kicadd_names.h: exact, the
+ * leading "/" added or taken off, a unique leaf, blind to case; an error names the candidates or
+ * the closest nets).
  *
  * This file is part of KiCadD and is licensed GPL-3.0-or-later, like KiCad.
  */
 
 #pragma once
 
+#include "common/kicadd_names.h"
+
 #include <board.h>
 #include <netinfo.h>
 
 #include <string>
+#include <vector>
 
 namespace kicadd
 {
 
-inline NETINFO_ITEM* FindNetLoose( const BOARD& aBoard, const wxString& aName )
+/// the net aName means (nullptr: none; aErr, when given, says why with candidates)
+inline NETINFO_ITEM* FindNetLoose( const BOARD& aBoard, const std::string& aName, std::string* aErr = nullptr )
 {
-    if( aName.IsEmpty() )
-        return nullptr;
+    if( aName.empty() )
+    {
+        if( aErr )
+            *aErr = "no net name given";
 
-    if( NETINFO_ITEM* net = aBoard.FindNet( aName ) )
+        return nullptr;
+    }
+
+    if( NETINFO_ITEM* net = aBoard.FindNet( wxString::FromUTF8( aName ) ) )
         return net;
 
-    if( aName.StartsWith( wxS( "/" ) ) && aName.Find( '/', true ) == 0 )
-        return aBoard.FindNet( aName.Mid( 1 ) );   // "/X" asked, the board has "X"
+    std::vector<std::string>   names;
+    std::vector<NETINFO_ITEM*> nets;
 
-    if( !aName.StartsWith( wxS( "/" ) ) )
-        return aBoard.FindNet( wxS( "/" ) + aName );   // "X" asked, the board has "/X"
+    for( NETINFO_ITEM* n : aBoard.GetNetInfo() )
+    {
+        if( n->GetNetCode() > 0 )
+        {
+            names.push_back( n->GetNetname().ToStdString( wxConvUTF8 ) );
+            nets.push_back( n );
+        }
+    }
 
-    return nullptr;
+    names::RESOLVED r = names::Resolve( names, aName );
+
+    if( r.index < 0 )
+    {
+        if( aErr )
+            *aErr = r.error;
+
+        return nullptr;
+    }
+
+    return nets[r.index];
 }
 
-inline NETINFO_ITEM* FindNetLoose( const BOARD& aBoard, const std::string& aName )
+inline NETINFO_ITEM* FindNetLoose( const BOARD& aBoard, const wxString& aName, std::string* aErr = nullptr )
 {
-    return FindNetLoose( aBoard, wxString::FromUTF8( aName ) );
+    return FindNetLoose( aBoard, aName.ToStdString( wxConvUTF8 ), aErr );
 }
 
 } // namespace kicadd

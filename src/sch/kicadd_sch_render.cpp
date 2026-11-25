@@ -9,6 +9,7 @@
  */
 
 #include "sch/kicadd_handler_sch.h"
+#include "common/kicadd_names.h"
 
 #include <api/sch_context.h>
 #include <base_units.h>
@@ -211,8 +212,9 @@ HANDLER_RESULT<SchRenderResponse> KICADD_HANDLER_SCH::handleRender( const HANDLE
 
         for( const std::string& n : nets )
         {
-            // "/VPP" or a hierarchical "/Power/VOUT" answers to "VPP" / "VOUT" too
-            if( aNet == n || aNet == "/" + n || ( aNet.size() > n.size() && aNet.compare( aNet.size() - n.size() - 1, n.size() + 1, "/" + n ) == 0 ) )
+            // "/VPP" or a hierarchical "/Power/VOUT" answers to "VPP" / "VOUT" too, blind to case
+            // (common/kicadd_names.h)
+            if( kicadd::names::Means( n, aNet ) )
                 return n;
         }
 

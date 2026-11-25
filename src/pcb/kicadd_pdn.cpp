@@ -146,10 +146,11 @@ NET_FILLS fillsOf( const BOARD& aBoard, int aNet )
 
 std::string PdnGeometry( BOARD& aBoard, const kicadd::board::PdnGeometry& aReq, kicadd::board::PdnGeometryResponse& aOut )
 {
-    NETINFO_ITEM* rail = kicadd::FindNetLoose( aBoard, aReq.net() );
+    std::string   why;
+    NETINFO_ITEM* rail = kicadd::FindNetLoose( aBoard, aReq.net(), &why );
 
     if( !rail || rail->GetNetCode() <= 0 )
-        return "no net " + aReq.net();
+        return why;
 
     const int railCode = rail->GetNetCode();
     aOut.set_net( str( rail->GetNetname() ) );
@@ -198,10 +199,10 @@ std::string PdnGeometry( BOARD& aBoard, const kicadd::board::PdnGeometry& aReq, 
 
     if( !aReq.ground().empty() )
     {
-        NETINFO_ITEM* g = kicadd::FindNetLoose( aBoard, aReq.ground() );
+        NETINFO_ITEM* g = kicadd::FindNetLoose( aBoard, aReq.ground(), &why );
 
         if( !g || g->GetNetCode() <= 0 )
-            return "no net " + aReq.ground() + " (ground)";
+            return why + " (ground)";
 
         gndCode = g->GetNetCode();
     }

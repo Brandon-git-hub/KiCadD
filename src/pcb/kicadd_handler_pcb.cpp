@@ -739,11 +739,11 @@ KICADD_HANDLER_PCB::handleQueryNet( const HANDLER_CONTEXT<QueryNet>& aCtx )
     if( !b )
         return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
 
-    const NETINFO_ITEM* net = kicadd::FindNetLoose( *b, aCtx.Request.net() );
+    std::string         why;
+    const NETINFO_ITEM* net = kicadd::FindNetLoose( *b, aCtx.Request.net(), &why );
 
     if( !net || net->GetNetCode() <= 0 )
-        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
-                                          "unknown net " + aCtx.Request.net() ) );
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, why ) );
 
     const int code  = net->GetNetCode();
     const int limit = aCtx.Request.limit() > 0 ? aCtx.Request.limit() : DEFAULT_NET_LIMIT;
@@ -2146,10 +2146,12 @@ KICADD_HANDLER_PCB::handleDeleteTracks( const HANDLER_CONTEXT<DeleteTracks>& aCt
 
     for( const std::string& n : req.nets() )
     {
-        if( const NETINFO_ITEM* net = kicadd::FindNetLoose( *b, n ) )
+        std::string why;
+
+        if( const NETINFO_ITEM* net = kicadd::FindNetLoose( *b, n, &why ) )
             nets.insert( net->GetNetname() );
         else
-            out.add_missing( "net " + n );
+            out.add_missing( why );
     }
 
     BOX2I region;
@@ -3142,66 +3144,6 @@ bool throughAll( const BOARD_CONNECTED_ITEM* aItem )
 }
 
 
-/// Up to five of the board's net names close to aName (case, a sheet path, a typo, a prefix).
-std::string similarNets( BOARD* aBoard, const std::string& aName )
-{
-    auto key = []( std::string s )
-    {
-        s = s.substr( s.rfind( '/' ) == std::string::npos ? 0 : s.rfind( '/' ) + 1 );
-
-        for( char& c : s )
-            c = (char) std::toupper( (unsigned char) c );
-
-        return s;
-    };
-
-    auto distance = []( const std::string& a, const std::string& b )
-    {
-        std::vector<size_t> row( b.size() + 1 );
-        std::iota( row.begin(), row.end(), 0 );
-
-        for( size_t i = 1; i <= a.size(); ++i )
-        {
-            size_t diag = row[0];
-            row[0] = i;
-
-            for( size_t j = 1; j <= b.size(); ++j )
-            {
-                size_t up = row[j];
-                row[j] = std::min( { row[j] + 1, row[j - 1] + 1, diag + ( a[i - 1] != b[j - 1] ) } );
-                diag = up;
-            }
-        }
-
-        return row[b.size()];
-    };
-
-    const std::string                          want = key( aName );
-    std::vector<std::pair<size_t, std::string>> found;
-
-    for( NETINFO_ITEM* n : aBoard->GetNetInfo() )
-    {
-        if( n->GetNetCode() <= 0 )
-            continue;
-
-        const std::string name = n->GetNetname().ToStdString();
-        const std::string k = key( name );
-        size_t            d = distance( want, k );
-
-        if( d <= 2 || ( want.size() >= 3 && ( k.find( want ) != std::string::npos || want.find( k ) != std::string::npos ) ) )
-            found.push_back( { d, name } );
-    }
-
-    std::sort( found.begin(), found.end() );
-    std::string out;
-
-    for( size_t i = 0; i < found.size() && i < 5; ++i )
-        out += ( i ? ", " : "" ) + found[i].second;
-
-    return out;
-}
-
-
 /// Where a via must not go: under an SMD IC with an exposed / thermal pad (a pad inside the
 /// others, as a QFN's), the box of its pads: on the pad, or between it and the pad ring. An IC
 /// without one (an LQFP) has a free body: vias there are the usual escape of a back-side part.
@@ -3274,10 +3216,11 @@ std::vector<BOX2I> icBodies( BOARD* aBoard )
 std::optional<std::string> viaSpots( BOARD* aBoard, const VECTOR2I& aCenter, int64_t aRadius,
                                      const std::string& aNet, int aLimit, QueryResponse& aOut )
 {
-    const NETINFO_ITEM* net = kicadd::FindNetLoose( *aBoard, aNet );
+    std::string         why;
+    const NETINFO_ITEM* net = kicadd::FindNetLoose( *aBoard, aNet, &why );
 
     if( !net || net->GetNetCode() <= 0 )
-        return "unknown net " + aNet;
+        return why;
 
     BOARD_CONNECTED_ITEM* netItem = nullptr;
 
@@ -3531,16 +3474,11 @@ HANDLER_RESULT<RouteResponse> KICADD_HANDLER_PCB::handleRouteShort( const HANDLE
 
     for( const std::string& name : req.nets() )
     {
-        NETINFO_ITEM* net = kicadd::FindNetLoose( *b, name );
+        std::string   why;
+        NETINFO_ITEM* net = kicadd::FindNetLoose( *b, name, &why );
 
         if( !net )
-        {
-            const std::string close = similarNets( b, name );
-            return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
-                                              "no net " + name + " on the board"
-                                                      + ( close.empty() ? std::string( " (board_summary lists them)" )
-                                                                        : ": did you mean " + close + "?" ) ) );
-        }
+            return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, why + " (board_summary lists the nets)" ) );
 
         onlyNets.insert( net->GetNetCode() );
     }
@@ -3992,10 +3930,12 @@ HANDLER_RESULT<FanoutResponse> KICADD_HANDLER_PCB::handleFanout( const HANDLER_C
 
     for( const std::string& name : req.nets() )
     {
-        if( NETINFO_ITEM* net = kicadd::FindNetLoose( *b, name ) )
+        std::string why;
+
+        if( NETINFO_ITEM* net = kicadd::FindNetLoose( *b, name, &why ) )
             nets.insert( net->GetNetCode() );
         else
-            out.add_no_zone( name + " (no such net)" );
+            out.add_no_zone( why );
     }
 
     std::vector<FOOTPRINT*> parts;
@@ -4237,10 +4177,11 @@ HANDLER_RESULT<StitchViasResponse> KICADD_HANDLER_PCB::handleStitchVias( const H
 
     const StitchVias& req = aCtx.Request;
     const wxString    netName = req.net().empty() ? wxString( wxS( "GND" ) ) : wxString::FromUTF8( req.net() );
-    NETINFO_ITEM*     net = kicadd::FindNetLoose( *b, netName );
+    std::string       why;
+    NETINFO_ITEM*     net = kicadd::FindNetLoose( *b, netName, &why );
 
     if( !net || net->GetNetCode() <= 0 )
-        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no net " + netName.ToStdString() ) );
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, why ) );
 
     const int              code = net->GetNetCode();
     BOARD_DESIGN_SETTINGS& bds = b->GetDesignSettings();
@@ -4645,12 +4586,13 @@ HANDLER_RESULT<TeardropsResponse> KICADD_HANDLER_PCB::handleTeardrops( const HAN
 
     for( const std::string& n : req.nets() )
     {
-        NETINFO_ITEM* net = kicadd::FindNetLoose( *b, n );
+        std::string   why;
+        NETINFO_ITEM* net = kicadd::FindNetLoose( *b, n, &why );
 
         if( net && net->GetNetCode() > 0 )
             nets.insert( net->GetNetCode() );
         else
-            out.add_missing( "net " + n );
+            out.add_missing( why );
     }
 
     for( const std::string& ref : req.refs() )
@@ -8474,11 +8416,10 @@ ZONE* KICADD_HANDLER_PCB::createZone( const ZoneCreate& aReq, std::string& aErro
 
     if( !aReq.net().empty() )
     {
-        net = kicadd::FindNetLoose( *b, aReq.net() );
+        net = kicadd::FindNetLoose( *b, aReq.net(), &aError );
 
         if( !net )
         {
-            aError = "no net " + aReq.net();
             return nullptr;
         }
     }
@@ -8863,7 +8804,7 @@ HANDLER_RESULT<BoardOutlineResponse> KICADD_HANDLER_PCB::handleBoardOutline( con
         }
     }
 
-    for( const HOLE& h : holes )
+    for( HOLE& h : holes )
     {
         if( h.drill < 500000 )
             return bad( "a mounting hole of at least 0.5 mm" );
@@ -8871,8 +8812,17 @@ HANDLER_RESULT<BoardOutlineResponse> KICADD_HANDLER_PCB::handleBoardOutline( con
         if( !outline.Contains( h.pos ) )
             return bad( "a hole at " + mm4( h.pos.x / 1e6 ) + "," + mm4( h.pos.y / 1e6 ) + " is not on the board" );
 
-        if( !h.net.IsEmpty() && !b->FindNet( h.net ) )
-            return bad( "no net " + h.net.ToStdString() );
+        std::string why;
+
+        if( h.net.IsEmpty() )
+            continue;
+
+        NETINFO_ITEM* net = kicadd::FindNetLoose( *b, h.net, &why );
+
+        if( !net )
+            return bad( why );
+
+        h.net = net->GetNetname();   // the board's name from here on ("gnd" -> "GND")
     }
 
     // H1, H2 ...: the next free numbers

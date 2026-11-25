@@ -66,10 +66,11 @@ struct DSU
 
 std::string NetTopology( BOARD& aBoard, const kicadd::board::NetTopology& aReq, kicadd::board::NetTopologyResponse& aOut )
 {
-    NETINFO_ITEM* net = kicadd::FindNetLoose( aBoard, aReq.net() );
+    std::string   why;
+    NETINFO_ITEM* net = kicadd::FindNetLoose( aBoard, aReq.net(), &why );
 
     if( !net || net->GetNetCode() <= 0 )
-        return "no net " + aReq.net();
+        return why;
 
     const int code = net->GetNetCode();
     aOut.set_net( str( net->GetNetname() ) );

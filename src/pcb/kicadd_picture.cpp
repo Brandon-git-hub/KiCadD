@@ -251,15 +251,11 @@ bool RenderBoardPng( BOARD* aBoard, const kicadd::board::RenderBoard& aReq,
         // after a sheet path too ("USB_D+" is "/USB/USB_D+"), case blind
         if( n.find_first_of( "*?" ) != std::string::npos )
         {
-            const wxString pattern = wxString::FromUTF8( n ).Upper();
-            bool           any = false;
+            bool any = false;
 
             for( NETINFO_ITEM* net : aBoard->GetNetInfo() )
             {
-                const wxString name = net->GetNetname().Upper();
-                const wxString leaf = name.AfterLast( '/' );
-
-                if( net->GetNetCode() > 0 && ( name.Matches( pattern ) || leaf.Matches( pattern ) ) )
+                if( net->GetNetCode() > 0 && kicadd::names::GlobMatch( n, net->GetNetname().ToStdString( wxConvUTF8 ) ) )
                 {
                     nets.insert( net->GetNetCode() );
                     any = true;
@@ -272,12 +268,13 @@ bool RenderBoardPng( BOARD* aBoard, const kicadd::board::RenderBoard& aReq,
             continue;
         }
 
-        NETINFO_ITEM* net = kicadd::FindNetLoose( *aBoard, n );
+        std::string   why;
+        NETINFO_ITEM* net = kicadd::FindNetLoose( *aBoard, n, &why );
 
         if( net && net->GetNetCode() > 0 )
             nets.insert( net->GetNetCode() );
         else
-            aOut.add_missing( "net " + n );
+            aOut.add_missing( why );
     }
 
     // --- the area
