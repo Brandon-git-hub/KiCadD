@@ -2,3 +2,6 @@
 run/
 client/kicadd_client/_pb/
 __pycache__/
+
+# development plans / handoff notes: kept local, not versioned
+docs/NEXT_*.md
