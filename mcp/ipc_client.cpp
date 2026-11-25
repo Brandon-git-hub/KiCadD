@@ -137,7 +137,14 @@ bool IPC_CLIENT::Call( const google::protobuf::Message& aRequest, google::protob
                 aError += ": " + reply.status().error_message();
 
             if( status == ApiStatusCode::AS_UNHANDLED
-                && aRequest.GetDescriptor()->full_name().starts_with( "kicadd." ) )
+                && aRequest.GetDescriptor()->full_name().starts_with( "kicadd.schematic." ) )
+            {
+                aError += " (nothing here handles KiCadD schematic requests: no Schematic Editor is open in this "
+                          "KiCad. A PCB Editor started on its own serves only board tools; launch_kicad desktop with the "
+                          "project (.kicad_pro) opens both editors)";
+            }
+            else if( status == ApiStatusCode::AS_UNHANDLED
+                     && aRequest.GetDescriptor()->full_name().starts_with( "kicadd." ) )
             {
                 aError += " (nothing here handles KiCadD requests: open the board in the PCB Editor "
                           "window; the KiCad project window alone does not serve them. A stock "

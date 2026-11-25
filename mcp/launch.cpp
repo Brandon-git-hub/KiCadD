@@ -2,8 +2,9 @@
  * KiCadD MCP - launch_kicad / close_kicad (roadmap phase 4, item 3).
  *
  * launch_kicad starts KiCad on the socket this kicadd-mcp already dials, so every other tool
- * works on it right away: the headless server (kicad-cli api-server) or the desktop PCB editor
- * (pcbnew, which serves on KICADD_API_SOCKET). Only KiCadD's own programs, from the folder
+ * works on it right away: the headless server (kicad-cli api-server) or the desktop: a project in
+ * the KiCad project window with its PCB and Schematic Editors (KICADD_OPEN_EDITORS), a lone board
+ * in pcbnew; the editors serve on KICADD_API_SOCKET. Only KiCadD's own programs, from the folder
  * kicadd-mcp is in (or its build tree), never a command given by the caller. Refused while
  * something answers on the socket already.
  *
@@ -110,7 +111,7 @@ fs::path selfDir()
 /// run with KICAD_RUN_FROM_BUILD_DIR) or an installed / portable folder (bin/).
 struct PROGRAMS
 {
-    fs::path cli, pcbnew;
+    fs::path cli, pcbnew, kicad;
     bool     buildTree = false;
 };
 
@@ -125,12 +126,14 @@ PROGRAMS findPrograms()
     {
         p.cli = dir / "kicad" / ( std::string( "kicad-cli" ) + EXE );
         p.pcbnew = dir / "pcbnew" / ( std::string( "pcbnew" ) + EXE );
+        p.kicad = dir / "kicad" / ( std::string( "kicad" ) + EXE );
         p.buildTree = true;
     }
     else
     {
         p.cli = dir / ( std::string( "kicad-cli" ) + EXE );
         p.pcbnew = dir / ( std::string( "pcbnew" ) + EXE );
+        p.kicad = dir / ( std::string( "kicad" ) + EXE );
     }
 
     return p;
@@ -494,7 +497,7 @@ TOOL_RESULT launch( IPC_CLIENT& aIpc, STATE& aState, const json& a )
     const std::string mode = a.value( "mode", std::string( "server" ) );
 
     if( mode != "server" && mode != "desktop" )
-        return fail( "mode: \"server\" (headless kicad-cli api-server) or \"desktop\" (the PCB editor)" );
+        return fail( "mode: \"server\" (headless kicad-cli api-server) or \"desktop\" (the editors, for a user to watch)" );
 
     const std::string sock = socketPath( aIpc );
 
@@ -519,7 +522,7 @@ TOOL_RESULT launch( IPC_CLIENT& aIpc, STATE& aState, const json& a )
     }
 
     // the project: a folder (its one .kicad_pro), a .kicad_pro, .kicad_pcb or .kicad_sch
-    fs::path        project, board;
+    fs::path        project, board, sch, pro;
     std::error_code ec;
 
     if( a.contains( "path" ) && a["path"].is_string() && !a["path"].get<std::string>().empty() )
@@ -557,10 +560,27 @@ TOOL_RESULT launch( IPC_CLIENT& aIpc, STATE& aState, const json& a )
 
         if( !fs::is_regular_file( board, ec ) )
             board.clear();
+
+        sch = fs::path( project ).replace_extension( ".kicad_sch" );
+
+        if( !fs::is_regular_file( sch, ec ) )
+            sch.clear();
+
+        pro = fs::path( project ).replace_extension( ".kicad_pro" );
+
+        if( !fs::is_regular_file( pro, ec ) )
+            pro.clear();
     }
 
-    if( mode == "desktop" && board.empty() )
-        return fail( "desktop: the PCB editor needs a board (path to a project with a .kicad_pcb); the agent works on the board open there" );
+    // desktop: with a project, the KiCad project window opens its PCB and Schematic Editors in one
+    // process, so board and schematic tools are both served; a lone board opens in pcbnew alone
+    const bool manager = mode == "desktop" && !pro.empty();
+
+    if( manager && board.empty() && sch.empty() )
+        return fail( "desktop: " + fromPath( pro.filename() ) + " has no .kicad_pcb or .kicad_sch to open" );
+
+    if( mode == "desktop" && !manager && board.empty() )
+        return fail( "desktop: needs a project (.kicad_pro, its board and schematic open in the editors) or a .kicad_pcb" );
 
 #if !defined( _WIN32 ) && !defined( __APPLE__ )
     if( mode == "desktop" && !std::getenv( "DISPLAY" ) && !std::getenv( "WAYLAND_DISPLAY" ) )
@@ -568,7 +588,7 @@ TOOL_RESULT launch( IPC_CLIENT& aIpc, STATE& aState, const json& a )
 #endif
 
     PROGRAMS progs = findPrograms();
-    fs::path exe = mode == "server" ? progs.cli : progs.pcbnew;
+    fs::path exe = mode == "server" ? progs.cli : manager ? progs.kicad : progs.pcbnew;
 
     if( !fs::is_regular_file( exe, ec ) )
         return fail( "not found: " + fromPath( exe ) + " (launch_kicad starts only KiCadD's own programs, next to kicadd-mcp)" );
@@ -584,7 +604,7 @@ TOOL_RESULT launch( IPC_CLIENT& aIpc, STATE& aState, const json& a )
     }
     else
     {
-        argv.push_back( fromPath( board ) );
+        argv.push_back( fromPath( manager ? pro : board ) );
     }
 
     fs::path sockFile = toPath( sock );
@@ -609,6 +629,11 @@ TOOL_RESULT launch( IPC_CLIENT& aIpc, STATE& aState, const json& a )
     {
         set.push_back( { "KICADD_API_SOCKET", sock } );
         unset.push_back( "KICADD_NO_API" );
+
+        if( manager )
+            set.push_back( { "KICADD_OPEN_EDITORS", "sch,pcb" } );
+        else
+            unset.push_back( "KICADD_OPEN_EDITORS" );
     }
 
     fs::path    log = sockFile.parent_path() / ( "kicadd-" + mode + ".log" );
@@ -639,7 +664,15 @@ TOOL_RESULT launch( IPC_CLIENT& aIpc, STATE& aState, const json& a )
                          + ( t.empty() ? std::string() : ":\n" + t ) );
         }
 
-        if( answering( aIpc, file ) && ( board.empty() || !file.empty() ) )
+        // the project window: its Schematic Editor too (it opens first, the PCB Editor after)
+        auto schLoaded = [&]()
+        {
+            ks::SchSummary r;
+            std::string    e;
+            return aIpc.Call( ks::GetSchSummary(), r, e ) && !r.file().empty();
+        };
+
+        if( answering( aIpc, file ) && ( board.empty() || !file.empty() ) && ( !manager || sch.empty() || schLoaded() ) )
         {
             up = true;
             break;
@@ -653,7 +686,7 @@ TOOL_RESULT launch( IPC_CLIENT& aIpc, STATE& aState, const json& a )
     std::snprintf( secs, sizeof secs, "%.1f", took );
     aState.child = child;
 
-    std::string out = "started the " + mode + " (pid " + std::to_string( child.id() ) + ") on " + sock;
+    std::string out = "started the " + std::string( manager ? "desktop (KiCad project window, PCB and Schematic Editors)" : mode == "desktop" ? "desktop (PCB editor)" : mode ) + " (pid " + std::to_string( child.id() ) + ") on " + sock;
 
     if( !up )
     {
@@ -676,10 +709,13 @@ TOOL_RESULT launch( IPC_CLIENT& aIpc, STATE& aState, const json& a )
         out += "no board open (project {open} / {new})\n";
     }
 
-    ks::SchSummary sch;
+    ks::SchSummary schSum;
 
-    if( mode == "server" && aIpc.Call( ks::GetSchSummary(), sch, err ) && !sch.file().empty() )
-        out += "schematic " + fromPath( toPath( sch.file() ).filename() ) + ": " + std::to_string( sch.symbols_size() ) + " symbols\n";
+    if( ( mode == "server" || manager ) && aIpc.Call( ks::GetSchSummary(), schSum, err ) && !schSum.file().empty() )
+        out += "schematic " + fromPath( toPath( schSum.file() ).filename() ) + ": " + std::to_string( schSum.symbols_size() ) + " symbols\n";
+
+    if( mode == "desktop" && !manager )
+        out += "board tools only: a lone .kicad_pcb opens in the PCB editor alone, sch_* are not served\n";
 
     return { out };
 }
@@ -776,8 +812,9 @@ void AddLaunchTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc, bool aAllowed 
     aTools.push_back( { "launch_kicad",
                         "Start KiCad for the agent on the socket kicadd-mcp uses, so every tool works on it at once: "
                         "mode \"server\" (default: headless kicad-cli api-server; path optional, project {new} / {open} "
-                        "after) or \"desktop\" (the PCB editor with path's board, for a user to watch and route; needs a "
-                        "display). path: a project folder (its one .kicad_pro), .kicad_pro, .kicad_pcb or .kicad_sch, "
+                        "after) or \"desktop\" (for a user to watch and edit too; needs a display: a project opens in the "
+                        "KiCad project window with its PCB and Schematic Editors, board and sch_* tools both; a "
+                        ".kicad_pcb with no .kicad_pro opens in the PCB editor alone, board tools only). path: a project folder (its one .kicad_pro), .kicad_pro, .kicad_pcb or .kicad_sch, "
                         "absolute on the server. Waits until it answers (wait_s, default 60 / 120 for the desktop) and "
                         "returns what is open and the log file. Refused while a KiCad already answers there. Only "
                         "KiCadD's own programs next to kicadd-mcp. HTTP mode: only with --allow-launch.",

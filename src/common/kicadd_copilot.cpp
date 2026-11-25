@@ -7,6 +7,11 @@
 #include "common/kicadd_copilot.h"
 #include "common/kicadd_events.h"
 
+#include <api/api_server.h>
+#include <pgm_base.h>
+
+#include <wx/utils.h>
+
 namespace kicadd
 {
 
@@ -14,6 +19,21 @@ COPILOT& COPILOT::Get()
 {
     static COPILOT s_copilot;
     return s_copilot;
+}
+
+
+void COPILOT::StartApiServer()
+{
+    if( wxGetEnv( wxS( "KICADD_NO_API" ), nullptr ) || Pgm().GetApiServer().Running() )
+        return;
+
+    // kicadd-mcp's launch_kicad starts the editors on the socket the agent already dials
+    wxString socketPath;
+
+    if( wxGetEnv( wxS( "KICADD_API_SOCKET" ), &socketPath ) && !socketPath.IsEmpty() )
+        Pgm().GetApiServer().SetSocketPath( socketPath );
+
+    Pgm().GetApiServer().Start();
 }
 
 

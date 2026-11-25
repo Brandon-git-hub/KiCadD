@@ -816,7 +816,7 @@ index 1ecfc2e0..2b60b81e 100644
      //-- Preferences menu -----------------------------------------------
      //
 diff --git a/eeschema/sch_edit_frame.cpp b/eeschema/sch_edit_frame.cpp
-index f2bd4e10..e2c9ae25 100644
+index f2bd4e10..20a72681 100644
 --- a/eeschema/sch_edit_frame.cpp
 +++ b/eeschema/sch_edit_frame.cpp
 @@ -71,7 +71,14 @@
@@ -834,20 +834,21 @@ index f2bd4e10..e2c9ae25 100644
  #include <tool/action_manager.h>
  #include <tool/action_toolbar.h>
  #include <tool/common_control.h>
-@@ -129,6 +136,12 @@
+@@ -129,6 +136,13 @@
  #include <wx/textdlg.h>
  #include <wx/generic/treectlg.h>
  
 +#ifdef KICADD
 +#include <api/sch_context.h>
 +#include <sch/kicadd_handler_sch.h>
++#include <common/kicadd_copilot.h>
 +#include <common/kicadd_copilot_tool.h>
 +#endif
 +
  
  #define DIFF_SYMBOLS_DIALOG_NAME wxT( "DiffSymbolsDialog" )
  
-@@ -315,6 +328,12 @@ SCH_EDIT_FRAME::SCH_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
+@@ -315,6 +329,12 @@ SCH_EDIT_FRAME::SCH_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
  
      // A saved layout brings its own minimum, so the one the panel needs is set again.
      m_auimgr.GetPane( GitCommitPaneName() ).min_size.x = m_gitCommitPane->GetMinDockWidth();
@@ -860,25 +861,22 @@ index f2bd4e10..e2c9ae25 100644
      FinishAUIInitialization();
  
      wxAuiPaneInfo& hierarchy_pane = m_auimgr.GetPane( SchematicHierarchyPaneName() );
-@@ -475,6 +494,17 @@ SCH_EDIT_FRAME::SCH_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
+@@ -475,6 +495,14 @@ SCH_EDIT_FRAME::SCH_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
      Pgm().GetApiServer().RegisterHandler( m_apiHandler.get() );
      subscribeConnectivity();
  
 +#ifdef KICADD
 +    // Desktop co-pilot: the agent (kicadd-mcp) edits this frame's schematic through the same
-+    // commits, undo stack and canvas as the user. The API server is the transport, so it is
-+    // started even when the user preference is off; KICADD_NO_API=1 opts out.
++    // commits, undo stack and canvas as the user (the API server: kicadd::COPILOT::StartApiServer).
 +    m_kicaddHandler = std::make_unique<KICADD_HANDLER_SCH>( CreateSchFrameContext( this ) );
 +    Pgm().GetApiServer().RegisterHandler( m_kicaddHandler.get() );
-+
-+    if( !wxGetEnv( wxS( "KICADD_NO_API" ), nullptr ) && !Pgm().GetApiServer().Running() )
-+        Pgm().GetApiServer().Start();
++    kicadd::COPILOT::StartApiServer();
 +#endif
 +
      if( Kiface().IsSingle() )
      {
          m_apiHandlerCommon = std::make_unique<API_HANDLER_COMMON>();
-@@ -620,6 +650,9 @@ SCH_EDIT_FRAME::~SCH_EDIT_FRAME()
+@@ -620,6 +648,9 @@ SCH_EDIT_FRAME::~SCH_EDIT_FRAME()
      if( m_schematic )
          Kiway().LocalHistory().UnregisterSaver( m_schematic );
  
@@ -888,7 +886,7 @@ index f2bd4e10..e2c9ae25 100644
      if( Kiface().IsSingle() )
      {
          Pgm().GetApiServer().DeregisterHandler( m_apiHandlerCommon.get() );
-@@ -741,6 +774,10 @@ void SCH_EDIT_FRAME::setupTools()
+@@ -741,6 +772,10 @@ void SCH_EDIT_FRAME::setupTools()
      m_toolManager->RegisterTool( new SCH_SELECTION_TOOL );
      m_toolManager->RegisterTool( new PICKER_TOOL );
      m_toolManager->RegisterTool( new SCH_DRAWING_TOOLS );
@@ -899,7 +897,7 @@ index f2bd4e10..e2c9ae25 100644
      m_toolManager->RegisterTool( new EE_GRAPHIC_TOOL );
      m_toolManager->RegisterTool( new SCH_LINE_WIRE_BUS_TOOL );
      m_toolManager->RegisterTool( new SCH_MOVE_TOOL );
-@@ -1293,6 +1330,10 @@ void SCH_EDIT_FRAME::doCloseWindow()
+@@ -1293,6 +1328,10 @@ void SCH_EDIT_FRAME::doCloseWindow()
      m_crossProbeFlashTimer.Stop();
  
      Pgm().GetApiServer().DeregisterHandler( m_apiHandler.get() );
@@ -1267,7 +1265,7 @@ index d8f6d66c..ae30ba26 100644
      Layout();
  }
 diff --git a/kicad/kicad_manager_frame.cpp b/kicad/kicad_manager_frame.cpp
-index b068e8a0..246ef6de 100644
+index b068e8a0..222cb149 100644
 --- a/kicad/kicad_manager_frame.cpp
 +++ b/kicad/kicad_manager_frame.cpp
 @@ -1492,8 +1492,14 @@ void KICAD_MANAGER_FRAME::OnIdle( wxIdleEvent& aEvent )
@@ -1294,6 +1292,32 @@ index b068e8a0..246ef6de 100644
      if( !m_updateManager && settings->m_KiCadUpdateCheck )
      {
          m_updateManager = std::make_unique<UPDATE_MANAGER>();
+@@ -1511,6 +1517,25 @@ void KICAD_MANAGER_FRAME::OnIdle( wxIdleEvent& aEvent )
+ 
+     // This little diddy is needed to get the window put into the Mac dock icon's context menu.
+     Raise();
++
++#ifdef KICADD
++    // kicadd-mcp's launch_kicad (desktop): open the project's editors so the agent's board and
++    // schematic tools are served from this process. After the Raise() above, so the editors are
++    // in front. Once: a project the user opens later is theirs.
++    wxString openEditors;
++
++    if( wxGetEnv( wxS( "KICADD_OPEN_EDITORS" ), &openEditors ) )
++    {
++        wxUnsetEnv( wxS( "KICADD_OPEN_EDITORS" ) );
++
++        if( openEditors.Contains( wxS( "sch" ) ) && wxFileName::FileExists( SchFileName() ) )
++            GetToolManager()->RunAction( KICAD_MANAGER_ACTIONS::editSchematic );
++
++        // the PCB Editor last, so it is in front
++        if( openEditors.Contains( wxS( "pcb" ) ) && wxFileName::FileExists( PcbFileName() ) )
++            GetToolManager()->RunAction( KICAD_MANAGER_ACTIONS::editPCB );
++    }
++#endif
+ }
+ 
+ 
 diff --git a/kicad/menubar.cpp b/kicad/menubar.cpp
 index f77dfcad..f46b3483 100644
 --- a/kicad/menubar.cpp
@@ -2231,10 +2255,10 @@ index eda0f8cb..23621833 100644
      //-- Preferences menu ----------------------------------------------------
      //
 diff --git a/pcbnew/pcb_edit_frame.cpp b/pcbnew/pcb_edit_frame.cpp
-index e6b786c0..1713d7a7 100644
+index e6b786c0..0785762d 100644
 --- a/pcbnew/pcb_edit_frame.cpp
 +++ b/pcbnew/pcb_edit_frame.cpp
-@@ -45,6 +45,12 @@
+@@ -45,6 +45,13 @@
  #include <api/api_handler_common.h>
  #include <api/api_handler_libraries.h>
  #include <api/api_handler_pcb.h>
@@ -2242,12 +2266,13 @@ index e6b786c0..1713d7a7 100644
 +#include <api/pcb_context.h>
 +#include <pcb/kicadd_handler_pcb.h>
 +#include <pcb/kicadd_lcsc_tool.h>
++#include <common/kicadd_copilot.h>
 +#include <common/kicadd_copilot_tool.h>
 +#endif
  #include <api/api_plugin_manager.h>
  #include <api/api_server.h>
  #include <api/api_utils.h>
-@@ -458,6 +464,12 @@ PCB_EDIT_FRAME::PCB_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
+@@ -458,6 +465,12 @@ PCB_EDIT_FRAME::PCB_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
      m_auimgr.GetPane( DesignBlocksPaneName() ).Show( GetPcbNewSettings()->m_AuiPanels.design_blocks_show );
      m_auimgr.GetPane( GitCommitPaneName() ).Show( GetPcbNewSettings()->m_AuiPanels.show_git_commit_pane );
  
@@ -2260,33 +2285,22 @@ index e6b786c0..1713d7a7 100644
      wxAuiPaneInfo& selectionFilterPane = m_auimgr.GetPane( wxS( "SelectionFilter" ) );
  
      // The selection filter doesn't need to grow in the vertical direction when docked
-@@ -561,6 +573,25 @@ PCB_EDIT_FRAME::PCB_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
+@@ -561,6 +574,14 @@ PCB_EDIT_FRAME::PCB_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
      m_apiHandler = std::make_unique<API_HANDLER_PCB>( this );
      Pgm().GetApiServer().RegisterHandler( m_apiHandler.get() );
  
 +#ifdef KICADD
 +    // Desktop co-pilot: the agent (kicadd-mcp) edits this frame's board through the same
-+    // commits, undo stack and canvas as the user. The API server is the transport, so it is
-+    // started even when the user preference is off; KICADD_NO_API=1 opts out.
++    // commits, undo stack and canvas as the user (the API server: kicadd::COPILOT::StartApiServer).
 +    m_kicaddHandler = std::make_unique<KICADD_HANDLER_PCB>( CreatePcbFrameContext( this ) );
 +    Pgm().GetApiServer().RegisterHandler( m_kicaddHandler.get() );
-+
-+    if( !wxGetEnv( wxS( "KICADD_NO_API" ), nullptr ) && !Pgm().GetApiServer().Running() )
-+    {
-+        // kicadd-mcp's launch_kicad starts the editor on the socket the agent already dials
-+        wxString socketPath;
-+
-+        if( wxGetEnv( wxS( "KICADD_API_SOCKET" ), &socketPath ) && !socketPath.IsEmpty() )
-+            Pgm().GetApiServer().SetSocketPath( socketPath );
-+
-+        Pgm().GetApiServer().Start();
-+    }
++    kicadd::COPILOT::StartApiServer();
 +#endif
 +
      if( Kiface().IsSingle() )
      {
          m_apiHandlerCommon = std::make_unique<API_HANDLER_COMMON>();
-@@ -807,6 +838,9 @@ PCB_EDIT_FRAME::~PCB_EDIT_FRAME()
+@@ -807,6 +828,9 @@ PCB_EDIT_FRAME::~PCB_EDIT_FRAME()
      // every cached TEXT_VAR_TRACKER* before the tracker is freed.
      detachTextVarTracker();
  
@@ -2296,7 +2310,7 @@ index e6b786c0..1713d7a7 100644
      if( Kiface().IsSingle() )
      {
          Pgm().GetApiServer().DeregisterHandler( m_apiHandlerCommon.get() );
-@@ -893,6 +927,12 @@ void PCB_EDIT_FRAME::SetBoard( BOARD* aBoard, bool aBuildConnectivity, PROGRESS_
+@@ -893,6 +917,12 @@ void PCB_EDIT_FRAME::SetBoard( BOARD* aBoard, bool aBuildConnectivity, PROGRESS_
          Kiway().LocalHistory().UnregisterSaver( m_pcb );
      }
  
@@ -2309,7 +2323,7 @@ index e6b786c0..1713d7a7 100644
      PCB_BASE_EDIT_FRAME::SetBoard( aBoard, aReporter );
  
      aBoard->AddListener( this );
-@@ -1121,6 +1161,10 @@ void PCB_EDIT_FRAME::setupTools()
+@@ -1121,6 +1151,10 @@ void PCB_EDIT_FRAME::setupTools()
      m_toolManager->RegisterTool( new PCB_SELECTION_TOOL );
      m_toolManager->RegisterTool( new ZOOM_TOOL );
      m_toolManager->RegisterTool( new PCB_PICKER_TOOL );
@@ -2320,7 +2334,7 @@ index e6b786c0..1713d7a7 100644
      m_toolManager->RegisterTool( new ROUTER_TOOL );
      m_toolManager->RegisterTool( new EDIT_TOOL );
      m_toolManager->RegisterTool( new PCB_EDIT_TABLE_TOOL );
-@@ -1773,6 +1817,10 @@ void PCB_EDIT_FRAME::doCloseWindow()
+@@ -1773,6 +1807,10 @@ void PCB_EDIT_FRAME::doCloseWindow()
      GetCanvas()->StopDrawing();
  
      Pgm().GetApiServer().DeregisterHandler( m_apiHandler.get() );

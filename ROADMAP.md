@@ -102,7 +102,7 @@ Beta 已能走完整個設計流程（電路圖 → 選料 → 擺件 → 規則
      - **測試：** `client/project_e2e.py`。
    - **開啟：** 啟動桌面版（帶專案），或 headless 的 `kicad-cli api-server`，再接上它的 socket。 ✅ 工具 `launch_kicad`（2026-11-23，`mcp/launch.cpp`）：
      - **socket：** 在 kicadd-mcp 已經連的 socket 上啟動，不必另外接。
-     - **兩種模式：** `mode` 為 `server`（`kicad-cli api-server`，預設）或 `desktop`（pcbnew；上游 patch 讓它讀 `KICADD_API_SOCKET`）。
+     - **兩種模式：** `mode` 為 `server`（`kicad-cli api-server`，預設）或 `desktop`（有 `.kicad_pro`：KiCad 專案視窗開 PCB 與電路圖編輯器，`KICADD_OPEN_EDITORS`；只有 `.kicad_pcb`：單開 pcbnew。兩個編輯器都讀 `KICADD_API_SOCKET`。2026-11-25 補上電路圖）。
      - **啟動後：** 等它回應，回報開了哪塊板、哪份電路圖，以及 log 檔。
      - **拒絕：** 已有 KiCad 在回應時拒絕。
    - **關閉：** 有未存檔修改就拒絕，除非 `discard=true`（附 board_diff）。 ✅ 工具 `close_kicad`：

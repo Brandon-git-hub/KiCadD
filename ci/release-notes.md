@@ -123,13 +123,13 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
   - **啟動時隱藏：** 設 `KICADD_COPILOT=0`。
 
 - **`launch_kicad`：** 在 kicadd-mcp 已經連的 socket 上啟動 KiCad，之後所有工具直接作用在它上面。
-  - **兩種模式：** `mode: "server"`（預設）是 headless 的 `kicad-cli api-server`；`"desktop"` 是 PCB 編輯器，開啟專案的板子，給人看、檢查、佈線。
+  - **兩種模式：** `mode: "server"`（預設）是 headless 的 `kicad-cli api-server`；`"desktop"` 給人在旁邊看、檢查、一起改：有 `.kicad_pro` 時開 KiCad 專案視窗，並自動開啟 PCB 與電路圖編輯器，板子和 `sch_*` 工具都能用；只有 `.kicad_pcb`、沒有專案檔時單開 PCB 編輯器，只提供板子工具。
   - **路徑：** `path` 可以是專案資料夾（裡面唯一的 `.kicad_pro`）、`.kicad_pro`、`.kicad_pcb` 或 `.kicad_sch`。server 模式可以不給，先開空的，再 `new_project` / `open_board`。
   - **啟動後：** 等它回應（`wait_s`），回報開了哪塊板、哪份電路圖，以及 log 檔位置。
   - **限制：** 已經有 KiCad 在回應就拒絕。只啟動 kicadd-mcp 同目錄（或 build tree）裡的 KiCadD 執行檔，不接受任意命令。
 - **`close_kicad`：** 只關 `launch_kicad` 啟動的程序，其他方式開的不動（拒絕）。板子或電路圖有未存檔修改就拒絕，並列出內容（附 board_diff）；`discard=true` 才照關。
 - **HTTP 模式：** 兩個工具預設關閉，啟動 kicadd-mcp 時加 `--allow-launch` 才能用。stdio 模式一律可用。
-- **桌面版的 socket：** PCB 編輯器讀環境變數 `KICADD_API_SOCKET`，所以能在指定的 socket 上服務。
+- **桌面版的 socket：** PCB 與電路圖編輯器都讀環境變數 `KICADD_API_SOCKET`（先開的那個啟動 API 伺服器），所以能在指定的 socket 上服務；`KICADD_OPEN_EDITORS` 讓專案視窗載入專案後開啟編輯器。
 - **`SchSummary.modified`：** 電路圖有未存檔修改時為 true。
 
 ## beta.10

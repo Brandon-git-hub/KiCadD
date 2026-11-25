@@ -82,11 +82,26 @@ def main():
             raise RuntimeError(t)
         win = None
         for _ in range(40):
-            if (win := d.window("pic_programmer")):
+            # a project opens in the project window with both editors: the PCB Editor's
+            if (win := d.window("PCB Editor")):
                 break
             time.sleep(0.5)
         check(win is not None, "its window")
         stop.set()
+
+        def canvas_keys(*keys):
+            # keys go to the canvas once it has the focus (in the project window's process the
+            # frame alone does not pass them on): click an empty spot of it first, as a user would
+            geo = d.x("getwindowgeometry", win)
+            g = re.search(r"Position: (\d+),(\d+).*?Geometry: (\d+)x(\d+)", geo, re.S)
+            x, y, w, h = (int(v) for v in g.groups()) if g else (0, 0, 1280, 720)
+            d.x("windowfocus", "--sync", win)
+            d.x("mousemove", "--sync", str(x + int(w * 0.60)), str(y + int(h * 0.20)))
+            d.x("click", "1")
+            time.sleep(0.5)
+            for k in keys:
+                d.x("key", "--clearmodifiers", k)
+                time.sleep(0.4)
 
         print("[edit]")
         err, t = m.tool("move_footprints", {"refs": ["R1"], "dx": 1})
@@ -96,7 +111,7 @@ def main():
         check(not err and "paused" not in t, "board_summary: no pause note")
 
         print("[pause]")
-        d.keys(win, "ctrl+alt+p")
+        canvas_keys("ctrl+alt+p")
         time.sleep(1)
         t0 = time.time()
         err, t = m.tool("move_footprints", {"refs": ["R1"], "dx": 1})
@@ -111,7 +126,7 @@ def main():
         d.shot(os.path.join(work, "copilot.png"))
 
         print("[resume]")
-        d.keys(win, "ctrl+alt+p")
+        canvas_keys("ctrl+alt+p")
         time.sleep(1)
         err, t = m.tool("move_footprints", {"refs": ["R1"], "dx": 1})
         check(not err, "resumed: the move goes through")

@@ -78,6 +78,11 @@ public:
     /// The refusal text busy() returns while paused
     static std::string PausedMessage();
 
+    /// Start the API server for the agent if it is not running: the PCB and Schematic Editors call
+    /// it when they open, whichever comes first. The transport, so started even when the user
+    /// preference is off; KICADD_NO_API=1 opts out, KICADD_API_SOCKET (launch_kicad) sets the socket.
+    static void StartApiServer();
+
     static constexpr size_t MAX_EVENTS = 500;
 
 private:

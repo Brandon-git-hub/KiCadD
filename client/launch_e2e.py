@@ -10,7 +10,7 @@ kicadd-mcp runs on a socket nobody serves yet, then:
              after save_board only the schematic; discard=true closes, the process and the
              socket are gone, board_summary fails again
   empty      a server with no project, then new_project on it, close_kicad (all saved)
-  refused    a relative path, a missing project, a desktop without a board, a bad mode
+  refused    a relative path, a missing project, a desktop without a project or board, a bad mode
   foreign    a server started by someone else on the socket: launch refused, close refused
              (left running)
   http       kicadd-mcp --http without --allow-launch: both refused
@@ -157,7 +157,7 @@ def main():
         shutil.copy(os.path.join(pic, "pic_programmer.kicad_sch"), os.path.join(nopcb, "x.kicad_sch"))
         for args, want in (({"path": "pic/pic_programmer.kicad_pro"}, "must be absolute"),
                            ({"path": os.path.join(work, "none.kicad_pro")}, "no such file"),
-                           ({"path": os.path.join(nopcb, "x.kicad_sch"), "mode": "desktop"}, "needs a board"),
+                           ({"path": os.path.join(nopcb, "x.kicad_sch"), "mode": "desktop"}, "needs a project"),
                            ({"path": work}, ".kicad_pro files"),
                            ({"mode": "gui"}, "mode:")):
             err, t = m.tool("launch_kicad", args)
@@ -252,8 +252,11 @@ def desktop(a, m_unused, work, pic, sock_unused, started):
         print("      ", "\n       ".join(t.splitlines()))
         pid = pid_of(t)
         started.append(pid)
-        check(not err and "started the desktop" in t and "board pic_programmer.kicad_pcb" in t,
-              "the PCB editor up on kicadd-mcp's socket (KICADD_API_SOCKET)")
+        check(not err and "KiCad project window" in t and "board pic_programmer.kicad_pcb" in t
+              and "schematic pic_programmer.kicad_sch" in t,
+              "a project: the project window with both editors on kicadd-mcp's socket (KICADD_API_SOCKET)")
+        err, t = m.tool("sch_summary")
+        check(not err and "parts" in t, "schematic tools served by the desktop: " + t.splitlines()[0][:60])
         err, t = m.tool("move_footprints", {"refs": ["R1"], "dx": 1})
         check(not err, "an edit through the editor")
         err, t = m.tool("close_kicad")
@@ -261,6 +264,19 @@ def desktop(a, m_unused, work, pic, sock_unused, started):
         err, t = m.tool("close_kicad", {"discard": True})
         check(not err and "closed the desktop" in t, "discard=true: closed")
         check(gone(pid), "the editor is gone")
+
+        lone = os.path.join(work, "lone")
+        os.makedirs(lone)
+        shutil.copy(os.path.join(pic, "pic_programmer.kicad_pcb"), os.path.join(lone, "board.kicad_pcb"))
+        err, t = m.tool("launch_kicad", {"mode": "desktop", "path": os.path.join(lone, "board.kicad_pcb")})
+        pid = pid_of(t)
+        started.append(pid)
+        check(not err and "desktop (PCB editor)" in t and "board board.kicad_pcb" in t and "board tools only" in t,
+              "a .kicad_pcb with no .kicad_pro: the PCB editor alone")
+        err, t = m.tool("sch_summary")
+        check(err and "no Schematic Editor" in t, "its sch_* say why: " + t.strip()[:60])
+        err, t = m.tool("close_kicad")
+        check(not err and "closed the desktop" in t and gone(pid), "closed")
     finally:
         stop.set()
         m.p.stdin.close()

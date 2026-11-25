@@ -86,7 +86,7 @@ Claude Code：`claude mcp add kicadd -- C:\KiCadD\bin\kicadd-mcp.exe --stdio`（
 | 專案 | `new_project`：在伺服器上建立新專案（`.kicad_pro`、空白板子與電路圖，可指定層數、疊層、板框），不覆寫既有檔案；`open_board` 開既有專案 |
 | 3D 圖 | `board_render_3d`：用 KiCad 的光線追蹤渲染目前的板子（任何一面、可傾斜、縮放），列出沒有 3D 模型的零件（這個 build 只載入 VRML） |
 | 組裝圖 | `export_assembly`：組裝圖 PDF（正面一頁，背面有零件時加一頁並從背面看），Fab 層沒有圖的零件補外框、pin 1、位號，DNP 畫叉 |
-| 開關 KiCad | `launch_kicad`：在 kicadd-mcp 的 socket 上啟動 headless 伺服器，或桌面版 PCB 編輯器（帶專案）；`close_kicad`：關掉它啟動的那一個，有未存檔修改就拒絕，除非 `discard=true` |
+| 開關 KiCad | `launch_kicad`：在 kicadd-mcp 的 socket 上啟動 headless 伺服器，或桌面版（帶 `.kicad_pro` 時開專案視窗與 PCB、電路圖編輯器，板子與電路圖工具都能用；只有 `.kicad_pcb` 時單開 PCB 編輯器）；`close_kicad`：關掉它啟動的那一個，有未存檔修改就拒絕，除非 `discard=true` |
 | 電路圖到 PCB | `sync_pcb`（照 UUID 對應，重新編號的零件原地改名）、`auto_place`（依連線擺放、去耦電容靠 IC，可設分群和擺件規則；USB、RJ45、DC 插座等連接器可依板邊規則朝外伸出板框） |
 | PCB 編輯 | 查詢、移動、翻面、新增 / 刪除封裝、`pcb_set_fields`、`delete_tracks`、`board_outline`、`board_setup`（疊層，或 JLCPCB 的阻抗疊層）、`set_rules`（網路類別、JLCPCB 製程預設、依電流算線寬、依阻抗算線寬 / 差分間距）、`impedance`（各銅層的控制阻抗線寬）、`zones` |
 | 佈線（逐條） | `route`（一條線，可以指定經過點和換層位置）、`route_short`、`fanout`、`stitch_vias`、`teardrops` |
