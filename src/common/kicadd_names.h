@@ -144,21 +144,21 @@ inline RESOLVED Resolve( const std::vector<std::string>& aNames, const std::stri
     }
 
     // none: the closest three leaves
-    std::vector<std::pair<size_t, int>> near;
+    std::vector<std::pair<size_t, int>> closest;
     const std::string                   uw = Upper( leafWant );
 
     for( size_t i = 0; i < aNames.size(); ++i )
-        near.emplace_back( Distance( uw, Upper( Leaf( aNames[i] ) ) ), (int) i );
+        closest.emplace_back( Distance( uw, Upper( Leaf( aNames[i] ) ) ), (int) i );
 
-    std::stable_sort( near.begin(), near.end(), []( const auto& x, const auto& y ) { return x.first < y.first; } );
+    std::stable_sort( closest.begin(), closest.end(), []( const auto& x, const auto& y ) { return x.first < y.first; } );
     r.error = "no " + aWhat + " " + aWant;
 
-    if( !near.empty() )
+    if( !closest.empty() )
     {
         r.error += " (closest: ";
 
-        for( size_t i = 0; i < near.size() && i < 3; ++i )
-            r.error += ( i ? ", " : "" ) + aNames[near[i].second];
+        for( size_t i = 0; i < closest.size() && i < 3; ++i )
+            r.error += ( i ? ", " : "" ) + aNames[closest[i].second];
 
         r.error += ")";
     }
