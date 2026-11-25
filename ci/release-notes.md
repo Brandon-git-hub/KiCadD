@@ -14,7 +14,7 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 - **目前不支援：** 差分對與等長佈線、全板自動佈線（`route` 只代替重複的手動佈線）、電路圖自動排版、多實例重複圖紙、STEP 匯出與 STEP 模型（3D 只有 VRML）、ODB++ / IPC-2581 / DXF。
 
 ## 這一版（beta.13）
-三部分：修正盲測 S2（四層 RP2040）回報的問題；收斂工具，從 68 個減為 58 個；跑一輪審查型盲測 R1（Jetson AGX Thor，10 層、1125 個零件），並修正它發現的問題。清單在 `docs/NEXT_beta13.md`。
+三部分：修正盲測 S2（四層 RP2040）回報的問題；收斂工具，從 68 個減為 58 個；跑一輪審查型盲測 R1（Jetson AGX Thor，10 層、1125 個零件），並修正它發現的問題。
 
 - **工具合併（舊名稱已移除，沒有別名）：**
   - `undo {target, redo}` 取代 undo / redo / sch_undo / sch_redo。
@@ -44,7 +44,7 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 - **測試：** 新增 `escape_e2e` 和 `merge_e2e`，共 42 個。
 
 ## beta.12
-通用改進：beta.10 之後清單（`docs/NEXT_beta10.md`）的第一優先 10 項，對任何板子都有用的部分。工具數不變（68 個）。
+通用改進：beta.10 之後整理出的第一優先 10 項，對任何板子都有用的部分。工具數不變（68 個）。
 
 - **`query_area` 的焊盤尺寸與過孔空位：**
   - 焊盤列加上銅箔的實際尺寸（旋轉後），例如 `PAD U1.5 [VDD] F.Cu @x,y 0.3x1.5`。
