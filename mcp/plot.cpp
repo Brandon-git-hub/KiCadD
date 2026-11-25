@@ -506,10 +506,16 @@ std::string number( double v, int aSig = 3 )
 } // namespace
 
 
-std::string Tick( double aValue, const std::string& aUnit )
+std::string Tick( double aValue, const std::string& aUnit, double aStep )
 {
+    // enough digits that neighbouring ticks differ: a 2 mV span at 3.13 V reads 3.1305 V, not 3.13 V
+    int sig = 3;
+
+    if( aStep > 0 && aValue != 0 )
+        sig = std::clamp( (int) std::floor( std::log10( std::fabs( aValue ) ) + 1e-9 ) - (int) std::floor( std::log10( aStep ) + 1e-9 ) + 1, 3, 9 );
+
     if( aUnit == "dB" || aUnit == "°" || aUnit == "%" || aUnit.empty() )
-        return number( aValue ) + ( aUnit.empty() ? "" : aUnit == "°" || aUnit == "%" ? aUnit : " " + aUnit );
+        return number( aValue, sig ) + ( aUnit.empty() ? "" : aUnit == "°" || aUnit == "%" ? aUnit : " " + aUnit );
 
     if( aValue == 0 )
         return "0";
@@ -517,7 +523,7 @@ std::string Tick( double aValue, const std::string& aUnit )
     static const char* PREFIX[] = { "f", "p", "n", "µ", "m", "", "k", "M", "G", "T" };
     int                e = (int) std::floor( std::log10( std::fabs( aValue ) ) / 3 + 1e-9 );
     e = std::clamp( e, -5, 4 );
-    return number( aValue / std::pow( 1000.0, e ) ) + " " + PREFIX[e + 5] + aUnit;
+    return number( aValue / std::pow( 1000.0, e ), sig ) + " " + PREFIX[e + 5] + aUnit;
 }
 
 
@@ -564,23 +570,28 @@ std::string Png( const CHART& aChart )
 
         AXIS ya = range( ys, p.logY, 0.05 );
 
-        // grid and ticks
-        for( auto [v, lab] : xa.ticks() )
+        // grid and ticks; a linear axis's labels as precise as its step
+        auto stepOf = []( const AXIS& aAx, const std::vector<std::pair<double, bool>>& aT )
+        { return !aAx.log && aT.size() > 1 ? std::fabs( aT[1].first - aT[0].first ) : 0.0; };
+        const auto xt = xa.ticks(), yt = ya.ticks();
+        const double xStep = stepOf( xa, xt ), yStep = stepOf( ya, yt );
+
+        for( auto [v, lab] : xt )
         {
             double x = xa.map( v, x0, x1 );
             img.fill( (int) std::lround( x ), y0, (int) std::lround( x ) + 1, y1, GRID );
 
             if( lab && pi + 1 == aChart.panels.size() )
-                img.text( Tick( v, aChart.xUnit ), x, y1 + 18, 11, INK, 0.5 );
+                img.text( Tick( v, aChart.xUnit, xStep ), x, y1 + 18, 11, INK, 0.5 );
         }
 
-        for( auto [v, lab] : ya.ticks() )
+        for( auto [v, lab] : yt )
         {
             double y = ya.map( v, y1, y0 );
             img.fill( x0, (int) std::lround( y ), x1, (int) std::lround( y ) + 1, GRID );
 
             if( lab )
-                img.text( Tick( v, p.yUnit ), x0 - 6, y + 4, 11, INK, 1 );
+                img.text( Tick( v, p.yUnit, yStep ), x0 - 6, y + 4, 11, INK, 1 );
         }
 
         img.fill( x0, y0, x1, y0 + 1, FRAME );

@@ -30,8 +30,10 @@
 #include <sstream>
 
 #include <kicadd/board.pb.h>
+#include <kicadd/schematic.pb.h>
 
 namespace kb = kicadd::board;
+namespace ks = kicadd::schematic;
 using json = nlohmann::json;
 
 namespace kicadd::mcp
@@ -205,6 +207,10 @@ struct NETG
     }
 
     std::string node( int n ) { return tag + std::to_string( rep( n ) ); }
+
+    /// the topology's own node, short pieces not joined (for the delays: a joined stretch still
+    /// takes its time)
+    std::string raw( int n ) const { return tag + "r" + std::to_string( n ); }
 };
 
 
@@ -537,7 +543,46 @@ TOOL_RESULT reflection( IPC_CLIENT& aIpc, const json& a )
     std::string             seriesRef;
     double                  seriesR = 0;
 
-    auto findDriver = [&]( const kb::NetTopologyResponse& aT, std::vector<const kb::TopoPad*>& aOut )
+    // aBidi: bidirectional pins too (an MCU's GPIO / USB pin), when no output pin is found
+    bool bidiDriver = false;
+
+    // a board made elsewhere may carry no pin types: the open schematic's, by reference and pin
+    std::map<std::string, std::map<std::string, std::string>> schTypes;   // ref -> pin -> type
+    bool                                                      typesFromSch = false;
+
+    auto fillTypes = [&]( kb::NetTopologyResponse& aT )
+    {
+        for( kb::TopoPad& p : *aT.mutable_pads() )
+        {
+            if( !p.pin_type().empty() || p.pads() <= 2 )
+                continue;
+
+            if( !schTypes.count( p.ref() ) )
+            {
+                auto&              pins = schTypes[p.ref()];
+                ks::SchGetPart     q;
+                ks::SchPartResponse r;
+                std::string        e;
+                q.set_ref( p.ref() );
+
+                if( aIpc.Call( q, r, e ) )
+                {
+                    for( const ks::SchPin& sp : r.symbol().pins() )
+                        pins[sp.number()] = sp.type();
+                }
+            }
+
+            if( auto it = schTypes[p.ref()].find( p.pin() ); it != schTypes[p.ref()].end() && !it->second.empty() )
+            {
+                p.set_pin_type( it->second );
+                typesFromSch = true;
+            }
+        }
+    };
+
+    fillTypes( b );
+
+    auto findDriver = [&]( const kb::NetTopologyResponse& aT, std::vector<const kb::TopoPad*>& aOut, bool aBidi )
     {
         aOut.clear();
 
@@ -548,7 +593,8 @@ TOOL_RESULT reflection( IPC_CLIENT& aIpc, const json& a )
                 if( p.ref() == drvRef && ( drvPin.empty() || p.pin() == drvPin ) )
                     aOut.push_back( &p );
             }
-            else if( p.pads() > 2 && ( p.pin_type() == "output" || p.pin_type() == "tri_state" ) )
+            else if( p.pads() > 2
+                     && ( p.pin_type() == "output" || p.pin_type() == "tri_state" || ( aBidi && p.pin_type() == "bidirectional" ) ) )
             {
                 aOut.push_back( &p );
             }
@@ -556,10 +602,15 @@ TOOL_RESULT reflection( IPC_CLIENT& aIpc, const json& a )
     };
 
     std::vector<const kb::TopoPad*> drv;
-    findDriver( b, drv );
+    findDriver( b, drv, false );
 
-    if( drv.empty() )
+    // an output pin on the net, else behind a series resistor; then the same with bidirectional
+    // pins, behind the resistor first (a series termination sits at its driver)
+    for( bool bidi : { false, true } )
     {
+        if( !drv.empty() || chained )
+            break;
+
         // a series resistor whose other net has the driver
         for( const kb::TopoPad& p : b.pads() )
         {
@@ -575,8 +626,10 @@ TOOL_RESULT reflection( IPC_CLIENT& aIpc, const json& a )
             if( !aIpc.Call( r2, t2, e2 ) )
                 continue;
 
+            fillTypes( t2 );
+
             std::vector<const kb::TopoPad*> d2;
-            findDriver( t2, d2 );
+            findDriver( t2, d2, bidi );
 
             if( d2.size() == 1 )
             {
@@ -592,7 +645,15 @@ TOOL_RESULT reflection( IPC_CLIENT& aIpc, const json& a )
         }
 
         if( chained )
-            findDriver( aside, drv );
+        {
+            findDriver( aside, drv, bidi );
+            bidiDriver = bidi && drvRef.empty();
+        }
+        else if( bidi )
+        {
+            findDriver( b, drv, true );
+            bidiDriver = !drv.empty() && drvRef.empty();
+        }
     }
 
     if( drv.size() != 1 )
@@ -607,7 +668,7 @@ TOOL_RESULT reflection( IPC_CLIENT& aIpc, const json& a )
         }
 
         if( drv.empty() )
-            return fail( ( drvRef.empty() ? "no output pin on " + b.net() + " (nor behind a series resistor)" : "driver " + drvRef + ( drvPin.empty() ? "" : "." + drvPin ) + " is not on " + b.net() )
+            return fail( ( drvRef.empty() ? "no output or bidirectional pin on " + b.net() + " (nor behind a series resistor)" : "driver " + drvRef + ( drvPin.empty() ? "" : "." + drvPin ) + " is not on " + b.net() )
                          + ": give driver (\"U3.12\"); its pins: " + l );
 
         std::string c;
@@ -631,28 +692,35 @@ TOOL_RESULT reflection( IPC_CLIENT& aIpc, const json& a )
 
     NETG& drvNet = chained ? na : nb;
     const std::string drvNode = drvNet.node( dp.node() );
+    const std::string drvKey = drvNet.raw( dp.node() );
 
     // where the series resistor sits: its pad's node on each net
-    std::string seriesA, seriesB;
+    std::string seriesA, seriesB, seriesAKey, seriesBKey;
 
     if( chained )
     {
         for( const kb::TopoPad& p : b.pads() )
         {
             if( p.ref() == seriesRef )
+            {
                 seriesB = nb.node( p.node() );
+                seriesBKey = nb.raw( p.node() );
+            }
         }
 
         for( const kb::TopoPad& p : aside.pads() )
         {
             if( p.ref() == seriesRef )
+            {
                 seriesA = na.node( p.node() );
+                seriesAKey = na.raw( p.node() );
+            }
         }
     }
 
     struct RX
     {
-        std::string name, node, type;
+        std::string name, node, type, key;   // key: the raw node (delays)
     };
 
     std::vector<RX>          rx;
@@ -696,7 +764,7 @@ TOOL_RESULT reflection( IPC_CLIENT& aIpc, const json& a )
             continue;
         }
 
-        rx.push_back( { p.ref() + "." + p.pin(), node, p.pin_type() } );
+        rx.push_back( { p.ref() + "." + p.pin(), node, p.pin_type(), nb.raw( p.node() ) } );
     }
 
     // the driver net's other pins (behind the series resistor): receivers too
@@ -707,7 +775,7 @@ TOOL_RESULT reflection( IPC_CLIENT& aIpc, const json& a )
             if( &p == &dp || p.ref() == seriesRef || p.pads() <= 2 )
                 continue;
 
-            rx.push_back( { p.ref() + "." + p.pin(), na.node( p.node() ), p.pin_type() } );
+            rx.push_back( { p.ref() + "." + p.pin(), na.node( p.node() ), p.pin_type(), na.raw( p.node() ) } );
         }
     }
 
@@ -725,23 +793,23 @@ TOOL_RESULT reflection( IPC_CLIENT& aIpc, const json& a )
         for( const kb::TopoEdge& e : n->topo->edges() )
         {
             const double td = e.length() / 10 * e.delay() * 1e-12;
-            adj[n->node( e.a() )].push_back( { n->node( e.b() ), td } );
-            adj[n->node( e.b() )].push_back( { n->node( e.a() ), td } );
+            adj[n->raw( e.a() )].push_back( { n->raw( e.b() ), td } );
+            adj[n->raw( e.b() )].push_back( { n->raw( e.a() ), td } );
         }
     }
 
     if( chained )
     {
-        adj[seriesA].push_back( { seriesB, 0 } );
-        adj[seriesB].push_back( { seriesA, 0 } );
+        adj[seriesAKey].push_back( { seriesBKey, 0 } );
+        adj[seriesBKey].push_back( { seriesAKey, 0 } );
     }
 
     std::map<std::string, double> dist;
     {
         using QE = std::pair<double, std::string>;
         std::priority_queue<QE, std::vector<QE>, std::greater<QE>> q;
-        dist[drvNode] = 0;
-        q.push( { 0, drvNode } );
+        dist[drvKey] = 0;
+        q.push( { 0, drvKey } );
 
         while( !q.empty() )
         {
@@ -767,10 +835,10 @@ TOOL_RESULT reflection( IPC_CLIENT& aIpc, const json& a )
 
     for( const RX& r : rx )
     {
-        if( !dist.count( r.node ) )
+        if( !dist.count( r.key ) )
             offCopper.push_back( r.name );
         else
-            tdMax = std::max( tdMax, dist[r.node] );
+            tdMax = std::max( tdMax, dist[r.key] );
     }
 
     // the line's Z0 seen from the driver: the length-weighted average of the driver's own net
@@ -874,6 +942,8 @@ TOOL_RESULT reflection( IPC_CLIENT& aIpc, const json& a )
 
     // --- the answer
     std::string out = "reflection " + b.net() + ": driver " + dp.ref() + "." + dp.pin() + ( dp.pin_type().empty() ? "" : " (" + dp.pin_type() + ")" )
+                      + ( bidiDriver ? " (no output pin: this bidirectional one taken as the driver; driver chooses)" : "" )
+                      + ( typesFromSch ? " (pin types from the schematic: the board has none)" : "" )
                       + ( chained ? " on " + aside.net() + " through " + seriesRef + " " + si( seriesR, "Ω" ) : "" ) + ", rout " + si( rout, "Ω" )
                       + ", rise " + si( rise, "s" ) + ", " + si( vdd, "V" ) + "; " + std::to_string( rx.size() ) + " receiver(s) at " + si( cin, "F" )
                       + "; ngspice " + g( spent, 2 ) + " s";

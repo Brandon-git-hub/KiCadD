@@ -5,6 +5,7 @@
  */
 
 #include "kicadd_handler_pcb.h"
+#include "pcb/kicadd_findnet.h"
 #include "common/kicadd_copilot.h"
 #include "kicadd_local_drc.h"
 #include "kicadd_render.h"
@@ -738,7 +739,7 @@ KICADD_HANDLER_PCB::handleQueryNet( const HANDLER_CONTEXT<QueryNet>& aCtx )
     if( !b )
         return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
 
-    const NETINFO_ITEM* net = b->FindNet( wxString::FromUTF8( aCtx.Request.net() ) );
+    const NETINFO_ITEM* net = kicadd::FindNetLoose( *b, aCtx.Request.net() );
 
     if( !net || net->GetNetCode() <= 0 )
         return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
@@ -2145,8 +2146,8 @@ KICADD_HANDLER_PCB::handleDeleteTracks( const HANDLER_CONTEXT<DeleteTracks>& aCt
 
     for( const std::string& n : req.nets() )
     {
-        if( b->FindNet( wxString::FromUTF8( n ) ) )
-            nets.insert( wxString::FromUTF8( n ) );
+        if( const NETINFO_ITEM* net = kicadd::FindNetLoose( *b, n ) )
+            nets.insert( net->GetNetname() );
         else
             out.add_missing( "net " + n );
     }
@@ -3273,7 +3274,7 @@ std::vector<BOX2I> icBodies( BOARD* aBoard )
 std::optional<std::string> viaSpots( BOARD* aBoard, const VECTOR2I& aCenter, int64_t aRadius,
                                      const std::string& aNet, int aLimit, QueryResponse& aOut )
 {
-    const NETINFO_ITEM* net = aBoard->FindNet( wxString::FromUTF8( aNet ) );
+    const NETINFO_ITEM* net = kicadd::FindNetLoose( *aBoard, aNet );
 
     if( !net || net->GetNetCode() <= 0 )
         return "unknown net " + aNet;
@@ -3530,7 +3531,7 @@ HANDLER_RESULT<RouteResponse> KICADD_HANDLER_PCB::handleRouteShort( const HANDLE
 
     for( const std::string& name : req.nets() )
     {
-        NETINFO_ITEM* net = b->FindNet( wxString::FromUTF8( name ) );
+        NETINFO_ITEM* net = kicadd::FindNetLoose( *b, name );
 
         if( !net )
         {
@@ -3991,7 +3992,7 @@ HANDLER_RESULT<FanoutResponse> KICADD_HANDLER_PCB::handleFanout( const HANDLER_C
 
     for( const std::string& name : req.nets() )
     {
-        if( NETINFO_ITEM* net = b->FindNet( wxString::FromUTF8( name ) ) )
+        if( NETINFO_ITEM* net = kicadd::FindNetLoose( *b, name ) )
             nets.insert( net->GetNetCode() );
         else
             out.add_no_zone( name + " (no such net)" );
@@ -4236,7 +4237,7 @@ HANDLER_RESULT<StitchViasResponse> KICADD_HANDLER_PCB::handleStitchVias( const H
 
     const StitchVias& req = aCtx.Request;
     const wxString    netName = req.net().empty() ? wxString( wxS( "GND" ) ) : wxString::FromUTF8( req.net() );
-    NETINFO_ITEM*     net = b->FindNet( netName );
+    NETINFO_ITEM*     net = kicadd::FindNetLoose( *b, netName );
 
     if( !net || net->GetNetCode() <= 0 )
         return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no net " + netName.ToStdString() ) );
@@ -4644,7 +4645,7 @@ HANDLER_RESULT<TeardropsResponse> KICADD_HANDLER_PCB::handleTeardrops( const HAN
 
     for( const std::string& n : req.nets() )
     {
-        NETINFO_ITEM* net = b->FindNet( wxString::FromUTF8( n ) );
+        NETINFO_ITEM* net = kicadd::FindNetLoose( *b, n );
 
         if( net && net->GetNetCode() > 0 )
             nets.insert( net->GetNetCode() );
@@ -8473,10 +8474,7 @@ ZONE* KICADD_HANDLER_PCB::createZone( const ZoneCreate& aReq, std::string& aErro
 
     if( !aReq.net().empty() )
     {
-        net = b->FindNet( wxString::FromUTF8( aReq.net() ) );
-
-        if( !net )
-            net = b->FindNet( wxS( "/" ) + wxString::FromUTF8( aReq.net() ) );
+        net = kicadd::FindNetLoose( *b, aReq.net() );
 
         if( !net )
         {

@@ -9,6 +9,7 @@
  */
 
 #include "pcb/kicadd_pdn.h"
+#include "pcb/kicadd_findnet.h"
 #include "pcb/kicadd_impedance.h"
 
 #include <board.h>
@@ -65,7 +66,7 @@ struct DSU
 
 std::string NetTopology( BOARD& aBoard, const kicadd::board::NetTopology& aReq, kicadd::board::NetTopologyResponse& aOut )
 {
-    NETINFO_ITEM* net = aBoard.FindNet( wxString::FromUTF8( aReq.net() ) );
+    NETINFO_ITEM* net = kicadd::FindNetLoose( aBoard, aReq.net() );
 
     if( !net || net->GetNetCode() <= 0 )
         return "no net " + aReq.net();

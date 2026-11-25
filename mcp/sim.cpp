@@ -453,10 +453,16 @@ struct PART
     bool        biasOn = true;
     double      ceff = 0, vdc = 0, layer = 0, field = 0;   // after the DC bias pass
     bool        tolAssumed = false;
+
+    mutable std::set<std::string> read;   // the models[ref] keys its model looked at
+
+    double ilim = 0;   // a regulator's current limit as modelled (0: none)
 };
 
 double param( const PART& aP, const std::string& aId, double aDefault = 0 )
 {
+    aP.read.insert( aId );
+
     if( aP.over.contains( aId ) )
     {
         double v = 0;
@@ -478,6 +484,7 @@ double param( const PART& aP, const std::string& aId, double aDefault = 0 )
 
 bool hasParam( const PART& aP, const std::string& aId )
 {
+    aP.read.insert( aId );
     return aP.over.contains( aId ) || ( aP.hit && aP.hit->values().count( aId ) );
 }
 
@@ -683,7 +690,13 @@ void passiveValues( PART& aP, std::string& aNote )
     const ks::SchSimPart& s = *aP.sch;
     double                v = 0;
     const kb::LcscHit*    h = aP.hit;
-    auto                  over = [&]( const char* k, double& aOut ) { return aP.over.contains( k ) && jsonSI( aP.over[k], aOut ); };
+    auto                  over = [&]( const char* k, double& aOut )
+    {
+        aP.read.insert( k );
+        return aP.over.contains( k ) && jsonSI( aP.over[k], aOut );
+    };
+
+    aP.read.insert( "tol" );
 
     if( h && h->tolerance() > 0 )
         aP.tol = h->tolerance() / 100;
@@ -818,6 +831,13 @@ bool emit( PART& aP, NETLIST& aN, double aScale )
             }
 
             line += " " + aN.node( *found, s.ref() );
+
+            // a power output in the subckt drives its rail: no source from the rail's name there
+            if( found->type().find( "power out" ) != std::string::npos || found->type() == "power_out" )
+            {
+                if( !found->net().empty() )
+                    aN.driven.insert( found->net() );
+            }
         }
 
         add( line + " " + aP.over["subckt"].get<std::string>() );
@@ -826,13 +846,20 @@ bool emit( PART& aP, NETLIST& aN, double aScale )
 
     if( aP.kind == "R" )
     {
-        if( aP.r <= 0 || !twoPinNodes( aP, aN, a, b ) )
+        double v0 = -1;
+        // a 0 Ω jumper ("0", "0R"): a short, as 1 mΩ (a node pair stays two nodes)
+        const bool jumper = aP.r == 0 && !aP.over.contains( "r" ) && valueOf( s.value(), v0 ) && v0 == 0;
+
+        if( ( aP.r <= 0 && !jumper ) || !twoPinNodes( aP, aN, a, b ) )
         {
             aP.why = "no resistance (value \"" + s.value() + "\")";
             return false;
         }
 
-        add( "R" + id + " " + a + " " + b + " " + fmt( aP.r * aScale, 6 ) );
+        if( jumper )
+            aP.notes = "0 Ω jumper: 1 mΩ";
+
+        add( "R" + id + " " + a + " " + b + " " + fmt( jumper ? 1e-3 : aP.r * aScale, 6 ) );
         return true;
     }
 
@@ -1036,6 +1063,11 @@ bool emit( PART& aP, NETLIST& aN, double aScale )
         const std::string nfb = adjustable ? aN.node( *fb, s.ref() ) : "kd_" + id + "_o";
         const std::string k = "kd_" + id + "_";
 
+        std::string on = "1";
+
+        if( en && !en->net().empty() )
+            on = "(" + vd( aN.node( *en, s.ref() ), ng ) + ">0.9?1:0)";
+
         // PSRR: the input's ripple (AC-coupled) on the output at the data's PSRR to psrr_f, then 20 dB / dec
         // worse to psrr_hf: a * (1 + s/w1) / (1 + s/w2) = a * v + a * (w2/w1 - 1) * (v high-passed at w2)
         const double a = std::pow( 10, -psrr / 20 );
@@ -1044,26 +1076,67 @@ bool emit( PART& aP, NETLIST& aN, double aScale )
         add( "R" + id + "_hp " + k + "h " + ng + " 1Meg" );
         add( "C" + id + "_h2 " + k + "h " + k + "h2 1n" );
         add( "R" + id + "_h2 " + k + "h2 " + ng + " " + fmt( 1 / ( 2 * PI * psrrF * ratio * 1e-9 ) ) );
-        add( "B" + id + "_r " + k + "r " + ng + " V=" + fmt( a ) + "*" + vd( k + "h", ng ) + "+" + fmt( a * ( ratio - 1 ) ) + "*" + vd( k + "h2", ng ) );
+        // (only while the pass element conducts: off, or at the start of a soft start, it passes
+        // no ripple; the scale is 0 .. 1 over its first 100 mV)
+        add( "B" + id + "_r " + k + "r " + ng + " V=" + on + "*min(1,max(0," + vd( k + "p", ng ) + "*10))*(" + fmt( a ) + "*" + vd( k + "h", ng ) + "+"
+             + fmt( a * ( ratio - 1 ) ) + "*" + vd( k + "h2", ng ) + ")" );
 
         // error amplifier (one pole: the loop crosses at loop_bw with the feedback at 1), then the
         // pass element: at most Vin - dropout, at least 0, plus the ripple; the amplifier does not
         // see the ripple (it is the PSRR the loop leaves); the input draws the output current plus Iq
         const std::string sense = adjustable ? "(" + vd( nfb, ng ) + "-" + vd( k + "r", ng ) + "*" + vd( nfb, ng ) + "/max(" + vd( k + "o", ng ) + ",1m))"
                                              : "(" + vd( nfb, ng ) + "-" + vd( k + "r", ng ) + ")";
-        add( "B" + id + "_e " + k + "e " + ng + " V=" + fmt( gain ) + "*(" + fmt( vref, 6 ) + "-" + sense + ")" );
-        add( "R" + id + "_p " + k + "e " + k + "p 1k" );
-        add( "C" + id + "_p " + k + "p " + ng + " " + fmt( gain / ( 2 * PI * 1e3 * fbw ) ) );
+        // soft start (models.soft_start, s: the datasheet's start-up time): the reference ramps 0 ->
+        // Vref in that time from when EN is on and Vin is over uvlo (default 1 V, assumed), so the
+        // output rises at Vout / soft_start and the inrush into its capacitors is C x that. A node
+        // charged at 1/soft_start per second into 1 F, held at 0 while off; at the DC point it is
+        // at 1 (on) or 0 (off)
+        const double tss = param( aP, "soft_start", 0 );
+        const double uvlo = tss > 0 ? param( aP, "uvlo", 1.0 ) : 0;
+        std::string  ref = fmt( vref, 6 );
 
-        std::string on = "1";
+        if( tss > 0 )
+        {
+            const std::string ss = vd( k + "ss", ng );
+            const std::string go = "(" + on + "*(" + vd( nin, ng ) + ">" + fmt( uvlo ) + "?1:0))";
+            add( "C" + id + "_ss " + k + "ss " + ng + " 1" );
+            add( "B" + id + "_ss " + ng + " " + k + "ss I=" + go + "*" + fmt( 1 / tss ) + "*min(1,max(0,(1-" + ss + ")*50))-(1-" + go + ")*" + ss + "*1e6" );
+            add( "R" + id + "_ss " + k + "ss " + ng + " 1G" );
+            ref = fmt( vref, 6 ) + "*min(1,max(0," + ss + "))";
+        }
 
-        if( en && !en->net().empty() )
-            on = "(" + vd( aN.node( *en, s.ref() ), ng ) + ">0.9?1:0)";
+        add( "B" + id + "_e " + k + "e " + ng + " V=" + fmt( gain ) + "*(" + ref + "-" + sense + ")" );
+        add( "R" + id + "_p " + k + "e " + k + "p 1Meg" );
+        add( "C" + id + "_p " + k + "p " + ng + " " + fmt( gain / ( 2 * PI * 1e6 * fbw ) ) );
 
-        add( "B" + id + "_o " + k + "x " + ng + " V=" + on + "*max(0,min(" + vd( k + "p", ng ) + "," + vd( nin, ng ) + "-" + fmt( drop ) + "))+"
-             + vd( k + "r", ng ) );
+        // anti-windup: the amplifier's output stays within what the pass element can give, 0 ..
+        // Vin - dropout (a stiff clamp, a few mV past it). Without it a tran that starts with Vin at
+        // 0 V winds it up to gain * Vref and the output sits at Vin - dropout until that discharges;
+        // with the bound at Vin instead, the output overshoots while it comes down the dropout
+        // (and at 0 while EN is off, so the output starts from 0 when it turns on)
+        add( "B" + id + "_cl " + k + "p " + ng + " I=max(" + vd( k + "p", ng ) + "-" + on + "*max(" + vd( nin, ng ) + "-" + fmt( drop ) + ",0),0)+min("
+             + vd( k + "p", ng ) + ",0)" );
+
+        // current limit: the pass element at most Rout * ilim above the output (ilim from the data,
+        // models.ilim, else 1.5 x the rated Iout; none when neither is known)
+        double ilim = param( aP, "ilim", 0 );
+
+        if( ilim <= 0 && hasParam( aP, "iout" ) && param( aP, "iout" ) > 0 )
+            ilim = 1.5 * param( aP, "iout" );
+
+        aP.ilim = ilim;
+
+        // (on everything the pass element gives, the input's ripple too; ngspice's min() takes two)
+        std::string pass = on + "*max(0,min(" + vd( k + "p", ng ) + "," + vd( nin, ng ) + "-" + fmt( drop ) + "))+" + vd( k + "r", ng );
+
+        if( ilim > 0 )
+            pass = "min(" + pass + "," + vd( nout, ng ) + "+" + fmt( ilim * rout, 6 ) + ")";
+
+        add( "B" + id + "_o " + k + "x " + ng + " V=" + pass );
         add( "V" + id + "_i " + k + "x " + k + "o 0" );
-        add( "R" + id + "_o " + k + "o " + nout + " " + fmt( rout ) );
+        // Rout one way: an LDO's pass element does not sink current (backwards 1 mS, so the
+        // operating point keeps a slope there)
+        add( "B" + id + "_ro " + k + "o " + nout + " I=max(" + vd( k + "o", nout ) + "/" + fmt( rout ) + "," + vd( k + "o", nout ) + "*1m)" );
         add( "B" + id + "_in " + nin + " " + ng + " I=max(I(V" + id + "_i),0)+" + fmt( iq ) );
         add( "R" + id + "_gmin " + k + "p " + ng + " 1G" );
 
@@ -1071,12 +1144,29 @@ bool emit( PART& aP, NETLIST& aN, double aScale )
         aN.currents.push_back( { s.ref() + " out", "i(v" + id + "_i)" } );
 
         auto src = [&]( const char* aId ) { return hasParam( aP, aId ) ? "" : " assumed"; };
+
+        // the data says the part has a soft start but not its time: said, with where to give it
+        const std::string desc = upper( ( aP.hit ? aP.hit->description() + " " : "" ) + s.description() );
+        const bool        listsSoft = desc.find( "SOFT START" ) != std::string::npos || desc.find( "SOFT-START" ) != std::string::npos;
+        std::string       softNote;
+
+        if( tss > 0 )
+            softNote = "; soft start " + FormatSI( tss, "s" ) + " (reference ramp from EN on and Vin over " + FormatSI( uvlo, "V" ) + src( "uvlo" ) + ")";
+        else if( listsSoft )
+            softNote = "; no soft start modelled although the data lists one (its time is not in the data): the output steps up to "
+                       "Vin - dropout as fast as the loop allows, so the start-up inrush is overstated; models." + s.ref()
+                       + ".soft_start (s, the datasheet's start-up time)";
+        else
+            softNote = "; no soft start (the output follows Vin - dropout up to its setpoint; models." + s.ref() + ".soft_start sets one)";
+
         aP.notes = std::string( adjustable ? "Vref " : "Vout " ) + FormatSI( vref, "V" ) + ( adjustable ? " on " + bare( fb->net() ) : "" )
                    + ", dropout " + FormatSI( drop, "V" ) + src( "dropout" ) + ", Iq " + FormatSI( iq, "A" ) + src( "iq" ) + ", PSRR "
                    + fmt( psrr, 3 ) + " dB" + ( hasParam( aP, "psrr" ) ? " (the data's one number)" : " assumed" ) + " to " + FormatSI( psrrF, "Hz" )
                    + src( "psrr_f" ) + ", then -20 dB/dec to " + fmt( psrrHf, 3 ) + " dB" + src( "psrr_hf" ) + "; loop "
                    + FormatSI( fbw, "Hz" ) + src( "loop_bw" ) + ", Rout " + FormatSI( rout, "Ω" ) + src( "rout" )
-                   + "; no current limit (Iout " + ( hasParam( aP, "iout" ) ? FormatSI( param( aP, "iout" ), "A" ) : "?" ) + ")";
+                   + ( ilim > 0 ? "; current limit " + FormatSI( ilim, "A" ) + ( hasParam( aP, "ilim" ) ? "" : " (1.5 x Iout, assumed)" )
+                                : std::string( "; no current limit (no Iout in the data: models." ) + s.ref() + ".ilim)" )
+                   + softNote;
         return true;
     }
 
@@ -1272,6 +1362,16 @@ bool emit( PART& aP, NETLIST& aN, double aScale )
         const std::string nvp = aN.node( *vp, s.ref() ), nvn = aN.node( *vn, s.ref() );
         int          made = 0;
 
+        // the inputs' ESD diodes to the rails (a powered-down op-amp's input then conducts into V+):
+        // on unless models.input_clamp 0, or the part says its inputs are protected when off
+        const std::string desc = upper( ( aP.hit ? aP.hit->description() + " " : "" ) + s.description() );
+        const bool offSafe = desc.find( "POWER-OFF" ) != std::string::npos || desc.find( "POWER OFF" ) != std::string::npos
+                             || desc.find( "FAIL-SAFE" ) != std::string::npos || desc.find( "FAILSAFE" ) != std::string::npos;
+        const bool clamp = param( aP, "input_clamp", offSafe ? 0 : 1 ) > 0.5;
+
+        if( clamp )
+            aN.models.push_back( ".model kd_dc_" + id + " D(IS=1e-15 N=1 RS=10)" );
+
         for( const CH& ch : chans )
         {
             if( !ch.p || !ch.n || !ch.o )
@@ -1288,8 +1388,21 @@ bool emit( PART& aP, NETLIST& aN, double aScale )
             // keep the integrator near the rails (no wind-up past them)
             add( "B" + c + "_cl " + k + "1 0 I=(V(" + k + "1)>V(" + nvp + ")+1?V(" + k + "1)-V(" + nvp + ")-1:0)+(V(" + k + "1)<V(" + nvn
                  + ")-1?V(" + k + "1)-V(" + nvn + ")+1:0)" );
-            add( "B" + c + "_o " + k + "o 0 V=max(V(" + nvn + ")+" + fmt( hr ) + ",min(V(" + nvp + ")-" + fmt( hr ) + ",V(" + k + "1)))" );
+            // the output within its headroom of the rails; below 2 x the headroom (powered down) the
+            // two limits meet at the rails' middle instead of crossing (no 1.2 V from a 0 V supply)
+            const std::string mid = "(V(" + nvp + ")+V(" + nvn + "))/2";
+            const std::string lo = "min(V(" + nvn + ")+" + fmt( hr ) + "," + mid + ")", hi = "max(V(" + nvp + ")-" + fmt( hr ) + "," + mid + ")";
+            add( "B" + c + "_o " + k + "o 0 V=max(" + lo + ",min(" + hi + ",V(" + k + "1)))" );
             add( "R" + c + "_o " + k + "o " + no + " 25" );
+
+            if( clamp )
+            {
+                for( const auto& [tag, n] : { std::pair<const char*, std::string>{ "p", np }, { "n", nn } } )
+                {
+                    add( "D" + c + "_" + tag + "h " + n + " " + nvp + " kd_dc_" + id );
+                    add( "D" + c + "_" + tag + "l " + nvn + " " + n + " kd_dc_" + id );
+                }
+            }
 
             if( ib != 0 )
             {
@@ -1311,7 +1424,11 @@ bool emit( PART& aP, NETLIST& aN, double aScale )
         aP.notes = std::to_string( made ) + " channel(s): GBW " + FormatSI( gbw, "Hz" ) + src( "gbw" ) + " (one pole after 100 dB), slew "
                    + fmt( slew / 1e6, 3 ) + " V/µs" + src( "slew" ) + ", Vos " + FormatSI( vos, "V" ) + src( "vos" ) + ", output "
                    + ( rro ? "rail to rail" : "1.2 V from the rails" ) + ( hasParam( aP, "rr_out" ) ? "" : " assumed" )
-                   + "; supply current Iq only" + ( inferred.empty() ? "" : "; inferred pairing: " + inferred );
+                   + "; supply current Iq only; inputs "
+                   + ( clamp ? std::string( "clamped to the rails by ESD diodes (models.input_clamp 0: off)" )
+                           : hasParam( aP, "input_clamp" ) ? std::string( "not clamped (input_clamp 0)" )
+                                                           : std::string( "not clamped: its description says power-off / fail-safe inputs (input_clamp 1: on)" ) )
+                   + ( inferred.empty() ? "" : "; inferred pairing: " + inferred );
         return true;
     }
 
@@ -1742,8 +1859,9 @@ std::string SimulateDescription()
            "and typical ESR / ESL), L (DCR, SRF), diodes, Zeners, MOSFETs (level 1), LDOs and op-amps "
            "(behavioural), or the part's own Sim.* model; every estimated or assumed value is said. Parts without a "
            "model are left out and their nets cut there (said). sources {net: volts or a SPICE source: \"dc 5 ac 1\", "
-           "\"pulse(0 5 0 1u 1u 5m 10m)\", \"sin(5 0.05 100k)\"} to ground; supplies not given and not made in the region "
-           "get the voltage their name says (+3V3) and that is said. loads {net: amps, a SPICE current source "
+           "\"pulse(0 5 0 1u 1u 5m 10m)\", \"sin(5 0.05 100k)\"} to ground, or null / \"none\": no source there; supplies not "
+           "given and not made in the region (an LDO's output, a subckt's power output pin) get the voltage their name "
+           "says (+3V3) and that is said. loads {net: amps, a SPICE current source "
            "(\"pulse(0.1 1 1m 1u 1u 1m 2m)\") or \"10 ohm\"}. analysis: op (default), tran {stop, step?, window?: "
            "the last part measured, default the last 20%}, ac {from, to, points per decade} (needs a source with "
            "ac 1) or dc {source: a net of sources (volts) or loads (amps), from, to, step}: that source swept "
@@ -1758,7 +1876,8 @@ std::string SimulateDescription()
            "MLCC DC bias comes from an op run first (for tran its average over the window): right for linear "
            "circuits; a switching converter or an AC-coupled node is not at its DC point there. dc_bias false: MLCCs at their nominal C. models {ref: {c, esr, esl, r, "
            "l, dcr, tol (%), dc_bias, vout, vref, dropout, iq, psrr, psrr_f, psrr_hf, loop_bw, rout, gbw, slew, vos, rds_on, vgs_th, "
-           "vf ... (any parameter, SI), exclude: true, or subckt + lib (a .lib / .cir path, relative to the project) "
+           "vf, ilim, soft_start (s: the reference ramps from EN on), uvlo, input_clamp ... (any parameter, SI; keys its model does not use are said), kind (a built-in model for a part "
+           "with no LCSC number: ldo, opamp, r, c, l, d, zener, mosfet, bead), exclude: true, or subckt + lib (a .lib / .cir path, relative to the project) "
            "+ pins (the subckt's pin order as pin numbers or names)}} override what the data gives. netlist true "
            "adds the netlist made. plot true: a PNG chart too (tran: the probes over time; ac: gain and phase over log f; "
            "dc: the probes and the sources' currents against the swept value; corners as faint lines of the same colour).";
@@ -1901,6 +2020,21 @@ TOOL_RESULT Simulate( IPC_CLIENT& aIpc, const json& a )
                 includes.insert( ".include \"" + genericOf( lib ) + "\"" );
             }
         }
+        else if( part.over.contains( "kind" ) )
+        {
+            // the built-in model named, for a part the data does not classify (no LCSC number)
+            static const std::map<std::string, std::string> kinds = { { "r", "R" }, { "c", "C" }, { "l", "L" }, { "d", "D" },
+                                                                      { "zener", "Z" }, { "z", "Z" }, { "mosfet", "M" }, { "m", "M" },
+                                                                      { "bead", "FB" }, { "fb", "FB" }, { "ldo", "LDO" },
+                                                                      { "opamp", "OPAMP" } };
+            std::string want = part.over["kind"].is_string() ? part.over["kind"].get<std::string>() : "";
+            std::transform( want.begin(), want.end(), want.begin(), ::tolower );
+
+            if( !kinds.count( want ) )
+                return fail( "models." + p.ref() + ".kind: r, c, l, d, zener, mosfet, bead, ldo or opamp" );
+
+            part.kind = kinds.at( want );
+        }
         else if( !p.spice_item().empty() )
         {
             part.kind = "KICAD";
@@ -2008,6 +2142,31 @@ TOOL_RESULT Simulate( IPC_CLIENT& aIpc, const json& a )
         base.driven = probe.driven;
     }
 
+    // models keys that did nothing: said, as other arguments are checked
+    std::vector<std::string> modelNotes;
+
+    for( const PART& p : parts )
+    {
+        std::string unused;
+
+        for( const auto& [key, v] : p.over.items() )
+        {
+            static const std::set<std::string> structural = { "exclude", "subckt", "lib", "pins", "kind" };
+
+            if( !structural.count( key ) && !p.read.count( key ) )
+                unused += ( unused.empty() ? "" : ", " ) + key;
+        }
+
+        if( unused.empty() )
+            continue;
+
+        if( p.kind.empty() )
+            modelNotes.push_back( "models." + p.sch->ref() + ": " + unused + " unused, " + p.sch->ref() + " is left out (" + p.why
+                                  + "); models." + p.sch->ref() + ".kind names a built-in model (ldo, opamp, r, c, ...)" );
+        else
+            modelNotes.push_back( "models." + p.sch->ref() + ": " + unused + " not used by its model (" + p.kind + ")" );
+    }
+
     // --- sources, loads
     struct SRC
     {
@@ -2017,6 +2176,7 @@ TOOL_RESULT Simulate( IPC_CLIENT& aIpc, const json& a )
 
     std::vector<SRC> srcs;
     std::set<std::string> given;
+    std::vector<std::string> noSource;   // sources {net: null / "none"}: no source, not even from its name
 
     for( const char* key : { "sources", "loads" } )
     {
@@ -2038,6 +2198,16 @@ TOOL_RESULT Simulate( IPC_CLIENT& aIpc, const json& a )
             s.net = net;
             s.node = base.spiceOf[net];
             s.load = std::string( key ) == "loads";
+
+            if( !s.load && ( v.is_null() || ( v.is_string() && ( v.get<std::string>() == "none" || v.get<std::string>() == "off" ) ) ) )
+            {
+                if( netByName[net]->ground() )
+                    return fail( "sources." + name + ": that is ground" );
+
+                given.insert( net );
+                noSource.push_back( bare( net ) );
+                continue;
+            }
 
             if( v.is_number() )
             {
@@ -2455,17 +2625,26 @@ TOOL_RESULT Simulate( IPC_CLIENT& aIpc, const json& a )
         return fail( aMsg + ( l.empty() ? "" : "\nleft out (their pins open): " + l ) );
     };
 
-    // a probe on a net no modelled part is on: no node there
-    for( const std::string& pr : probes )
+    // a probe on a net no modelled part is on: no node there (one asked for: refused; a default
+    // one: dropped)
+    const bool askedProbes = a.contains( "probes" ) && a["probes"].is_array();
+
+    for( size_t i = 0; i < probes.size(); )
     {
+        const std::string pr = probes[i];
         bool on = std::any_of( parts.begin(), parts.end(), [&]( const PART& p )
                                { return !p.kind.empty() && std::any_of( p.sch->pins().begin(), p.sch->pins().end(),
                                                                          [&]( const ks::SchSimPin& pin ) { return pin.net() == pr; } ); } );
 
         bool src = std::any_of( srcs.begin(), srcs.end(), [&]( const SRC& x ) { return x.net == pr; } );
 
-        if( !on && !src )
+        if( !on && !src && askedProbes )
             return runFail( "probes: " + bare( pr ) + " has no modelled part on it" );
+
+        if( !on && !src )
+            probes.erase( probes.begin() + i );
+        else
+            ++i;
     }
 
     // --- the DC bias pass: the DC voltage across each MLCC (op; for tran its average over the window)
@@ -2547,6 +2726,9 @@ TOOL_RESULT Simulate( IPC_CLIENT& aIpc, const json& a )
     for( const std::string& n : region.notes() )
         out += "\nnote: " + n;
 
+    for( const std::string& n : modelNotes )
+        out += "\nnote: " + n;
+
     // sources
     {
         std::string l;
@@ -2556,6 +2738,9 @@ TOOL_RESULT Simulate( IPC_CLIENT& aIpc, const json& a )
             if( !s.load )
                 l += ( l.empty() ? "" : "; " ) + bare( s.net ) + " " + s.spec + ( s.why.empty() ? "" : " (" + s.why + ")" );
         }
+
+        for( const std::string& n : noSource )
+            l += ( l.empty() ? "" : "; " ) + n + " none (sources: null)";
 
         std::string ld;
 
@@ -2640,6 +2825,8 @@ TOOL_RESULT Simulate( IPC_CLIENT& aIpc, const json& a )
             line += "its own SPICE model (Sim.* fields)";
         else if( p.kind == "SUBCKT" )
             line += "subckt " + p.over["subckt"].get<std::string>() + " (models)";
+        else if( p.kind == "R" && !p.notes.empty() )
+            line += p.notes;
         else if( p.kind == "R" )
             line += FormatSI( p.r, "Ω" ) + " ±" + fmt( p.tol * 100, 3 ) + "%" + ( p.tolAssumed ? " (assumed)" : "" );
         else if( p.kind == "C" )
@@ -2864,6 +3051,23 @@ TOOL_RESULT Simulate( IPC_CLIENT& aIpc, const json& a )
 
                 if( p.sch->ref() + " out" == who && hasParam( p, "iout" ) )
                     out += " (Iout " + FormatSI( param( p, "iout" ), "A" ) + ")";
+
+                // the current limit reached: for how long (tran), said; the limit holds the
+                // current there, so the peak is the limit's, not what the circuit would draw
+                if( p.sch->ref() + " out" == who && p.ilim > 0 && pk >= 0.98 * p.ilim )
+                {
+                    double at = 0;
+
+                    for( size_t i = 1; i < y.size() && i < x.size(); ++i )
+                    {
+                        if( std::fabs( y[i] ) >= 0.98 * p.ilim )
+                            at += x[i] - x[i - 1];
+                    }
+
+                    out += "; at its current limit " + FormatSI( p.ilim, "A" )
+                           + ( analysis == "tran" ? " for " + FormatSI( at, "s" ) : "" )
+                           + " (the circuit would draw more: inrush into the output capacitors, or a load over the limit)";
+                }
             }
         }
     }

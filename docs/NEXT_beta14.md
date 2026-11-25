@@ -43,3 +43,13 @@
 - `sch_part` 沒有腳的篩選（J1 有 700 行）。加 `pins` 或 `net` glob。
 - `query_area` 的零件列沒有 value。
 - ERC「multiple_net_names」引用 #PWR 的隱藏腳時，名稱和 symbol 的 value 不一樣（KiCad 本身的行為），可以補充說明。
+
+## 已處理：Marlow（DM0002，RP2040 + TLV758P）研究回報（2026-11-25）
+
+- **simulate 自動電源與 subckt 衝突：** subckt 的 power_out 腳所在的網路算「區內產生」，不再依名稱補電源。`sources {net: null / "none"}` 可以明確關掉某條網路的電源。
+- **內建 LDO 積分飽和：** 誤差放大器輸出鉗在 0 .. Vin − dropout（EN 關時為 0），VIN 從 0 V 起的 tran 不再卡在 Vin − dropout。加上限流：`ilim`，沒給時用資料的 Iout × 1.5（標 assumed），兩者都沒有時說明無限流。`models.{ref}.soft_start`（秒，資料手冊的啟動時間）：參考電壓從 EN 開啟且 Vin 高於 `uvlo`（預設 1 V，assumed）起線性爬升；沒有給時間但零件描述列出 Soft Start 時，模型說明會講明未模擬、啟動湧入電流被高估。電流到達限流值時，輸出列出「at its current limit … for …」。導通元件只供電不吸電（反向 1 mS），PSRR 饋通只在導通時作用（關閉或 soft start 剛開始時不把輸入的跳變帶到輸出）。Marlow 原報告的 15 顆（jlcparts 2026-11-21 的 C2876308 資料）：舊版 4.885 V、峰值 2.4 A；新版 3.149 V、峰值 655 mA（未達 750 mA 限流）；soft_start 1 ms 時 55 mA。
+- **內建運放：** 輸入加 ESD 二極體到兩軌（`input_clamp 0` 關閉；描述寫 power-off / fail-safe 的零件預設關閉並說明）。斷電時輸出上下限交會在兩軌中點，不再從 0 V 電源輸出 1.2 V。
+- **網路名稱：** 板子工具以名稱找網路時，接受有或沒有開頭 `/` 的寫法（`kicadd::FindNetLoose`：query_net、board_render、topology / reflection、pdn、teardrops、stitch_vias 等）。
+- **reflection：** 沒有 output 腳時改用 bidirectional 腳當 driver（先找串聯電阻後面），並在輸出說明；板子沒有腳的類型時（從別的工具來的板）用電路圖的。最遠接收端的 TD 改在未合併的節點上算（rise 慢時短線段被併成電容，原本算成 0 s）。
+- **小項：** `models` 裡沒有作用的鍵會列出（零件被略過時提示 `kind`）；新增 `models.{ref}.kind`（ldo、opamp、r、c、l、d、zener、mosfet、bead），給沒有 LCSC 編號的零件用內建模型。圖表刻度的位數依刻度間距決定。
+- **順手修：** 值為 `0` / `0R` 的電阻當 1 mΩ 跳線（原本被略過、網路斷開）；預設的 probes 遇到沒有模型零件的網路時略過，不再整個失敗。

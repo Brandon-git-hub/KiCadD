@@ -173,6 +173,30 @@ def main():
         v = num(t, r"\n  \+3V3: ([\d.]+) V")
         check(v and abs(v - 3.0) < 0.01, f"models {u1} vout 3: +3V3 {v} V")
 
+        print("[LDO start-up, current limit, sources null, unused keys]")
+        # VIN from 0 V: no wind-up at the DC point (the output used to sit at VIN - dropout)
+        err, t = sim({"around": [u1], "sources": {"VIN": "pulse(0 5 0.2m 0.5m 0.5m 10 20)"}, "loads": {"+3V3": 0.1},
+                      "tran": {"stop": "3m", "step": "1u", "window": "0.5m"}})
+        v = num(t, r"\n  \+3V3: ([\d.]+) V, ripple")
+        mx = num(t, r"\n  \+3V3: .*?max ([\d.]+) V")
+        check(not err and v and abs(v - 3.3) < 0.01 and mx and mx < 3.32, f"VIN ramped from 0 V: +3V3 {v} V (max {mx} V), not VIN - dropout")
+        check(re.search(re.escape(u1) + r" .*current limit 1\.5 A \(1\.5 x Iout, assumed\)", t), "current limit from C6186's Iout 1 A, said assumed")
+        err, t = sim({"around": [u1], "sources": {"VIN": "pulse(0 5 0.2m 1u 1u 10 20)"}, "loads": {"+3V3": 0.1},
+                      "tran": {"stop": "1m", "step": "1u"}, "models": {u1: {"ilim": 0.3}}})
+        pk = num(t, re.escape(u1) + r" out: [\d.]+ mA rms, peak ([\d.]+) mA")
+        check(not err and pk and pk <= 301, f"a 1 µs VIN step into the output caps: {u1} peak {pk} mA with ilim 300 mA")
+        check(re.search(r"at its current limit 300 mA for [\d.]+ [µm]?s \(the circuit would draw more", t), "the limit reached: said, with for how long")
+        err, t = sim({"around": [u1], "sources": {"VIN": "pulse(0 5 0.2m 1u 1u 10 20)"}, "loads": {"+3V3": 0.1},
+                      "tran": {"stop": "2m", "step": "1u", "window": "0.5m"}, "models": {u1: {"soft_start": "1m"}}})
+        pk = num(t, re.escape(u1) + r" out: [\d.]+ mA rms, peak ([\d.]+) mA")
+        rise = re.search(r"\+3V3: .*?rise 10-90% ([\d.]+ [µm]?)s", t)
+        check(not err and pk and pk < 160 and "soft start 1 ms" in t and "current limit" in t and "at its current limit" not in t,
+              f"soft_start 1 ms: peak {pk} mA (100 mA load + C x 3.3 V / 1 ms), not at the limit")
+        check(rise and 0.6e-3 < si(rise.group(1)) < 1.0e-3, f"soft_start 1 ms: +3V3 rises 10-90% in {rise and rise.group(1)}s (0.8 ms for a ramp)")
+        err, t = sim({"around": [u1], "sources": {"VIN": 5, "+3V3": None}, "models": {u1: {"exclude": True, "foo": 1}, c1: {"bar": 2}}})
+        check(not err and "+3V3 none (sources: null)" in t and "from its name" not in t, "sources {+3V3: null}: no source there, not even from its name")
+        check(f"models.{u1}: foo unused, {u1} is left out" in t and f"models.{c1}: bar not used by its model (C)" in t, "keys that did nothing: said")
+
         print("[RC]")
         err, t = sim({"around": [r2], "sources": {"SIG": "dc 0 ac 1"}, "ac": {"from": 10, "to": "1Meg"}, "probes": ["OUT"]})
         print("      ", "\n       ".join(t.splitlines()[:12]))
@@ -233,6 +257,17 @@ def main():
         err, t = sim({"refs": [u3], "sources": {"AIN": 2.5}})
         v = num(t, r"\n  AOUT: ([\d.]+) V")
         check(v and abs(v - 2.5 - 0.007) < 1e-3, f"follower DC {v} V (2.5 V + Vos 7 mV from the data)")
+
+        # powered down: the input's ESD diode to V+ conducts (2.5 V on AIN, +5V at 0 V); the output
+        # does not drive 1.2 V from a 0 V supply
+        err, t = sim({"refs": [u3], "sources": {"AIN": 2.5, "+5V": 0}})
+        i = num(t, r"\n  AIN source: ([\d.]+) mA")
+        check(not err and i and i > 1 and "clamped to the rails by ESD diodes" in t, f"powered down: AIN pushes {i} mA into +5V through the input's ESD diode")
+        m = re.search(r"\n  AOUT: (-?[\d.]+ ?[mµn]?)V", t)
+        v = si(m.group(1)) if m else None
+        check(v is not None and abs(v) < 0.6, f"powered down: AOUT {v} V, not 1.2 V")
+        err, t = sim({"refs": [u3], "sources": {"AIN": 2.5, "+5V": 0}, "models": {u3: {"input_clamp": 0}}})
+        check(not err and "not clamped (input_clamp 0)" in t, "input_clamp 0: no ESD diodes")
 
         err, t = sim({"refs": [u4], "sources": {"BIN1": 1, "BIN2": 2}})
         print("      ", "\n       ".join(t.splitlines()[-6:]))

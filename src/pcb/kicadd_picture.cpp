@@ -9,6 +9,7 @@
  */
 
 #include "pcb/kicadd_picture.h"
+#include "pcb/kicadd_findnet.h"
 
 #include <board.h>
 #include <board_design_settings.h>
@@ -271,7 +272,7 @@ bool RenderBoardPng( BOARD* aBoard, const kicadd::board::RenderBoard& aReq,
             continue;
         }
 
-        NETINFO_ITEM* net = aBoard->FindNet( wxString::FromUTF8( n ) );
+        NETINFO_ITEM* net = kicadd::FindNetLoose( *aBoard, n );
 
         if( net && net->GetNetCode() > 0 )
             nets.insert( net->GetNetCode() );

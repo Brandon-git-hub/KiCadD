@@ -53,7 +53,8 @@ struct CHART
 std::string Png( const CHART& aChart );
 
 /// A value with its SI prefix for an axis ("2.5 µs", "100 kHz", "-20 dB").
-std::string Tick( double aValue, const std::string& aUnit );
+/// aStep: the axis's tick step, for enough digits that neighbouring ticks differ (0: 3 digits)
+std::string Tick( double aValue, const std::string& aUnit, double aStep = 0 );
 
 /// The web view's Chart tab (phase 4 item 2): with a view running (kicadd-mcp --http), every chart
 /// a tool makes (simulate, pdn, reflection) is also handed to it, plot=true or not; the PNG is

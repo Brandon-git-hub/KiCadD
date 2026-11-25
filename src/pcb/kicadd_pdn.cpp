@@ -5,6 +5,7 @@
  */
 
 #include "pcb/kicadd_pdn.h"
+#include "pcb/kicadd_findnet.h"
 #include "pcb/kicadd_impedance.h"
 
 #include <board.h>
@@ -145,7 +146,7 @@ NET_FILLS fillsOf( const BOARD& aBoard, int aNet )
 
 std::string PdnGeometry( BOARD& aBoard, const kicadd::board::PdnGeometry& aReq, kicadd::board::PdnGeometryResponse& aOut )
 {
-    NETINFO_ITEM* rail = aBoard.FindNet( wxString::FromUTF8( aReq.net() ) );
+    NETINFO_ITEM* rail = kicadd::FindNetLoose( aBoard, aReq.net() );
 
     if( !rail || rail->GetNetCode() <= 0 )
         return "no net " + aReq.net();
@@ -197,7 +198,7 @@ std::string PdnGeometry( BOARD& aBoard, const kicadd::board::PdnGeometry& aReq, 
 
     if( !aReq.ground().empty() )
     {
-        NETINFO_ITEM* g = aBoard.FindNet( wxString::FromUTF8( aReq.ground() ) );
+        NETINFO_ITEM* g = kicadd::FindNetLoose( aBoard, aReq.ground() );
 
         if( !g || g->GetNetCode() <= 0 )
             return "no net " + aReq.ground() + " (ground)";

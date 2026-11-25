@@ -153,6 +153,13 @@ def main():
         if imgs:
             open(os.path.join(work, "reflection.png"), "wb").write(imgs[0])
 
+        # a slow edge: the short stretches become capacitances, the delay to the receivers stays;
+        # the net named without the sheet's "/" (as a schematic tool or a board from elsewhere may)
+        err, t = m.tool("reflection", {"net": "VMEF.SYSRESET_N", "rise": "20n"})
+        td2 = re.search(r"the farthest receiver ([\d.]+ [pn]?)s one way", t)
+        check(not err and td2 and td and abs(si(td2.group(1)) - float(td.group(1)) * 1e-12) < 2e-12,
+              f"rise 20 ns, the lines lumped: the farthest receiver still {td2 and td2.group(1)}s (not 0 s); the net without its '/'")
+
         err, t = m.tool("reflection", {"net": "Net-(IC55-SER)", "rs": [47], "rout": 20, "vdd": 3.3, "cin": "2p", "rise": "1n"})
         check(not err and "with 47 Ω in series (rs):" in t and "assumed" not in t, "rs tried; nothing assumed when all given")
 
