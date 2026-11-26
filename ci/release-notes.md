@@ -2,7 +2,7 @@
      {{UPSTREAM}} is filled from patches/UPSTREAM_BASE; build info and SHA-256 are appended. -->
 KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修剪版 Windows x64 build，加上 Agent（MCP）協同設計。
 
-> ⚠️ Beta（pre-release）。已能走完整個設計流程，功能仍會持續加入。由 GitHub Actions 自動建置；42 個端到端測試在 Linux 上全部通過（含桌面版），Windows CI 跑 smoke test 與 headless 的出廠、貼片、電路圖文件、模擬、PDN / 反射、新專案、開關 KiCad、工具、設定、undo 歷史測試；桌面版在 Windows 上只有人工試用。
+> ⚠️ Beta（pre-release）。已能走完整個設計流程，功能仍會持續加入。由 GitHub Actions 自動建置；44 個端到端測試在 Linux 上全部通過（含桌面版），Windows CI 跑 smoke test 與 headless 的出廠、貼片、電路圖文件、模擬、PDN / 反射、新專案、開關 KiCad、工具、設定、undo 歷史測試；桌面版在 Windows 上只有人工試用。
 
 ## 使用前須知
 完整的使用說明（安裝、接上 Agent、skill、存檔格式、做得到 / 做不到）：[docs/GUIDE.md](https://github.com/Brandon-git-hub/KiCadD/blob/main/docs/GUIDE.md)。
@@ -13,7 +13,31 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 - **一次一個專案：** 一個服務同時只開一個專案（板子加電路圖），換專案請用 `project {open}`，新專案用 `project {new}`。
 - **目前不支援：** 差分對與等長佈線、全板自動佈線（`route` 只代替重複的手動佈線）、電路圖自動排版、多實例重複圖紙、STEP 匯出與 STEP 模型（3D 只有 VRML）、ODB++ / IPC-2581 / DXF。
 
-## 這一版（beta.13）
+## 這一版（beta.14）
+根本改進：把一次次個別修正的模型與工具問題，改成有系統的檢查。工具數不變（58 個），`tools/list` 的大小不變。
+
+- **模擬模型的情境測試（新測試 `simmodel_e2e`，66 項）：** LDO、運放、MOSFET、二極體 / Zener / 蕭特基、電容、電感、磁珠，各以固定參數跑典型情境（壓降、反向、限流、PSRR、飽和、崩潰…），測出並修正：
+  - LDO：輸出高過輸入（anti-windup 上限改為 min(Vin − dropout, Vout + 限流壓降)）、反向電流、啟動時 PSRR 偏移。
+  - 運放：輸出超出電源軌（積分器夾在軌內）。
+  - Zener：順向壓降錯誤（崩潰改成獨立的支路，`izt` 鍵）。
+  - 二極體：大電流的順向壓降（加上 `rs` 與接面電容上限）。
+  - 極性電容反接時會標出 `[reverse biased: …]`。
+- **模型自我檢查：** `simulate` 的回應多一段 `model check:`，列出不合物理的結果：LDO 輸出高過輸入、反向導通、0 V 輸入卻有輸出；運放超出電源軌、沒電卻在驅動；MOSFET 關閉時導通；二極體在崩潰區外反向導通；電源吸收電流，或在沒有負載元件的網路上送出遠超宣告的電流。門檻固定，寫在每一行裡。
+- **沒建模的特性：** 各模型列出它不模擬的東西（例如 LDO 的過熱關斷、運放的輸入共模範圍、電感飽和），`simulate` 的說明與回應都會提到。
+- **批量實測 `client/model_survey.py`：** 從零件索引每類抽樣 100 顆，跑標準情境，統計觸發 model check 的比例。release 前跑一次並和上一次比較；這一版 14 類都是 0%。
+- **網路名稱一套規則：** 板子工具、電路圖工具與 `simulate` 用同一組規則找網路：完全相同 → 加或去掉開頭的 `/` → 唯一的末段名稱 → 以上三步不分大小寫。有兩個以上符合時列出候選（`X: which net, a, b?`），找不到時列出最接近的名稱。新測試 `names_e2e`。
+- **工具參數只宣告一次（`mcp/params.h`）：** 58 個工具的參數各宣告一次，產生 inputSchema、執行前的檢查（tools/call 與 batch）、以及 `tool_help` / TOOLS.md 的參數說明（單位、範圍、預設值）。
+  - 型別錯誤的參數以前常被靜默忽略，現在直接報錯。
+  - 錯誤訊息統一為「路徑: 要求; got 實際值」，例如 `skew.*: a number in mm; got "small"`；多包一層引號的值（`"\"4n\""`）會註明。
+  - SI 字串（`4k7`、`10u`、`100 nF`）在檢查時就轉成數字。
+  - `simulate models` 的鍵依模型登錄檢查：任何模型都不用的鍵報錯，這顆零件用不到的鍵只提示。
+- **beta.13 之後的其他修正：**
+  - `launch_kicad desktop` 開專案時同時開啟電路圖與 PCB 編輯器，`sch_*` 工具可用。
+  - `simulate`：子電路的 power_out 腳驅動它的電源軌；LDO 限流（`ilim`）、soft start、UVLO；運放輸入 ESD 二極體；0 Ω 電阻當跳線。
+  - `reflection`：沒有輸出腳時以雙向腳為驅動端；板子沒有腳型別時從電路圖取。
+- **測試：** 新增 `simmodel_e2e`、`names_e2e`，共 44 個。
+
+## beta.13
 三部分：修正盲測 S2（四層 RP2040）回報的問題；收斂工具，從 68 個減為 58 個；跑一輪審查型盲測 R1（Jetson AGX Thor，10 層、1125 個零件），並修正它發現的問題。
 
 - **工具合併（舊名稱已移除，沒有別名）：**
