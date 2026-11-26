@@ -10146,7 +10146,7 @@ HANDLER_RESULT<PcbTextResponse> KICADD_HANDLER_PCB::handlePcbText( const HANDLER
             PCB_LAYER_ID layer = b->GetLayerID( name );
 
             if( layer == UNDEFINED_LAYER )
-                layer = b->GetLayerID( name == wxS( "F.Silkscreen" ) ? wxS( "F.SilkS" ) : name );
+                layer = b->GetLayerID( name == wxS( "F.Silkscreen" ) ? wxString( wxS( "F.SilkS" ) ) : name );
 
             if( layer == UNDEFINED_LAYER || !b->IsLayerEnabled( layer ) )
             {
