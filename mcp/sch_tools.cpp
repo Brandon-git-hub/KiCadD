@@ -1979,7 +1979,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                               params::Boolean( "measure_only", "move nothing, report the numbers for the parts as they are" ),
                               params::Strings( "refs" ),
                               params::Boolean( "rotate", "try 90/180/270 (default true)" ),
-                              params::Map( "rules", params::Any( "", {} ), "placement rules; refs may be patterns (\"J*\"). edge: {\"J1\": \"left\"} (left/right/top/bottom/any: the courtyard at that board edge); a connector (USB, RJ45, DC jack: its courtyard well past its pads on one side) is turned to open over that edge, the footprint's own \"PCB Edge\" line on the edge (else its front flush with it); {\"J1\": {\"side\": \"left\", \"overhang\": 1}} puts its front 1 mm past the edge, \"inside\": true keeps it inside like any part, \"along\": true its long side along the edge (a pin header's row parallel to it; inside the board); region: {\"U1\": [x0, y0, x1, y1]} (mm, the courtyard inside); rotation: {\"J1\": 90}; near: [{\"refs\": [\"Y1\", \"U1\"], \"max\": 5}] (mm between the centres of their pads). edge/region/rotation are hard, near is reported when it can't be met" ),
+                              params::Map( "rules", params::Any( "", {} ), "placement rules; refs may be patterns (\"J*\"). edge: {\"J1\": \"left\"} (left/right/top/bottom/any: the courtyard at that board edge); a connector (USB, RJ45, DC jack: its courtyard well past its pads on one side) is turned to open over that edge, the footprint's own \"PCB Edge\" line on the edge (else its front flush with it); {\"J1\": {\"side\": \"left\", \"overhang\": 1}} puts its front 1 mm past the edge, \"inside\": true keeps it inside like any part, \"along\": true its long side along the edge (a pin header's row parallel to it; inside the board); region: {\"U1\": [x0, y0, x1, y1]} (mm, the courtyard inside; \"block:AFE\" for every part of a block); rotation: {\"J1\": 90}; near: [{\"refs\": [\"Y1\", \"U1\"], \"max\": 5}] (mm between the centres of their pads). edge/region/rotation are hard, near is reported when it can't be met" ),
                               params::Boolean( "silk_room", "room for silkscreen (default true)" ),
                               params::Number( "spacing", "courtyard gap, mm (default 0.25)" ).Unit( "mm" ).Range( 0 ),
                               params::Number( "time_limit", "seconds for improving the wire length after every part has a legal spot (default 10, -1 no limit); the placement is legal either way" ).Unit( "s" ).Range( -1 ),
@@ -2173,7 +2173,11 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "narrowest track per layer against IPC-2221 (temp_rise, default 10 C; the stackup's copper); "
             "voltages {\"VPP\": 13} (V; nets named like +12V or 3V3 are read from the name, others "
             "count as 0 V) checks the closest copper of other nets per layer against IPC-2221B table 6-1; "
-            "silkscreen text over pads and overlapping references; nets without a test point. Reference "
+            "silkscreen text over pads and overlapping references; nets without a test point; "
+            "connector openings (mouth: J* P* CN* USB*, or mouth_refs globs): which way each opens, its "
+            "front's distance to the board edge it faces, the parts in front of it (before the edge), "
+            "\"opening unknown\" when the footprint does not tell; mouth_edge_mm / mouth_clear_mm make "
+            "warnings. Reference "
             "planes (refill zones first): along each signal track, plane splits and stretches with no "
             "plane under it (plane); at each via that changes planes, the nearest return via of the "
             "plane net, the nearest on the other side, BGA fields, or the capacitor between different "
@@ -2279,6 +2283,12 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
 
                 if( a.contains( "bga_return_via_mm" ) )
                     boardReq.set_bga_return_via_mm( a["bga_return_via_mm"].get<double>() );
+
+                for( const json& g : a.value( "mouth_refs", json::array() ) )
+                    boardReq.add_mouth_refs( g.get<std::string>() );
+
+                boardReq.set_mouth_edge_mm( a.value( "mouth_edge_mm", 0.0 ) );
+                boardReq.set_mouth_clear_mm( a.value( "mouth_clear_mm", 0.0 ) );
 
                 boardReq.set_pairs_only( a.value( "pairs_only", false ) );
                 boardReq.set_length_limit( a.value( "length_limit", 0 ) );
@@ -2424,7 +2434,7 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                     t += "; no board (" + boardErr + "): schematic checks only";
 
                 static const std::vector<std::string> CATS = { "decoupling", "power", "esd", "net", "current", "voltage",
-                                                               "silk", "testpoint", "plane", "return_via", "diff_pair",
+                                                               "silk", "testpoint", "mouth", "plane", "return_via", "diff_pair",
                                                                "length", "ir_drop", "crosstalk", "impedance" };
 
                 for( const std::string& s : only )
@@ -2541,6 +2551,9 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                               params::Map( "length_match", params::Number( "", "", "mm" ).Range( 0 ), "net glob -> mm" ),
                               params::Strings( "length_nets" ),
                               params::Number( "max_decap_mm" ).Unit( "mm" ).Positive(),
+                              params::Number( "mouth_clear_mm", "a part this near in front: warning" ).Unit( "mm" ).Positive(),
+                              params::Number( "mouth_edge_mm", "front farther from the edge: warning" ).Unit( "mm" ).Range( 0 ),
+                              params::Strings( "mouth_refs", "connector ref globs (default J* P* CN* USB*)" ),
                               params::Map( "max_length", params::Number( "", "", "mm" ).Range( 0 ), "net glob -> mm" ),
                               params::Map( "min_length", params::Number( "", "", "mm" ).Range( 0 ), "net glob -> mm" ),
                               params::Map( "pair_gap", params::Number( "", "", "mm" ).Range( 0 ), "net glob -> mm tolerance" ),

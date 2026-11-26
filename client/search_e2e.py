@@ -62,7 +62,7 @@ try:
     h = hits(t)
     check(not err and h and all(k == "BASIC" for _, k in h), f"basic_only: {h[:3]}")
     err, t = m.tool("lcsc_search", {"keyword": "AMS1117 qqzzxx", "live": 0})
-    check(not err and '"qqzzxx" matched nothing here, so this is "AMS1117"' in t and hits(t),
+    check(not err and '"qqzzxx" 0' in t and 'relaxed: dropped "qqzzxx", this is "AMS1117"' in t and hits(t),
           "keyword with a word nothing has: said, searched without it")
     err, t = m.tool("lcsc_search", {"keyword": "AMS1117 3.3", "live": 0})
     check(not err and "AMS1117" in t and hits(t), "keyword AMS1117 3.3: " + (t.splitlines()[1][:80] if len(t.splitlines()) > 1 else t))

@@ -2218,6 +2218,11 @@ KICADD_HANDLER_PCB::handleSilkTidy( const HANDLER_CONTEXT<SilkTidy>& aCtx )
     out.set_checked( plan.checked );
     out.set_problems_before( plan.problemsBefore );
     out.set_problems_after( plan.problemsAfter );
+    out.set_nearer_before( plan.nearerBefore );
+    out.set_nearer_after( plan.nearerAfter );
+
+    for( const std::string& s : plan.nearer )
+        out.add_nearer( s );
 
     for( const kicadd::SILK_MOVE& m : plan.moves )
         out.add_moved( m.text );
@@ -7252,8 +7257,11 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
     std::map<std::string, int> groupIndex;
     std::string                groupSource;
 
+    std::vector<std::string> blockOf( parts.size() );   // for region rules on a block
+
     auto assign = [&]( size_t aPart, const std::string& aName )
     {
+        blockOf[aPart] = aName;
         auto [it, added] = groupIndex.emplace( aName, (int) groupIndex.size() );
         parts[aPart].group = it->second;
     };
@@ -7416,8 +7424,35 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
     {
         std::vector<int> hit;
 
-        if( !matching( r.ref(), hit ) )
+        if( r.ref().rfind( "block:", 0 ) == 0 )
+        {
+            // every part of a functional block (as the groups name them)
+            const std::string name = r.ref().substr( 6 );
+            std::set<std::string> names;
+
+            for( size_t i = 0; i < blockOf.size(); ++i )
+            {
+                if( blockOf[i] == name )
+                    hit.push_back( (int) i );
+                else if( !blockOf[i].empty() )
+                    names.insert( blockOf[i] );
+            }
+
+            if( hit.empty() )
+            {
+                std::string known;
+
+                for( const std::string& n : names )
+                    known += ( known.empty() ? "" : ", " ) + n;
+
+                return bad( "region rule: no block \"" + name + "\" ("
+                            + ( known.empty() ? std::string( "no blocks: a Block field, or groups" ) : "blocks: " + known ) + ")" );
+            }
+        }
+        else if( !matching( r.ref(), hit ) )
+        {
             return bad( "region rule: no footprint " + r.ref() );
+        }
 
         BOX2I box( VECTOR2I( (int) std::min( r.min().x(), r.max().x() ), (int) std::min( r.min().y(), r.max().y() ) ),
                    VECTOR2I( (int) std::abs( r.max().x() - r.min().x() ), (int) std::abs( r.max().y() - r.min().y() ) ) );

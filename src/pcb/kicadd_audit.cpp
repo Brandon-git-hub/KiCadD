@@ -22,6 +22,7 @@
 #include "common/kicadd_ipc2221.h"
 #include "pcb/kicadd_irdrop.h"
 #include "pcb/kicadd_lengths.h"
+#include "pcb/kicadd_mouth.h"
 #include "pcb/kicadd_refplane.h"
 #include "pcb/kicadd_xtalk.h"
 #include "pcb/kicadd_zprofile.h"
@@ -889,6 +890,226 @@ void checkTestPoints( BOARD& aBoard, BoardAuditResponse& aOut )
              std::to_string( without.size() ) + " of " + std::to_string( nets ) + " nets have no test point: " + list );
 }
 
+/// Connectors' openings (kicadd_mouth): how far each is from the board edge it faces, and the
+/// other parts in front of it (a plug or cable goes there). Measured; aReq's mouth_edge_mm /
+/// mouth_clear_mm make warnings of them.
+void checkMouths( BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& aOut )
+{
+    static const std::regex connRef( R"(^(J|P|CN|CON|USB)\d+$)", std::regex::icase );
+    std::vector<wxString>   globs;
+
+    for( const std::string& g : aReq.mouth_refs() )
+        globs.push_back( wxString::FromUTF8( g ) );
+
+    SHAPE_POLY_SET outline;
+    const bool     haveOutline = aBoard.GetBoardPolygonOutlines( outline, false ) && outline.OutlineCount() > 0;
+    const double   edgeLimit = aReq.mouth_edge_mm(), clearLimit = aReq.mouth_clear_mm();
+    std::vector<std::string> unknown;
+    int                      measured = 0;
+
+    auto bodyOf = []( FOOTPRINT* aFp )
+    {
+        aFp->BuildCourtyardCaches();
+        const SHAPE_POLY_SET& c = aFp->GetCourtyard( aFp->IsFlipped() ? B_CrtYd : F_CrtYd );
+        return c.OutlineCount() > 0 ? c.BBox() : aFp->GetBoundingBox( false );
+    };
+
+    // the distance from aFrom along aDir (a unit vector) to the outline's nearest crossing
+    auto rayToEdge = [&]( const VECTOR2D& aFrom, const VECTOR2D& aDir ) -> std::optional<double>
+    {
+        std::optional<double> best;
+
+        for( int o = 0; o < outline.OutlineCount(); o++ )
+        {
+            for( int h = -1; h < outline.HoleCount( o ); h++ )
+            {
+                const SHAPE_LINE_CHAIN& chain = h < 0 ? outline.COutline( o ) : outline.CHole( o, h );
+
+                for( int k = 0; k < chain.SegmentCount(); k++ )
+                {
+                    const SEG      seg = chain.CSegment( k );
+                    const VECTOR2D a( seg.A ), e = VECTOR2D( seg.B ) - a;
+                    const double   den = aDir.x * e.y - aDir.y * e.x;
+
+                    if( std::fabs( den ) < 1e-9 )
+                        continue;
+
+                    const VECTOR2D w = a - aFrom;
+                    const double   t = ( w.x * e.y - w.y * e.x ) / den;
+                    const double   u = ( w.x * aDir.y - w.y * aDir.x ) / den;
+
+                    if( t >= 0 && u >= 0 && u <= 1 && ( !best || t < *best ) )
+                        best = t;
+                }
+            }
+        }
+
+        return best;
+    };
+
+    for( FOOTPRINT* fp : aBoard.Footprints() )
+    {
+        const std::string ref = str( fp->GetReference() );
+        bool              asked = globs.empty() && std::regex_match( ref, connRef );
+
+        for( const wxString& g : globs )
+            asked = asked || fp->GetReference().Matches( g );
+
+        // a connector has pins on nets: a mounting hole (P101, no net) is none
+        int wired = 0;
+
+        for( PAD* pad : fp->Pads() )
+            wired += pad->GetNetCode() > 0;
+
+        if( !asked || wired < 2 )
+            continue;
+
+        const kicadd::mouth::MOUTH m = kicadd::mouth::Find( *fp, std::nullopt );
+        const double               deg = fp->GetOrientation().Normalized().AsDegrees();
+
+        if( m.side < 0 )
+        {
+            unknown.push_back( ref );
+            continue;
+        }
+
+        if( std::fabs( std::remainder( deg, 90.0 ) ) > 0.5 )
+        {
+            unknown.push_back( ref + " (turned " + mm( deg, 1 ) + " deg)" );
+            continue;
+        }
+
+        measured++;
+
+        // the opening's direction on the board, and the middle of the courtyard's face there
+        static const VECTOR2D SIDE_DIR[4] = { { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 } };
+        VECTOR2D dir = SIDE_DIR[m.side];
+        {
+            VECTOR2I d( KiROUND( dir.x * 1000 ), KiROUND( dir.y * 1000 ) );
+            RotatePoint( d, fp->GetOrientation() );
+            dir = VECTOR2D( d ) / 1000.0;
+        }
+
+        const BOX2I body = bodyOf( fp );
+        const bool  horizontal = std::fabs( dir.x ) > 0.5;
+        VECTOR2D    face( body.Centre() );
+
+        if( horizontal )
+            face.x = dir.x > 0 ? body.GetRight() : body.GetLeft();
+        else
+            face.y = dir.y > 0 ? body.GetBottom() : body.GetTop();
+
+        const char* sideName = horizontal ? ( dir.x > 0 ? "right" : "left" ) : ( dir.y > 0 ? "down" : "up" );
+        const char* how = m.marked ? "its footprint's edge line" : m.byPads ? "its pads" : "its courtyard";
+        std::string msg = ref + " opens " + sideName + " (" + how + "): ";
+        bool        warn = false;
+        double      toEdge = 0;   // mm; < 0: past the edge
+
+        if( !haveOutline )
+        {
+            msg += "no board outline";
+        }
+        else if( outline.Contains( VECTOR2I( KiROUND( face.x ), KiROUND( face.y ) ) ) )
+        {
+            std::optional<double> d = rayToEdge( face, dir );
+            toEdge = d ? *d / 1e6 : std::numeric_limits<double>::infinity();
+            msg += d ? "its front " + mm( toEdge ) + " mm from the board edge" : "no board edge that way";
+            warn = edgeLimit > 0 && toEdge > edgeLimit;
+
+            if( warn )
+                msg += " (over " + mm( edgeLimit ) + ")";
+        }
+        else
+        {
+            std::optional<double> d = rayToEdge( face, -dir );
+            toEdge = d ? -*d / 1e6 : 0;
+            msg += "its front " + mm( -toEdge ) + " mm past the board edge";
+        }
+
+        // other parts in front: the corridor as wide as the face, to the edge (or clear mm)
+        const double reach = clearLimit > 0 ? clearLimit : toEdge > 0 && std::isfinite( toEdge ) ? toEdge : 0;
+        std::vector<std::pair<double, std::string>> inFront;
+
+        if( reach > 0 )
+        {
+            const int depth = KiROUND( reach * 1e6 );
+            BOX2I     corridor;
+
+            if( horizontal )
+                corridor = BOX2I( VECTOR2I( dir.x > 0 ? body.GetRight() : body.GetLeft() - depth, body.GetTop() ),
+                                  VECTOR2I( depth, body.GetHeight() ) );
+            else
+                corridor = BOX2I( VECTOR2I( body.GetLeft(), dir.y > 0 ? body.GetBottom() : body.GetTop() - depth ),
+                                  VECTOR2I( body.GetWidth(), depth ) );
+
+            for( FOOTPRINT* other : aBoard.Footprints() )
+            {
+                if( other == fp )
+                    continue;
+
+                // a part on the other side is in the way only when it is through-hole
+                bool tht = false;
+
+                for( PAD* pad : other->Pads() )
+                    tht = tht || pad->GetAttribute() == PAD_ATTRIB::PTH;
+
+                if( other->IsFlipped() != fp->IsFlipped() && !tht )
+                    continue;
+
+                const BOX2I ob = bodyOf( other );
+
+                if( !ob.Intersects( corridor ) )
+                    continue;
+
+                double gap = horizontal ? ( dir.x > 0 ? ob.GetLeft() - body.GetRight() : body.GetLeft() - ob.GetRight() )
+                                        : ( dir.y > 0 ? ob.GetTop() - body.GetBottom() : body.GetTop() - ob.GetBottom() );
+                inFront.push_back( { std::max( 0.0, gap / 1e6 ), str( other->GetReference() ) } );
+            }
+        }
+
+        std::sort( inFront.begin(), inFront.end() );
+
+        if( !inFront.empty() )
+        {
+            msg += "; in front (" + ( clearLimit > 0 ? "within " + mm( clearLimit ) + " mm" : std::string( "before the edge" ) )
+                   + "): ";
+
+            for( size_t i = 0; i < inFront.size() && i < 4; i++ )
+                msg += ( i ? ", " : "" ) + inFront[i].second + " at " + mm( inFront[i].first ) + " mm";
+
+            if( inFront.size() > 4 )
+                msg += ", +" + std::to_string( inFront.size() - 4 );
+
+            warn = warn || clearLimit > 0;
+        }
+
+        std::vector<std::string> refs{ ref };
+
+        for( const auto& [d, r] : inFront )
+            refs.push_back( r );
+
+        finding( aOut, "mouth", warn ? "warning" : "info", msg, refs,
+                 VECTOR2I( KiROUND( face.x ), KiROUND( face.y ) ) );
+    }
+
+    if( !unknown.empty() )
+    {
+        std::string list;
+
+        for( size_t i = 0; i < unknown.size() && i < 12; i++ )
+            list += ( i ? ", " : "" ) + unknown[i];
+
+        if( unknown.size() > 12 )
+            list += ", +" + std::to_string( unknown.size() - 12 );
+
+        finding( aOut, "mouth", "info",
+                 "opening unknown (no edge line in the footprint, its courtyard not past its pads on one side; "
+                 "a pin header, a banana socket): " + list );
+    }
+
+    aOut.set_mouths( measured );
+}
+
 } // namespace
 
 
@@ -925,6 +1146,7 @@ void AuditBoard( BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& aOut
     checkVoltages( aBoard, aReq, aOut );
     checkSilk( aBoard, aOut );
     checkTestPoints( aBoard, aOut );
+    checkMouths( aBoard, aReq, aOut );
     CheckReferencePlanes( aBoard, aReq, aOut );
     CheckLengths( aBoard, aReq, aOut );
     CheckIrDrop( aBoard, aReq, aOut );

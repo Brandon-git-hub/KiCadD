@@ -38,6 +38,9 @@ struct SILK_PLAN
     int                      checked = 0;
     int                      problemsBefore = 0;
     int                      problemsAfter = 0;   // as planned
+    int                      nearerBefore = 0;    // texts nearer another part's courtyard than their own
+    int                      nearerAfter = 0;     // as planned
+    std::vector<std::string> nearer;              // those, as planned: "C3 reference: 0.2 mm from C4, 0.6 mm from its own"
 };
 
 /// Where the texts @a aReq asks about should go. Nothing is changed.

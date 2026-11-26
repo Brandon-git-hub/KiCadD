@@ -1,4 +1,4 @@
-"""Defaults and behaviour (headless): beta.15 batch 3.
+"""Defaults and behaviour (headless): beta.15 batches 3 and 4.
 
 usage: python3 -I behave_e2e.py --build BUILD --demos DEMOS_DIR --work DIR
 
@@ -12,6 +12,13 @@ usage: python3 -I behave_e2e.py --build BUILD --demos DEMOS_DIR --work DIR
              when a file of that name is there
   sch_move   a wire dragged along becomes an L (no diagonal), the nets stay; sch_delete dangling
              leaves a wire teed into another's middle alone
+  silk       silk_tidy counts the references nearer another part than their own; placed again
+             (all=true) none is
+  block      auto_place region rule "block:X" keeps that block's parts in the box; an unknown
+             block is refused, naming the blocks
+  mouth      audit mouth: which way each connector opens, its front against the edge; a
+             connector moved in is a warning with mouth_edge_mm; "opening unknown" for headers
+  lcsc       lcsc_search: no part has every keyword: each word's count, relaxed (dropped "...")
 """
 
 import argparse
@@ -103,6 +110,50 @@ def main():
                   + next((ln.strip() for ln in t.splitlines() if "not placed" in ln), t)[:120])
         err, t = m.tool("undo", {})
         check(not err and unrouted(m) == u0, "undo takes the via back: " + t.strip()[:60])
+
+        print("[silk]")
+        err, t = m.tool("silk_tidy", {"dry_run": True})
+        g = re.search(r"nearer another part than their own: (\d+) -> (\d+)", t)
+        check(not err and g and int(g.group(1)) > 0, "counted: " + (g.group(0) if g else t[:120]))
+        refs = re.findall(r"^  (\S+) reference: [\d.]+ mm from \S+, [\d.]+ mm from its own$", t, re.M)
+        err, t = m.tool("silk_tidy", {"refs": refs, "all": True, "dry_run": True})
+        g = re.search(r"nearer another part than their own: (\d+) -> (\d+)", t)
+        check(not err and (g is None or int(g.group(2)) < int(g.group(1))),
+              f"placed again ({len(refs)} asked): " + (g.group(0) if g else "none left"))
+
+        print("[block]")
+        box = [180, 100, 230, 135]
+        err, t = m.tool("auto_place", {"refs": ["R1", "R2", "R3", "R4"], "groups": {"X": ["R1", "R2"], "Y": ["R3", "R4"]},
+                                       "rules": {"region": {"block:X": box}}, "force": True})
+        check(not err and "placed" in t, "auto_place with a block region: " + t.splitlines()[0][:100])
+        for r in ("R1", "R2"):
+            err, q = m.tool("query_area", {"ref": r, "radius": 0.1, "kinds": ["footprint"]})
+            at = re.search(r"@(-?[\d.]+),(-?[\d.]+)", q)
+            check(at and box[0] < float(at.group(1)) < box[2] and box[1] < float(at.group(2)) < box[3],
+                  f"{r} of block X in the box: " + (at.group(0) if at else q[:80]))
+        err, t = m.tool("auto_place", {"refs": ["R1"], "groups": {"X": ["R1"], "Y": ["R3"]},
+                                       "rules": {"region": {"block:Q": box}}})
+        check(err and 'no block "Q"' in t and "X" in t, "unknown block refused: " + t.splitlines()[0][:100])
+        m.tool("undo", {})
+
+        print("[mouth]")
+        err, t = m.tool("audit", {"sections": ["mouth"]})
+        check(not err and re.search(r"J1 opens left \(.*?\): its front [\d.]+ mm past the board edge", t),
+              "J1 (DB9) opens left, over the edge: " + next((ln.strip() for ln in t.splitlines() if "J1" in ln), t[:120]))
+        check("opening unknown" in t and "P1" in t, "headers: opening unknown, named")
+        m.tool("move_footprints", {"refs": ["J1"], "dx": 25})
+        err, t = m.tool("audit", {"sections": ["mouth"], "mouth_edge_mm": 2})
+        ln = next((ln.strip() for ln in t.splitlines() if "J1 opens" in ln), t[:120])
+        check(ln.startswith("warning:") and "mm from the board edge (over 2)" in ln, "moved in: " + ln[:140])
+        m.tool("undo", {})
+
+        print("[lcsc]")
+        err, t = m.tool("lcsc_search", {"keyword": "AMS1117 3.3 zzzq", "live": 0})
+        check(not err and '"zzzq" 0' in t and 'dropped "zzzq"' in t and "C6186 BASIC" in t,
+              "relaxed: " + next((ln.strip() for ln in t.splitlines() if "relaxed" in ln or "every word" in ln), t[:120]))
+        err, t = m.tool("lcsc_search", {"keyword": "banana socket 4mm", "live": 0})
+        check(not err and "relaxed: dropped" in t, "every word matches alone, not together: "
+              + next((ln.strip() for ln in t.splitlines() if "every word" in ln), t[:120]))
 
         print("[new]")
         fresh = os.path.join(work, "fresh")

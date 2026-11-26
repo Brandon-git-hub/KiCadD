@@ -27,6 +27,7 @@
 #include <string_utils.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <map>
 #include <memory>
@@ -210,6 +211,98 @@ PROBLEMS problemsNow( const WORLD& aW, const std::vector<TEXT>& aTexts, size_t a
     return p;
 }
 
+/// The courtyard box of @a aFp on the silk layer's side (its bounding box when it has none)
+BOX2I bodyOf( const WORLD& aW, PCB_LAYER_ID aLayer, const FOOTPRINT* aFp )
+{
+    auto it = aW.courtyards.find( aLayer );
+
+    if( it != aW.courtyards.end() )
+    {
+        for( const auto& [owner, box] : it->second )
+        {
+            if( owner == aFp )
+                return box;
+        }
+    }
+
+    return aFp->GetBoundingBox( false );
+}
+
+double distToBox( const VECTOR2I& aP, const BOX2I& aBox )
+{
+    const double dx = std::max( { 0.0, double( aBox.GetLeft() - aP.x ), double( aP.x - aBox.GetRight() ) } );
+    const double dy = std::max( { 0.0, double( aBox.GetTop() - aP.y ), double( aP.y - aBox.GetBottom() ) } );
+    return std::hypot( dx, dy );
+}
+
+/// The nearest other part to a text centred at @a aC, when it is at least as near as the text's
+/// own part (the reader would take the text for that part's): null otherwise
+const FOOTPRINT* nearerOther( const WORLD& aW, PCB_LAYER_ID aLayer, const FOOTPRINT* aOwn, const VECTOR2I& aC,
+                              double* aOwnDist = nullptr, double* aOtherDist = nullptr )
+{
+    const double own = distToBox( aC, bodyOf( aW, aLayer, aOwn ) );
+
+    if( own <= 0 )
+        return nullptr;
+
+    const FOOTPRINT* best = nullptr;
+    double           bestD = own;
+    auto             it = aW.courtyards.find( aLayer );
+
+    if( it == aW.courtyards.end() )
+        return nullptr;
+
+    for( const auto& [owner, box] : it->second )
+    {
+        if( owner == aOwn )
+            continue;
+
+        const double d = distToBox( aC, box );
+
+        if( d <= bestD )
+        {
+            best = owner;
+            bestD = d;
+        }
+    }
+
+    if( aOwnDist )
+        *aOwnDist = own;
+
+    if( aOtherDist )
+        *aOtherDist = bestD;
+
+    return best;
+}
+
+enum class SIDE { INSIDE, ABOVE, BELOW, LEFT, RIGHT };
+
+SIDE sideOf( const VECTOR2I& aC, const BOX2I& aBody )
+{
+    const int dl = aBody.GetLeft() - aC.x, dr = aC.x - aBody.GetRight();
+    const int dt = aBody.GetTop() - aC.y, db = aC.y - aBody.GetBottom();
+    const int dx = std::max( { 0, dl, dr } ), dy = std::max( { 0, dt, db } );
+
+    if( dx == 0 && dy == 0 )
+        return SIDE::INSIDE;
+
+    if( dy >= dx )
+        return dt > 0 ? SIDE::ABOVE : SIDE::BELOW;
+
+    return dl > 0 ? SIDE::LEFT : SIDE::RIGHT;
+}
+
+std::string refPrefix( const wxString& aRef )
+{
+    std::string s = str( aRef );
+    size_t      n = 0;
+
+    while( n < s.size() && !std::isdigit( (unsigned char) s[n] ) )
+        n++;
+
+    return s.substr( 0, n );
+}
+
 std::string describeProblems( const PROBLEMS& p )
 {
     std::string s;
@@ -346,6 +439,67 @@ SILK_PLAN PlanSilk( BOARD& aBoard, const SilkTidy& aReq )
 
     plan.problemsBefore = countProblems();
 
+    // texts the reader would take for another part's: nearer that part's courtyard than their own
+    auto countNearer = [&]( std::vector<std::string>* aList )
+    {
+        int n = 0;
+
+        for( const TEXT& t : texts )
+        {
+            if( !t.movable )
+                continue;
+
+            double own = 0, other = 0;
+
+            if( const FOOTPRINT* o = nearerOther( w, t.layer, t.fp, t.box.Centre(), &own, &other ) )
+            {
+                n++;
+
+                if( aList )
+                    aList->push_back( t.what + ": " + mm( other / 1e6 ) + " mm from " + str( o->GetReference() )
+                                      + ", " + mm( own / 1e6 ) + " mm from its own" );
+            }
+        }
+
+        return n;
+    };
+
+    plan.nearerBefore = countNearer( nullptr );
+
+    // a row: parts of the same kind and footprint, turned alike, centres in a line, close; their
+    // texts go on the same side (the one most of the row's texts are on, as placed so far)
+    auto rowOf = [&]( size_t aText )
+    {
+        const TEXT&       t = texts[aText];
+        const BOX2I       body = bodyOf( w, t.layer, t.fp );
+        const std::string prefix = refPrefix( t.fp->GetReference() );
+        const int         reach = 2 * std::max( body.GetWidth(), body.GetHeight() );
+        std::vector<size_t> row;
+
+        for( size_t j = 0; j < texts.size(); j++ )
+        {
+            const TEXT& o = texts[j];
+
+            if( j == aText || !o.fp || !o.field || o.fp == t.fp || o.layer != t.layer
+                || o.field->IsReference() != t.field->IsReference()
+                || refPrefix( o.fp->GetReference() ) != prefix || o.fp->GetFPID() != t.fp->GetFPID()
+                || o.fp->GetOrientation().Normalized() != t.fp->GetOrientation().Normalized() )
+            {
+                continue;
+            }
+
+            const BOX2I ob = bodyOf( w, o.layer, o.fp );
+            const VECTOR2I d = ob.Centre() - body.Centre();
+            const bool inRow = std::abs( d.y ) < 250000 && std::abs( d.x ) < body.GetWidth() + reach;
+            const bool inColumn = std::abs( d.x ) < 250000 && std::abs( d.y ) < body.GetHeight() + reach;
+
+            if( inRow || inColumn )
+                row.push_back( j );
+        }
+
+        return row;
+    };
+
     // what to place, in reference order
     std::vector<size_t> todo;
 
@@ -412,6 +566,26 @@ SILK_PLAN PlanSilk( BOARD& aBoard, const SilkTidy& aReq )
 
         std::optional<SPOT> best;
 
+        // the side most of its row's texts are on (as they are, or as placed already)
+        std::optional<SIDE> rowSide;
+        {
+            std::map<SIDE, int> votes;
+
+            for( size_t j : rowOf( i ) )
+                votes[sideOf( texts[j].box.Centre(), bodyOf( w, texts[j].layer, texts[j].fp ) )]++;
+
+            int most = 0;
+
+            for( const auto& [side, n] : votes )
+            {
+                if( side != SIDE::INSIDE && n > most )
+                {
+                    most = n;
+                    rowSide = side;
+                }
+            }
+        }
+
         for( const EDA_ANGLE& angle : { first, second } )
         {
             // the text's box at that angle, and where its anchor sits in it
@@ -438,6 +612,13 @@ SILK_PLAN PlanSilk( BOARD& aBoard, const SilkTidy& aReq )
                         break;
                     }
                 }
+
+                // nearer another part than its own: it reads as that part's
+                if( nearerOther( w, t.layer, fp, aCentre ) )
+                    score += 3;
+
+                if( rowSide && sideOf( aCentre, body ) == *rowSide )
+                    score -= 1;
 
                 for( const auto& [owner, lbox] : w.lines[t.layer] )
                 {
@@ -511,6 +692,7 @@ SILK_PLAN PlanSilk( BOARD& aBoard, const SilkTidy& aReq )
     }
 
     plan.problemsAfter = countProblems();
+    plan.nearerAfter = countNearer( &plan.nearer );
     return plan;
 }
 

@@ -2985,32 +2985,86 @@ TOOL_RESULT lcscSearch( IPC_CLIENT& aIpc, const json& aArgs )
 
         if( words.size() > 1 && words.size() <= 8 )
         {
-            for( const std::string& word : words )
+            // a keyword set's count with the other conditions (no live check, one row)
+            auto count = [&]( const std::vector<std::string>& aWords ) -> int64_t
             {
                 kb::LcscSearch         one = req;
                 kb::LcscSearchResponse lr;
-                std::string            e;
-                one.set_keyword( word );
+                std::string            e, k;
+
+                for( const std::string& x : aWords )
+                    k += ( k.empty() ? "" : " " ) + x;
+
+                one.set_keyword( k );
                 one.set_live( -1 );
                 one.set_limit( 1 );
+                return aIpc.Call( one, lr, e ) ? lr.total() : 0;
+            };
 
-                if( aIpc.Call( one, lr, e ) && lr.total() > 0 )
-                    kept.push_back( word );
-                else
-                    dropped.push_back( word );
+            std::string counts;
+
+            for( const std::string& word : words )
+            {
+                const int64_t n = count( { word } );
+                counts += ( counts.empty() ? "" : ", " ) + ( "\"" + word + "\" " ) + std::to_string( n );
+                ( n > 0 ? kept : dropped ).push_back( word );
+            }
+
+            // the words that match together: drop the least telling one (the most matches alone)
+            // at a time while the rest match nothing together
+            std::vector<std::string> keep = kept, cut = dropped;
+
+            while( keep.size() > 1 && count( keep ) == 0 )
+            {
+                size_t  worst = 0;
+                int64_t most = -1;
+
+                for( size_t i = 0; i < keep.size(); i++ )
+                {
+                    std::vector<std::string> rest = keep;
+                    rest.erase( rest.begin() + i );
+                    const int64_t n = count( rest );
+
+                    // the subset left that still matches with the fewest parts: the most telling
+                    if( n > 0 && ( most < 0 || n < most ) )
+                    {
+                        most = n;
+                        worst = i;
+                    }
+                }
+
+                if( most < 0 )
+                {
+                    // no single drop helps: drop the word with the most matches alone
+                    int64_t big = -1;
+
+                    for( size_t i = 0; i < keep.size(); i++ )
+                    {
+                        const int64_t n = count( { keep[i] } );
+
+                        if( n > big )
+                        {
+                            big = n;
+                            worst = i;
+                        }
+                    }
+                }
+
+                cut.push_back( keep[worst] );
+                keep.erase( keep.begin() + worst );
             }
 
             std::string list;
 
-            for( const std::string& d : dropped )
+            for( const std::string& d : cut )
                 list += ( list.empty() ? "\"" : ", \"" ) + d + "\"";
 
-            if( !dropped.empty() && !kept.empty() )
+            if( !keep.empty() && !cut.empty() )
             {
                 kb::LcscSearch again = req;
                 std::string    k;
 
-                for( const std::string& x : kept )
+                for( const std::string& x : keep )
                     k += ( k.empty() ? "" : " " ) + x;
 
                 again.set_keyword( k );
@@ -3019,27 +3073,24 @@ TOOL_RESULT lcscSearch( IPC_CLIENT& aIpc, const json& aArgs )
                 if( aIpc.Call( again, r2, err ) && r2.total() > 0 )
                 {
                     r = r2;
-                    relaxed = "nothing has every word: " + list + " matched nothing here, so this is \"" + k + "\"";
+                    relaxed = "nothing has every word (alone: " + counts + "); relaxed: dropped " + list + ", this is \""
+                              + k + "\"";
                 }
                 else
                 {
-                    relaxed = "nothing has every word (" + list + " match nothing; the others together match nothing either)";
+                    relaxed = "nothing has every word (alone: " + counts + ")";
                 }
-            }
-            else if( !dropped.empty() )
-            {
-                relaxed = "no word matches anything here: " + list + " (keywords are matched as word prefixes in the "
-                          "part number, description and package: try a part number or a plain word)";
             }
             else
             {
-                relaxed = "each word matches parts, but no part has them all: fewer words";
+                relaxed = "no word matches anything here (" + counts + "; keywords are matched as word prefixes in the "
+                          "part number, description and package: try a part number or a plain word)";
             }
         }
     }
 
     std::string out = std::to_string( r.total() ) + " match(es) in stock at JLCPCB (parts index of " + r.index_date()
-                      + ", jlcparts data)";
+                      + ", jlcparts data; after the number its JLC assembly class)";
 
     if( !relaxed.empty() )
         out += "\n  " + relaxed;
@@ -3057,7 +3108,15 @@ TOOL_RESULT lcscSearch( IPC_CLIENT& aIpc, const json& aArgs )
         if( h.price() >= 0 )
             std::snprintf( price, sizeof( price ), ", US$%.4f", h.price() );
 
-        out += "\n" + h.lcsc() + " " + ( h.basic() ? "BASIC" : h.preferred() ? "preferred" : "extended" ) + " "
+        // the assembly class: the index's (basic / preferred / extended), unless the live check
+        // says JLC does not assemble it now
+        const bool        checked = h.live_stock() >= 0 || !h.live_class().empty();
+        const std::string cls = checked && !h.live_smt() ? "NOT-for-assembly"
+                                : h.basic()              ? "BASIC"
+                                : h.preferred()          ? "preferred"
+                                                         : "extended";
+
+        out += "\n" + h.lcsc() + " " + cls + " "
                + h.mfr() + " (" + h.manufacturer() + ") " + h.package() + ", JLC stock " + std::to_string( h.stock() )
                + price;
 
@@ -4468,7 +4527,9 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                        "Move silkscreen references that are over an exposed pad (within 0.15 mm), over another "
                        "silkscreen text, or off the board, to the nearest free spot next to their part (above, "
                        "below, left, right, the corners, further out ring by ring; inside a big part last), "
-                       "horizontal or vertical as the part reads. refs: only these parts (default all); "
+                       "horizontal or vertical as the part reads; a spot nearer another part's courtyard than "
+                       "its own costs more, and a row of like parts gets its texts on one side. Also counts "
+                       "the texts nearer another part than their own (a reader takes them for that part's). refs: only these parts (default all); "
                        "all=true places them all, not just the ones with a problem; values=true does visible "
                        "values too; gap mm between texts (0.1); dry_run=true only says what would move. One "
                        "undoable edit. Look at it with board_render layers=[\"silk\"].", json::object(),
@@ -4514,6 +4575,19 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
 
                            for( const std::string& s : r.stuck() )
                                t += "\nleft as is: " + s;
+
+                           if( r.nearer_before() || r.nearer_after() )
+                           {
+                               t += "\nnearer another part than their own: " + std::to_string( r.nearer_before() )
+                                    + " -> " + std::to_string( r.nearer_after() )
+                                    + ( r.nearer_after() ? " (all=true with refs places them)" : "" );
+
+                               for( int i = 0; i < r.nearer_size() && i < ( detail ? 1000 : 8 ); i++ )
+                                   t += "\n  " + r.nearer( i );
+
+                               if( !detail && r.nearer_size() > 8 )
+                                   t += "\n  ... " + std::to_string( r.nearer_size() - 8 ) + " more (detail=true)";
+                           }
 
                            return { t + "\n" };
                        }, "", std::vector<params::PARAM>{

@@ -67,7 +67,10 @@ jobs.
    sizes and the worst through-via aspect ratio: compare them with the fab's limits).
 2. `audit`: decoupling caps measured on the board, supply sources, ESD on external connectors,
    one-pin nets; on the board, silkscreen text over pads and overlapping references, nets
-   without a test point. Give what you know about the power: `currents {"VIN": 2}` (A) checks
+   without a test point, connector openings (`mouth`: which way each J* / P* / USB* opens, its
+   front's distance to the board edge it faces, the parts in front of it; "opening unknown"
+   for a footprint that does not tell, such as a pin header or a banana socket: check those by
+   eye with `board_render {view: "3d"}`; `mouth_edge_mm` / `mouth_clear_mm` make warnings). Give what you know about the power: `currents {"VIN": 2}` (A) checks
    each net's narrowest track per layer against IPC-2221; `voltages {"HV": 48}` (V; names like
    `+12V` / `3V3` are read on their own, other nets count as 0 V) checks the spacing to every
    other net against IPC-2221B table 6-1 (refill zones first). Judge the findings (a socket for
@@ -224,6 +227,11 @@ jobs.
    never), so drop a condition rather than conclude no part exists. A wrong name lists them.
    **Isat is given for no basic / preferred inductor**: with `where {"i_sat": ...}` leave
    `basic_only` off (or filter on `i_rated`, given for most, and check Isat on the hits).
+   Keywords are word prefixes in the part number, description and package. When no part has
+   every word, the answer gives each word's own count and searches again without the least
+   telling ones ("relaxed: dropped "4mm""): check the hits against the word that went. The
+   word after each part number is its JLC assembly class (BASIC, preferred, extended;
+   NOT-for-assembly when the live check says JLC does not assemble it now).
 2. Use one: `sch_add_part lcsc="C25804"` (symbol + footprint saved to the project's LCSC
    library), or `lcsc_fetch` first to inspect pins and pads, or put the number on an existing
    part with `sch_set_fields {"LCSC": "C25804"}`.
@@ -436,6 +444,12 @@ From a blank project, before placing parts:
 2. `auto_place` (default: the parts outside the board). Useful options: `groups` or the Block
    field to keep functional blocks together, `rules` (edge, region, rotation, near), `fixed`
    for parts that must not move (place connectors first, then fix them), `back_decaps`.
+   A region rule on a block: `{"region": {"block:AFE": [x0, y0, x1, y1]}}` keeps every part of
+   that block (Block field or `groups` name) inside the box.
+   **Analog front ends, high-impedance nodes, measurement loops: place them yourself first**
+   (`move_footprints`, short and symmetric, away from switching parts), put them in `fixed`
+   (or lock them), then `auto_place` the rest. auto_place packs by wire length and area; it
+   does not know which node is sensitive.
    `measure_only=true` reports the numbers without moving anything.
    Connectors (USB, RJ45, DC jack): an edge rule `{"J1": "left"}` turns one to open over that
    edge, with the footprint's own "PCB Edge" line on the board edge (KiCad's library has it for
@@ -633,6 +647,13 @@ symbols or text, labels away from their wires, a sheet that does not read well.
 the bottom. Only VRML models load in this build (the LCSC parts' are VRML): the answer lists the
 parts drawn without a body; that is not a fault of the board.
 
+`kicad-cli` (KiCadD's own, for what no tool does): Windows `C:\KiCadD\bin\kicad-cli.exe`;
+Linux, a build: `build/kicad/kicad-cli` with `KICAD_RUN_FROM_BUILD_DIR=1`. It reads the saved
+files, not the board in memory: `save_board` / `sch_save` first. Common: `pcb export svg
+--mode-single --layers F.Silkscreen,Edge.Cuts -o silk.svg board.kicad_pcb`, `pcb export pdf`,
+`pcb drc`, `sch export pdf`, `sch erc`. To look at the board, `board_render` comes first (it
+includes unsaved edits).
+
 ## Manufacturing (JLCPCB)
 
 1. `refill_zones` and a clean `run_drc` (or the user's agreement on what remains).
@@ -641,6 +662,9 @@ parts drawn without a body; that is not a fault of the board.
 2. Silkscreen: `silk_tidy dry_run=true` lists references over pads, over each other or off the
    board and where they would go; `silk_tidy` moves them (one undo), then `board_render
    layers=["silk"]` to look. It only moves the ones with a problem (all=true: every one asked).
+   It also counts the references nearer another part's courtyard than their own (a reader
+   takes them for that part's) and lists them; `silk_tidy {refs: [...], all: true}` places
+   those again (a spot nearer another part costs more; a row of like parts gets one side).
 3. Parts not to be assembled: `sch_set_fields` / `pcb_set_fields` with `dnp` or
    `exclude_from_bom` (they leave both BOM and CPL).
 4. `export {fab: {}}`: Gerbers, drill, the upload zip, BOM and CPL in JLCPCB's columns, from the

@@ -1320,11 +1320,16 @@ message BoardAudit
   double              z_off_mm      = 33;  // a net off its target this long or more is a warning (default 1)
   repeated string     z_nets        = 34;  // globs: rows for these nets
   int32               z_limit       = 35;  // rows (default: header only; 10 with z_nets); per rule
+  // Connector openings (where a plug goes): the distance from each connector's opening to the
+  // board edge it faces, the parts in front of it. Without limits: measured, no verdicts.
+  repeated string     mouth_refs     = 36;  // ref globs; default: J*, P*, CN*, CON*, USB* (numbered)
+  double              mouth_edge_mm  = 37;  // the front farther from the edge than this is a warning
+  double              mouth_clear_mm = 38;  // a part within this far in front is a warning
 }
 
 message BoardAuditFinding
 {
-  string          category = 1;   // current, voltage, silk, testpoint, plane, return_via, diff_pair, length, ir_drop, crosstalk, impedance
+  string          category = 1;   // current, voltage, silk, testpoint, mouth, plane, return_via, diff_pair, length, ir_drop, crosstalk, impedance
   string          severity = 2;   // warning, info
   string          message  = 3;
   repeated string refs     = 4;
@@ -1347,6 +1352,7 @@ message BoardAuditResponse
   int32  ir_rails           = 12;  // rails looked at for IR drop
   int32  xtalk_pairs        = 13;  // net pairs coupled 2 mm or more
   int32  z_nets             = 14;  // nets (a diff pair: one) profiled for impedance
+  int32  mouths             = 15;  // connectors whose opening was found and measured
 }
 
 // ---------------------------------------------------------------------------
@@ -1399,6 +1405,9 @@ message SilkTidyResponse
   int32           problems_before = 4;   // texts over a pad (0.15 mm), another text, off the board
   int32           problems_after  = 5;
   string          history_label   = 6;
+  int32           nearer_before   = 7;   // texts nearer another part's courtyard than their own
+  int32           nearer_after    = 8;
+  repeated string nearer          = 9;   // "C3 reference: 0.2 mm from C4, 0.6 mm from its own" (after)
 }
 
 // ---------------------------------------------------------------------------
