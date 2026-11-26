@@ -3196,12 +3196,12 @@ HANDLER_RESULT<SchPartResponse> KICADD_HANDLER_SCH::handleMove( const HANDLER_CO
             // askew: an L, out of the pin first (unless that corner is someone else's spot)
             for( auto& [wire, startHere] : a.drag )
             {
-                const VECTOR2I far = startHere ? wire->GetEndPoint() : wire->GetStartPoint();
+                const VECTOR2I wireEnd = startHere ? wire->GetEndPoint() : wire->GetStartPoint();
                 std::string    line = str( symbol->GetRef( &sheet ) ) + "." + str( a.pin->GetNumber() ) + " wire to "
-                                   + mmPt( far );
+                                   + mmPt( wireEnd );
                 dragged++;
 
-                if( far == at )
+                if( wireEnd == at )
                 {
                     take( wire );
                     draggedLines.push_back( line + ": now zero length, removed" );
@@ -3210,7 +3210,7 @@ HANDLER_RESULT<SchPartResponse> KICADD_HANDLER_SCH::handleMove( const HANDLER_CO
 
                 commit.Modify( wire, screen );
 
-                if( far.x == at.x || far.y == at.y )
+                if( wireEnd.x == at.x || wireEnd.y == at.y )
                 {
                     if( startHere )
                         wire->SetStartPoint( at );
@@ -3221,20 +3221,20 @@ HANDLER_RESULT<SchPartResponse> KICADD_HANDLER_SCH::handleMove( const HANDLER_CO
                     continue;
                 }
 
-                // the wire keeps its direction into its far end (so it does not fold back over
+                // the wire keeps its direction into its wireEnd end (so it does not fold back over
                 // what continues there); a new leg from the pin meets it, unless that corner is
                 // someone else's spot
                 const VECTOR2I was = startHere ? wire->GetStartPoint() : wire->GetEndPoint();
-                const bool     vertical = was.x == far.x;
-                const VECTOR2I keep = vertical ? VECTOR2I( far.x, at.y ) : VECTOR2I( at.x, far.y );
-                const VECTOR2I other = vertical ? VECTOR2I( at.x, far.y ) : VECTOR2I( far.x, at.y );
+                const bool     vertical = was.x == wireEnd.x;
+                const VECTOR2I keep = vertical ? VECTOR2I( wireEnd.x, at.y ) : VECTOR2I( at.x, wireEnd.y );
+                const VECTOR2I other = vertical ? VECTOR2I( at.x, wireEnd.y ) : VECTOR2I( wireEnd.x, at.y );
                 const VECTOR2I corner = taken( keep ) && !taken( other ) ? other : keep;
 
                 wire->SetStartPoint( at );
                 wire->SetEndPoint( corner );
 
                 auto* rest = new SCH_LINE( corner, LAYER_WIRE );
-                rest->SetEndPoint( far );
+                rest->SetEndPoint( wireEnd );
                 commit.Add( rest, screen );
                 draggedLines.push_back( line + ": an L through " + mmPt( corner ) );
             }
