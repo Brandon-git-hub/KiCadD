@@ -84,6 +84,9 @@
 #include "pcb/kicadd_mouth.h"
 #include <pcb_edit_frame.h>
 #include <pcb_shape.h>
+#include <pcb_group.h>
+#include <pcb_generator.h>
+#include <pcb_textbox.h>
 #include <zone_settings.h>
 #include <wx/ffile.h>
 
@@ -347,6 +350,8 @@ KICADD_HANDLER_PCB::KICADD_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext ) 
     registerHandler<SetRules, RulesResponse>( &KICADD_HANDLER_PCB::handleSetRules );
     registerHandler<Zones, ZonesResponse>( &KICADD_HANDLER_PCB::handleZones );
     registerHandler<BoardOutline, BoardOutlineResponse>( &KICADD_HANDLER_PCB::handleBoardOutline );
+    registerHandler<BoardTransform, BoardTransformResponse>( &KICADD_HANDLER_PCB::handleBoardTransform );
+    registerHandler<PcbText, PcbTextResponse>( &KICADD_HANDLER_PCB::handlePcbText );
     registerHandler<BoardSetup, BoardSetupResponse>( &KICADD_HANDLER_PCB::handleBoardSetup );
     registerHandler<Impedance, ImpedanceResponse>( &KICADD_HANDLER_PCB::handleImpedance );
     registerHandler<PdnGeometry, PdnGeometryResponse>( &KICADD_HANDLER_PCB::handlePdnGeometry );
@@ -1106,6 +1111,34 @@ bool KICADD_HANDLER_PCB::matches( const FOOTPRINT* aFp, const FP_SNAPSHOT& aSnap
         || aFp->GetPath() != s.GetPath() || aFp->GetFPID() != s.GetFPID() || !( *aFp == s ) )
         return false;
 
+    // the fields' layout too (the footprint's == leaves out where and how they show)
+    const std::deque<PCB_FIELD*>& mine = aFp->GetFields();
+    const std::deque<PCB_FIELD*>& theirs = s.GetFields();
+
+    if( mine.size() != theirs.size() )
+        return false;
+
+    for( size_t f = 0; f < mine.size(); ++f )
+    {
+        const PCB_FIELD* a = mine[f];
+        const PCB_FIELD* o = theirs[f];
+
+        if( !a || !o )
+        {
+            if( a != o )
+                return false;
+
+            continue;
+        }
+
+        if( a->GetName() != o->GetName() || a->GetText() != o->GetText() || a->GetLayer() != o->GetLayer()
+            || a->IsVisible() != o->IsVisible() || a->GetPosition() != o->GetPosition()
+            || a->GetTextSize() != o->GetTextSize() || a->GetTextThickness() != o->GetTextThickness()
+            || a->GetHorizJustify() != o->GetHorizJustify() || a->GetTextAngle() != o->GetTextAngle()
+            || a->IsMirrored() != o->IsMirrored() )
+            return false;
+    }
+
     size_t i = 0;
 
     for( const PAD* pad : aFp->Pads() )
@@ -1380,6 +1413,127 @@ std::unique_ptr<FOOTPRINT> loadFromDirectories( const BOARD* aBoard, const LIB_I
 }
 
 
+/// A layer for a field of aFp: a layer name, or "silk" / "fab" for the part's side.
+PCB_LAYER_ID fieldLayer( const BOARD* aBoard, const FOOTPRINT* aFp, const std::string& aName )
+{
+    std::string n = aName;
+    std::transform( n.begin(), n.end(), n.begin(), ::tolower );
+
+    if( n == "silk" || n == "silkscreen" )
+        return aFp->IsFlipped() ? B_SilkS : F_SilkS;
+
+    if( n == "fab" )
+        return aFp->IsFlipped() ? B_Fab : F_Fab;
+
+    PCB_LAYER_ID layer = aBoard->GetLayerID( wxString::FromUTF8( aName ) );
+
+    if( layer == UNDEFINED_LAYER && n.size() > 2 )
+    {
+        // F.Silkscreen / F.SilkS, F.Fab / F.Fabrication: either name
+        static const std::map<std::string, PCB_LAYER_ID> alias = { { "f.silks", F_SilkS }, { "b.silks", B_SilkS },
+                                                                    { "f.silkscreen", F_SilkS }, { "b.silkscreen", B_SilkS },
+                                                                    { "f.fab", F_Fab }, { "b.fab", B_Fab },
+                                                                    { "f.fabrication", F_Fab }, { "b.fabrication", B_Fab } };
+        auto it = alias.find( n );
+
+        if( it != alias.end() )
+            layer = it->second;
+    }
+
+    return layer;
+}
+
+
+/// pcb_set_fields: a field's layout (only what aLayout gives). Returns an error, empty when fine.
+std::string applyFieldLayout( const BOARD* aBoard, FOOTPRINT* aFp, PCB_FIELD* aField, const FieldLayout& aLayout )
+{
+    auto nm = []( double aMm ) { return (int) std::llround( aMm * 1e6 ); };
+
+    if( aLayout.has_layer() )
+    {
+        PCB_LAYER_ID layer = fieldLayer( aBoard, aFp, aLayout.layer() );
+
+        if( layer == UNDEFINED_LAYER )
+            return "no layer " + aLayout.layer() + " (a layer name, or silk / fab: the part's side)";
+
+        aField->SetLayer( layer );
+        aField->SetMirrored( IsBackLayer( layer ) );
+    }
+
+    if( aLayout.has_visible() )
+        aField->SetVisible( aLayout.visible() );
+
+    if( aLayout.at_size() == 2 )
+        aField->SetPosition( aFp->GetPosition() + VECTOR2I( nm( aLayout.at( 0 ) ), nm( aLayout.at( 1 ) ) ) );
+    else if( aLayout.at_size() )
+        return "at is [dx, dy] mm from the part's origin";
+
+    if( aLayout.has_size() )
+    {
+        if( aLayout.size() < 0.1 || aLayout.size() > 50 )
+            return "size is the text height in mm (0.1 - 50)";
+
+        aField->SetTextSize( VECTOR2I( nm( aLayout.size() ), nm( aLayout.size() ) ) );
+
+        if( !aLayout.has_thickness() )
+            aField->SetTextThickness( nm( aLayout.size() * 0.15 ) );
+    }
+
+    if( aLayout.has_thickness() )
+    {
+        if( aLayout.thickness() <= 0 || aLayout.thickness() > aField->GetTextHeight() / 1e6 )
+            return "thickness is mm, more than 0 and at most the size";
+
+        aField->SetTextThickness( nm( aLayout.thickness() ) );
+    }
+
+    if( aLayout.has_justify() )
+    {
+        if( aLayout.justify() == "left" )
+            aField->SetHorizJustify( GR_TEXT_H_ALIGN_LEFT );
+        else if( aLayout.justify() == "right" )
+            aField->SetHorizJustify( GR_TEXT_H_ALIGN_RIGHT );
+        else if( aLayout.justify() == "center" )
+            aField->SetHorizJustify( GR_TEXT_H_ALIGN_CENTER );
+        else
+            return "justify is left, center or right";
+    }
+
+    if( aLayout.has_angle() )
+        aField->SetTextAngle( EDA_ANGLE( aLayout.angle(), DEGREES_T ) );
+
+    return std::string();
+}
+
+
+/// pcb_set_fields silk=: which of Reference and Value are on the silkscreen, the other on Fab
+/// (shown there, for the assembly drawing). Returns an error, empty when fine.
+std::string applySilkPreset( FOOTPRINT* aFp, const std::string& aPreset )
+{
+    const PCB_LAYER_ID silk = aFp->IsFlipped() ? B_SilkS : F_SilkS;
+    const PCB_LAYER_ID fab = aFp->IsFlipped() ? B_Fab : F_Fab;
+    bool               refOn = false, valueOn = false;
+
+    if( aPreset == "ref_only" )
+        refOn = true;
+    else if( aPreset == "value_only" )
+        valueOn = true;
+    else if( aPreset == "both" )
+        refOn = valueOn = true;
+    else if( aPreset != "none" )
+        return "silk is value_only, ref_only, both or none";
+
+    for( auto [field, on] : { std::pair<PCB_FIELD*, bool>( &aFp->Reference(), refOn ), { &aFp->Value(), valueOn } } )
+    {
+        field->SetLayer( on ? silk : fab );
+        field->SetMirrored( aFp->IsFlipped() );
+        field->SetVisible( true );
+    }
+
+    return std::string();
+}
+
+
 /// A copy of a board footprint as a fresh, unplaced part: new KIIDs, no nets, front side, 0°.
 std::unique_ptr<FOOTPRINT> copyAsNew( const FOOTPRINT* aSource )
 {
@@ -1509,12 +1663,50 @@ KICADD_HANDLER_PCB::handleSetFields( const HANDLER_CONTEXT<FpSetFields>& aCtx )
     if( edits.empty() )
         return out;
 
-    HISTORY_ENTRY           entry;
-    std::vector<FOOTPRINT*> targets;
+    // Layout and silk presets tried on a copy first: a bad one changes nothing
+    bool layout = false;
 
     for( auto& [fp, e] : edits )
     {
-        entry.before.push_back( stateOf( fp, true ) );
+        if( e->layout().empty() && e->silk().empty() )
+            continue;
+
+        layout = true;
+        std::unique_ptr<FOOTPRINT> copy( static_cast<FOOTPRINT*>( fp->Clone() ) );
+        std::string                err = e->silk().empty() ? std::string() : applySilkPreset( copy.get(), e->silk() );
+
+        for( const auto& [name, text] : e->fields() )
+        {
+            if( !copy->GetField( wxString::FromUTF8( name ) ) )
+                addUserField( copy.get(), wxString::FromUTF8( name ), wxString::FromUTF8( text ) );
+        }
+
+        for( const auto& [name, l] : e->layout() )
+        {
+            PCB_FIELD* f = copy->GetField( wxString::FromUTF8( name ) );
+
+            if( !f )
+                err = "no field " + name + " (give its text too to add it)";
+            else if( err.empty() )
+                err = applyFieldLayout( b, copy.get(), f, l );
+        }
+
+        if( !err.empty() )
+            return bad( e->ref() + ": " + err );
+    }
+
+    HISTORY_ENTRY           entry;
+    std::vector<FOOTPRINT*> targets;
+    std::vector<FP_SNAPSHOT> was;
+
+    for( auto& [fp, e] : edits )
+    {
+        // a layout is more than the fields' text: the parts kept whole (undo swaps them back)
+        if( layout )
+            was.push_back( copyOf( fp ) );
+        else
+            entry.before.push_back( stateOf( fp, true ) );
+
         targets.push_back( fp );
     }
 
@@ -1570,13 +1762,27 @@ KICADD_HANDLER_PCB::handleSetFields( const HANDLER_CONTEXT<FpSetFields>& aCtx )
                             if( e.has_exclude_from_pos() )
                                 fp->SetExcludedFromPosFiles( e.exclude_from_pos() );
 
+                            if( !e.silk().empty() )
+                                applySilkPreset( fp, e.silk() );
+
+                            for( const auto& [name, l] : e.layout() )
+                            {
+                                if( PCB_FIELD* f = fp->GetField( wxString::FromUTF8( name ) ) )
+                                    applyFieldLayout( b, fp, f, l );
+                            }
+
                             if( v )
                                 v->Add( fp );
                         },
                         wxString::FromUTF8( "Agent: " + entry.label ), out );
 
-    for( const FOOTPRINT* fp : targets )
-        entry.after.push_back( stateOf( fp, true ) );
+    for( size_t i = 0; i < targets.size(); ++i )
+    {
+        if( layout )
+            entry.replaced.emplace_back( was[i], copyOf( targets[i] ) );
+        else
+            entry.after.push_back( stateOf( targets[i], true ) );
+    }
 
     out.set_history_label( entry.label );
     record( std::move( entry ) );
@@ -5215,6 +5421,9 @@ bool KICADD_HANDLER_PCB::applyHistory( const HISTORY_ENTRY& aEntry, bool aUndo, 
         return true;
     }
 
+    if( !aEntry.shifted.empty() )
+        return applyShift( aEntry, aUndo, aOut );
+
     if( !aEntry.teardropFlags.empty() )
     {
         std::vector<std::pair<BOARD_CONNECTED_ITEM*, bool>> todo;
@@ -5360,6 +5569,29 @@ bool KICADD_HANDLER_PCB::applyHistory( const HISTORY_ENTRY& aEntry, bool aUndo, 
             else
                 ++alreadyDone;
         }
+    }
+
+    // Board items changed in place (pcb_text): swapped back / forth whole
+    std::vector<std::pair<BOARD_ITEM*, const HISTORY_ENTRY::ITEM_SNAPSHOT*>> itemSwap;
+
+    for( const auto& [was, is] : aEntry.itemsChanged )
+    {
+        const HISTORY_ENTRY::ITEM_SNAPSHOT& target = aUndo ? was : is;
+        const HISTORY_ENTRY::ITEM_SNAPSHOT& expect = aUndo ? is : was;
+        BOARD_ITEM*                         onBoard = b->ResolveItem( target.item->m_Uuid, true );
+        auto same = []( const BOARD_ITEM& aA, const BOARD_ITEM& aB )
+        {
+            return aA.Type() == aB.Type() && aA.GetLayer() == aB.GetLayer() && aA.IsLocked() == aB.IsLocked() && aA == aB;
+        };
+
+        if( !onBoard )
+            aOut.add_missing( "a board item (gone)" );
+        else if( same( *onBoard, *target.item ) )
+            ++alreadyDone;
+        else if( same( *onBoard, *expect.item ) )
+            itemSwap.emplace_back( onBoard, &target );
+        else
+            aOut.add_missing( "a board item (changed since; left as is)" );
     }
 
     for( const FP_SNAPSHOT& snap : toRemove )
@@ -5539,7 +5771,8 @@ bool KICADD_HANDLER_PCB::applyHistory( const HISTORY_ENTRY& aEntry, bool aUndo, 
     }
 
     if( removing.empty() && adding.empty() && modifying.empty() && trackAdd.empty() && trackRemove.empty()
-        && swapping.empty() && renetting.empty() && netsGone.empty() && itemAdd.empty() && itemRemove.empty() )
+        && swapping.empty() && renetting.empty() && netsGone.empty() && itemAdd.empty() && itemRemove.empty()
+        && itemSwap.empty() )
         return false;
 
     runCommit(
@@ -5619,6 +5852,13 @@ bool KICADD_HANDLER_PCB::applyHistory( const HISTORY_ENTRY& aEntry, bool aUndo, 
 
                 for( BOARD_ITEM* item : itemRemove )
                     aCommit.Remove( item );
+
+                for( auto& [item, snap] : itemSwap )
+                {
+                    aCommit.Modify( item );
+                    std::unique_ptr<BOARD_ITEM> copy( static_cast<BOARD_ITEM*>( snap->item->Clone() ) );
+                    item->SwapItemData( copy.get() );
+                }
 
                 return ids;
             },
@@ -6487,9 +6727,18 @@ KICADD_HANDLER_PCB::handleSyncFromSchematic( const HANDLER_CONTEXT<SyncFromSchem
     SyncFromSchematicResponse out;
     out.set_from_editor( fromEditor );
 
+    // update_changed: footprints the library has otherwise now (an edited lcsc.pretty footprint,
+    // a library update): reloaded in place the way Update Footprints from Library does, keeping
+    // place, side, lock, the fields (text and layout), attributes and pad nets
+    if( ok && aCtx.Request.update_changed() && aCtx.Request.dry_run() )
+        updateChangedFootprints( true, out );
+
     if( !aCtx.Request.dry_run() && ok )
     {
         m_context->OnNetlistChanged( *updater );
+
+        if( aCtx.Request.update_changed() )
+            updateChangedFootprints( false, out );
 
         for( FOOTPRINT* fp : updater->GetAddedFootprints() )
             out.add_new_refs( fp->GetReference().ToStdString() );
@@ -9478,6 +9727,7 @@ HANDLER_RESULT<CopilotState> KICADD_HANDLER_PCB::handleGetCopilot( const HANDLER
 {
     CopilotState out;
     packCopilot( aCtx.Request.since(), aCtx.Request.limit(), out );
+    out.set_desktop( editorOwnsUndo() );
     return out;
 }
 
@@ -9490,4 +9740,789 @@ HANDLER_RESULT<CopilotState> KICADD_HANDLER_PCB::handleSetCopilotPaused( const H
     CopilotState out;
     packCopilot( 0, 20, out );
     return out;
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// board_transform (beta.15 A1): the whole board moved, as one undoable edit
+
+std::vector<BOARD_ITEM*> KICADD_HANDLER_PCB::topLevelItems() const
+{
+    BOARD*                   b = board();
+    std::vector<BOARD_ITEM*> items;
+
+    auto take = [&]( BOARD_ITEM* aItem )
+    {
+        if( !aItem->GetParentGroup() )
+            items.push_back( aItem );
+    };
+
+    for( FOOTPRINT* fp : b->Footprints() )
+        take( fp );
+
+    for( PCB_TRACK* t : b->Tracks() )
+        take( t );
+
+    for( ZONE* z : b->Zones() )
+        take( z );
+
+    for( BOARD_ITEM* d : b->Drawings() )
+        take( d );
+
+    for( PCB_GROUP* g : b->Groups() )
+        take( g );
+
+    for( PCB_GENERATOR* g : b->Generators() )
+        take( g );
+
+    return items;
+}
+
+
+namespace
+{
+
+/// Modify aItem in aCommit before it moves: a group with all it holds.
+void stageMove( BOARD_COMMIT& aCommit, BOARD_ITEM* aItem )
+{
+    if( aItem->Type() == PCB_GROUP_T || aItem->Type() == PCB_GENERATOR_T )
+        aCommit.Modify( aItem, nullptr, RECURSE_MODE::RECURSE );
+    else
+        aCommit.Modify( aItem );
+}
+
+
+/// The outline's box, or every item's when there is no outline.
+BOX2I boardBox( const BOARD* aBoard )
+{
+    BOX2I box = aBoard->GetBoardEdgesBoundingBox();
+
+    if( box.GetWidth() <= 0 || box.GetHeight() <= 0 )
+        box = aBoard->ComputeBoundingBox( false );
+
+    return box;
+}
+
+
+void putBox( google::protobuf::RepeatedField<double>* aOut, const BOX2I& aBox )
+{
+    for( int v : { aBox.GetLeft(), aBox.GetTop(), aBox.GetRight(), aBox.GetBottom() } )
+        aOut->Add( std::round( v / 1e3 ) / 1e3 );
+}
+
+} // namespace
+
+
+HANDLER_RESULT<BoardTransformResponse>
+KICADD_HANDLER_PCB::handleBoardTransform( const HANDLER_CONTEXT<BoardTransform>& aCtx )
+{
+    if( std::optional<ApiResponseStatus> wait = busy() )
+        return tl::unexpected( *wait );
+
+    BOARD* b = board();
+
+    if( !b )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
+
+    const BoardTransform& req = aCtx.Request;
+    auto bad = [&]( const std::string& aMsg ) { return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, aMsg ) ); };
+    const BOX2I box = boardBox( b );
+    VECTOR2I    shift;
+
+    if( req.center_on_sheet() )
+    {
+        if( req.dx() != 0 || req.dy() != 0 )
+            return bad( "dx / dy or center_on_sheet, not both" );
+
+        const PAGE_INFO& page = b->GetPageSettings();
+        VECTOR2I centre( page.GetWidthIU( pcbIUScale.IU_PER_MILS ) / 2, page.GetHeightIU( pcbIUScale.IU_PER_MILS ) / 2 );
+        VECTOR2I d = centre - box.GetCenter();
+        // to the nearest mm: round coordinates stay round
+        shift = VECTOR2I( (int) std::llround( d.x / 1e6 ) * 1000000, (int) std::llround( d.y / 1e6 ) * 1000000 );
+    }
+    else
+    {
+        if( std::abs( req.dx() ) > 2000 || std::abs( req.dy() ) > 2000 )
+            return bad( "dx / dy are mm, at most 2000" );
+
+        shift = VECTOR2I( (int) std::llround( req.dx() * 1e6 ), (int) std::llround( req.dy() * 1e6 ) );
+    }
+
+    BoardTransformResponse out;
+    std::vector<BOARD_ITEM*> items = topLevelItems();
+
+    // what moves, counted once each (a group's members too)
+    std::function<void( BOARD_ITEM* )> count = [&]( BOARD_ITEM* aItem )
+    {
+        switch( aItem->Type() )
+        {
+        case PCB_FOOTPRINT_T: out.set_footprints( out.footprints() + 1 ); break;
+        case PCB_TRACE_T:
+        case PCB_ARC_T:       out.set_tracks( out.tracks() + 1 ); break;
+        case PCB_VIA_T:       out.set_vias( out.vias() + 1 ); break;
+        case PCB_ZONE_T:      out.set_zones( out.zones() + 1 ); break;
+        case PCB_GROUP_T:
+        case PCB_GENERATOR_T:
+            out.set_groups( out.groups() + 1 );
+
+            for( EDA_ITEM* m : static_cast<PCB_GROUP*>( aItem )->GetItems() )
+                count( static_cast<BOARD_ITEM*>( m ) );
+
+            break;
+        default:              out.set_drawings( out.drawings() + 1 ); break;
+        }
+    };
+
+    for( BOARD_ITEM* item : items )
+        count( item );
+
+    out.set_dx( shift.x / 1e6 );
+    out.set_dy( shift.y / 1e6 );
+    putBox( out.mutable_box_before(), box );
+    BOX2I after = box;
+    after.Move( shift );
+    putBox( out.mutable_box_after(), after );
+
+    const PAGE_INFO& page = b->GetPageSettings();
+    BOX2I sheet( VECTOR2I( 0, 0 ), VECTOR2I( page.GetWidthIU( pcbIUScale.IU_PER_MILS ), page.GetHeightIU( pcbIUScale.IU_PER_MILS ) ) );
+
+    if( !sheet.Contains( after ) )
+        out.add_notes( "the board is (partly) off the page after this (" + mm4( sheet.GetWidth() / 1e6 ) + " x "
+                       + mm4( sheet.GetHeight() / 1e6 ) + " mm)" );
+
+    BOARD_DESIGN_SETTINGS& bds = b->GetDesignSettings();
+    UNCONNECTED before = unconnectedNow( b, m_deferMinPads );
+    out.set_unconnected_before( before.count );
+
+    if( shift == VECTOR2I( 0, 0 ) )
+    {
+        out.add_notes( "nothing to move: the shift is 0" );
+        return out;
+    }
+
+    if( req.dry_run() )
+        return out;
+
+    HISTORY_ENTRY entry;
+    entry.shift = shift;
+
+    for( BOARD_ITEM* item : items )
+        entry.shifted.push_back( { item->m_Uuid, item->GetPosition() } );
+
+    if( bds.GetAuxOrigin() != VECTOR2I( 0, 0 ) )
+        entry.auxOriginBefore = bds.GetAuxOrigin();
+
+    if( bds.GetGridOrigin() != VECTOR2I( 0, 0 ) )
+        entry.gridOriginBefore = bds.GetGridOrigin();
+
+    runCommit(
+            [&]( BOARD_COMMIT& aCommit )
+            {
+                for( BOARD_ITEM* item : items )
+                {
+                    stageMove( aCommit, item );
+                    item->Move( shift );
+                }
+
+                return std::vector<KIID>();
+            },
+            wxS( "Agent: board moved" ), *out.mutable_result() );
+
+    if( entry.auxOriginBefore )
+    {
+        bds.SetAuxOrigin( *entry.auxOriginBefore + shift );
+        out.add_notes( "the drill / place origin moved with it" );
+    }
+
+    if( entry.gridOriginBefore )
+    {
+        bds.SetGridOrigin( *entry.gridOriginBefore + shift );
+        out.add_notes( "the grid origin moved with it" );
+    }
+
+    char label[96];
+    std::snprintf( label, sizeof( label ), "board moved by %s, %s mm", mm4( shift.x / 1e6 ).c_str(), mm4( shift.y / 1e6 ).c_str() );
+    entry.label = label;
+    out.mutable_result()->set_history_label( entry.label );
+
+    if( out.result().unconnected() != before.count )
+        out.add_notes( "the unrouted count changed (" + std::to_string( before.count ) + " -> "
+                       + std::to_string( out.result().unconnected() ) + "): something did not move with the rest; undo" );
+
+    record( std::move( entry ) );
+    return out;
+}
+
+
+bool KICADD_HANDLER_PCB::applyShift( const HISTORY_ENTRY& aEntry, bool aUndo, MoveResponse& aOut )
+{
+    BOARD*         b = board();
+    const VECTOR2I d = aUndo ? -aEntry.shift : aEntry.shift;
+    std::vector<BOARD_ITEM*> todo;
+    int already = 0, changed = 0;
+
+    for( const HISTORY_ENTRY::SHIFTED& s : aEntry.shifted )
+    {
+        BOARD_ITEM* item = b->ResolveItem( s.id, true );
+        VECTOR2I    expect = aUndo ? s.before + aEntry.shift : s.before;
+
+        if( !item )
+            continue;
+        else if( item->GetPosition() == expect + d )
+            already++;
+        else if( item->GetPosition() == expect )
+            todo.push_back( item );
+        else
+            changed++;   // moved since: shifted all the same, so the board stays together
+    }
+
+    if( changed )
+    {
+        for( const HISTORY_ENTRY::SHIFTED& s : aEntry.shifted )
+        {
+            BOARD_ITEM* item = b->ResolveItem( s.id, true );
+            VECTOR2I    expect = aUndo ? s.before + aEntry.shift : s.before;
+
+            if( item && item->GetPosition() != expect && item->GetPosition() != expect + d )
+                todo.push_back( item );
+        }
+
+        aOut.add_notes( std::to_string( changed ) + " item(s) moved since: moved back by the same amount" );
+    }
+
+    aOut.set_already_there( already );
+
+    if( todo.empty() )
+        return false;
+
+    runCommit(
+            [&]( BOARD_COMMIT& aCommit )
+            {
+                for( BOARD_ITEM* item : todo )
+                {
+                    stageMove( aCommit, item );
+                    item->Move( d );
+                }
+
+                return std::vector<KIID>();
+            },
+            wxString::FromUTF8( std::string( "Agent: " ) + ( aUndo ? "undo " : "redo " ) + aEntry.label ), aOut );
+
+    BOARD_DESIGN_SETTINGS& bds = b->GetDesignSettings();
+
+    if( aEntry.auxOriginBefore )
+        bds.SetAuxOrigin( *aEntry.auxOriginBefore + ( aUndo ? VECTOR2I( 0, 0 ) : aEntry.shift ) );
+
+    if( aEntry.gridOriginBefore )
+        bds.SetGridOrigin( *aEntry.gridOriginBefore + ( aUndo ? VECTOR2I( 0, 0 ) : aEntry.shift ) );
+
+    return true;
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// pcb_text (beta.15 A3): board-level texts listed, added, changed, removed
+
+namespace
+{
+
+std::string shortId( const KIID& aId )
+{
+    return aId.AsStdString().substr( 0, 8 );
+}
+
+
+void describeText( const PCB_TEXT* aText, PcbTextItem* aOut )
+{
+    aOut->set_id( shortId( aText->m_Uuid ) );
+    aOut->set_text( aText->GetText().ToStdString() );
+    wxString shown = aText->GetShownText( FOR_GUI );
+
+    if( shown != aText->GetText() )
+        aOut->set_shown( shown.ToStdString() );
+
+    aOut->set_x( std::round( aText->GetPosition().x / 1e3 ) / 1e3 );
+    aOut->set_y( std::round( aText->GetPosition().y / 1e3 ) / 1e3 );
+    aOut->set_layer( aText->GetBoard() ? aText->GetBoard()->GetLayerName( aText->GetLayer() ).ToStdString()
+                                       : LSET::Name( aText->GetLayer() ).ToStdString() );
+    aOut->set_size( std::round( aText->GetTextHeight() / 1e3 ) / 1e3 );
+    aOut->set_thickness( std::round( aText->GetTextThickness() / 1e3 ) / 1e3 );
+    aOut->set_angle( aText->GetTextAngle().AsDegrees() );
+    aOut->set_justify( aText->GetHorizJustify() == GR_TEXT_H_ALIGN_LEFT    ? "left"
+                       : aText->GetHorizJustify() == GR_TEXT_H_ALIGN_RIGHT ? "right"
+                                                                           : "center" );
+    aOut->set_locked( aText->IsLocked() );
+    aOut->set_mirrored( aText->IsMirrored() );
+}
+
+
+/// Two copies of a board item that are the same (an item as an undo entry left it).
+bool sameItem( const BOARD_ITEM& aA, const BOARD_ITEM& aB )
+{
+    return aA.Type() == aB.Type() && aA.GetLayer() == aB.GetLayer() && aA.IsLocked() == aB.IsLocked() && aA == aB;
+}
+
+} // namespace
+
+
+HANDLER_RESULT<PcbTextResponse> KICADD_HANDLER_PCB::handlePcbText( const HANDLER_CONTEXT<PcbText>& aCtx )
+{
+    if( std::optional<ApiResponseStatus> wait = busy() )
+        return tl::unexpected( *wait );
+
+    BOARD* b = board();
+
+    if( !b )
+        return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, "no board loaded" ) );
+
+    const PcbText& req = aCtx.Request;
+    auto bad = [&]( const std::string& aMsg ) { return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, aMsg ) ); };
+    auto nm = []( double aMm ) { return (int) std::llround( aMm * 1e6 ); };
+    PcbTextResponse out;
+
+    std::vector<PCB_TEXT*> texts;
+
+    for( BOARD_ITEM* item : b->Drawings() )
+    {
+        if( item->Type() == PCB_TEXT_T )
+            texts.push_back( static_cast<PCB_TEXT*>( item ) );
+        else if( item->Type() == PCB_TEXTBOX_T )
+            out.set_textboxes( out.textboxes() + 1 );
+    }
+
+    if( req.add().empty() && req.edit().empty() && req.remove().empty() )
+    {
+        PCB_LAYER_ID only = UNDEFINED_LAYER;
+
+        if( !req.layer().empty() )
+        {
+            only = b->GetLayerID( wxString::FromUTF8( req.layer() ) );
+
+            if( only == UNDEFINED_LAYER )
+                return bad( "no layer " + req.layer() );
+        }
+
+        for( const PCB_TEXT* t : texts )
+        {
+            if( only == UNDEFINED_LAYER || t->GetLayer() == only )
+                describeText( t, out.add_texts() );
+        }
+
+        return out;
+    }
+
+    // The text an edit / remove names: by id (a unique start of the KIID) or by what it says
+    auto find = [&]( const PcbTextSpec& aSpec, std::string& aWhy ) -> PCB_TEXT*
+    {
+        std::vector<PCB_TEXT*> hits;
+        std::string            id = aSpec.id();
+        std::transform( id.begin(), id.end(), id.begin(), ::tolower );
+
+        for( PCB_TEXT* t : texts )
+        {
+            if( !id.empty() ? t->m_Uuid.AsStdString().rfind( id, 0 ) == 0
+                            : t->GetText() == wxString::FromUTF8( aSpec.match() ) )
+                hits.push_back( t );
+        }
+
+        std::string what = !id.empty() ? "id " + aSpec.id() : "\"" + aSpec.match() + "\"";
+
+        if( id.empty() && aSpec.match().empty() )
+            aWhy = "(no id or match)";
+        else if( hits.empty() )
+            aWhy = what + " (no such board text)";
+        else if( hits.size() > 1 )
+            aWhy = what + " (" + std::to_string( hits.size() ) + " texts: give the id)";
+
+        return hits.size() == 1 ? hits.front() : nullptr;
+    };
+
+    // Apply a spec's settings to a text (aNew: defaults for what is not given)
+    auto apply = [&]( PCB_TEXT* aText, const PcbTextSpec& aSpec, bool aNew, std::string& aErr )
+    {
+        if( aSpec.has_layer() || aNew )
+        {
+            wxString     name = aSpec.has_layer() ? wxString::FromUTF8( aSpec.layer() ) : wxString( wxS( "F.SilkS" ) );
+            PCB_LAYER_ID layer = b->GetLayerID( name );
+
+            if( layer == UNDEFINED_LAYER )
+                layer = b->GetLayerID( name == wxS( "F.Silkscreen" ) ? wxS( "F.SilkS" ) : name );
+
+            if( layer == UNDEFINED_LAYER || !b->IsLayerEnabled( layer ) )
+            {
+                aErr = "no layer " + name.ToStdString() + " on this board";
+                return;
+            }
+
+            const bool wasBack = !aNew && IsBackLayer( aText->GetLayer() );
+            aText->SetLayer( layer );
+
+            // as the editor does: text on a back layer reads from below
+            if( aNew || wasBack != IsBackLayer( layer ) )
+                aText->SetMirrored( IsBackLayer( layer ) );
+
+            if( aNew )
+            {
+                const BOARD_DESIGN_SETTINGS& bds = b->GetDesignSettings();
+                aText->SetTextSize( bds.GetTextSize( layer ) );
+                aText->SetTextThickness( bds.GetTextThickness( layer ) );
+                aText->SetItalic( bds.GetTextItalic( layer ) );
+                aText->SetKeepUpright( bds.GetTextUpright( layer ) );
+            }
+        }
+
+        if( aSpec.has_text() )
+        {
+            if( aSpec.text().empty() )
+            {
+                aErr = "a text is not empty (remove takes one away)";
+                return;
+            }
+
+            aText->SetText( wxString::FromUTF8( aSpec.text() ) );
+        }
+
+        if( aSpec.at_size() == 2 )
+            aText->SetPosition( VECTOR2I( nm( aSpec.at( 0 ) ), nm( aSpec.at( 1 ) ) ) );
+        else if( aSpec.at_size() )
+            aErr = "at is [x, y] mm";
+
+        if( aSpec.by_size() == 2 )
+            aText->Move( VECTOR2I( nm( aSpec.by( 0 ) ), nm( aSpec.by( 1 ) ) ) );
+        else if( aSpec.by_size() )
+            aErr = "by is [dx, dy] mm";
+
+        if( aSpec.has_size() )
+        {
+            if( aSpec.size() < 0.1 || aSpec.size() > 100 )
+            {
+                aErr = "size is the text height in mm (0.1 - 100)";
+                return;
+            }
+
+            aText->SetTextSize( VECTOR2I( nm( aSpec.size() ), nm( aSpec.size() ) ) );
+
+            if( !aSpec.has_thickness() )
+                aText->SetTextThickness( nm( aSpec.size() * 0.15 ) );
+        }
+
+        if( aSpec.has_thickness() )
+        {
+            if( aSpec.thickness() <= 0 || aSpec.thickness() > aText->GetTextHeight() / 1e6 )
+            {
+                aErr = "thickness is mm, more than 0 and at most the size";
+                return;
+            }
+
+            aText->SetTextThickness( nm( aSpec.thickness() ) );
+        }
+
+        if( aSpec.has_angle() )
+            aText->SetTextAngle( EDA_ANGLE( aSpec.angle(), DEGREES_T ) );
+
+        if( aSpec.has_justify() )
+        {
+            if( aSpec.justify() == "left" )
+                aText->SetHorizJustify( GR_TEXT_H_ALIGN_LEFT );
+            else if( aSpec.justify() == "right" )
+                aText->SetHorizJustify( GR_TEXT_H_ALIGN_RIGHT );
+            else if( aSpec.justify() == "center" )
+                aText->SetHorizJustify( GR_TEXT_H_ALIGN_CENTER );
+            else
+                aErr = "justify is left, center or right";
+        }
+
+        if( aSpec.has_locked() )
+            aText->SetLocked( aSpec.locked() );
+    };
+
+    std::set<PCB_TEXT*>                                 touched;
+    std::vector<std::pair<PCB_TEXT*, const PcbTextSpec*>> edits;
+    std::vector<PCB_TEXT*>                              removes;
+
+    for( const PcbTextSpec& s : req.edit() )
+    {
+        std::string why;
+
+        if( PCB_TEXT* t = find( s, why ) )
+        {
+            if( !touched.insert( t ).second )
+                return bad( "the text " + shortId( t->m_Uuid ) + " is named twice in one call" );
+
+            edits.emplace_back( t, &s );
+        }
+        else
+        {
+            out.add_missing( why );
+        }
+    }
+
+    for( const PcbTextSpec& s : req.remove() )
+    {
+        std::string why;
+
+        if( PCB_TEXT* t = find( s, why ) )
+        {
+            if( !touched.insert( t ).second )
+                return bad( "the text " + shortId( t->m_Uuid ) + " is named twice in one call" );
+
+            removes.push_back( t );
+        }
+        else
+        {
+            out.add_missing( why );
+        }
+    }
+
+    // Everything checked on copies first: a bad value changes nothing
+    std::vector<std::unique_ptr<PCB_TEXT>> made;
+
+    for( const PcbTextSpec& s : req.add() )
+    {
+        if( !s.has_text() || s.text().empty() )
+            return bad( "add: give the text" );
+
+        if( s.at_size() != 2 )
+            return bad( "add: give at [x, y] mm" );
+
+        if( s.by_size() )
+            return bad( "add: at places it (by is for edit)" );
+
+        auto        t = std::make_unique<PCB_TEXT>( b );
+        std::string err;
+        apply( t.get(), s, true, err );
+
+        if( !err.empty() )
+            return bad( "add \"" + s.text() + "\": " + err );
+
+        made.push_back( std::move( t ) );
+    }
+
+    std::vector<std::unique_ptr<PCB_TEXT>> changed;
+
+    for( auto& [t, s] : edits )
+    {
+        auto        copy = std::unique_ptr<PCB_TEXT>( static_cast<PCB_TEXT*>( t->Clone() ) );
+        std::string err;
+        apply( copy.get(), *s, false, err );
+
+        if( !err.empty() )
+            return bad( shortId( t->m_Uuid ) + ": " + err );
+
+        changed.push_back( std::move( copy ) );
+    }
+
+    if( made.empty() && edits.empty() && removes.empty() )
+        return out;
+
+    HISTORY_ENTRY entry;
+
+    for( PCB_TEXT* t : removes )
+    {
+        entry.itemsRemoved.push_back( snapshotItem( t ) );
+        out.add_removed( shortId( t->m_Uuid ) + " " + t->GetText().ToStdString() );
+    }
+
+    for( size_t i = 0; i < edits.size(); ++i )
+    {
+        if( sameItem( *edits[i].first, *changed[i] ) )
+            out.add_notes( shortId( edits[i].first->m_Uuid ) + ": already so" );
+        else
+            entry.itemsChanged.emplace_back( snapshotItem( edits[i].first ), snapshotItem( changed[i].get() ) );
+    }
+
+    std::vector<KIID> ids;
+    MoveResponse      ignored;
+
+    runCommit(
+            [&]( BOARD_COMMIT& aCommit )
+            {
+                for( PCB_TEXT* t : removes )
+                    aCommit.Remove( t );
+
+                for( size_t i = 0; i < edits.size(); ++i )
+                {
+                    PCB_TEXT* t = edits[i].first;
+
+                    if( sameItem( *t, *changed[i] ) )
+                        continue;
+
+                    aCommit.Modify( t );
+                    // the copy's settings onto the board's own text (a clone: the same KIID)
+                    t->SwapItemData( changed[i].get() );
+                    ids.push_back( t->m_Uuid );
+                }
+
+                for( std::unique_ptr<PCB_TEXT>& t : made )
+                {
+                    entry.itemsAdded.push_back( snapshotItem( t.get() ) );
+                    ids.push_back( t->m_Uuid );
+                    aCommit.Add( t.release() );
+                }
+
+                return std::vector<KIID>();
+            },
+            wxS( "Agent: board texts" ), ignored );
+
+    if( !editorOwnsUndo() )
+    {
+        for( PCB_TEXT* t : removes )
+            delete t;
+    }
+
+    for( const KIID& id : ids )
+    {
+        if( BOARD_ITEM* item = b->ResolveItem( id, true ); item && item->Type() == PCB_TEXT_T )
+            describeText( static_cast<PCB_TEXT*>( item ), out.add_texts() );
+    }
+
+    std::string label;
+
+    if( !made.empty() )
+        label += std::to_string( made.size() ) + " added";
+
+    if( !entry.itemsChanged.empty() )
+        label += ( label.empty() ? "" : ", " ) + std::to_string( entry.itemsChanged.size() ) + " changed";
+
+    if( !removes.empty() )
+        label += ( label.empty() ? "" : ", " ) + std::to_string( removes.size() ) + " removed";
+
+    if( label.empty() )
+        return out;
+
+    entry.label = "board texts: " + label;
+    out.set_history_label( entry.label );
+    record( std::move( entry ) );
+    return out;
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// sync_pcb update_footprints="changed" (beta.15 B1)
+
+void KICADD_HANDLER_PCB::updateChangedFootprints( bool aDryRun, SyncFromSchematicResponse& aOut )
+{
+    BOARD* b = board();
+    std::map<LIB_ID, std::shared_ptr<FOOTPRINT>> libs;
+    std::vector<std::pair<FOOTPRINT*, FOOTPRINT*>> todo;   // board's, the library's (a copy, to place)
+    std::map<std::string, int>                     noLib;  // nickname -> parts: not compared
+
+    for( FOOTPRINT* fp : b->Footprints() )
+    {
+        const LIB_ID& id = fp->GetFPID();
+
+        if( id.GetLibNickname().empty() || id.GetLibItemName().empty() )
+            continue;   // made on the board (mounting holes): no library to compare with
+
+        auto it = libs.find( id );
+
+        if( it == libs.end() )
+        {
+            std::shared_ptr<FOOTPRINT> lib( loadFromTable( b, id ) );
+            std::string                source;
+
+            if( !lib )
+                lib = loadFromDirectories( b, id, source );
+
+            it = libs.emplace( id, lib ).first;
+        }
+
+        if( !it->second )
+        {
+            noLib[id.GetLibNickname().wx_str().ToStdString()]++;
+            continue;
+        }
+
+        WX_STRING_REPORTER why;
+
+        if( !fp->FootprintNeedsUpdate( it->second.get(), BOARD_ITEM::COMPARE_FLAGS::DRC, &why ) )
+            continue;
+
+        // the first few differences, in KiCad's words
+        std::string what;
+        int         n = 0;
+        wxStringTokenizer lines( why.GetMessages(), wxS( "\n" ) );
+
+        while( lines.HasMoreTokens() )
+        {
+            wxString line = lines.GetNextToken().Trim().Trim( false );
+
+            if( line.IsEmpty() || ( line.Contains( wxS( "stackup" ) ) && !line.Contains( wxS( "differs" ) ) ) )
+                continue;
+
+            if( n++ < 3 )
+                what += ( what.empty() ? "" : "; " ) + line.ToStdString();
+        }
+
+        if( n > 3 )
+            what += "; ...";
+
+        std::string line = fp->GetReference().ToStdString() + " " + id.Format().wx_str().ToStdString()
+                           + ( what.empty() ? "" : ": " + what );
+
+        if( fp->IsLocked() )
+        {
+            aOut.add_not_updated( line + " (locked: unlock it to update)" );
+            continue;
+        }
+
+        aOut.add_updated( line );
+
+        if( !aDryRun )
+            todo.emplace_back( fp, static_cast<FOOTPRINT*>( it->second->Clone() ) );
+    }
+
+    if( !noLib.empty() )
+    {
+        std::string list;
+        int         parts = 0;
+
+        for( const auto& [nick, n] : noLib )
+        {
+            list += ( list.empty() ? "" : ", " ) + nick + " (" + std::to_string( n ) + ")";
+            parts += n;
+        }
+
+        aOut.add_not_updated( std::to_string( parts ) + " part(s) not compared: their library is not found: " + list );
+    }
+
+    if( todo.empty() )
+        return;
+
+    MoveResponse ignored;
+
+    runCommit(
+            [&]( BOARD_COMMIT& aCommit )
+            {
+                for( auto& [old, fresh] : todo )
+                {
+                    fresh->FixUpPadsForBoard( b );
+                    fresh->SetFPID( old->GetFPID() );   // a directory's copy has no nickname
+                    fresh->ResetUuid();
+                    fresh->RunOnChildren( []( BOARD_ITEM* aChild ) { aChild->ResetUuid(); }, RECURSE_MODE::RECURSE );
+
+                    // like Update Footprints from Library keeping the texts (content, layers,
+                    // effects, positions): the library's shape, type, clearances and 3D models;
+                    // the board's DNP / BOM / position-file flags (they come from the schematic)
+                    const int keep = FP_DNP | FP_EXCLUDE_FROM_BOM | FP_EXCLUDE_FROM_POS_FILES | FP_BOARD_ONLY
+                                     | FP_EXCLUDE_FROM_SIM;
+                    const int flags = old->GetAttributes() & keep;
+                    b->ExchangeFootprint( old, fresh, aCommit, FLIP_DIRECTION::LEFT_RIGHT, true,
+                                          false /* delete extra texts */, false /* text layers */,
+                                          false /* text effects */, false /* text positions */,
+                                          false /* text content */, true /* fabrication attributes */,
+                                          true /* clearance overrides */, true /* 3D models */ );
+                    fresh->SetAttributes( ( fresh->GetAttributes() & ~keep ) | flags );
+                }
+
+                return std::vector<KIID>();
+            },
+            wxS( "Agent: footprints updated from the library" ), ignored );
+
+    // Headless, the old footprints are ours to delete; the editor's undo owns them otherwise
+    if( !editorOwnsUndo() )
+    {
+        for( auto& [old, fresh] : todo )
+            delete old;
+    }
 }

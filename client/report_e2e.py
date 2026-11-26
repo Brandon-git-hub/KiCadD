@@ -7,7 +7,8 @@ On a copy of KiCad's pic_programmer demo, with an LCSC cache of its own (offline
   pour        a pour with nothing of its net in it: the refill says it is floating (or gone), and why
   kept        a footprint edited in lcsc.pretty is kept when the part is fetched or placed again
               (the edit is what gets placed); refresh=true replaces it; fetching an unchanged one
-              writes no note
+              writes no note; sync_pcb update_footprints="changed" puts the library's on the board,
+              keeping place and field layout
   npth        a shell whose legs come as unnumbered non-plated holes with copper (EasyEDA's
               C456012): counted as unnumbered pads, numbering plates them; fetching it again keeps
               the numbered footprint without calling it an edit
@@ -127,6 +128,37 @@ def main():
         err, t = m.tool("lcsc_fetch", {"lcsc": "C25804", "refresh": True})
         check(not err and "kept" not in t and "1.234" not in open(mod, encoding="utf-8").read(),
               "refresh=true: replaced by EasyEDA's")
+
+        print("[changed: sync_pcb reloads what the library has otherwise]")
+        err, t = m.tool("pcb_set_fields", {"parts": {"R900": {"Value": {"layer": "silk", "at": [0, 2], "size": 0.7}}}})
+        check(not err, "R900's value laid out on the silkscreen")
+        err, t = m.tool("move_footprints", {"parts": {"R900": {"x": 62, "y": 61, "rotation": 90}}})
+        err, t = m.tool("sync_pcb", {"update_footprints": "changed", "dry_run": True})
+        line = next((ln.strip() for ln in t.splitlines() if ln.strip().startswith("R900 ")), "")
+        check(not err and line and "LCSC:R0603" in line, "dry run: R900 differs from lcsc.pretty: " + (line or t[:300])[:200])
+        err, t = m.tool("save_board", {})
+        check("1.234 1.234" in open(board, encoding="utf-8").read(), "dry run: nothing changed on the board")
+        err, t = m.tool("sync_pcb", {"update_footprints": "changed"})
+        print("   ", "\n    ".join(ln for ln in t.splitlines() if "R900" in ln or "reloaded" in ln or "not compared" in ln))
+        check(not err and "reloaded from the library" in t, "sync_pcb update_footprints=changed: reloaded")
+        check(" footprint(s) changed:" not in t, "no library link reported as changed (the FPID kept)")
+        m.tool("save_board", {})
+        pcb = open(board, encoding="utf-8").read()
+        i = pcb.find('"R900"')
+        r900 = pcb[pcb.rfind("(footprint ", 0, i):pcb.find("\n\t(footprint ", i)]
+        check("1.234 1.234" not in r900, "R900 now has the library's pad (EasyEDA's again)")
+        check(re.search(r"\n\t\t\(at 62 61 90\)", r900) or re.search(r"\(translate 62 61\)\s*\(rotate 90\)", r900),
+              "R900 kept its place and rotation")
+        v = re.search(r'\(property "Value" "[^"]*"\s*\(at ([^)]*)\)[^"]*?\(layer "([^"]+)"\)(.*?)\n\t\t\)', r900, re.S)
+        check(v and v.group(2) == "F.SilkS" and "(size 0.7 0.7)" in v.group(3),
+              "R900's value layout kept (F.SilkS, 0.7 mm): " + (v.group(0)[:160] if v else r900[:200]))
+        err, t = m.tool("undo", {})
+        m.tool("save_board", {})
+        check("1.234 1.234" in open(board, encoding="utf-8").read(), "undo: the old footprint back: " + t.splitlines()[0][:80])
+        err, t = m.tool("sync_pcb", {"update_footprints": "changed"})
+        err, t = m.tool("sync_pcb", {"update_footprints": "changed", "dry_run": True})
+        check(not err and "reloaded" not in t, "synced again: nothing differs any more: "
+              + " | ".join(ln.strip() for ln in t.splitlines()[1:6]))
 
         print("[npth: copper on unplated shell legs]")
         check(legs >= 2, f"C165948 in the test cache: {legs} shell legs made pad \"\" / not plated")

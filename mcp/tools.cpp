@@ -20,6 +20,8 @@
 
 #include <kicadd/board.pb.h>
 #include <kicadd/render.pb.h>
+#include <kicadd/schematic.pb.h>
+#include <api/common/commands/editor_commands.pb.h>
 #include <api/common/commands/base_commands.pb.h>
 #include <api/common/commands/project_commands.pb.h>
 #include <api/board/board_commands.pb.h>
@@ -1472,14 +1474,46 @@ TOOL_RESULT pcbSetFields( IPC_CLIENT& aIpc, const json& aArgs )
                 else
                     e->set_exclude_from_pos( v.get<bool>() );
             }
+            else if( key == "silk" )
+            {
+                if( !v.is_string() )
+                    bad = "silk is value_only, ref_only, both or none";
+                else
+                    e->set_silk( v.get<std::string>() );
+            }
             else if( v.is_null() )
                 e->add_remove( key );
             else if( v.is_string() )
                 ( *e->mutable_fields() )[key] = v.get<std::string>();
             else if( v.is_number() )
                 ( *e->mutable_fields() )[key] = v.dump();
+            else if( v.is_object() )
+            {
+                // the field's layout (and its text, if given)
+                kb::FieldLayout& l = ( *e->mutable_layout() )[key];
+                double           d = 0;
+
+                for( const auto& [k, x] : v.items() )
+                {
+                    if( k == "text" && ( x.is_string() || x.is_number() ) )
+                        ( *e->mutable_fields() )[key] = x.is_string() ? x.get<std::string>() : x.dump();
+                    else if( k == "layer" && x.is_string() )
+                        l.set_layer( x.get<std::string>() );
+                    else if( k == "visible" && x.is_boolean() )
+                        l.set_visible( x.get<bool>() );
+                    else if( k == "justify" && x.is_string() )
+                        l.set_justify( x.get<std::string>() );
+                    else if( k == "at" && x.is_array() && x.size() == 2 && x[0].is_number() && x[1].is_number() )
+                        l.add_at( x[0].get<double>() ), l.add_at( x[1].get<double>() );
+                    else if( ( k == "size" || k == "thickness" || k == "angle" ) && getNumber( v, k.c_str(), d ) )
+                        k == "size" ? l.set_size( d ) : k == "thickness" ? l.set_thickness( d ) : l.set_angle( d );
+                    else
+                        bad = key + "." + k + ": a field's layout takes text, layer, visible, at [dx, dy], size, "
+                              "thickness, justify, angle";
+                }
+            }
             else
-                bad = key + ": a field's text is a string (null removes it)";
+                bad = key + ": a field's text is a string (null removes it), or its layout {layer, visible, at, ...}";
         }
     };
 
@@ -2046,6 +2080,179 @@ TOOL_RESULT boardOutline( IPC_CLIENT& aIpc, const json& aArgs )
 
     t += "undo takes it back: \"" + r.history_label() + "\"; zones create for a pour, refill_zones after moving parts\n";
     return { t };
+}
+
+
+TOOL_RESULT boardTransform( IPC_CLIENT& aIpc, const json& aArgs )
+{
+    kb::BoardTransform req;
+    double             d = 0;
+
+    if( getNumber( aArgs, "dx", d ) ) req.set_dx( d );
+    if( getNumber( aArgs, "dy", d ) ) req.set_dy( d );
+
+    req.set_center_on_sheet( aArgs.value( "center_on_sheet", false ) );
+    req.set_dry_run( aArgs.value( "dry_run", false ) );
+
+    if( !req.center_on_sheet() && req.dx() == 0 && req.dy() == 0 )
+        return error( "give dx / dy (mm) or center_on_sheet=true" );
+
+    kb::BoardTransformResponse r;
+    std::string                err;
+
+    if( !aIpc.Call( req, r, err ) )
+        return error( err );
+
+    auto num = []( double aV )
+    {
+        char buf[32];
+        std::snprintf( buf, sizeof( buf ), "%.4g", aV );
+        return std::string( buf );
+    };
+    auto box = [&]( const auto& aB )
+    {
+        return aB.size() == 4 ? "[" + num( aB[0] ) + ", " + num( aB[1] ) + ", " + num( aB[2] ) + ", " + num( aB[3] ) + "]"
+                              : std::string( "?" );
+    };
+
+    std::string what = std::to_string( r.footprints() ) + " footprint(s), " + std::to_string( r.tracks() ) + " track(s), "
+                       + std::to_string( r.vias() ) + " via(s), " + std::to_string( r.zones() ) + " zone(s), "
+                       + std::to_string( r.drawings() ) + " graphic(s) / text(s)"
+                       + ( r.groups() ? ", " + std::to_string( r.groups() ) + " group(s)" : "" );
+    std::string t = ( req.dry_run() ? "would move by " : "moved by " ) + num( r.dx() ) + ", " + num( r.dy() ) + " mm: "
+                    + what + "\nboard " + box( r.box_before() ) + " -> " + box( r.box_after() ) + "\n";
+
+    if( !req.dry_run() && !r.result().history_label().empty() )
+        t += "unrouted " + std::to_string( r.unconnected_before() ) + " -> " + std::to_string( r.result().unconnected() )
+             + "; zone fills moved with their zones; one undo takes it back\n";
+
+    for( const std::string& n : r.notes() )
+        t += "note: " + n + "\n";
+
+    return { t };
+}
+
+
+TOOL_RESULT pcbText( IPC_CLIENT& aIpc, const json& aArgs )
+{
+    kb::PcbText req;
+    std::string bad;
+
+    auto spec = [&]( const json& aIn, kb::PcbTextSpec* aOut, const std::string& aWhat )
+    {
+        if( aIn.is_string() )
+        {
+            aOut->set_id( aIn.get<std::string>() );
+            return;
+        }
+
+        if( !aIn.is_object() )
+        {
+            bad = aWhat + ": an object ({id | match, ...})";
+            return;
+        }
+
+        auto pair = [&]( const char* aKey, google::protobuf::RepeatedField<double>* aTo )
+        {
+            if( !aIn.contains( aKey ) )
+                return;
+
+            const json& v = aIn[aKey];
+
+            if( !v.is_array() || v.size() != 2 || !v[0].is_number() || !v[1].is_number() )
+                bad = aWhat + ": " + aKey + " is [x, y] mm";
+            else
+                aTo->Add( v[0].get<double>() ), aTo->Add( v[1].get<double>() );
+        };
+
+        double d = 0;
+        aOut->set_id( aIn.value( "id", std::string() ) );
+        aOut->set_match( aIn.value( "match", std::string() ) );
+
+        if( aIn.contains( "text" ) )      aOut->set_text( aIn.value( "text", std::string() ) );
+        if( aIn.contains( "layer" ) )     aOut->set_layer( aIn.value( "layer", std::string() ) );
+        if( aIn.contains( "justify" ) )   aOut->set_justify( aIn.value( "justify", std::string() ) );
+        if( getNumber( aIn, "size", d ) )      aOut->set_size( d );
+        if( getNumber( aIn, "thickness", d ) ) aOut->set_thickness( d );
+        if( getNumber( aIn, "angle", d ) )     aOut->set_angle( d );
+        if( aIn.contains( "locked" ) && aIn["locked"].is_boolean() ) aOut->set_locked( aIn["locked"].get<bool>() );
+
+        pair( "at", aOut->mutable_at() );
+        pair( "by", aOut->mutable_by() );
+    };
+
+    auto list = [&]( const char* aKey, auto aAdd )
+    {
+        if( !aArgs.contains( aKey ) )
+            return;
+
+        const json& v = aArgs[aKey];
+
+        if( v.is_array() )
+            for( const json& s : v )
+                spec( s, aAdd(), aKey );
+        else
+            spec( v, aAdd(), aKey );
+    };
+
+    list( "add", [&]() { return req.add_add(); } );
+    list( "edit", [&]() { return req.add_edit(); } );
+    list( "remove", [&]() { return req.add_remove(); } );
+    req.set_layer( aArgs.value( "layer", std::string() ) );
+
+    if( !bad.empty() )
+        return error( bad );
+
+    kb::PcbTextResponse r;
+    std::string         err;
+
+    if( !aIpc.Call( req, r, err ) )
+        return error( err );
+
+    auto num = []( double aV )
+    {
+        char buf[32];
+        std::snprintf( buf, sizeof( buf ), "%.4g", aV );
+        return std::string( buf );
+    };
+
+    const bool  listing = req.add().empty() && req.edit().empty() && req.remove().empty();
+    std::string t;
+
+    if( listing )
+        t = r.texts().empty() ? "no board texts" + std::string( req.layer().empty() ? "" : " on " + req.layer() )
+                              : std::to_string( r.texts_size() ) + " board text(s) (id text @x,y layer size[/thickness] ...):";
+    else
+        t = r.history_label().empty() ? "nothing changed" : r.history_label() + " (undo takes it back)";
+
+    for( const kb::PcbTextItem& i : r.texts() )
+    {
+        t += "\n  " + i.id() + " \"" + i.text() + "\"" + ( i.shown().empty() ? "" : " (shows \"" + i.shown() + "\")" )
+             + " @" + num( i.x() ) + "," + num( i.y() ) + " " + i.layer() + " " + num( i.size() ) + "/" + num( i.thickness() )
+             + ( i.angle() != 0 ? " " + num( i.angle() ) + "deg" : "" ) + ( i.justify() != "center" ? " " + i.justify() : "" )
+             + ( i.mirrored() ? " mirrored" : "" ) + ( i.locked() ? " locked" : "" );
+    }
+
+    for( const std::string& rm : r.removed() )
+        t += "\n  removed " + rm;
+
+    if( !r.missing().empty() )
+    {
+        t += "\nnot found:";
+
+        for( const std::string& m : r.missing() )
+            t += " " + m + ";";
+
+        t.pop_back();
+    }
+
+    for( const std::string& n : r.notes() )
+        t += "\nnote: " + n;
+
+    if( listing && r.textboxes() )
+        t += "\n(" + std::to_string( r.textboxes() ) + " text box(es) too, not listed)";
+
+    return { t + "\n", !listing && r.history_label().empty() && !r.missing().empty() };
 }
 
 
@@ -3198,17 +3405,75 @@ std::string UnsavedBoardChanges( IPC_CLIENT& aIpc )
 namespace
 {
 
+/// project reload in the desktop editor: File > Revert for the board, and for the schematic
+/// when the Schematic Editor has it open; the editors show the files as they are on disk.
+TOOL_RESULT revertInEditor( IPC_CLIENT& aIpc, const std::string& aBoardFile )
+{
+    namespace kc = kiapi::common::commands;
+    namespace kt = kiapi::common::types;
+    namespace fs = std::filesystem;
+
+    if( aBoardFile.empty() )
+        return error( "no board is open to reload" );
+
+    std::string             err;
+    google::protobuf::Empty empty;
+    kc::RevertDocument      pcb;
+    pcb.mutable_document()->set_type( kt::DOCTYPE_PCB );
+    pcb.mutable_document()->set_board_filename( fs::path( aBoardFile ).filename().string() );
+
+    if( !aIpc.Call( pcb, empty, err ) )
+        return error( "reloading the board failed: " + err );
+
+    std::string note;
+    kicadd::schematic::SchSummary sum;
+
+    if( aIpc.Call( kicadd::schematic::GetSchSummary(), sum, err ) && !sum.file().empty() )
+    {
+        kc::RevertDocument sch;
+        sch.mutable_document()->set_type( kt::DOCTYPE_SCHEMATIC );
+
+        if( !aIpc.Call( sch, empty, err ) )
+            note = "note: the schematic was not reloaded (" + err + ")\n";
+        else
+            note = "the schematic reloaded too\n";
+    }
+
+    TOOL_RESULT r = boardSummary( aIpc );
+    r.text = "reloaded " + fs::path( aBoardFile ).filename().string() + " from disk in the editor (the agent's "
+             "undo history starts over)\n" + note + r.text;
+    return r;
+}
+
+
 TOOL_RESULT openBoard( IPC_CLIENT& aIpc, const json& aArgs )
 {
     namespace kc = kiapi::common::commands;
     namespace kt = kiapi::common::types;
     namespace fs = std::filesystem;
 
-    if( !aArgs.contains( "path" ) || !aArgs["path"].is_string() )
+    const bool reload = aArgs.value( "reload", false );
+
+    if( !reload && ( !aArgs.contains( "path" ) || !aArgs["path"].is_string() ) )
         return error( "path (absolute path to .kicad_pcb or .kicad_pro) is required" );
 
     const bool discard = aArgs.value( "discard", false );
-    fs::path   pcb = fs::path( aArgs["path"].get<std::string>() );
+    fs::path   pcb;
+
+    if( reload )
+    {
+        kb::BoardSummaryResponse now;
+        std::string              e;
+
+        if( !aIpc.Call( kb::GetBoardSummary(), now, e ) || now.file().empty() )
+            return error( "no board is open to reload" + ( e.empty() ? std::string() : ": " + e ) );
+
+        pcb = fs::path( now.file() );
+    }
+    else
+    {
+        pcb = fs::path( aArgs["path"].get<std::string>() );
+    }
 
     if( pcb.extension() == ".kicad_pro" )
         pcb.replace_extension( ".kicad_pcb" );
@@ -3238,13 +3503,42 @@ TOOL_RESULT openBoard( IPC_CLIENT& aIpc, const json& aArgs )
                       + ") has unsaved changes: save_board first, or discard=true to drop them" + what );
     }
 
+    // ... nor the schematic's
+    {
+        kicadd::schematic::SchSummary sum;
+        std::string                   schErr;
+
+        if( !discard && aIpc.Call( kicadd::schematic::GetSchSummary(), sum, schErr ) && sum.modified() )
+            return error( "the open schematic has unsaved changes: sch_save first, or discard=true to drop them" );
+    }
+
+    // project reload in the desktop editor: KiCad's own File > Revert (asked first: closing
+    // documents is refused there, and the user's Co-pilot panel would show that refusal)
+    if( reload )
+    {
+        kb::GetCopilot   q;
+        kb::CopilotState state;
+        std::string      e;
+        q.set_limit( 1 );
+
+        if( aIpc.Call( q, state, e ) && state.desktop() )
+            return revertInEditor( aIpc, before.file() );
+    }
+
     // The server holds one project: close it (board, schematic, project), then open the other.
     // The desktop editor has no such command: the user opens files there.
     google::protobuf::Empty empty;
 
     if( !aIpc.Call( kc::CloseAllDocuments(), empty, err ) )
     {
-        if( err.find( "not available" ) != std::string::npos || err.starts_with( "AS_UNIMPLEMENTED" ) )
+        const bool desktop = err.find( "not available" ) != std::string::npos || err.starts_with( "AS_UNIMPLEMENTED" );
+
+        // project reload in the desktop editor: KiCad's own revert (File > Revert), the editor
+        // shows the file as it is on disk now
+        if( desktop && aArgs.value( "reload", false ) )
+            return revertInEditor( aIpc, before.file() );
+
+        if( desktop )
             err += " (in the desktop editor, open the file in pcbnew; the agent works on the board that is open there)";
 
         return error( err );
@@ -3293,6 +3587,9 @@ TOOL_RESULT openBoard( IPC_CLIENT& aIpc, const json& aArgs )
 
     if( !r.isError && history.modified() && discard )
         note += "note: the unsaved changes of " + fs::path( before.file() ).filename().string() + " were dropped\n";
+
+    if( reload )
+        note = "reloaded " + pcb.filename().string() + " from disk (the agent's undo history starts over)\n" + note;
 
     r.text = note + r.text;
     return r;
@@ -3606,6 +3903,33 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                              params::Boolean( "keep_old" ),
                              params::Array( "rect", params::Number( "" ) ) }} );
 
+    tools.push_back( { "board_transform",
+                       "Move the whole board: footprints, tracks, vias, zones (their fills with them), graphics, "
+                       "texts, dimensions, groups and the outline, and the drill / grid origins when set, as one "
+                       "undoable edit. dx / dy (mm), or center_on_sheet=true: the outline's box to the middle of "
+                       "the page (the shift to the nearest mm). Reports what moved, the board's box before and "
+                       "after, and the unrouted count before and after (the same, or it says so). dry_run: what it "
+                       "would do. Use it instead of editing the file.", json::object(),
+                       [&aIpc]( const json& a ) { return boardTransform( aIpc, a ); }, "", std::vector<params::PARAM>{
+                             params::Boolean( "center_on_sheet" ),
+                             params::Boolean( "dry_run" ),
+                             params::Number( "dx", "mm" ).Unit( "mm" ),
+                             params::Number( "dy", "mm, Y down" ).Unit( "mm" ) }} );
+
+    tools.push_back( { "pcb_text",
+                       "Board texts (not a part's fields: pcb_set_fields). No arguments: the list, with ids "
+                       "(layer: one layer only). add: [{text, at: [x, y], layer (default F.SilkS), size (mm, "
+                       "height), thickness, angle (deg), justify (left / center / right), locked}]; edit: "
+                       "[{id | match, and any of text, at, by: [dx, dy], layer, size, thickness, angle, justify, "
+                       "locked}]; remove: [id | {match}]. match is the text as written; ${VARS} (e.g. "
+                       "${REVISION}) stay as written and the list shows what they give. A back layer reads "
+                       "mirrored, as in the editor. One undoable edit for the whole call.", json::object(),
+                       [&aIpc]( const json& a ) { return pcbText( aIpc, a ); }, "", std::vector<params::PARAM>{
+                             params::Array( "add", params::Any( "", {} ) ),
+                             params::Array( "edit", params::Any( "", {} ) ),
+                             params::String( "layer" ),
+                             params::Array( "remove", params::Any( "", {} ) ) }} );
+
     tools.push_back( { "board_setup",
                        "The board's layers and stackup. No arguments: what they are (copper layers, thickness, "
                        "each layer of the stackup). copper_layers (2, 4, 6, ...), thickness (mm, e.g. 1.6), "
@@ -3654,7 +3978,13 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                        "hand). Attributes: dnp, exclude_from_bom, exclude_from_pos. The footprint is not "
                        "changed here. A board made from a schematic takes its fields and references from it: "
                        "change them there (sch_set_fields), then sync_pcb. Refs that are not found are listed; "
-                       "the other parts are changed anyway.", json::object(),
+                       "the other parts are changed anyway. A field's layout: {\"R1\": {\"Value\": {\"layer\": "
+                       "\"silk\", \"visible\": true, \"at\": [0, 1.5], \"size\": 0.8, \"justify\": \"left\"}}}: "
+                       "layer a name or silk / fab (the part's side), at [dx, dy] mm from the part's origin (board "
+                       "axes), size the height (mm), thickness, angle (deg, on the board), text too if wanted; only "
+                       "what is given changes. silk: \"value_only\" / \"ref_only\" / \"both\" / \"none\": which of "
+                       "Reference and Value are on the silkscreen, the other shown on Fab (e.g. refs [...] with set "
+                       "{\"silk\": \"value_only\"}). sync_pcb keeps layouts.", json::object(),
                        [&aIpc]( const json& a ) { return pcbSetFields( aIpc, a ); }, "", std::vector<params::PARAM>{
                              params::Map( "parts", params::Map( "", params::Any( "", {} ) ) ).ItemSchema(),
                              params::Strings( "refs", "Reference designators, e.g. [\"U5\", \"C12\"]" ),

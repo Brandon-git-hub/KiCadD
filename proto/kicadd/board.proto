@@ -255,6 +255,8 @@ message SyncFromSchematic
   bool delete_extra      = 1;   // remove footprints the schematic no longer has
   bool update_footprints = 2;   // replace footprints whose library link changed
   bool dry_run           = 3;
+  bool update_changed    = 4;   // and those the library now has otherwise (pads, shapes, ...): reloaded
+                                // in place, keeping place, side, lock, fields and their layout
 }
 
 message SyncFromSchematicResponse
@@ -270,6 +272,8 @@ message SyncFromSchematicResponse
   string history_label = 9;     // the agent's undo entry for it (empty: nothing changed)
   repeated string swapped = 10; // footprints replaced (update_footprints): "J2 Lib:Old -> Lib:New ..."
                                 // (counted in added by KiCad's updater; said here instead)
+  repeated string updated = 11; // update_changed: "R1 LCSC:R0603: <what differs>"
+  repeated string not_updated = 12;   // differ but left: "U1 (locked)", "J1 (not in any library)"
 }
 
 // M5c: automatic placement (src/pcb/kicadd_autoplace.h). Moves the chosen parts inside the
@@ -823,6 +827,22 @@ message FpFieldEdit
   optional bool dnp              = 4;
   optional bool exclude_from_bom = 5;
   optional bool exclude_from_pos = 6;
+  map<string, FieldLayout> layout = 7;   // where and how a field shows (beta.15 A2)
+  string silk = 8;   // value_only / ref_only / both / none: which of Reference and Value are on
+                     // the silkscreen (the other on Fab, the part's side)
+}
+
+// A field's layout: only what is given changes. layer: a layer name, or "silk" / "fab" for the
+// part's side. at: [dx, dy] mm from the part's origin, board axes. angle: degrees, on the board
+message FieldLayout
+{
+  optional string layer     = 1;
+  optional bool   visible   = 2;
+  repeated double at        = 3;
+  optional double size      = 4;   // mm, height and width
+  optional double thickness = 5;   // mm (default 0.15 x size when size is given)
+  optional string justify   = 6;   // left / center / right
+  optional double angle     = 7;
 }
 
 message FpSetFields
@@ -1496,6 +1516,7 @@ message CopilotState
   repeated CopilotEvent events = 6;   // oldest first
   string last_type = 7;
   int64  last_ms   = 8;   // Unix time of the last request (0: none)
+  bool   desktop   = 9;   // the desktop editor (not kicad-cli api-server)
 }
 
 // Returns CopilotState
@@ -1559,4 +1580,88 @@ message ExportAssemblyResponse
   int32  back  = 4;
   int32  dnp   = 5;   // crossed out
   int32  drawn = 6;   // parts with no Fab outline: drawn from their courtyard
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// The whole board moved (beta.15 A1): footprints, tracks, vias, zones (their fills with them),
+// graphics, texts, dimensions, groups, the outline, and the aux / grid origins when set. One
+// undoable edit. by: dx / dy mm, or center_on_sheet: the outline's box centred on the page (to
+// the nearest mm). Rotation / mirroring would come as more fields here (an angle, a mirror
+// axis, about: a centre). Returns BoardTransformResponse
+message BoardTransform
+{
+  double dx              = 1;   // mm
+  double dy              = 2;
+  bool   center_on_sheet = 3;
+  bool   dry_run         = 4;   // what it would move, changing nothing
+}
+
+message BoardTransformResponse
+{
+  double dx = 1;                    // mm, the shift made (or to be made)
+  double dy = 2;
+  int32  footprints = 3;
+  int32  tracks     = 4;            // tracks and arcs
+  int32  vias       = 5;
+  int32  zones      = 6;            // copper zones and rule areas
+  int32  drawings   = 7;            // board graphics, texts, dimensions, tables (the outline among them)
+  int32  groups     = 8;
+  repeated double box_before = 9;   // the outline's box [x0, y0, x1, y1] mm (all items' when no outline)
+  repeated double box_after  = 10;
+  int32  unconnected_before  = 11;
+  MoveResponse result        = 12;  // unconnected after, history_label
+  repeated string notes      = 13;  // origins moved, the board off the page ...
+}
+
+// Board-level texts (beta.15 A3): no add / edit / remove: the list. Texts are found by id (the
+// list's, a unique start of the KIID will do) or match (the text as written, ${VARS} and all).
+// One undoable edit for the whole call. Returns PcbTextResponse
+message PcbTextSpec
+{
+  string          id        = 1;
+  string          match     = 2;
+  optional string text      = 3;
+  repeated double at        = 4;   // [x, y] mm
+  repeated double by        = 5;   // [dx, dy] mm (edit: a move)
+  optional string layer     = 6;   // default F.SilkS
+  optional double size      = 7;   // mm, height and width
+  optional double thickness = 8;   // mm (default size / 6.67, KiCad's ratio)
+  optional double angle     = 9;   // degrees
+  optional string justify   = 10;  // left / center / right
+  optional bool   locked    = 11;
+}
+
+message PcbText
+{
+  repeated PcbTextSpec add    = 1;
+  repeated PcbTextSpec edit   = 2;
+  repeated PcbTextSpec remove = 3;
+  string               layer  = 4;   // the list: only this layer
+}
+
+message PcbTextItem
+{
+  string id        = 1;   // 8 characters of the KIID (unique on the board)
+  string text      = 2;   // as written
+  string shown     = 3;   // with ${VARS} put in, when it differs
+  double x         = 4;
+  double y         = 5;
+  string layer     = 6;
+  double size      = 7;   // the height, mm
+  double thickness = 8;
+  double angle     = 9;
+  string justify   = 10;
+  bool   locked    = 11;
+  bool   mirrored  = 12;
+}
+
+message PcbTextResponse
+{
+  repeated PcbTextItem texts   = 1;   // the list, or the ones added / changed
+  repeated string      removed = 2;   // "id text"
+  repeated string      missing = 3;   // an id / match that found nothing, or more than one
+  repeated string      notes   = 4;
+  string history_label = 5;
+  int32  textboxes = 6;               // board text boxes (not listed here)
 }

@@ -1285,6 +1285,58 @@ HANDLER_RESULT<SchPartResponse> KICADD_HANDLER_SCH::handleAddPart( const HANDLER
                 + " times: the part is on every copy";
     int            unit = req.unit() > 0 ? req.unit() : 1;
 
+    // Another unit of a part that is there (U1 unit B of a dual op amp): the same symbol, a unit
+    // it has and none of its placed units is
+    const wxString givenRef = wx( req.ref() );
+    std::vector<std::pair<SCH_SYMBOL*, SCH_SHEET_PATH>> sameRef;
+
+    if( !givenRef.IsEmpty() && !givenRef.EndsWith( wxS( "?" ) ) && wxIsdigit( givenRef.Last() ) )
+        sameRef = findSymbols( req.ref() );
+
+    if( !sameRef.empty() )
+    {
+        SCH_SYMBOL* first = sameRef.front().first;
+        std::set<int> used;
+
+        for( const auto& [sym, path] : sameRef )
+            used.insert( sym->GetUnitSelection( &path ) );
+
+        std::string usedList;
+
+        for( int u : used )
+            usedList += ( usedList.empty() ? "" : ", " ) + std::to_string( u );
+
+        if( first->GetLibId() != libId )
+            return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
+                                              req.ref() + " already exists (" + str( first->GetLibId().Format().wx_str() )
+                                                      + "); another unit of it takes the same symbol, or give a free reference" ) );
+
+        if( libSymbol->GetUnitCount() < 2 )
+            return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, req.ref() + " already exists" ) );
+
+        if( req.unit() <= 0 )
+        {
+            unit = 0;
+
+            for( int u = 1; u <= libSymbol->GetUnitCount() && !unit; ++u )
+                unit = used.count( u ) ? 0 : u;
+
+            if( !unit )
+                return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
+                                                  req.ref() + " has all its " + std::to_string( libSymbol->GetUnitCount() )
+                                                          + " units placed already" ) );
+        }
+        else if( used.count( unit ) )
+        {
+            return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
+                                              req.ref() + " unit " + std::to_string( unit ) + " is placed already (units placed: "
+                                                      + usedList + " of " + std::to_string( libSymbol->GetUnitCount() ) + ")" ) );
+        }
+
+        note += std::string( note.empty() ? "" : "; " ) + "unit " + std::to_string( unit ) + " of " + req.ref()
+                + " (units placed before: " + usedList + ")";
+    }
+
     if( libSymbol->GetUnitCount() > 0 && unit > libSymbol->GetUnitCount() )
         return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
                                           "unit " + std::to_string( unit ) + " out of range ("
@@ -1328,10 +1380,31 @@ HANDLER_RESULT<SchPartResponse> KICADD_HANDLER_SCH::handleAddPart( const HANDLER
     // Reference: "R5" as given; "", "R?" or a bare prefix annotated with the next free number.
     wxString ref = wx( req.ref() );
 
-    if( !ref.IsEmpty() && !ref.EndsWith( wxS( "?" ) ) && wxIsdigit( ref.Last() ) )
+    if( !sameRef.empty() )
     {
-        if( !findSymbols( req.ref() ).empty() )
-            return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST, req.ref() + " already exists" ) );
+        // the part's other units: one value, footprint and fields for all of them
+        SCH_SYMBOL* first = sameRef.front().first;
+        symbol->SetRef( &sheet, ref );
+
+        if( req.value().empty() )
+            symbol->SetValueFieldText( first->GetField( FIELD_T::VALUE )->GetText() );
+
+        if( req.footprint().empty() )
+            symbol->SetFootprintFieldText( first->GetField( FIELD_T::FOOTPRINT )->GetText() );
+
+        for( const SCH_FIELD& f : first->GetFields() )
+        {
+            if( f.IsMandatory() || symbol->GetField( f.GetName() ) )
+                continue;
+
+            SCH_FIELD* copy = symbol->AddField( SCH_FIELD( symbol.get(), FIELD_T::USER, f.GetName() ) );
+            copy->SetText( f.GetText() );
+            copy->SetVisible( f.IsVisible() );
+            copy->SetPosition( symbol->GetPosition() );
+        }
+    }
+    else if( !ref.IsEmpty() && !ref.EndsWith( wxS( "?" ) ) && wxIsdigit( ref.Last() ) )
+    {
 
         wxString base;
         wxString error = symbol->BaseRefFromUser( sheet, ref, base, schematic() );
@@ -4431,6 +4504,7 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleSetFields( const HA
 
     SchConnectResponse        out;
     kicadd::KICADD_SCH_COMMIT commit( m_context->GetToolManager() );
+    std::vector<std::string>  renamed;
 
     auto mandatory = []( const std::string& aName ) -> std::optional<FIELD_T>
     {
@@ -4453,14 +4527,26 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleSetFields( const HA
             continue;
         }
 
-        std::string bad;
+        std::string             bad;
+        std::optional<wxString> newRef;   // Reference: the part renumbered, all its units
 
         for( const auto& [name, text] : edit.fields() )
         {
             if( upper( name ) == "REFERENCE" )
-                bad = "the reference is not a field to set here";
+            {
+                wxString r = wx( text ).Trim().Trim( false );
+
+                if( r.IsEmpty() || r.Contains( wxS( " " ) ) || !wxIsdigit( r.Last() ) || !wxIsalpha( r[0] ) )
+                    bad = "Reference is a designator like R12";
+                else if( r != wx( edit.ref() ) && !findSymbols( str( r ) ).empty() )
+                    bad = "another part is " + str( r ) + " already; give a reference that is free";
+                else if( r != wx( edit.ref() ) )
+                    newRef = r;
+            }
             else if( name.empty() )
+            {
                 bad = "a field needs a name";
+            }
         }
 
         for( const std::string& name : edit.remove() )
@@ -4479,9 +4565,15 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleSetFields( const HA
         {
             commit.Modify( symbol, sheet.LastScreen() );
 
+            if( newRef )
+                symbol->SetRef( &sheet, *newRef );
+
             for( const auto& [name, text] : edit.fields() )
             {
                 SCH_FIELD* field = nullptr;
+
+                if( upper( name ) == "REFERENCE" )
+                    continue;
 
                 if( std::optional<FIELD_T> id = mandatory( name ) )
                 {
@@ -4530,12 +4622,31 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleSetFields( const HA
             }
         }
 
+        if( newRef )
+        {
+            renamed.push_back( edit.ref() + " -> " + str( *newRef )
+                               + ( symbols.size() > 1 ? " (" + std::to_string( symbols.size() ) + " units)" : "" ) );
+        }
+
         out.set_done( out.done() + 1 );
     }
 
     if( out.done() )
     {
-        out.set_history_label( "set fields of " + std::to_string( out.done() ) + " part(s)" );
+        out.set_history_label( "set fields of " + std::to_string( out.done() ) + " part(s)"
+                               + ( renamed.size() == 1 ? " (" + renamed.front() + ")"
+                                   : renamed.empty() ? std::string() : " (" + std::to_string( renamed.size() ) + " renumbered)" ) );
+
+        if( !renamed.empty() )
+        {
+            std::string list;
+
+            for( size_t i = 0; i < renamed.size() && i < 10; ++i )
+                list += ( list.empty() ? "" : ", " ) + renamed[i];
+
+            out.add_warnings( "renumbered " + list + ( renamed.size() > 10 ? ", ..." : "" ) + "; sync_pcb gives "
+                              "their footprints the new references (the board's place and routing stay)" );
+        }
         pushRecorded( commit, wx( out.history_label() ) );
         rebuildConnectivity();
         announce( wxS( "Agent: " ) + wx( out.history_label() ) );

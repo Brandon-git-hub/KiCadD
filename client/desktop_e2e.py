@@ -15,6 +15,7 @@ The agent and the user share one board, one undo stack and one canvas:
   5. agent delete -> user Ctrl+Z restores it, Ctrl+Y removes it again (one owner: the undo list)
      (5b, with KICADD_LCSC_CACHE: an LCSC part placed and taken back, its symbol saved;
       5c: the user's Place > Add LCSC Part... with the part on the cursor, placed, undone)
+     (5f: board_transform and pcb_text, Ctrl+Z; 5g: project reload of a file edited on disk)
   6. the editor closes cleanly (no double free of the deleted footprint)
 Screenshots go to WORK/shot-*.png.
 """
@@ -302,6 +303,62 @@ def main():
         err, text = mcp.tool("undo")
         err, q = mcp.tool("query_area", {"x": 110, "y": 75, "radius": 1, "kinds": ["footprint"]})
         check(not err and "undid" in text and "FP H1" not in q, "agent undo of the hole")
+
+        print("[5f] board_transform and pcb_text in the editor; user Ctrl+Z")
+        u3 = pos("U3")
+        err, text = mcp.tool("board_transform", {"dx": 10, "dy": 5})
+        check(not err and near(pos("U3"), (u3[0] + 10, u3[1] + 5)) and "unrouted" in text,
+              "the whole board moved in the editor: " + text.splitlines()[0][:90])
+        g = re.search(r"unrouted (\d+) -> (\d+)", text)
+        check(g and g.group(1) == g.group(2), "unrouted the same: " + (g.group(0) if g else "?"))
+        time.sleep(1)
+        d.shot(os.path.join(work, "shot-5f-moved.png"))
+        d.keys(main_win, "ctrl+z")
+        time.sleep(1)
+        check(near(pos("U3"), u3), "user Ctrl+Z put the board back (one commit)")
+        err, text = mcp.tool("undo")
+        check(not err and "already" in text and near(pos("U3"), u3), "agent undo: already undone in the editor: "
+              + text.splitlines()[0][:80])
+        err, text = mcp.tool("pcb_text", {"add": [{"text": "DESKTOP ${REVISION}", "at": [120, 60]}]})
+        tid = re.search(r"^  ([0-9a-f]{8}) ", text, re.M)
+        check(not err and tid, "pcb_text add in the editor")
+        err, text = mcp.tool("pcb_text", {"edit": [{"id": tid.group(1) if tid else "", "by": [0, 3]}]})
+        check(not err and "@120,63" in text, "moved by 3")
+        d.keys(main_win, "ctrl+z")
+        time.sleep(1)
+        err, text = mcp.tool("pcb_text", {})
+        check(re.search(r'"DESKTOP \$\{REVISION\}"[^\n]* @120,60 ', text), "user Ctrl+Z took the move back: " + next((ln.strip() for ln in text.splitlines() if "DESKTOP" in ln), "no DESKTOP text"))
+        err, text = mcp.tool("undo")
+        err, text = mcp.tool("undo")
+        err, text = mcp.tool("pcb_text", {})
+        check("DESKTOP" not in text, "agent undo: the text gone")
+
+        print("[5g] project reload in the editor: a file edited on disk comes in, no restart")
+        err, text = mcp.tool("save_board")
+        check(not err, "saved: " + text.strip()[:80])
+        pcb_file = os.path.join(board_dir, "pic_programmer.kicad_pcb")
+        content = open(pcb_file, encoding="utf-8").read()
+        g = re.search(r'\(gr_text "([^"$]+)"', content)
+        check(g, "a board text in the file: " + (g.group(1) if g else "none"))
+        if g:
+            open(pcb_file, "w", encoding="utf-8").write(content.replace('(gr_text "%s"' % g.group(1),
+                                                                        '(gr_text "EDITED ON DISK"', 1))
+        err, text = mcp.tool("move_footprints", {"refs": ["U3"], "dx": 1, "dy": 0})
+        err, text = mcp.tool("project", {"reload": True})
+        check(err and "unsaved changes" in text, "unsaved move: reload refused: " + text.strip()[:80])
+        err, text = mcp.tool("project", {"reload": True, "discard": True})
+        check(not err and text.startswith("reloaded pic_programmer.kicad_pcb from disk in the editor"),
+              "reloaded in the editor: " + text.splitlines()[0][:100])
+        time.sleep(2)
+        err, text = mcp.tool("pcb_text", {})
+        check('"EDITED ON DISK"' in text, "the edit on disk is in the editor's board")
+        check(near(pos("U3"), u3), "the unsaved move is gone")
+        d.shot(os.path.join(work, "shot-5g-reloaded.png"))
+        err, text = mcp.tool("move_footprints", {"refs": ["U3"], "dx": 0, "dy": 2})
+        check(not err and near(pos("U3"), (u3[0], u3[1] + 2)), "the agent edits the reloaded board")
+        d.keys(main_win, "ctrl+z")
+        time.sleep(1)
+        check(near(pos("U3"), u3), "user Ctrl+Z on it")
 
         cache = os.environ.get("KICADD_LCSC_CACHE", "")
         if cache and os.path.exists(os.path.join(cache, "C25804.json")):

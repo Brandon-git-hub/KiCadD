@@ -239,20 +239,36 @@ void MergeTools( std::vector<TOOL>& aTools )
             "project",
             "Open or make the project on the server (kicad-cli api-server), replacing the open one: the board, its "
             "schematic when there is one, the project's rules; the agent history starts over. open: a .kicad_pcb or "
-            ".kicad_pro (absolute); the same file again reloads it from disk. new: {path (the folder, absolute; made "
+            ".kicad_pro (absolute). reload=true: the open board (and schematic) from disk again, after the files "
+            "were changed outside (save first; also in the desktop editor, which shows them anew: no need to close "
+            "KiCad). new: {path (the folder, absolute; made "
             "when missing, or its .kicad_pro), name (default the folder's name), copper_layers (2), thickness (mm, "
             "1.6) or stackup (a JLCPCB one, as board_setup), outline [width, height] mm (a rectangle at (100, 100), "
             "corner_radius)}: writes <name>.kicad_pro, an empty .kicad_pcb and .kicad_sch (refused when any is there: "
             "never written over), opens and saves them. Both are refused while the open board has unsaved changes, "
-            "unless discard=true (the refusal lists what board_diff finds changed). Not with the desktop editor: "
-            "there the user opens and makes projects.",
+            "unless discard=true (the refusal lists what board_diff finds changed). open / new not with the desktop "
+            "editor: there the user opens and makes projects.",
             json::object(),
             [=]( const json& a ) -> TOOL_RESULT
             {
                 const bool isOpen = a.contains( "open" ), isNew = a.contains( "new" );
+                const bool isReload = a.value( "reload", false );
 
-                if( isOpen == isNew )
-                    return fail( "give one of open: \"/path/board.kicad_pcb\" or new: {\"path\": \"/path/folder\", ...}" );
+                if( isOpen + isNew + isReload != 1 )
+                    return fail( "give one of open: \"/path/board.kicad_pcb\", new: {\"path\": \"/path/folder\", ...} "
+                                 "or reload: true" );
+
+                if( isReload )
+                {
+                    // the board open now, from disk again (headless: opened anew; the desktop
+                    // editor: its File > Revert)
+                    json args = { { "reload", true } };
+
+                    if( a.contains( "discard" ) )
+                        args["discard"] = a["discard"];
+
+                    return open( args );
+                }
 
                 json args = isOpen ? json{ { "path", a["open"] } } : a["new"];
 
@@ -266,7 +282,8 @@ void MergeTools( std::vector<TOOL>& aTools )
             },
             "",
             { params::String( "open", "a .kicad_pcb / .kicad_pro, absolute" ), params::Object( "new", newProps ),
-              params::Boolean( "discard", "Drop the open board's unsaved changes (default false)" ) } };
+              params::Boolean( "discard", "Drop the open board's unsaved changes (default false)" ),
+              params::Boolean( "reload", "The open files from disk again" ) } };
 
         m.drop( "open_board" );
         m.drop( "new_project" );

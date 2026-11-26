@@ -37,8 +37,11 @@ jobs.
    `.kicad_sch` / `.kicad_pcb` files: labels, sheet pins, hidden power pins, multi-unit parts
    and no-connect flags are already resolved there.
 2. **Never write the design files while the editor has them open.** The editor would overwrite
-   them, or the two would disagree. Edit through the tools. Direct file edits are for KiCad
-   closed (bulk text changes), checked afterwards with the tools or `kicad-cli`.
+   them, or the two would disagree. Edit through the tools: `board_transform` moves the whole
+   board, `pcb_text` edits board texts, `pcb_set_fields` a part's field layout, `sync_pcb
+   update_footprints="changed"` brings in edited library footprints. If a file edit is still
+   needed: `save_board` / `sch_save`, edit the file, then `project {reload: true}` (it works in
+   the desktop editor too; no need to close KiCad), and check the result with the tools.
 3. **Every edit is undoable, and the user's edits are safe.** `undo` (the board; `redo:
    true` redoes), `undo {target: "schematic"}` the schematic. They take back only the agent's own edits and leave alone what the
    user changed since. The user can also Ctrl+Z any agent edit in the editor.
@@ -181,14 +184,16 @@ jobs.
   when the project has a Device library, or when the schematic already uses `Device:R` (its own
   copy is taken). On an existing project use the symbols it already uses (`sch_summary`; a
   "not found" reply names them, e.g. `CM5IO:R`). `ref="R?"` takes the next free number. Check
-  the reply: it names the footprint and warns when it is missing.
+  the reply: it names the footprint and warns when it is missing. Another unit of a multi-unit
+  part (the second op amp of U3): `sch_add_part` with the same `lib_id` and `ref="U3"` (`unit`
+  optional: the first one not placed); it takes U3's value and footprint.
 - Connections: `sch_connect` (stubs + net labels; `power: ["GND", "+3V3"]` for power symbols;
   `NC` for no-connect) is the reliable way. `sch_wire` draws real wires for readability.
   It is all or none; on a big batch `partial=true` connects what fits and lists only the pins
   at fault (one undo step per batch that went). A local label's net is `/NAME` on the board
   (sheet path + name): use that in `set_rules` assign patterns and `audit` globs.
-- Change: `sch_move`, `sch_set_fields` (values, footprints, LCSC numbers, DNP, BOM flags; many
-  parts at once with `refs` + `set`), `sch_disconnect`, `sch_delete` (parts, `wires` by a point
+- Change: `sch_move`, `sch_set_fields` (values, footprints, LCSC numbers, DNP, BOM flags,
+  `Reference` to renumber a part with all its units; many parts at once with `refs` + `set`), `sch_disconnect`, `sch_delete` (parts, `wires` by a point
   on them, `dangling=true` for wires hanging off nothing).
 - Hierarchy: `sch_add_sheet` with `ports`; on the parent connect `SheetName.PORT`.
   **Plan sheets before entering parts:** one A4 sheet holds about 30-40 parts. Beyond that,
@@ -238,7 +243,8 @@ jobs.
    a copper ring (shell legs) count too and are plated when numbered; locating-peg holes stay.
    A footprint you edited in `lcsc.pretty` (a pad fixed by hand) is kept when the part is
    fetched or placed again (`lcsc_fetch`, `add_footprint lcsc=`, `sch_add_part lcsc=`) and the
-   reply says so; `refresh=true` replaces it with EasyEDA's.
+   reply says so; `refresh=true` replaces it with EasyEDA's. Parts already on the board take
+   an edited (or refreshed) library footprint with `sync_pcb update_footprints="changed"`.
 3. Many parts at once: `lcsc_match` (dry run) groups the parts without an LCSC number by value
    and footprint and picks one for each group of resistors, capacitors, inductors, ferrite
    beads (FB) and LEDs (colour in the value) in chip packages. Check the choices (capacitor
@@ -416,6 +422,10 @@ From a blank project, before placing parts:
    part; `sheet` or `refs` limits it) and `sync_pcb`: the board's parts are renamed in place
    (matched by UUID), nothing moves. Renumbering after the user has seen the board changes the
    refs on its silkscreen and in the BOM: ask first.
+   `update_footprints=true` swaps footprints whose Footprint field changed; `"changed"` also
+   reloads those the library now has otherwise (an edited `lcsc.pretty` footprint), keeping
+   place, side, nets, fields and their layout, and lists what differed. On an older board it can
+   list many parts (the installed libraries moved on): `dry_run=true` first.
    Fabrication attributes (DNP, exclude from BOM / position files) come from the symbol: one
    set on the board only (`pcb_set_fields`) is dropped by the sync. The answer lists it with
    the `sch_set_fields` call that keeps it: set it on the symbol, then sync again.
@@ -580,6 +590,20 @@ length matching, dense escapes).
   (see "A new board").
 - After `undo` (or redo) of a zone, outline or layer edit, the fills are of the other state:
   the response says so. `refill_zones` before reading `unconnected` or running DRC.
+
+## Board texts, silkscreen fields, moving the board
+
+- `pcb_text`: no arguments lists the board texts with ids; `add` / `edit` (by `id` or `match`,
+  `by: [dx, dy]` moves) / `remove`. `${REVISION}` and other variables stay as written (the list
+  shows what they print). Back layers read mirrored, as in the editor.
+- A part's reference / value on the silkscreen: `pcb_set_fields` with a layout per field,
+  `{"R1": {"Value": {"layer": "silk", "at": [0, 1.5], "size": 0.8}}}` (`at` from the part's
+  origin, board axes), or `silk` for many at once: `refs [...]` with `set {"silk":
+  "value_only"}` (or `ref_only`, `both`, `none`; the other one goes to Fab). Then `silk_tidy`
+  and `board_render layers=["silk"]` to check. Layouts survive `sync_pcb`.
+- `board_transform {dx, dy}` or `{center_on_sheet: true}` moves everything (tracks, zones and
+  their fills, the outline, texts, origins) as one edit; the reply gives the unrouted count
+  before and after, which must match. `dry_run` first on a routed board.
 
 ## Look at it
 

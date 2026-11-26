@@ -282,6 +282,32 @@ Arguments:
 - `keep_old` (boolean)
 - `rect` (array)
 
+## board_transform
+
+Move the whole board (dx / dy, or centred on the page), everything on it, as one undoable edit.
+
+Move the whole board: footprints, tracks, vias, zones (their fills with them), graphics, texts, dimensions, groups and the outline, and the drill / grid origins when set, as one undoable edit. dx / dy (mm), or center_on_sheet=true: the outline's box to the middle of the page (the shift to the nearest mm). Reports what moved, the board's box before and after, and the unrouted count before and after (the same, or it says so). dry_run: what it would do. Use it instead of editing the file.
+
+Arguments:
+
+- `center_on_sheet` (boolean)
+- `dry_run` (boolean)
+- `dx` (number, mm): mm
+- `dy` (number, mm): mm, Y down
+
+## pcb_text
+
+List, add, change, move or remove board texts (not part fields), as one undoable edit.
+
+Board texts (not a part's fields: pcb_set_fields). No arguments: the list, with ids (layer: one layer only). add: [{text, at: [x, y], layer (default F.SilkS), size (mm, height), thickness, angle (deg), justify (left / center / right), locked}]; edit: [{id | match, and any of text, at, by: [dx, dy], layer, size, thickness, angle, justify, locked}]; remove: [id | {match}]. match is the text as written; ${VARS} (e.g. ${REVISION}) stay as written and the list shows what they give. A back layer reads mirrored, as in the editor. One undoable edit for the whole call.
+
+Arguments:
+
+- `add` (array)
+- `edit` (array)
+- `layer` (string)
+- `remove` (array)
+
 ## board_setup
 
 Show or set copper layers and stackup (or a JLCPCB impedance stackup).
@@ -319,7 +345,7 @@ Arguments:
 
 Change parts' fields, value, reference or attributes (DNP, BOM) on the board, as one undoable edit.
 
-Change footprints' fields and attributes on the board as one undoable edit. parts: {"R1": {"Value": "10k", "LCSC": "C25804", "dnp": true}}, or refs [...] with set {...} for many. Value is the value; other names are user fields (added hidden when missing; null removes one). Reference renumbers the part: {"R22": {"Reference": "R23"}} (to a reference no other part has; of two parts with the same one, the one placed by hand). Attributes: dnp, exclude_from_bom, exclude_from_pos. The footprint is not changed here. A board made from a schematic takes its fields and references from it: change them there (sch_set_fields), then sync_pcb. Refs that are not found are listed; the other parts are changed anyway.
+Change footprints' fields and attributes on the board as one undoable edit. parts: {"R1": {"Value": "10k", "LCSC": "C25804", "dnp": true}}, or refs [...] with set {...} for many. Value is the value; other names are user fields (added hidden when missing; null removes one). Reference renumbers the part: {"R22": {"Reference": "R23"}} (to a reference no other part has; of two parts with the same one, the one placed by hand). Attributes: dnp, exclude_from_bom, exclude_from_pos. The footprint is not changed here. A board made from a schematic takes its fields and references from it: change them there (sch_set_fields), then sync_pcb. Refs that are not found are listed; the other parts are changed anyway. A field's layout: {"R1": {"Value": {"layer": "silk", "visible": true, "at": [0, 1.5], "size": 0.8, "justify": "left"}}}: layer a name or silk / fab (the part's side), at [dx, dy] mm from the part's origin (board axes), size the height (mm), thickness, angle (deg, on the board), text too if wanted; only what is given changes. silk: "value_only" / "ref_only" / "both" / "none": which of Reference and Value are on the silkscreen, the other shown on Fab (e.g. refs [...] with set {"silk": "value_only"}). sync_pcb keeps layouts.
 
 Arguments:
 
@@ -454,7 +480,7 @@ Arguments:
 
 Open a .kicad_pcb / .kicad_pro, or make a new project, on the server (headless only); refused with unsaved changes unless discard.
 
-Open or make the project on the server (kicad-cli api-server), replacing the open one: the board, its schematic when there is one, the project's rules; the agent history starts over. open: a .kicad_pcb or .kicad_pro (absolute); the same file again reloads it from disk. new: {path (the folder, absolute; made when missing, or its .kicad_pro), name (default the folder's name), copper_layers (2), thickness (mm, 1.6) or stackup (a JLCPCB one, as board_setup), outline [width, height] mm (a rectangle at (100, 100), corner_radius)}: writes <name>.kicad_pro, an empty .kicad_pcb and .kicad_sch (refused when any is there: never written over), opens and saves them. Both are refused while the open board has unsaved changes, unless discard=true (the refusal lists what board_diff finds changed). Not with the desktop editor: there the user opens and makes projects.
+Open or make the project on the server (kicad-cli api-server), replacing the open one: the board, its schematic when there is one, the project's rules; the agent history starts over. open: a .kicad_pcb or .kicad_pro (absolute). reload=true: the open board (and schematic) from disk again, after the files were changed outside (save first; also in the desktop editor, which shows them anew: no need to close KiCad). new: {path (the folder, absolute; made when missing, or its .kicad_pro), name (default the folder's name), copper_layers (2), thickness (mm, 1.6) or stackup (a JLCPCB one, as board_setup), outline [width, height] mm (a rectangle at (100, 100), corner_radius)}: writes <name>.kicad_pro, an empty .kicad_pcb and .kicad_sch (refused when any is there: never written over), opens and saves them. Both are refused while the open board has unsaved changes, unless discard=true (the refusal lists what board_diff finds changed). open / new not with the desktop editor: there the user opens and makes projects.
 
 Parameter notes:
 
@@ -472,6 +498,7 @@ Arguments:
   - `new.stackup` (string)
   - `new.thickness` (number, mm, > 0)
 - `discard` (boolean): Drop the open board's unsaved changes (default false)
+- `reload` (boolean): The open files from disk again
 
 ## save_board
 
@@ -519,7 +546,7 @@ Arguments:
 
 Place a symbol (an LCSC number, or a library symbol) on the schematic.
 
-Place a symbol on the schematic: an LCSC part (lcsc "C25804": fetched from the JLCEDA/EasyEDA Official Library, symbol + footprint saved to the project's LCSC libraries; the usual way for a new part) or a symbol from the project's sym-lib-table (lib_id "Library:Symbol"; KiCadD ships no symbol libraries: power:* is generated, and a lib_id the schematic already uses is taken from its own copy when the library is not here; not found, the reply names what the schematic uses instead). ref "R?" or empty is numbered automatically. Without x/y it goes to the next free spot. Returns its pins (number, name, type, side) to connect with sch_connect. block names the functional block the part belongs to ("LDO", "MCU", "USB"): auto_place keeps each block's parts together on the board.
+Place a symbol on the schematic: an LCSC part (lcsc "C25804": fetched from the JLCEDA/EasyEDA Official Library, symbol + footprint saved to the project's LCSC libraries; the usual way for a new part) or a symbol from the project's sym-lib-table (lib_id "Library:Symbol"; KiCadD ships no symbol libraries: power:* is generated, and a lib_id the schematic already uses is taken from its own copy when the library is not here; not found, the reply names what the schematic uses instead). ref "R?" or empty is numbered automatically; the ref of a multi-unit part already there ("U1") with the same lib_id adds another of its units (unit, default the first not placed; one placed already is refused, with the units placed). Without x/y it goes to the next free spot. Returns its pins (number, name, type, side) to connect with sch_connect. block names the functional block the part belongs to ("LDO", "MCU", "USB"): auto_place keeps each block's parts together on the board.
 
 Parameter notes:
 
@@ -622,14 +649,14 @@ Arguments:
 
 Update the PCB from the schematic (new footprints, nets, values).
 
-Update PCB from Schematic: brings the board in line with the schematic (the open Schematic Editor's, unsaved edits included; headless: saved first) (new footprints from each symbol's Footprint field, nets on the pads, changed values). New footprints land outside the board outline until placed (auto_place). dry_run reports without changing anything; delete_extra removes footprints the schematic no longer has. A reference already on the board but not linked to its symbol (placed by hand) is warned about: the sync would add it a second time. One undoable edit.
+Update PCB from Schematic: brings the board in line with the schematic (the open Schematic Editor's, unsaved edits included; headless: saved first) (new footprints from each symbol's Footprint field, nets on the pads, changed values). New footprints land outside the board outline until placed (auto_place). dry_run reports without changing anything; delete_extra removes footprints the schematic no longer has. A reference already on the board but not linked to its symbol (placed by hand) is warned about: the sync would add it a second time. update_footprints=true replaces footprints whose library link (Footprint field) changed; "changed" also reloads those the library now has otherwise (a footprint edited in lcsc.pretty, a library update), keeping place, side, fields and their layout, and lists what differed. One undoable edit.
 
 Arguments:
 
 - `delete_extra` (boolean)
 - `detail` (boolean): list every change line (default: the first 25)
 - `dry_run` (boolean)
-- `update_footprints` (boolean): Replace footprints whose library link changed
+- `update_footprints` (boolean): true, or "changed": also reload edited ones
 
 ## auto_place
 
@@ -810,7 +837,7 @@ Arguments:
 
 Change schematic parts' fields (value, footprint, LCSC, DNP ...) in one edit.
 
-Change parts' fields and attributes as one edit (all units; undo {target: schematic} takes it back; sync_pcb carries it to the board). parts: {"R1": {"Value": "10k", "LCSC": "C25804", "Footprint": "Lib:Name", "dnp": true}}, or refs [...] with set {...} for the same change on many. Value, Footprint, Datasheet, Description are the symbol's own fields; any other name is a user field (added hidden when missing; null removes it). Attributes: dnp, exclude_from_bom, exclude_from_board, exclude_from_sim, exclude_from_pos (true / false). Refs that are not found are listed; the other parts are changed anyway.
+Change parts' fields and attributes as one edit (all units; undo {target: schematic} takes it back; sync_pcb carries it to the board). parts: {"R1": {"Value": "10k", "LCSC": "C25804", "Footprint": "Lib:Name", "dnp": true}}, or refs [...] with set {...} for the same change on many. Value, Footprint, Datasheet, Description are the symbol's own fields; any other name is a user field (added hidden when missing; null removes it). Reference renumbers the part, all its units: {"U3": {"Reference": "U7"}} (to a free reference; sync_pcb then renames its footprint). Attributes: dnp, exclude_from_bom, exclude_from_board, exclude_from_sim, exclude_from_pos (true / false). Refs that are not found are listed; the other parts are changed anyway.
 
 Arguments:
 

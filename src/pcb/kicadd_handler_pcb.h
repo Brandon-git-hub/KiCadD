@@ -102,6 +102,12 @@ private:
     HANDLER_RESULT<kicadd::board::BoardOutlineResponse>
     handleBoardOutline( const HANDLER_CONTEXT<kicadd::board::BoardOutline>& aCtx );
 
+    HANDLER_RESULT<kicadd::board::BoardTransformResponse>
+    handleBoardTransform( const HANDLER_CONTEXT<kicadd::board::BoardTransform>& aCtx );
+
+    HANDLER_RESULT<kicadd::board::PcbTextResponse>
+    handlePcbText( const HANDLER_CONTEXT<kicadd::board::PcbText>& aCtx );
+
     HANDLER_RESULT<kicadd::board::BoardSetupResponse>
     handleBoardSetup( const HANDLER_CONTEXT<kicadd::board::BoardSetup>& aCtx );
 
@@ -389,6 +395,23 @@ private:
 
         std::vector<ITEM_SNAPSHOT> itemsAdded, itemsRemoved;
 
+        /// pcb_text: board items changed in place, as they were / are (undo / redo swaps them
+        /// whole, same KIID)
+        std::vector<std::pair<ITEM_SNAPSHOT, ITEM_SNAPSHOT>> itemsChanged;
+
+        /// board_transform: the board's top-level items (not inside a group: the group moves
+        /// them) shifted by `shift`, each with where it was; the aux / grid origins when they
+        /// were set (moved with the board)
+        struct SHIFTED
+        {
+            KIID     id;
+            VECTOR2I before;
+        };
+
+        VECTOR2I                shift;
+        std::vector<SHIFTED>    shifted;
+        std::optional<VECTOR2I> auxOriginBefore, gridOriginBefore;
+
         /// board_setup: layers and stackup before / after (nothing else in such an entry)
         std::shared_ptr<kicadd::setup::STATE> setupBefore, setupAfter;
 
@@ -431,6 +454,16 @@ private:
     NETINFO_ITEM* netFor( const wxString& aName, BOARD_COMMIT& aCommit, kicadd::board::MoveResponse& aOut );
 
     void record( HISTORY_ENTRY&& aEntry );
+
+    /// sync_pcb update_footprints="changed": footprints the library now has otherwise, reloaded
+    /// in place (fields, their layout, place and nets kept); listed in aOut.updated
+    void updateChangedFootprints( bool aDryRun, kicadd::board::SyncFromSchematicResponse& aOut );
+
+    /// board_transform: the items to move (top-level: a group moves its own members)
+    std::vector<BOARD_ITEM*> topLevelItems() const;
+
+    /// board_transform's undo / redo
+    bool applyShift( const HISTORY_ENTRY& aEntry, bool aUndo, kicadd::board::MoveResponse& aOut );
 
     /// Undo (aUndo) or redo aEntry; fills aOut. Returns false if nothing of it is left to apply.
     bool applyHistory( const HISTORY_ENTRY& aEntry, bool aUndo, kicadd::board::MoveResponse& aOut );

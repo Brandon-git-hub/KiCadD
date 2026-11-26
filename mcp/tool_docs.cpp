@@ -34,6 +34,7 @@ const std::map<std::string, std::string> BRIEFS = {
     { "add_footprint", "Place a new footprint (library, LCSC number, or a copy of a part) with its pad nets, as one undoable edit." },
     { "delete_footprints", "Delete parts as one undoable edit (tracks stay)." },
     { "pcb_set_fields", "Change parts' fields, value, reference or attributes (DNP, BOM) on the board, as one undoable edit." },
+    { "pcb_text", "List, add, change, move or remove board texts (not part fields), as one undoable edit." },
     { "undo", "Undo (redo=true: redo) the agent's last board edit, or with target=\"schematic\" its last schematic edit." },
     { "board_diff", "What changed since the board was saved (or against another .kicad_pcb). Use before save_board." },
     { "board_render", "PNG of the board (layers, zoom to parts or nets, marks): to see silkscreen, crowding, routing; view=\"3d\": raytraced from any side." },
@@ -43,6 +44,7 @@ const std::map<std::string, std::string> BRIEFS = {
     // layout setup and rules
     { "board_outline", "Draw the board outline (rect / circle), cut-outs and mounting holes, as one undoable edit." },
     { "board_setup", "Show or set copper layers and stackup (or a JLCPCB impedance stackup)." },
+    { "board_transform", "Move the whole board (dx / dy, or centred on the page), everything on it, as one undoable edit." },
     { "impedance", "Track width for a Z0 / pair for a Zdiff (or the impedance of a width) per layer, from the stackup." },
     { "set_rules", "No arguments: the net classes, patterns and minimums. Else change classes (width, clearance, via, diff pair, current, impedance), assignments or fab presets, undoable." },
     { "zones", "List, create or change copper pours." },

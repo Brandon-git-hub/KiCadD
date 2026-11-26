@@ -22,6 +22,7 @@
 #include <cctype>
 #include <map>
 #include <set>
+#include <climits>
 #include <thread>
 #include <vector>
 
@@ -988,7 +989,9 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "(lib_id \"Library:Symbol\"; KiCadD ships no symbol libraries: power:* is generated, "
             "and a lib_id the schematic already uses is taken from its own copy when the library "
             "is not here; not found, the reply names what the schematic uses instead). ref \"R?\" "
-            "or empty is numbered automatically. Without x/y it goes to the next free spot. Returns "
+            "or empty is numbered automatically; the ref of a multi-unit part already there (\"U1\") with "
+            "the same lib_id adds another of its units (unit, default the first not placed; one placed "
+            "already is refused, with the units placed). Without x/y it goes to the next free spot. Returns "
             "its pins (number, name, type, side) to connect with sch_connect. block names the "
             "functional block the part belongs to (\"LDO\", \"MCU\", \"USB\"): auto_place keeps "
             "each block's parts together on the board.", json::object(),
@@ -1309,7 +1312,10 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "New footprints land outside the board outline until placed (auto_place). dry_run "
             "reports without changing anything; delete_extra removes footprints the schematic no "
             "longer has. A reference already on the board but not linked to its symbol (placed "
-            "by hand) is warned about: the sync would add it a second time. One undoable edit.", json::object(),
+            "by hand) is warned about: the sync would add it a second time. update_footprints=true "
+            "replaces footprints whose library link (Footprint field) changed; \"changed\" also reloads "
+            "those the library now has otherwise (a footprint edited in lcsc.pretty, a library update), "
+            "keeping place, side, fields and their layout, and lists what differed. One undoable edit.", json::object(),
             [&aIpc]( const json& a )
             {
                 std::string err;
@@ -1328,7 +1334,19 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                 kicadd::board::SyncFromSchematic req;
                 req.set_dry_run( a.value( "dry_run", false ) );
                 req.set_delete_extra( a.value( "delete_extra", false ) );
-                req.set_update_footprints( a.value( "update_footprints", false ) );
+                if( a.contains( "update_footprints" ) && a["update_footprints"].is_string() )
+                {
+                    if( a["update_footprints"].get<std::string>() != "changed" )
+                        return fail( "update_footprints is true (library links that changed) or \"changed\" "
+                                     "(and footprints the library has otherwise now)" );
+
+                    req.set_update_footprints( true );
+                    req.set_update_changed( true );
+                }
+                else
+                {
+                    req.set_update_footprints( a.value( "update_footprints", false ) );
+                }
                 kicadd::board::SyncFromSchematicResponse r;
 
                 if( !aIpc.Call( req, r, err ) )
@@ -1351,6 +1369,27 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
 
                 if( !newList.empty() )
                     t += ":" + newList;
+
+                if( r.updated_size() )
+                {
+                    t += std::string( "; " ) + std::to_string( r.updated_size() ) + " footprint(s) "
+                         + ( req.dry_run() ? "would be " : "" ) + "reloaded from the library (place, fields and "
+                         "their layout kept):";
+
+                    const int cap = a.value( "detail", false ) ? INT_MAX : 25;
+
+                    for( int i = 0; i < r.updated_size() && i < cap; ++i )
+                        t += "\n  " + r.updated( i );
+
+                    if( r.updated_size() > cap )
+                        t += "\n  ... " + std::to_string( r.updated_size() - cap ) + " more (detail=true lists all)";
+                }
+
+                for( const std::string& s : r.not_updated() )
+                    t += "\n  not updated: " + s;
+
+                if( r.updated_size() || r.not_updated_size() )
+                    t += "\n";
 
                 if( r.swapped_size() )
                 {
@@ -1495,7 +1534,8 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
                               params::Boolean( "delete_extra" ),
                               params::Boolean( "detail", "list every change line (default: the first 25)" ),
                               params::Boolean( "dry_run" ),
-                              params::Boolean( "update_footprints", "Replace footprints whose library link changed" ) }} );
+                              params::Any( "update_footprints", { "boolean", "string" },
+                                           "true, or \"changed\": also reload edited ones" ) }} );
 
     aTools.push_back( { "auto_place",
             "Place parts automatically inside the board outline: each part goes near what it "
@@ -2680,7 +2720,8 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "\"C25804\", \"Footprint\": \"Lib:Name\", \"dnp\": true}}, or refs [...] with set {...} "
             "for the same change on many. Value, Footprint, Datasheet, Description are the symbol's own "
             "fields; any other name is a user field (added hidden when missing; null removes it). "
-            "Attributes: dnp, exclude_from_bom, exclude_from_board, exclude_from_sim, exclude_from_pos "
+            "Reference renumbers the part, all its units: {\"U3\": {\"Reference\": \"U7\"}} (to a free "
+            "reference; sync_pcb then renames its footprint). Attributes: dnp, exclude_from_bom, exclude_from_board, exclude_from_sim, exclude_from_pos "
             "(true / false). Refs that are not found are listed; the other parts are changed anyway.", json::object(),
             [&aIpc]( const json& a )
             {
