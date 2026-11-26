@@ -331,10 +331,16 @@ def main():
                     open(os.path.join(a.cache, name), "w", encoding="utf-8").write(text)
                     made.append(os.path.join(a.cache, name))
             try:
-                err, text = m.tool("lcsc_fetch", {"lcsc": "C99000001"})
+                # the package's footprint is in lcsc.pretty already, numbered (C165948 above): a part
+                # on it whose data has no numbers takes the library's, and says nothing about pads
+                err, text = m.tool("lcsc_fetch", {"lcsc": "C99000002"})
+                check(not err and "with no number" not in text and "kept" not in text,
+                      "a part on a package already in lcsc.pretty: its numbered footprint is used, nothing to say")
+                # refresh=true: the data's own footprint, so its shell pads are numbered here
+                err, text = m.tool("lcsc_fetch", {"lcsc": "C99000001", "refresh": True})
                 check(not err and "1 copper pad(s) with no number (a shell or tab) numbered 2, the symbol's one pin with no pad" in text
                       and "without a pad" not in text, "one shell pad with no number: numbered as the one pin with no pad (2)")
-                err, text = m.tool("lcsc_fetch", {"lcsc": "C99000002"})
+                err, text = m.tool("lcsc_fetch", {"lcsc": "C99000002", "refresh": True})
                 check(not err and "4 copper pad(s) with no number" in text and "unnumbered_pads=<pin> numbers them" in text
                       and "pins with no pad: 1, 2, 3, 4" in text, "four, and four pins with no pad: said, how to number them")
                 err, text = m.tool("lcsc_fetch", {"lcsc": "C99000002", "unnumbered_pads": "1"})

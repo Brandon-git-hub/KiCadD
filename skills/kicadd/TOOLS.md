@@ -73,7 +73,7 @@ Arguments:
 - `lcsc` (string, required): LCSC part number, e.g. C8734
 - `model` (boolean): the 3D model too (default true)
 - `pin_types` (map): set pin types: {"VREG_VOUT": "power_out", "12": "input"}
-- `refresh` (boolean): Fetch again even if cached
+- `refresh` (boolean): Fetch again; replaces an edited footprint / 3D model
 - `unnumbered_pads` (string): number shell pads with no number as this pin
 
 ## add_footprint
@@ -362,7 +362,7 @@ Arguments:
 
 Refill all pours (before judging connectivity, DRC or fabrication).
 
-Refill all copper zones. Fills go stale when parts move; refill before judging copper connectivity, running full DRC or saving for fabrication.
+Refill all copper zones. Fills go stale when parts move; refill before judging copper connectivity, running full DRC or saving for fabrication. Pours that come out empty, lose over half their copper, or join nothing of their net are listed (as after every tool that refills).
 
 ## lcsc_search
 

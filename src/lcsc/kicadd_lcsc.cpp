@@ -770,7 +770,7 @@ bool FetchPart( const std::string& aLcsc, bool aRefresh, PART& aPart, std::strin
 }
 
 
-bool SaveToProjectLibrary( BOARD* aBoard, const PART& aPart, SAVED& aSaved, std::string& aError )
+bool SaveToProjectLibrary( BOARD* aBoard, PART& aPart, SAVED& aSaved, std::string& aError, bool aReplace )
 {
     if( !aBoard )
     {
@@ -786,11 +786,25 @@ bool SaveToProjectLibrary( BOARD* aBoard, const PART& aPart, SAVED& aSaved, std:
         return false;
     }
 
-    return SaveToProjectLibrary( dir, aPart, aSaved, aError );
+    return SaveToProjectLibrary( dir, aPart, aSaved, aError, aReplace );
 }
 
 
-bool SaveToProjectLibrary( const wxString& dir, const PART& aPart, SAVED& aSaved, std::string& aError )
+/// The footprint as a library writes it, without uuids, nets, path and position: two footprints
+/// with the same text are the same footprint (a hand-edited file is parsed first, so its layout
+/// does not matter).
+static std::string libraryText( const FOOTPRINT* aFp )
+{
+    PCB_IO_KICAD_SEXPR io( CTL_FOR_LIBRARY );
+    io.Format( aFp );
+
+    // the fields' and items' uuids are written all the same (new ones on every import)
+    static const std::regex uuid( R"(\(uuid "[^"]*"\))" );
+    return std::regex_replace( io.GetStringOutput( true ), uuid, "" );
+}
+
+
+bool SaveToProjectLibrary( const wxString& dir, PART& aPart, SAVED& aSaved, std::string& aError, bool aReplace )
 {
     aSaved = SAVED();
 
@@ -832,8 +846,96 @@ bool SaveToProjectLibrary( const wxString& dir, const PART& aPart, SAVED& aSaved
         if( PCB_FIELD* f = shared->GetField( FIELD_T::DATASHEET ) )
             f->SetText( wxEmptyString );
 
-        PCB_IO_KICAD_SEXPR io;
-        io.FootprintSave( lib.GetPath(), shared.get() );
+        const wxFileName file( lib.GetPath(), package, wxS( "kicad_mod" ) );
+        std::unique_ptr<FOOTPRINT> existing;
+
+        if( file.FileExists() && !aReplace )
+        {
+            try
+            {
+                PCB_IO_KICAD_SEXPR reader;
+                existing = reader.FootprintLoad( lib.GetPath(), package );
+            }
+            catch( const IO_ERROR& )
+            {
+                existing.reset();   // unreadable: written again below, as before
+            }
+        }
+
+        // pads with no number that the library's file numbers at the same spot (a shell numbered
+        // by unnumbered_pads before): not an edit of the user's
+        bool numberedBefore = false;
+
+        if( existing )
+        {
+            std::unique_ptr<FOOTPRINT> numbered( static_cast<FOOTPRINT*>( shared->Clone() ) );
+
+            for( PAD* pad : numbered->Pads() )
+            {
+                if( !pad->GetNumber().IsEmpty() )
+                    continue;
+
+                for( const PAD* was : existing->Pads() )
+                {
+                    if( !was->GetNumber().IsEmpty() && was->GetPosition() == pad->GetPosition() )
+                    {
+                        pad->SetNumber( was->GetNumber() );
+
+                        if( pad->GetAttribute() == PAD_ATTRIB::NPTH && was->GetAttribute() == PAD_ATTRIB::PTH )
+                            pad->SetAttribute( PAD_ATTRIB::PTH );   // as NumberUnnumberedPads does
+
+                        numberedBefore = true;
+                        break;
+                    }
+                }
+            }
+
+            if( numberedBefore && libraryText( existing.get() ) != libraryText( numbered.get() ) )
+                numberedBefore = false;
+        }
+
+        if( existing && ( numberedBefore || libraryText( existing.get() ) != libraryText( shared.get() ) ) )
+        {
+            // the project's own version (a shell pad plated by hand, ...): placed as it is, with
+            // this part's fields (value, LCSC number) on it
+            std::unique_ptr<FOOTPRINT> mine( static_cast<FOOTPRINT*>( existing->Clone() ) );
+            mine->SetFPID( aPart.footprint->GetFPID() );
+            mine->SetValue( aPart.footprint->GetValue() );
+
+            if( const PCB_FIELD* ds = aPart.footprint->GetField( FIELD_T::DATASHEET ) )
+                if( PCB_FIELD* to = mine->GetField( FIELD_T::DATASHEET ) )
+                    to->SetText( ds->GetText() );
+
+            for( const PCB_FIELD* f : aPart.footprint->GetFields() )
+            {
+                if( f->IsMandatory() )
+                    continue;
+
+                if( PCB_FIELD* to = mine->GetField( f->GetName() ) )
+                    to->SetText( f->GetText() );
+                else
+                {
+                    PCB_FIELD* add = static_cast<PCB_FIELD*>( f->Clone() );
+                    add->SetParent( mine.get() );
+                    mine->Add( add );
+                }
+            }
+
+            aPart.footprint = std::move( mine );
+
+            if( !numberedBefore )
+            {
+                aSaved.kept = true;
+                aSaved.note = "kept lcsc.pretty/" + aPart.package + ".kicad_mod: it differs from what the "
+                              "EasyEDA data gives (edited in the project?); placed as the library has it, "
+                              "lcsc_fetch refresh=true replaces it";
+            }
+        }
+        else if( !existing || aReplace )
+        {
+            PCB_IO_KICAD_SEXPR io;
+            io.FootprintSave( lib.GetPath(), shared.get() );
+        }
     }
     catch( const IO_ERROR& e )
     {
@@ -852,7 +954,11 @@ bool SaveToProjectLibrary( const wxString& dir, const PART& aPart, SAVED& aSaved
         if( !shapes.DirExists() )
             wxFileName::Mkdir( shapes.GetPath(), wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL );
 
-        if( !writeFile( shapes.GetFullPath(), aPart.wrl ) )
+        std::string have;
+
+        if( !aReplace && shapes.FileExists() && readFile( shapes.GetFullPath(), have ) && have != aPart.wrl )
+            modelError = "kept lcsc.3dshapes/" + aPart.package + ".wrl (it differs from EasyEDA's; refresh=true replaces it)";
+        else if( have != aPart.wrl && !writeFile( shapes.GetFullPath(), aPart.wrl ) )
             modelError = "the 3D model could not be written to " + shapes.GetFullPath().ToStdString();
     }
 
@@ -861,7 +967,11 @@ bool SaveToProjectLibrary( const wxString& dir, const PART& aPart, SAVED& aSaved
                           .GetFullPath()
                           .ToStdString();
 
-    aSaved.registered = registerLibrary( dir, false, aSaved.note );
+    std::string tableNote;
+    aSaved.registered = registerLibrary( dir, false, tableNote );
+
+    if( !tableNote.empty() )
+        aSaved.note += ( aSaved.note.empty() ? "" : "; " ) + tableNote;
 
     if( !modelError.empty() )
         aSaved.note += ( aSaved.note.empty() ? "" : "; " ) + modelError;
@@ -988,7 +1098,7 @@ bool FetchAndSave( const wxString& aProjectDir, KIWAY* aKiway, const std::string
     }
 
     std::string err;
-    aOut.footprintSaved = SaveToProjectLibrary( aProjectDir, aOut.part, aOut.footprint, err );
+    aOut.footprintSaved = SaveToProjectLibrary( aProjectDir, aOut.part, aOut.footprint, err, aRefresh );
     addNote( aOut.footprintSaved ? aOut.footprint.note : "footprint not saved: " + err );
 
     err.clear();
@@ -1000,8 +1110,8 @@ bool FetchAndSave( const wxString& aProjectDir, KIWAY* aKiway, const std::string
         bool renumbered = false;
         addNote( NumberUnnumberedPads( aOut.part, aOut.symbol.pins, "", renumbered ) );
 
-        if( renumbered )
-            aOut.footprintSaved = SaveToProjectLibrary( aProjectDir, aOut.part, aOut.footprint, err );
+        if( renumbered )   // the footprint as it is now (the library's own when that was kept)
+            aOut.footprintSaved = SaveToProjectLibrary( aProjectDir, aOut.part, aOut.footprint, err, true );
     }
     return true;
 }
@@ -1018,10 +1128,27 @@ std::string NumberUnnumberedPads( PART& aPart, const std::vector<std::string>& a
     std::vector<PAD*>     bare;
     std::set<std::string> numbered;
 
+    // an NPTH with copper (EasyEDA's USB-C shell legs come as pad "", np_thru_hole, *.Cu) is a
+    // shell pad too: as an NPTH its copper is on no net, plated it joins the shell pin
+    int unplated = 0;
+
     for( PAD* pad : aPart.footprint->Pads() )
     {
-        if( pad->GetAttribute() == PAD_ATTRIB::NPTH || ( pad->GetLayerSet() & LSET::AllCuMask() ).none() )
+        if( ( pad->GetLayerSet() & LSET::AllCuMask() ).none() )
             continue;
+
+        if( pad->GetAttribute() == PAD_ATTRIB::NPTH )
+        {
+            // a ring of copper round the hole; a locating peg's hole is as big as its "pad"
+            const PCB_LAYER_ID cu = pad->GetLayerSet().test( F_Cu ) ? F_Cu : B_Cu;
+            const VECTOR2I     size = pad->GetSize( cu ), drill = pad->GetDrillSize();
+            const int          ring = std::min( size.x - drill.x, size.y - drill.y );
+
+            if( !pad->GetNumber().IsEmpty() || ring < pcbIUScale.mmToIU( 0.02 ) )
+                continue;
+
+            ++unplated;
+        }
 
         if( pad->GetNumber().IsEmpty() )
             bare.push_back( pad );
@@ -1059,17 +1186,26 @@ std::string NumberUnnumberedPads( PART& aPart, const std::vector<std::string>& a
     {
         char at[48];
         std::snprintf( at, sizeof( at ), " (one at %.2f, %.2f mm)", bare[0]->GetPosition().x / 1e6, bare[0]->GetPosition().y / 1e6 );
-        return n + " copper pad(s) with no number" + at + ", a shell or tab: on no net as they are; "
+        return n + " copper pad(s) with no number" + at + ", a shell or tab: on no net as they are"
+               + ( unplated ? " (" + std::to_string( unplated ) + " of them non-plated holes with copper: numbering plates them)" : "" )
+               + "; "
                + ( padless.empty() ? std::string( "the symbol has no pin for them" )
                                    : "unnumbered_pads=<pin> numbers them (the symbol's pins with no pad: " + list + ")" );
     }
 
     for( PAD* pad : bare )
+    {
         pad->SetNumber( wxString::FromUTF8( bind ) );
+
+        if( pad->GetAttribute() == PAD_ATTRIB::NPTH )   // copper on a hole that is not plated: plated now
+            pad->SetAttribute( PAD_ATTRIB::PTH );
+    }
 
     aChanged = true;
     return n + " copper pad(s) with no number (a shell or tab) numbered " + bind
-           + ( asked ? " as asked" : ", the symbol's one pin with no pad" ) + ": they join its net";
+           + ( asked ? " as asked" : ", the symbol's one pin with no pad" )
+           + ( unplated ? " (" + std::to_string( unplated ) + " non-plated holes with copper made plated)" : "" )
+           + ": they join its net";
 }
 
 

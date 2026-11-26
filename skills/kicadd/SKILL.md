@@ -234,7 +234,11 @@ jobs.
    `lcsc_fetch pin_types={"RUN": "input", "26": "output"}` (by name or number) sets it in the
    library symbol; a symbol already placed keeps its copy (`sch_delete`, `sch_add_part` again).
    Copper pads with no number (a USB-C's shell) take the symbol's one pin with no pad (EH);
-   otherwise the reply says so and `unnumbered_pads=<pin>` numbers them.
+   otherwise the reply says so and `unnumbered_pads=<pin>` numbers them. Non-plated holes with
+   a copper ring (shell legs) count too and are plated when numbered; locating-peg holes stay.
+   A footprint you edited in `lcsc.pretty` (a pad fixed by hand) is kept when the part is
+   fetched or placed again (`lcsc_fetch`, `add_footprint lcsc=`, `sch_add_part lcsc=`) and the
+   reply says so; `refresh=true` replaces it with EasyEDA's.
 3. Many parts at once: `lcsc_match` (dry run) groups the parts without an LCSC number by value
    and footprint and picks one for each group of resistors, capacitors, inductors, ferrite
    beads (FB) and LEDs (colour in the value) in chip packages. Check the choices (capacitor

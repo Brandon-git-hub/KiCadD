@@ -27,6 +27,7 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <set>
 #include <thread>
 
 #include <kicadd/board.pb.h>
@@ -206,6 +207,8 @@ struct CHILD
     std::string mode;     ///< "server" / "desktop"
     std::string project;
     fs::path    log;
+    fs::path    lockDir;                 ///< the project's folder
+    std::set<std::string> locksBefore;   ///< its ~*.lck files before this KiCad started
 
     bool running() const
     {
@@ -446,6 +449,38 @@ bool spawn( CHILD& aChild, const std::vector<std::string>& aArgv, const std::vec
 }
 
 
+/// KiCad's lock files in a folder (~<file>.lck, one per open board / schematic / project).
+std::set<std::string> lockFiles( const fs::path& aDir )
+{
+    std::set<std::string> out;
+    std::error_code       ec;
+
+    if( aDir.empty() )
+        return out;
+
+    for( const auto& e : fs::directory_iterator( aDir, ec ) )
+    {
+        const std::string name = fromPath( e.path().filename() );
+
+        if( name.size() > 5 && name[0] == '~' && name.compare( name.size() - 4, 4, ".lck" ) == 0 )
+            out.insert( name );
+    }
+
+    return out;
+}
+
+
+std::string joinNames( const std::set<std::string>& aNames )
+{
+    std::string s;
+
+    for( const std::string& n : aNames )
+        s += ( s.empty() ? "" : ", " ) + n;
+
+    return s;
+}
+
+
 void terminate( CHILD& aChild, int aGraceMs )
 {
 #if defined( _WIN32 )
@@ -640,6 +675,10 @@ TOOL_RESULT launch( IPC_CLIENT& aIpc, STATE& aState, const json& a )
     std::string err;
     CHILD       child;
 
+    // the locks there now are not this KiCad's: close_kicad leaves them alone
+    child.lockDir = project.empty() ? fs::path() : project.parent_path();
+    child.locksBefore = lockFiles( child.lockDir );
+
     if( !spawn( child, argv, set, unset, log, mode == "desktop", err ) )
         return fail( "could not start " + fromPath( exe ) + ": " + err );
 
@@ -784,9 +823,28 @@ TOOL_RESULT close( IPC_CLIENT& aIpc, STATE& aState, const json& a )
     }
 #endif
 
+    // KiCad removes its lock files when it exits by itself, not when ended (TerminateProcess on
+    // Windows): the ones that came with this KiCad go too, or the next edit of the files (or the
+    // next launch) meets "file is locked"
+    std::set<std::string> removed;
+    std::error_code       lockEc;
+
+    for( const std::string& name : lockFiles( child.lockDir ) )
+    {
+        if( !child.locksBefore.count( name ) && fs::remove( child.lockDir / toPath( name ), lockEc ) )
+            removed.insert( name );
+    }
+
+    const std::set<std::string> others = child.locksBefore;
     child.forget();
 
     std::string out = "closed the " + mode + " (pid " + std::to_string( pid ) + ")";
+
+    if( !removed.empty() )
+        out += "; its lock files removed (" + joinNames( removed ) + ")";
+
+    if( !others.empty() )
+        out += "; lock files from before it started left as they are (" + joinNames( others ) + ")";
 
     if( boardDirty || schDirty )
         out += std::string( "; unsaved changes dropped (" ) + ( boardDirty ? "board" : "" )

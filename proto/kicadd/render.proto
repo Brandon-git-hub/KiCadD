@@ -198,6 +198,8 @@ message Ratsnest
 message GetZoneFills
 {
   repeated string ids = 1;   // zone ids; empty = all filled copper zones
+  bool summary = 2;          // no polygons: areas and piece counts, unfilled zones included
+  bool islands = 3;          // summary: count the pieces joined to nothing of the net (a connectivity pass)
 }
 
 message FillPoly
@@ -212,6 +214,13 @@ message ZoneFill
   string            net   = 2;
   string            layer = 3;
   repeated FillPoly polys = 4;
+  // summary (and always set):
+  string            name        = 5;   // the zone's name ("" none)
+  double            area_mm2    = 6;   // filled copper on this layer
+  int32             pieces      = 7;   // separate pieces of fill
+  double            outline_mm2 = 8;   // the zone's outline
+  bool              islands_removed = 9;   // its island mode removes islands (KiCad's default)
+  int32             floating    = 10;  // GetZoneFills.islands: pieces joined to nothing of its net
 }
 
 message ZoneFills

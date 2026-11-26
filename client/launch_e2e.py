@@ -259,15 +259,22 @@ def desktop(a, m_unused, work, pic, sock_unused, started):
         check(not err and "parts" in t, "schematic tools served by the desktop: " + t.splitlines()[0][:60])
         err, t = m.tool("move_footprints", {"refs": ["R1"], "dx": 1})
         check(not err, "an edit through the editor")
+        locks = lambda: sorted(f for f in os.listdir(pic) if f.startswith("~") and f.endswith(".lck"))
+        held = locks()
         err, t = m.tool("close_kicad")
         check(err and "unsaved changes" in t, "close refused with the unsaved edit")
         err, t = m.tool("close_kicad", {"discard": True})
         check(not err and "closed the desktop" in t, "discard=true: closed")
         check(gone(pid), "the editor is gone")
+        # KiCad leaves its ~*.lck behind when ended (not quit): close_kicad removes the ones it made
+        check(not locks(), f"no lock files left (held while open: {', '.join(held) or 'none'}; "
+              + next((p.strip() for p in t.split(";") if "lock" in p), "nothing said") + ")")
 
         lone = os.path.join(work, "lone")
         os.makedirs(lone)
         shutil.copy(os.path.join(pic, "pic_programmer.kicad_pcb"), os.path.join(lone, "board.kicad_pcb"))
+        stale = os.path.join(lone, "~old.kicad_pcb.lck")   # someone else's, from before
+        open(stale, "w").write('{"username": "someone", "hostname": "elsewhere"}')
         err, t = m.tool("launch_kicad", {"mode": "desktop", "path": os.path.join(lone, "board.kicad_pcb")})
         pid = pid_of(t)
         started.append(pid)
@@ -277,6 +284,9 @@ def desktop(a, m_unused, work, pic, sock_unused, started):
         check(err and "no Schematic Editor" in t, "its sch_* say why: " + t.strip()[:60])
         err, t = m.tool("close_kicad")
         check(not err and "closed the desktop" in t and gone(pid), "closed")
+        check(os.path.isfile(stale) and "left as they are (~old.kicad_pcb.lck)" in t,
+              "a lock file from before the launch is left alone, and said")
+        check(not [f for f in os.listdir(lone) if f.endswith(".lck") and f != "~old.kicad_pcb.lck"], "its own removed")
     finally:
         stop.set()
         m.p.stdin.close()

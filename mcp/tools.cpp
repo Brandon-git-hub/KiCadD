@@ -19,6 +19,7 @@
 #include <memory>
 
 #include <kicadd/board.pb.h>
+#include <kicadd/render.pb.h>
 #include <api/common/commands/base_commands.pb.h>
 #include <api/common/commands/project_commands.pb.h>
 #include <api/board/board_commands.pb.h>
@@ -1062,7 +1063,7 @@ TOOL_RESULT fanout( IPC_CLIENT& aIpc, const json& aArgs )
     if( !r.routes().history_label().empty() && aArgs.value( "refill", true ) )
     {
         TOOL_RESULT f = refillZones( aIpc );
-        s += f.text.substr( 0, f.text.find( '\n' ) ) + "\n";
+        s += f.text;
     }
 
     return { s };
@@ -1174,7 +1175,7 @@ TOOL_RESULT stitchVias( IPC_CLIENT& aIpc, const json& aArgs )
         if( aArgs.value( "refill", true ) )
         {
             TOOL_RESULT f = refillZones( aIpc );
-            s += f.text.substr( 0, f.text.find( '\n' ) ) + "\n";
+            s += f.text;
         }
     }
 
@@ -1224,7 +1225,7 @@ TOOL_RESULT teardrops( IPC_CLIENT& aIpc, const json& aArgs )
     {
         s += std::string( req.remove() ? "" : "they follow the parts and tracks from now on; " ) + "undo takes it back\n";
         TOOL_RESULT f = refillZones( aIpc );
-        s += f.text.substr( 0, f.text.find( '\n' ) ) + "\n";
+        s += f.text;
     }
 
     return { s };
@@ -1863,7 +1864,7 @@ TOOL_RESULT zonesTool( IPC_CLIENT& aIpc, const json& aArgs )
         if( !aArgs.contains( "refill" ) || !aArgs["refill"].is_boolean() || aArgs["refill"].get<bool>() )
         {
             TOOL_RESULT f = refillZones( aIpc );
-            t += f.text.substr( 0, f.text.find( '\n' ) ) + "\n";
+            t += f.text;
 
             // the list as it is after the fill
             kb::Zones again;
@@ -2229,7 +2230,7 @@ TOOL_RESULT history( IPC_CLIENT& aIpc, bool aUndo, bool aDetail )
 
         if( !f.isError )
         {
-            refilled = f.text.substr( 0, f.text.find( '\n' ) ) + "\n";
+            refilled = f.text;
             shown.clear_notes();
 
             for( const std::string& n : res.notes() )
@@ -2486,6 +2487,104 @@ TOOL_RESULT runDrc( IPC_CLIENT& aIpc, const json& aArgs )
 }
 
 
+namespace
+{
+
+/// Each copper zone layer's fill (area, pieces), unfilled ones too; empty when it can't be had.
+std::map<std::string, kicadd::render::ZoneFill> zoneFillSummary( IPC_CLIENT& aIpc, bool aIslands = false )
+{
+    kicadd::render::GetZoneFills req;
+    req.set_summary( true );
+    req.set_islands( aIslands );
+    kicadd::render::ZoneFills    r;
+    std::string                  err;
+    std::map<std::string, kicadd::render::ZoneFill> out;
+
+    if( aIpc.Call( req, r, err ) )
+    {
+        for( const kicadd::render::ZoneFill& zf : r.fills() )
+            out[zf.id() + "|" + zf.layer()] = zf;
+    }
+
+    return out;
+}
+
+
+/// What a refill took away, one line per zone layer, worst first: a pour that came out empty or
+/// lost most of its copper (islands removed, cut off by tracks) says so, or an agent reads
+/// "refilled" as "the pour is there".
+std::string fillLosses( const std::map<std::string, kicadd::render::ZoneFill>& aBefore,
+                        const std::map<std::string, kicadd::render::ZoneFill>& aAfter )
+{
+    struct LOSS
+    {
+        double      order;
+        std::string line;
+    };
+
+    std::vector<LOSS> losses;
+
+    for( const auto& [key, now] : aAfter )
+    {
+        auto was = aBefore.find( key );
+        const bool   hadFill = was != aBefore.end() && was->second.pieces() > 0;
+        const double before = hadFill ? was->second.area_mm2() : 0.0;
+        const std::string zone = ( now.net().empty() ? std::string( "no-net" ) : now.net() ) + " " + now.layer()
+                                 + ( now.name().empty() ? "" : " \"" + now.name() + "\"" );
+        char buf[320];
+
+        if( now.pieces() == 0 )
+        {
+            std::string line = zone + ": no fill at all";
+
+            if( hadFill )
+            {
+                std::snprintf( buf, sizeof( buf ), " (it had %.1f mm²)", before );
+                line += buf;
+            }
+
+            std::snprintf( buf, sizeof( buf ), ", outline %.1f mm²", now.outline_mm2() );
+            line += std::string( buf )
+                    + ( now.islands_removed()
+                                ? ": every piece is an island (nothing of its net — pad, via, track — in it, or cut "
+                                  "off from it by other copper); add a via / track of the net into it, or widen the gaps"
+                                : ": no room for copper inside (clearances, keepouts)" );
+            losses.push_back( { -1e9, line } );
+        }
+        else if( now.floating() > 0 && now.floating() == now.pieces() )
+        {
+            std::snprintf( buf, sizeof( buf ),
+                           "%s: all its fill (%d piece(s), %.1f mm²) is joined to nothing of its net: floating "
+                           "copper (KiCad keeps a pour that is all islands); add a via / track of the net into it",
+                           zone.c_str(), now.pieces(), now.area_mm2() );
+            losses.push_back( { -1e8, buf } );
+        }
+        else if( hadFill && now.area_mm2() < 0.5 * before )
+        {
+            std::snprintf( buf, sizeof( buf ), "%s: fill %.1f -> %.1f mm² (%d piece(s) left)%s", zone.c_str(), before,
+                           now.area_mm2(), now.pieces(),
+                           now.islands_removed() ? ": pieces cut off from the net were removed as islands" : "" );
+            losses.push_back( { now.area_mm2() / std::max( before, 1e-9 ), buf } );
+        }
+    }
+
+    std::sort( losses.begin(), losses.end(), []( const LOSS& a, const LOSS& b ) { return a.order < b.order; } );
+
+    std::string s;
+    const size_t limit = 8;
+
+    for( size_t i = 0; i < losses.size() && i < limit; ++i )
+        s += "  " + losses[i].line + "\n";
+
+    if( losses.size() > limit )
+        s += "  " + std::to_string( losses.size() - limit ) + " more\n";
+
+    return s.empty() ? s : "pours with copper missing or on no real connection after the refill:\n" + s;
+}
+
+} // namespace
+
+
 TOOL_RESULT refillZones( IPC_CLIENT& aIpc )
 {
     std::string err;
@@ -2498,6 +2597,8 @@ TOOL_RESULT refillZones( IPC_CLIENT& aIpc )
     req.mutable_board()->set_type( kiapi::common::types::DOCTYPE_PCB );
     req.mutable_board()->set_board_filename( file );
 
+    const auto before = zoneFillSummary( aIpc );
+
     google::protobuf::Empty r;
     auto                    t0 = std::chrono::steady_clock::now();
 
@@ -2507,7 +2608,9 @@ TOOL_RESULT refillZones( IPC_CLIENT& aIpc )
     char buf[64];
     std::snprintf( buf, sizeof( buf ), "all zones refilled in %.1f s\n",
                    std::chrono::duration<double>( std::chrono::steady_clock::now() - t0 ).count() );
-    return { buf };
+
+    // the first line stays "all zones refilled ..." (callers keep only it): the losses go after
+    return { std::string( buf ) + fillLosses( before, zoneFillSummary( aIpc, true ) ) };
 }
 
 
@@ -3265,7 +3368,7 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                              params::String( "lcsc", "LCSC part number, e.g. C8734" ).Required(),
                              params::Boolean( "model", "the 3D model too (default true)" ),
                              params::Map( "pin_types", params::Any( "", {} ), "set pin types: {\"VREG_VOUT\": \"power_out\", \"12\": \"input\"}" ),
-                             params::Boolean( "refresh", "Fetch again even if cached" ),
+                             params::Boolean( "refresh", "Fetch again; replaces an edited footprint / 3D model" ),
                              params::String( "unnumbered_pads", "number shell pads with no number as this pin" ) }} );
 
     tools.push_back( { "add_footprint",
@@ -3595,7 +3698,9 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
 
     tools.push_back( { "refill_zones",
                        "Refill all copper zones. Fills go stale when parts move; refill before judging "
-                       "copper connectivity, running full DRC or saving for fabrication.", json::object(),
+                       "copper connectivity, running full DRC or saving for fabrication. Pours that come "
+                       "out empty, lose over half their copper, or join nothing of their net are listed "
+                       "(as after every tool that refills).", json::object(),
                        [&aIpc]( const json& ) { return refillZones( aIpc ); }, "", std::vector<params::PARAM>{}} );
 
     tools.push_back( { "lcsc_search",

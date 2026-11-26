@@ -4801,6 +4801,9 @@ KICADD_HANDLER_PCB::handleAddFootprint( const HANDLER_CONTEXT<AddFootprint>& aCt
         if( !part.note.empty() )
             source += "; " + part.note;
 
+        if( saved.kept )
+            source += "; " + saved.note;
+
         fp.reset( static_cast<FOOTPRINT*>( part.footprint->Duplicate( IGNORE_PARENT_GROUP ) ) );
         fp->SetFPID( part.footprint->GetFPID() );
         BOARD_DESIGN_SETTINGS& bds = b->GetDesignSettings();
@@ -5000,7 +5003,7 @@ KICADD_HANDLER_PCB::handleFetchLcsc( const HANDLER_CONTEXT<FetchLcsc>& aCtx )
     {
         kicadd::lcsc::SAVED saved;
 
-        if( kicadd::lcsc::SaveToProjectLibrary( b, part, saved, err ) )
+        if( kicadd::lcsc::SaveToProjectLibrary( b, part, saved, err, aCtx.Request.refresh() ) )
         {
             out.set_lib_id( saved.libId );
             out.set_file( saved.file );
@@ -5033,7 +5036,7 @@ KICADD_HANDLER_PCB::handleFetchLcsc( const HANDLER_CONTEXT<FetchLcsc>& aCtx )
                                                                          renumbered );
                 kicadd::lcsc::SAVED again;
 
-                if( renumbered && !kicadd::lcsc::SaveToProjectLibrary( b, part, again, err ) )
+                if( renumbered && !kicadd::lcsc::SaveToProjectLibrary( b, part, again, err, true ) )
                     shell += " (the footprint could not be saved again: " + err + ")";
 
                 if( !shell.empty() )
@@ -6121,10 +6124,31 @@ KICADD_HANDLER_PCB::handleGetZoneFills( const HANDLER_CONTEXT<kicadd::render::Ge
     };
 
     kicadd::render::ZoneFills out;
+    const bool summary = aCtx.Request.summary();
+
+    // the pieces of fill that touch nothing of their net (what the filler calls islands): a pour
+    // that is all islands on a layer is kept by KiCad, as copper on no real net
+    std::map<ZONE*, std::map<PCB_LAYER_ID, ISOLATED_ISLANDS>> islands;
+
+    if( summary && aCtx.Request.islands() )
+    {
+        for( ZONE* zone : b->Zones() )
+        {
+            if( zone->GetIsRuleArea() || !zone->IsOnCopperLayer() || !zone->IsFilled() || zone->IsTeardropArea()
+                || zone->IsCopperThieving() )
+                continue;
+
+            for( PCB_LAYER_ID layer : LSET( zone->GetLayerSet() & LSET::AllCuMask() ).Seq() )
+                islands[zone][layer] = ISOLATED_ISLANDS();
+        }
+
+        if( !islands.empty() )
+            b->GetConnectivity()->FillIsolatedIslandsMap( islands );
+    }
 
     for( const ZONE* zone : b->Zones() )
     {
-        if( zone->GetIsRuleArea() || !zone->IsOnCopperLayer() || !zone->IsFilled() )
+        if( zone->GetIsRuleArea() || !zone->IsOnCopperLayer() || ( !zone->IsFilled() && !summary ) )
             continue;
 
         const std::string id = zone->m_Uuid.AsStdString();
@@ -6134,15 +6158,31 @@ KICADD_HANDLER_PCB::handleGetZoneFills( const HANDLER_CONTEXT<kicadd::render::Ge
 
         for( PCB_LAYER_ID layer : LSET( zone->GetLayerSet() & LSET::AllCuMask() ).Seq() )
         {
-            std::shared_ptr<SHAPE_POLY_SET> fill = zone->GetFilledPolysList( layer );
+            std::shared_ptr<SHAPE_POLY_SET> fill = zone->HasFilledPolysForLayer( layer )
+                                                           ? zone->GetFilledPolysList( layer )
+                                                           : nullptr;
 
-            if( !fill || fill->OutlineCount() == 0 )
+            if( ( !fill || fill->OutlineCount() == 0 ) && !summary )
                 continue;
 
             kicadd::render::ZoneFill* zf = out.add_fills();
             zf->set_id( id );
             zf->set_net( zone->GetNetCode() > 0 ? zone->GetNetname().ToStdString() : std::string() );
             zf->set_layer( LSET::Name( layer ).ToStdString() );
+            zf->set_name( zone->GetZoneName().ToStdString( wxConvUTF8 ) );
+            zf->set_pieces( fill ? fill->OutlineCount() : 0 );
+            zf->set_area_mm2( fill ? fill->Area() / 1e12 : 0.0 );
+            zf->set_outline_mm2( SHAPE_POLY_SET( *zone->Outline() ).Area() / 1e12 );
+            zf->set_islands_removed( zone->GetIslandRemovalMode() != ISLAND_REMOVAL_MODE::NEVER );
+
+            if( auto z = islands.find( const_cast<ZONE*>( zone ) ); z != islands.end() )
+            {
+                if( auto l = z->second.find( layer ); l != z->second.end() )
+                    zf->set_floating( (int) l->second.m_IsolatedOutlines.size() );
+            }
+
+            if( summary || !fill )
+                continue;
 
             for( int i = 0; i < fill->OutlineCount(); ++i )
             {

@@ -379,8 +379,10 @@ bool RenderBoardPng( BOARD* aBoard, const kicadd::board::RenderBoard& aReq,
     opts.SetColorSettings( &colors );
     opts.SetBlackAndWhite( false );
     opts.SetDrillMarksType( DRILL_MARKS::NO_DRILL_SHAPE );    // the holes: below, in the background colour
+    // what a fab plot shows: references and values both, as visible on the board (hidden
+    // fields are left out by the plotter); a value hidden here led to a wrong "silk is clear"
     opts.SetPlotReference( true );
-    opts.SetPlotValue( false );
+    opts.SetPlotValue( true );
     opts.SetSketchPadsOnFabLayers( true );
     opts.SetPlotPadNumbers( true );
     opts.SetSubtractMaskFromSilk( false );

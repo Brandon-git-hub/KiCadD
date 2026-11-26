@@ -89,6 +89,7 @@ struct SAVED
     std::string libId;        ///< "LCSC:<package>"
     std::string file;         ///< .kicad_mod written
     bool        registered = false;   ///< the LCSC row was added to the project fp-lib-table now
+    bool        kept = false;         ///< the library's file differs (edited): kept, PART::footprint is now it
     std::string note;
 };
 
@@ -96,11 +97,17 @@ struct SAVED
  * Write the footprint to <project dir>/lcsc.pretty and make sure the project fp-lib-table
  * has the LCSC library. Needs a board that lives in a folder (a saved board or a project).
  */
-bool SaveToProjectLibrary( BOARD* aBoard, const PART& aPart, SAVED& aSaved, std::string& aError );
+///
+/// A .kicad_mod (or 3D model) already there that differs from what the EasyEDA data gives is
+/// the project's own (a pad fixed by hand): it is kept unless aReplace (refresh=true), said in
+/// SAVED::note, and aPart.footprint becomes the library's one (with the part's fields), so what
+/// is placed is what the library has.
+bool SaveToProjectLibrary( BOARD* aBoard, PART& aPart, SAVED& aSaved, std::string& aError,
+                           bool aReplace = false );
 
 /// The same for a project folder (e.g. from the schematic editor, which has no BOARD).
-bool SaveToProjectLibrary( const wxString& aProjectDir, const PART& aPart, SAVED& aSaved,
-                           std::string& aError );
+bool SaveToProjectLibrary( const wxString& aProjectDir, PART& aPart, SAVED& aSaved,
+                           std::string& aError, bool aReplace = false );
 
 struct SAVED_SYMBOL
 {
