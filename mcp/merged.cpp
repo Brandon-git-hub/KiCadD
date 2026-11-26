@@ -243,20 +243,30 @@ void MergeTools( std::vector<TOOL>& aTools )
             "were changed outside (save first; also in the desktop editor, which shows them anew: no need to close "
             "KiCad). new: {path (the folder, absolute; made "
             "when missing, or its .kicad_pro), name (default the folder's name), copper_layers (2), thickness (mm, "
-            "1.6) or stackup (a JLCPCB one, as board_setup), outline [width, height] mm (a rectangle at (100, 100), "
-            "corner_radius)}: writes <name>.kicad_pro, an empty .kicad_pcb and .kicad_sch (refused when any is there: "
+            "1.6) or stackup (a JLCPCB one, as board_setup), outline [width, height] mm (a rectangle centred on the "
+            "sheet clear of the title block; a larger sheet when A4 is too small; corner_radius)}: writes <name>.kicad_pro, an empty .kicad_pcb and .kicad_sch (refused when any is there: "
             "never written over), opens and saves them. Both are refused while the open board has unsaved changes, "
-            "unless discard=true (the refusal lists what board_diff finds changed). open / new not with the desktop "
-            "editor: there the user opens and makes projects.",
+            "unless discard=true (the refusal lists what board_diff finds changed). rename: \"new_name\": the open "
+            "project's files in their folder under the new name (.kicad_pro / _pcb / _sch / _prl / _dru, the backups "
+            "folder, a title block titled with the old name), saved first and reopened; refused when a file of that "
+            "name is there. open / new / rename not with the desktop editor: there the user opens and makes projects.",
             json::object(),
             [=]( const json& a ) -> TOOL_RESULT
             {
                 const bool isOpen = a.contains( "open" ), isNew = a.contains( "new" );
-                const bool isReload = a.value( "reload", false );
+                const bool isReload = a.value( "reload", false ), isRename = a.contains( "rename" );
 
-                if( isOpen + isNew + isReload != 1 )
-                    return fail( "give one of open: \"/path/board.kicad_pcb\", new: {\"path\": \"/path/folder\", ...} "
-                                 "or reload: true" );
+                if( isOpen + isNew + isReload + isRename != 1 )
+                    return fail( "give one of open: \"/path/board.kicad_pcb\", new: {\"path\": \"/path/folder\", ...}, "
+                                 "reload: true or rename: \"new_name\"" );
+
+                if( isRename )
+                {
+                    if( !a["rename"].is_string() )
+                        return fail( "rename: the new name, e.g. \"sensor_v2\"" );
+
+                    return open( json{ { "rename", a["rename"] } } );
+                }
 
                 if( isReload )
                 {
@@ -283,7 +293,8 @@ void MergeTools( std::vector<TOOL>& aTools )
             "",
             { params::String( "open", "a .kicad_pcb / .kicad_pro, absolute" ), params::Object( "new", newProps ),
               params::Boolean( "discard", "Drop the open board's unsaved changes (default false)" ),
-              params::Boolean( "reload", "The open files from disk again" ) } };
+              params::Boolean( "reload", "The open files from disk again" ),
+              params::String( "rename", "The open project's new name (files renamed)" ) } };
 
         m.drop( "open_board" );
         m.drop( "new_project" );

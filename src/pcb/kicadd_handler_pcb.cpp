@@ -3692,6 +3692,52 @@ HANDLER_RESULT<RouteResponse> KICADD_HANDLER_PCB::handleRouteShort( const HANDLE
     if( parts.empty() )
         nets = onlyNets;
 
+    // A net with a copper pour is joined by it: tracks between its pads (GND pulled as lines
+    // between every part) are what the pour should do. Left out unless the net is named or
+    // include_poured; skip_nets covers the ones still to be poured
+    {
+        std::map<int, std::set<wxString>> poured;
+
+        for( ZONE* z : b->Zones() )
+        {
+            if( !z->GetIsRuleArea() && z->GetNetCode() > 0 && z->IsOnCopperLayer() )
+            {
+                for( PCB_LAYER_ID l : z->GetLayerSet().CuStack() )
+                    poured[z->GetNetCode()].insert( LSET::Name( l ) );
+            }
+        }
+
+        for( auto it = nets.begin(); it != nets.end(); )
+        {
+            NETINFO_ITEM* ni = b->FindNet( *it );
+            wxString      name = ni ? ni->GetNetname() : wxString();
+            bool          skip = false;
+
+            for( const std::string& g : req.skip_nets() )
+            {
+                if( name.Matches( wxString::FromUTF8( g ) ) )
+                {
+                    out.add_skipped_nets( name.ToStdString( wxConvUTF8 ) );
+                    skip = true;
+                    break;
+                }
+            }
+
+            if( !skip && !req.include_poured() && !onlyNets.count( *it ) && poured.count( *it ) )
+            {
+                wxString layers;
+
+                for( const wxString& l : poured[*it] )
+                    layers += ( layers.IsEmpty() ? wxString() : wxString( wxS( ", " ) ) ) + l;
+
+                out.add_skipped_poured( ( name + wxS( " (" ) + layers + wxS( ")" ) ).ToStdString( wxConvUTF8 ) );
+                skip = true;
+            }
+
+            it = skip ? nets.erase( it ) : std::next( it );
+        }
+    }
+
     struct CONN
     {
         BOARD_CONNECTED_ITEM* a;
@@ -4401,6 +4447,84 @@ HANDLER_RESULT<StitchViasResponse> KICADD_HANDLER_PCB::handleStitchVias( const H
     out.set_via_diameter( dia );
     out.set_via_drill( drill );
     out.set_dry_run( req.dry_run() );
+
+    // --- vias where asked: no pour needed, no grid; each said with what of the net it touches
+    if( !req.at().empty() )
+    {
+        kicadd::route::SESSION session( b );
+        int                    placed = 0;
+
+        for( const Point& pt : req.at() )
+        {
+            const VECTOR2I p( (int) pt.x(), (int) pt.y() );
+            char           at[64];
+            std::snprintf( at, sizeof( at ), "@%g,%g", std::round( pcbIUScale.IUTomm( p.x ) * 1000 ) / 1000,
+                           std::round( pcbIUScale.IUTomm( p.y ) * 1000 ) / 1000 );
+
+            kicadd::route::RESULT res = session.PlaceVia( p, code, dia, drill );
+
+            if( !res.ok )
+            {
+                out.add_at_results( std::string( at ) + ": not placed: " + res.error );
+                continue;
+            }
+
+            placed++;
+            std::vector<std::string> joins;
+
+            for( ZONE* z : b->Zones() )
+            {
+                if( !z->GetIsRuleArea() && z->GetNetCode() == code && z->Outline()->Contains( p ) )
+                {
+                    for( PCB_LAYER_ID l : LSET( z->GetLayerSet() & LSET::AllCuMask() ).Seq() )
+                        joins.push_back( "zone " + LSET::Name( l ).ToStdString() );
+                }
+            }
+
+            for( PCB_TRACK* t : b->Tracks() )
+            {
+                if( t->GetNetCode() == code && t->HitTest( p, r ) )
+                {
+                    joins.push_back( t->Type() == PCB_VIA_T ? "via" : "track " + LSET::Name( t->GetLayer() ).ToStdString() );
+                    break;
+                }
+            }
+
+            for( FOOTPRINT* fp : b->Footprints() )
+            {
+                for( PAD* pad : fp->Pads() )
+                {
+                    if( pad->GetNetCode() == code && pad->HitTest( p, r ) )
+                        joins.push_back( "pad " + fp->GetReference().ToStdString() + "." + pad->GetNumber().ToStdString() );
+                }
+            }
+
+            std::string j;
+
+            for( const std::string& x : joins )
+                j += ( j.empty() ? "" : ", " ) + x;
+
+            out.add_at_results( std::string( at ) + ( j.empty() ? ": touches nothing of the net yet (route a track to it)"
+                                                                 : ": on " + j ) );
+        }
+
+        out.set_vias_added( placed );
+
+        if( req.dry_run() || placed == 0 )
+        {
+            fillUnconnected( out, unconnectedNow( b, m_deferMinPads ) );
+            return out;
+        }
+
+        RouteResponse routes;
+        commitRoutes( session.TakeAdded(), {}, "add " + std::to_string( placed ) + " " + netName.ToStdString() + " via(s)",
+                      routes );
+        out.set_history_label( routes.history_label() );
+        out.set_unconnected( routes.unconnected() );
+        *out.mutable_ratsnest_pending() = routes.ratsnest_pending();
+        *out.mutable_large_included() = routes.large_included();
+        return out;
+    }
 
     // --- the net's copper, layer by layer: its zones' fills; `inner` keeps a via's radius from their edge
     std::map<PCB_LAYER_ID, SHAPE_POLY_SET> copper, inner;

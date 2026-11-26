@@ -476,7 +476,8 @@ RESULT SESSION::Route( const REQUEST& aReq )
             if( ( st.pos - before ).EuclideanNorm() < 10000 || ( st.pos - aReq.to ).EuclideanNorm() < 10000 )
             {
                 out.error = "a waypoint / via at " + mm( st.pos.x ) + "," + mm( st.pos.y )
-                            + " is on the route's start, end or the waypoint before: leave it out or move it";
+                            + " is on the route's start, end or the waypoint before: leave it out or move it"
+                            + std::string( st.viaTo != UNDEFINED_LAYER || st.otherSide ? " (a via on its own, with no track to it: stitch_vias {at: [x, y], net})" : "" );
                 return out;
             }
 

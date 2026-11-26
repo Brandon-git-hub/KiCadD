@@ -1150,6 +1150,8 @@ message RouteResponse
   int32                 vias_added    = 7;
   repeated string       ratsnest_pending = 8;   // as MoveResponse: nets not counted (deferred)
   repeated string       large_included   = 9;   // large nets counted: "GND 24"
+  repeated string       skipped_poured   = 10;  // route_short: nets left to their zone, "GND (B.Cu, F.Cu)"
+  repeated string       skipped_nets     = 11;  // route_short: nets matched by skip_nets
 }
 
 // Route the unrouted connections of refs / nets up to max_length, shortest first, each as
@@ -1165,6 +1167,9 @@ message RouteShort
   bool            no_vias    = 6;   // never a via: a connection that needs one is left (default: vias
                                     // where it can't be done on one layer)
   bool            allow_under_ic = 7;   // vias also inside an exposed-pad IC's pads (QFN): off by default
+  bool            include_poured = 8;   // also nets with a copper zone that came in through refs (skipped by
+                                        // default: the pour joins them; a net named in nets is always routed)
+  repeated string skip_nets      = 9;   // globs ("GND*", "+3V3"): nets left alone, e.g. ones to be poured later
 }
 
 // Fan out SMD pads to a copper zone of their net on another layer: a short track and a via
@@ -1201,6 +1206,8 @@ message StitchVias
   bool   no_islands  = 6;    // the grid only
   bool   dry_run     = 7;
   int32  max         = 8;    // at most this many vias (default 500)
+  repeated Point at  = 9;    // nm: one via at each of these instead of the grid (no pour needed);
+                             // checked as route's vias are (clearance, holes, the edge)
 }
 
 message StitchViasResponse
@@ -1221,6 +1228,7 @@ message StitchViasResponse
   repeated string notes  = 14;
   repeated string ratsnest_pending = 15;
   repeated string large_included   = 16;
+  repeated string at_results       = 17;  // at: one per point, "@x,y: joins GND zone B.Cu" / "@x,y: not placed: ..."
 }
 
 // Teardrops (KiCad's own: copper zones that widen a track into its pad or via) on vias and

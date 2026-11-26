@@ -1989,7 +1989,8 @@ void AddSchematicTools( std::vector<TOOL>& aTools, IPC_CLIENT& aIpc )
             "Move and/or rotate a placed part on the schematic: x/y (mm, the new anchor) or dx/dy, "
             "rotation 0/90/180/270. Its wire stubs, net labels, power symbols and no-connect flags go "
             "with it (re-drawn on the side each pin now faces), so its connections stay; other wires "
-            "ending on its pins are dragged along. unit picks one unit of a multi-unit part (needed "
+            "ending on its pins are dragged along and listed (straight, an L where it would run "
+            "askew, or removed when left zero length). unit picks one unit of a multi-unit part (needed "
             "with x/y; dx/dy moves all units). A move that would change any pin's net (a pin, stub "
             "or label landing on another net) is refused and undone, with the per-pin diff, unless "
             "allow_rewire. Returns the part's pins at their new place.", json::object(),

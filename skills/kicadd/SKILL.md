@@ -192,7 +192,8 @@ jobs.
   It is all or none; on a big batch `partial=true` connects what fits and lists only the pins
   at fault (one undo step per batch that went). A local label's net is `/NAME` on the board
   (sheet path + name): use that in `set_rules` assign patterns and `audit` globs.
-- Change: `sch_move`, `sch_set_fields` (values, footprints, LCSC numbers, DNP, BOM flags,
+- Change: `sch_move` (stubs and labels go with the part; a longer wire on a pin is dragged as
+  an L, listed in the answer), `sch_set_fields` (values, footprints, LCSC numbers, DNP, BOM flags,
   `Reference` to renumber a part with all its units; many parts at once with `refs` + `set`), `sch_disconnect`, `sch_delete` (parts, `wires` by a point
   on them, `dangling=true` for wires hanging off nothing).
 - Hierarchy: `sch_add_sheet` with `ports`; on the parent connect `SheetName.PORT`.
@@ -353,8 +354,10 @@ not monotonic, which matters on a clock or strobe).
 
 `project {new: {path: "/abs/folder", copper_layers: 4, outline: [60, 40]}}` writes
 `<name>.kicad_pro`, `.kicad_pcb` and `.kicad_sch` in the folder (made when missing), opens
-them, sets the layers and a stackup (or `stackup: "JLC04161H-7628"`), draws the outline and
-saves. It never writes over a file: an existing project is opened with `project {open:
+them, sets the layers and a stackup (or `stackup: "JLC04161H-7628"`), draws the outline
+(centred on the sheet clear of the title block; A3 or larger when it does not fit A4) and
+saves. `project {rename: "new_name"}` renames the open project's files in their folder (saved
+first, then reopened); not in the desktop editor. It never writes over a file: an existing project is opened with `project {open:
 "/abs/board.kicad_pcb"}`. Both are refused while the open board has unsaved changes (`discard=true` drops
 them). KiCadD ships no symbol libraries: start the schematic with `lcsc_fetch` / `sch_add_part
 lcsc=...` or `lib_create_symbol`.
@@ -406,7 +409,8 @@ From a blank project, before placing parts:
    call that settles it.
 5. All of them are one `undo` each.
 6. After routing: `stitch_vias` (GND by default, 5 mm grid, also one via in each island of
-   the pour that has none) and `teardrops` (vias and through-hole pads; `smd=true` for SMD
+   the pour that has none; `at: [[x, y], ...]` with `net`: vias just there, e.g. one a
+   route's `via` waypoint can't make with no track to it) and `teardrops` (vias and through-hole pads; `smd=true` for SMD
    pads). Both are one `undo`, and both refill the zones.
 
 ## Schematic to board, placement
@@ -513,7 +517,9 @@ length matching, dense escapes).
    "already joined" means joined to today's fill (a pad on a pour island cut off from the rest
    counts as not joined).
 2. `route_short` with the parts (or nets) and a `max_length` (e.g. 10 mm): decoupling caps,
-   pull-ups, LED resistors. `dry_run=true` first to see what would fail. It goes shortest first.
+   pull-ups, LED resistors. `dry_run=true` first to see what would fail. Nets with a copper
+   zone are skipped (listed: the pour joins them) unless named in `nets` or `include_poured`;
+   a net to be poured later goes in `skip_nets` (globs), or it is drawn as tracks. It goes shortest first.
    Where one layer won't do it adds vias: one on the way for ends on different sides, over the
    other side and back for a blocked one (`vias=false`: none). Via spots are tried first along
    the straight line, then at free spots round it (a gap beside a part). The via search has

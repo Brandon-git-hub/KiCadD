@@ -2424,6 +2424,14 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleDeleteParts( const 
                 if( !line->IsWire() || gone.count( line ) )
                     continue;
 
+                // zero length (a pin moved onto its far end): connects nothing, shows as a dot
+                if( line->GetStartPoint() == line->GetEndPoint() )
+                {
+                    gone.insert( line );
+                    wires++;
+                    continue;
+                }
+
                 std::vector<VECTOR2I> ends;
                 std::set<SCH_ITEM*>   run = wireRun( screen, line, &ends );
                 bool                  loose = false;
@@ -2458,6 +2466,44 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::handleDeleteParts( const 
                         touching++;
 
                     loose |= touching == 0;
+                }
+
+                // ... unless something joins it part way (a wire teed onto a segment's middle,
+                // a pin or label on it): then the run carries a connection, only its tail is loose
+                if( loose )
+                {
+                    for( SCH_ITEM* seg : run )
+                    {
+                        auto* l = static_cast<SCH_LINE*>( seg );
+                        auto  inside = [&]( const VECTOR2I& p )
+                        {
+                            return p != l->GetStartPoint() && p != l->GetEndPoint() && l->HitTest( p, 0 );
+                        };
+
+                        for( SCH_ITEM* other : screen->Items().Overlapping( l->GetBoundingBox() ) )
+                        {
+                            if( run.count( other ) )
+                                continue;
+
+                            if( other->Type() == SCH_LINE_T )
+                            {
+                                auto* o = static_cast<SCH_LINE*>( other );
+                                loose &= !( o->IsWire() && ( inside( o->GetStartPoint() ) || inside( o->GetEndPoint() ) ) );
+                            }
+                            else if( other->Type() == SCH_SYMBOL_T )
+                            {
+                                for( SCH_PIN* pin : static_cast<SCH_SYMBOL*>( other )->GetPins( nullptr ) )
+                                    loose &= !inside( pin->GetPosition() );
+                            }
+                            else if( dynamic_cast<SCH_LABEL_BASE*>( other ) )
+                            {
+                                loose &= !inside( other->GetPosition() );
+                            }
+                        }
+
+                        if( !loose )
+                            break;
+                    }
                 }
 
                 if( loose )
@@ -2961,8 +3007,9 @@ HANDLER_RESULT<SchPartResponse> KICADD_HANDLER_SCH::handleMove( const HANDLER_CO
     const std::map<std::string, std::string> netsBefore = pinNets();
 
     kicadd::KICADD_SCH_COMMIT commit( m_context->GetToolManager() );
-    std::string note;
-    int         dragged = 0;
+    std::string              note;
+    int                      dragged = 0;
+    std::vector<std::string> draggedLines;
 
     for( auto& [symbol, sheet] : targets )
     {
@@ -3145,16 +3192,51 @@ HANDLER_RESULT<SchPartResponse> KICADD_HANDLER_SCH::handleMove( const HANDLER_CO
                 }
             }
 
+            // A longer wire: its end goes with the pin. Straight still: as is; on the spot: gone;
+            // askew: an L, out of the pin first (unless that corner is someone else's spot)
             for( auto& [wire, startHere] : a.drag )
             {
+                const VECTOR2I far = startHere ? wire->GetEndPoint() : wire->GetStartPoint();
+                std::string    line = str( symbol->GetRef( &sheet ) ) + "." + str( a.pin->GetNumber() ) + " wire to "
+                                   + mmPt( far );
+                dragged++;
+
+                if( far == at )
+                {
+                    take( wire );
+                    draggedLines.push_back( line + ": now zero length, removed" );
+                    continue;
+                }
+
                 commit.Modify( wire, screen );
 
-                if( startHere )
-                    wire->SetStartPoint( at );
-                else
-                    wire->SetEndPoint( at );
+                if( far.x == at.x || far.y == at.y )
+                {
+                    if( startHere )
+                        wire->SetStartPoint( at );
+                    else
+                        wire->SetEndPoint( at );
 
-                dragged++;
+                    draggedLines.push_back( line + ": still straight" );
+                    continue;
+                }
+
+                // the wire keeps its direction into its far end (so it does not fold back over
+                // what continues there); a new leg from the pin meets it, unless that corner is
+                // someone else's spot
+                const VECTOR2I was = startHere ? wire->GetStartPoint() : wire->GetEndPoint();
+                const bool     vertical = was.x == far.x;
+                const VECTOR2I keep = vertical ? VECTOR2I( far.x, at.y ) : VECTOR2I( at.x, far.y );
+                const VECTOR2I other = vertical ? VECTOR2I( at.x, far.y ) : VECTOR2I( far.x, at.y );
+                const VECTOR2I corner = taken( keep ) && !taken( other ) ? other : keep;
+
+                wire->SetStartPoint( at );
+                wire->SetEndPoint( corner );
+
+                auto* rest = new SCH_LINE( corner, LAYER_WIRE );
+                rest->SetEndPoint( far );
+                commit.Add( rest, screen );
+                draggedLines.push_back( line + ": an L through " + mmPt( corner ) );
             }
         }
 
@@ -3173,8 +3255,15 @@ HANDLER_RESULT<SchPartResponse> KICADD_HANDLER_SCH::handleMove( const HANDLER_CO
     }
 
     if( dragged )
-        note += std::string( note.empty() ? "" : "; " ) + std::to_string( dragged )
-                + " wire(s) dragged along (they may now run diagonally: redraw with sch_wire)";
+    {
+        note += std::string( note.empty() ? "" : "; " ) + std::to_string( dragged ) + " wire(s) dragged along:";
+
+        for( size_t i = 0; i < draggedLines.size() && i < 12; ++i )
+            note += "\n    " + draggedLines[i];
+
+        if( draggedLines.size() > 12 )
+            note += "\n    (+" + std::to_string( draggedLines.size() - 12 ) + " more)";
+    }
 
     wxString                      what = wxS( "move " ) + wx( req.ref() );
     std::vector<kicadd::SCH_EDIT> redo = std::move( m_redo );

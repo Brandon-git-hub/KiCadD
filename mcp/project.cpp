@@ -12,6 +12,7 @@
 
 #include "tools.h"
 
+#include <cmath>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -150,6 +151,60 @@ TOOL_RESULT newProject( std::shared_ptr<std::vector<TOOL>> aTable, const json& a
             return fail( "outline: [width, height] mm, 0 < each <= 1000" );
     }
 
+    // Where the outline goes: centred on the sheet inside its 10 mm frame, clear of the title
+    // block (bottom right, about 110 x 35 mm), on whole mm; on the smallest ISO sheet it fits
+    std::string paper = "A4";
+    double      ox = 0, oy = 0;
+    std::string placedHow;
+
+    if( !outline.empty() )
+    {
+        struct SHEET { const char* name; double w, h; };
+        static const SHEET sheets[] = { { "A4", 297, 210 }, { "A3", 420, 297 }, { "A2", 594, 420 },
+                                        { "A1", 841, 594 }, { "A0", 1189, 841 } };
+        constexpr double FRAME = 10, TB_W = 110, TB_H = 35;
+        const double     w = outline[0], h = outline[1];
+        bool             placed = false;
+
+        for( const SHEET& sh : sheets )
+        {
+            const double x0 = FRAME, y0 = FRAME, x1 = sh.w - FRAME, y1 = sh.h - FRAME;
+
+            // above the title block (full width), or beside it (full height)
+            if( w <= x1 - x0 && h <= y1 - TB_H - y0 )
+            {
+                ox = std::round( ( x0 + x1 - w ) / 2 );
+                oy = std::round( ( y0 + y1 - TB_H - h ) / 2 );
+                placedHow = "centred above the title block";
+            }
+            else if( w <= x1 - TB_W - x0 && h <= y1 - y0 )
+            {
+                ox = std::round( ( x0 + x1 - TB_W - w ) / 2 );
+                oy = std::round( ( y0 + y1 - h ) / 2 );
+                placedHow = "centred left of the title block";
+            }
+            else
+            {
+                continue;
+            }
+
+            paper = sh.name;
+            placed = true;
+            break;
+        }
+
+        if( !placed )
+        {
+            paper = "A0";
+            ox = oy = FRAME;
+            placedHow = "larger than an A0 sheet's frame: at its top left corner, over the frame";
+        }
+        else if( paper != "A4" )
+        {
+            placedHow += " (an A4 sheet is too small: " + paper + ")";
+        }
+    }
+
     const bool madeDir = !fs::exists( path, ec );
     fs::create_directories( path, ec );
 
@@ -195,7 +250,7 @@ TOOL_RESULT newProject( std::shared_ptr<std::vector<TOOL>> aTable, const json& a
     json proJson = { { "meta", { { "filename", fileName }, { "version", 3 } } } };
 
     if( !write( pro, proJson.dump( 2 ) + "\n" )
-        || !write( pcb, "(kicad_pcb (version 20241229) (generator \"kicadd\") (generator_version \"10.99\") (paper \"A4\"))\n" )
+        || !write( pcb, "(kicad_pcb (version 20241229) (generator \"kicadd\") (generator_version \"10.99\") (paper \"" + paper + "\"))\n" )
         || !write( sch, "(kicad_sch (version 20231120) (generator \"kicadd\") (uuid \"" + uuid4() + "\") (paper \"A4\") (lib_symbols) "
                         "(sheet_instances (path \"/\" (page \"1\"))))\n" ) )
     {
@@ -225,11 +280,13 @@ TOOL_RESULT newProject( std::shared_ptr<std::vector<TOOL>> aTable, const json& a
 
     if( !outline.empty() )
     {
-        // at (100, 100) like KiCad's own new boards sit on the sheet
-        TOOL_RESULT o = call( "board_outline", { { "rect", { 100.0, 100.0, 100.0 + outline[0], 100.0 + outline[1] } },
+        TOOL_RESULT o = call( "board_outline", { { "rect", { ox, oy, ox + outline[0], oy + outline[1] } },
                                                  { "corner_radius", a.value( "corner_radius", 0.0 ) } } );
         std::string first = o.text.substr( 0, o.text.find( '\n' ) );
         notes += ( o.isError ? "\nboard_outline failed: " : "\noutline: " ) + first;
+
+        if( !o.isError )
+            notes += " (" + placedHow + ")";
     }
 
     TOOL_RESULT saved = call( "save_board", json::object() );
@@ -255,7 +312,8 @@ std::string NewProjectDescription()
            "project's folder, absolute; made when missing) or its .kicad_pro, name (default the folder's name). Writes "
            "<name>.kicad_pro, an empty .kicad_pcb and .kicad_sch, refused when any of them is there (never written "
            "over). copper_layers (default 2), thickness (mm, 1.6) or stackup (a JLCPCB one, as board_setup), outline "
-           "[width, height] mm (a rectangle at (100, 100), corner_radius), then saved by KiCad. Refused while the open "
+           "[width, height] mm (a rectangle centred on the sheet clear of the title block, on whole mm; a larger sheet "
+           "than A4 when it does not fit; corner_radius), then saved by KiCad. Refused while the open "
            "board has unsaved changes, unless discard=true. Not in the desktop editor (the user makes projects there).";
 }
 

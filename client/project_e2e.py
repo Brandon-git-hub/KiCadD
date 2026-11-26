@@ -108,6 +108,11 @@ def main():
         # on the 4-layer alpha: a capacitor GND / VCC, GND as a plane on In1.Cu, VCC as a pour on
         # F.Cu beside the part: GND reaches its plane through a via, VCC its pour on its own layer
         err, t = m.tool("project", {"open": files[".kicad_pro"], "discard": True})
+        # the coordinates below are from the outline's corner at (100, 100); project new centres it
+        g = re.search(r"outline=(-?[\d.]+),(-?[\d.]+)\.\.", t)
+        if g:
+            m.tool("board_transform", {"dx": round(100 - float(g.group(1)) - 0.05),
+                                       "dy": round(100 - float(g.group(2)) - 0.05)})
         m.tool("sch_add_part", {"lib_id": "power:PWR_FLAG", "x": 101.6, "y": 50.8})
         m.tool("sch_connect", {"nets": {"VBUF": ["#FLG01.1", "U1.1"]}})
         err, t = m.tool("sch_move", {"ref": "#FLG01", "x": 127, "y": 76.2})

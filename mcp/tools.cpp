@@ -9,6 +9,7 @@
 #include "ipc_client.h"
 
 #include <algorithm>
+#include <fstream>
 #include <cctype>
 #include <set>
 
@@ -965,6 +966,21 @@ std::string renderRoutes( const kb::RouteResponse& r, bool aDetail, const char* 
 }
 
 
+/// "a, b, c" of the first aMax, then "(+N more)"
+std::string joinList( const google::protobuf::RepeatedPtrField<std::string>& aList, int aMax )
+{
+    std::string s;
+
+    for( int i = 0; i < aList.size() && i < aMax; ++i )
+        s += ( i ? ", " : "" ) + aList[i];
+
+    if( aList.size() > aMax )
+        s += " (+" + std::to_string( aList.size() - aMax ) + " more)";
+
+    return s;
+}
+
+
 TOOL_RESULT routeShort( IPC_CLIENT& aIpc, const json& aArgs )
 {
     kb::RouteShort req;
@@ -985,6 +1001,10 @@ TOOL_RESULT routeShort( IPC_CLIENT& aIpc, const json& aArgs )
     req.set_dry_run( aArgs.value( "dry_run", false ) );
     req.set_no_vias( !aArgs.value( "vias", true ) );
     req.set_allow_under_ic( aArgs.value( "allow_under_ic", false ) );
+    req.set_include_poured( aArgs.value( "include_poured", false ) );
+
+    for( const std::string& g : getStrings( aArgs, "skip_nets" ) )
+        req.add_skip_nets( g );
 
     kb::RouteResponse r;
     std::string       err;
@@ -992,10 +1012,19 @@ TOOL_RESULT routeShort( IPC_CLIENT& aIpc, const json& aArgs )
     if( !aIpc.Call( req, r, err ) )
         return error( err );
 
-    if( r.results().empty() )
-        return { "no unrouted connections match" + std::string( req.max_length() ? " (max_length)" : "" ) + "\n" };
+    std::string skipped;
 
-    std::string s = renderRoutes( r, detailOf( aArgs ), "connection(s), shortest first" );
+    if( !r.skipped_poured().empty() )
+        skipped += "skipped (poured, the zone joins them; include_poured=true or name the net to route it): "
+                   + joinList( r.skipped_poured(), 12 ) + "\n";
+
+    if( !r.skipped_nets().empty() )
+        skipped += "skipped (skip_nets): " + joinList( r.skipped_nets(), 12 ) + "\n";
+
+    if( r.results().empty() )
+        return { skipped + "no unrouted connections match" + std::string( req.max_length() ? " (max_length)" : "" ) + "\n" };
+
+    std::string s = skipped + renderRoutes( r, detailOf( aArgs ), "connection(s), shortest first" );
 
     if( !r.history_label().empty() )
         s += "copper zones keep their old shape: refill_zones before run_drc\n";
@@ -1120,6 +1149,35 @@ TOOL_RESULT stitchVias( IPC_CLIENT& aIpc, const json& aArgs )
         req.mutable_area_max()->set_y( toNm( a[3].get<double>() ) );
     }
 
+    if( aArgs.contains( "at" ) )
+    {
+        const json& at = aArgs["at"];
+        auto isPoint = []( const json& p ) { return p.is_array() && p.size() == 2 && p[0].is_number() && p[1].is_number(); };
+
+        // one point [x, y] or a list of them
+        std::vector<json> pts;
+
+        if( isPoint( at ) )
+            pts.push_back( at );
+        else if( at.is_array() && !at.empty() && std::all_of( at.begin(), at.end(), isPoint ) )
+            pts.assign( at.begin(), at.end() );
+        else
+            return error( "at: [x, y] mm, or a list of them [[x, y], ...]" );
+
+        if( req.net().empty() )
+            return error( "at: say the via's net (net: \"GND\")" );
+
+        if( pts.size() > 200 )
+            return error( "at: at most 200 points" );
+
+        for( const json& p : pts )
+        {
+            kb::Point* q = req.add_at();
+            q->set_x( toNm( p[0].get<double>() ) );
+            q->set_y( toNm( p[1].get<double>() ) );
+        }
+    }
+
     req.set_under_parts( aArgs.value( "under_parts", false ) );
     req.set_no_islands( !aArgs.value( "islands", true ) );
     req.set_dry_run( aArgs.value( "dry_run", false ) );
@@ -1140,6 +1198,26 @@ TOOL_RESULT stitchVias( IPC_CLIENT& aIpc, const json& aArgs )
 
     if( !aIpc.Call( req, r, err ) )
         return error( err );
+
+    if( !req.at().empty() )
+    {
+        std::string s = std::string( r.dry_run() ? "would add " : "added " ) + std::to_string( r.vias_added() ) + " of "
+                        + std::to_string( req.at_size() ) + " " + req.net() + " via(s) " + mmText( r.via_diameter() / 1e6 ) + "/"
+                        + mmText( r.via_drill() / 1e6 ) + " mm (net class size)\n";
+
+        for( const std::string& line : r.at_results() )
+            s += "  " + line + "\n";
+
+        if( !r.history_label().empty() )
+        {
+            s += unconnectedOf( r ) + "; undo takes it back\n";
+
+            if( aArgs.value( "refill", true ) )
+                s += refillZones( aIpc ).text;
+        }
+
+        return { s };
+    }
 
     std::string layers;
 
@@ -3446,8 +3524,14 @@ TOOL_RESULT revertInEditor( IPC_CLIENT& aIpc, const std::string& aBoardFile )
 }
 
 
+TOOL_RESULT renameProject( IPC_CLIENT& aIpc, const json& aArgs );
+
+
 TOOL_RESULT openBoard( IPC_CLIENT& aIpc, const json& aArgs )
 {
+    if( aArgs.contains( "rename" ) )
+        return renameProject( aIpc, aArgs );
+
     namespace kc = kiapi::common::commands;
     namespace kt = kiapi::common::types;
     namespace fs = std::filesystem;
@@ -3593,6 +3677,201 @@ TOOL_RESULT openBoard( IPC_CLIENT& aIpc, const json& aArgs )
 
     r.text = note + r.text;
     return r;
+}
+
+
+/// project {rename}: the open project's files under a new name in the same folder (saved
+/// first, then reopened). Its .kicad_pro / _pcb / _sch / _prl / _dru, the backups folder, and
+/// a title block whose title is the old name (a ${PROJECTNAME} one follows by itself).
+TOOL_RESULT renameProject( IPC_CLIENT& aIpc, const json& aArgs )
+{
+    namespace fs = std::filesystem;
+
+    const std::string name = aArgs.value( "rename", std::string() );
+
+    if( name.empty() || name.size() > 100 || name == "." || name == ".."
+        || name.find_first_of( "/\\:*?\"<>|" ) != std::string::npos
+        || std::any_of( name.begin(), name.end(), []( char c ) { return (unsigned char) c < 32; } ) )
+        return error( "rename: the new project name, a file name without / \\ : * ? \" < > | (\"" + name + "\")" );
+
+    {
+        kb::GetCopilot   q;
+        kb::CopilotState state;
+        std::string      e;
+        q.set_limit( 1 );
+
+        if( aIpc.Call( q, state, e ) && state.desktop() )
+            return error( "rename: not while the desktop editor has the project open (its files are KiCad's there): "
+                          "the project manager's File > Save As makes the project under a new name" );
+    }
+
+    kb::BoardSummaryResponse now;
+    std::string              err;
+
+    if( !aIpc.Call( kb::GetBoardSummary(), now, err ) || now.file().empty() )
+        return error( "no project is open to rename" + ( err.empty() ? std::string() : ": " + err ) );
+
+    const fs::path    pcb( now.file() );
+    const fs::path    dir = pcb.parent_path();
+    const std::string old = pcb.stem().string();
+
+    if( old == name )
+        return error( "rename: the project is " + name + " already" );
+
+    // the files that carry the name; the ones to be written must not be there
+    std::vector<std::pair<fs::path, fs::path>> moves;
+    std::error_code                            ec;
+
+    for( const char* ext : { ".kicad_pro", ".kicad_pcb", ".kicad_sch", ".kicad_prl", ".kicad_dru" } )
+    {
+        fs::path from = dir / ( old + ext ), to = dir / ( name + ext );
+
+        if( !fs::exists( from, ec ) )
+            continue;
+
+        if( fs::exists( to, ec ) )
+            return error( "rename refused, nothing changed: " + to.filename().string() + " is there already" );
+
+        moves.emplace_back( from, to );
+    }
+
+    if( fs::is_directory( dir / ( old + "-backups" ), ec ) && !fs::exists( dir / ( name + "-backups" ), ec ) )
+        moves.emplace_back( dir / ( old + "-backups" ), dir / ( name + "-backups" ) );
+
+    // saved first: what is on disk is what gets the new name
+    if( TOOL_RESULT b = saveBoard( aIpc ); b.isError )
+        return error( "rename refused, nothing changed: save_board failed: " + b.text );
+
+    {
+        kicadd::schematic::SchSummary sum;
+        std::string                   e;
+
+        if( aIpc.Call( kicadd::schematic::GetSchSummary(), sum, e ) && !sum.file().empty() )
+        {
+            kicadd::schematic::SchSave save;
+            kicadd::schematic::SchConnectResponse r;
+
+            if( !aIpc.Call( save, r, e ) )
+                return error( "rename refused, nothing changed: sch_save failed: " + e );
+        }
+    }
+
+    // let go of the files (lock files too), rename, open under the new name
+    google::protobuf::Empty empty;
+
+    if( !aIpc.Call( kiapi::common::commands::CloseAllDocuments(), empty, err ) )
+        return error( "rename refused, nothing changed: could not close the project: " + err );
+
+    std::vector<std::pair<fs::path, fs::path>> done;
+    std::string                                failed;
+
+    for( const auto& [from, to] : moves )
+    {
+        fs::rename( from, to, ec );
+
+        if( ec )
+        {
+            failed = from.filename().string() + ": " + ec.message();
+            break;
+        }
+
+        done.emplace_back( from, to );
+    }
+
+    auto readAll = []( const fs::path& f, std::string& t )
+    {
+        std::ifstream in( f, std::ios::binary );
+        t.assign( std::istreambuf_iterator<char>( in ), {} );
+        return (bool) in || in.eof();
+    };
+
+    auto writeAll = []( const fs::path& f, const std::string& t )
+    {
+        std::ofstream o( f, std::ios::binary | std::ios::trunc );
+        o << t;
+        return (bool) o;
+    };
+
+    std::vector<std::string> edits;
+
+    if( failed.empty() )
+    {
+        // the project file's own name in it ("meta": {"filename": "old.kicad_pro"})
+        for( const char* ext : { ".kicad_pro", ".kicad_prl" } )
+        {
+            fs::path   f = dir / ( name + ext );
+            std::string t;
+
+            if( !fs::exists( f, ec ) || !readAll( f, t ) )
+                continue;
+
+            try
+            {
+                json j = json::parse( t );
+
+                if( j.contains( "meta" ) && j["meta"].is_object() && j["meta"].value( "filename", "" ) == old + ext )
+                {
+                    j["meta"]["filename"] = name + ext;
+                    writeAll( f, j.dump( 2 ) + "\n" );
+                }
+            }
+            catch( const std::exception& )
+            {
+            }
+        }
+
+        // a title block titled with the old name, written out (not ${PROJECTNAME})
+        const std::string from = "(title \"" + old + "\")", to = "(title \"" + name + "\")";
+
+        for( const char* ext : { ".kicad_pcb", ".kicad_sch" } )
+        {
+            fs::path    f = dir / ( name + ext );
+            std::string t;
+
+            if( !fs::exists( f, ec ) || !readAll( f, t ) )
+                continue;
+
+            if( size_t at = t.find( from ); at != std::string::npos )
+            {
+                t.replace( at, from.size(), to );
+
+                if( writeAll( f, t ) )
+                    edits.push_back( std::string( ext + 1 ) + " title block" );
+            }
+        }
+    }
+    else
+    {
+        for( auto it = done.rbegin(); it != done.rend(); ++it )
+            fs::rename( it->second, it->first, ec );
+    }
+
+    const fs::path open = failed.empty() ? dir / ( name + ".kicad_pcb" ) : pcb;
+    TOOL_RESULT    r = openBoard( aIpc, json{ { "path", open.string() }, { "discard", true } } );
+
+    if( !failed.empty() )
+        return error( "rename failed (" + failed + "): the files keep their old names; " + pcb.filename().string()
+                      + ( r.isError ? " did not open again: " + r.text : " is open again" ) );
+
+    std::string s = "renamed " + old + " -> " + name + " in " + dir.string() + " (saved first; reopened, the agent's undo "
+                    "history starts over):";
+
+    for( const auto& [from, to] : moves )
+        s += " " + to.filename().string();
+
+    s += "\n";
+
+    if( !edits.empty() )
+    {
+        s += "  title \"" + old + "\" -> \"" + name + "\" in:";
+
+        for( const std::string& e : edits )
+            s += " " + e;
+
+        s += "\n";
+    }
+
+    return { s + r.text, r.isError };
 }
 
 
@@ -3750,16 +4029,21 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                        "different layers one via on the way, on the same layer over the other side and back, "
                        "the spots along the straight line tried in turn, none inside the pads of an IC with an exposed / thermal "
                        "pad (a QFN: allow_under_ic=true allows it; an LQFP's body is free). The failures say how far they got and what is in the way "
-                       "(delete_tracks or move the part). All of it is one undoable edit; dry_run reports "
+                       "(delete_tracks or move the part). Nets with a copper zone that come in through refs are "
+                       "skipped and listed (the pour joins them; include_poured=true, or name the net in nets, "
+                       "to route them); skip_nets (globs) leaves others alone, e.g. a net to be poured later. "
+                       "All of it is one undoable edit; dry_run reports "
                        "what would and would not route without drawing.", json::object(),
                        [&aIpc]( const json& a ) { return routeShort( aIpc, a ); }, "", std::vector<params::PARAM>{
                              params::Boolean( "allow_under_ic", "vias under a QFN's body too (default false)" ),
                              params::Boolean( "detail", "List every part / violation (default: long lists cut short)" ),
                              params::Boolean( "dry_run" ),
+                             params::Boolean( "include_poured", "also nets with a zone (default: skipped)" ),
                              params::String( "layer" ),
                              params::Number( "max_length" ).Unit( "mm" ).Positive(),
                              params::Strings( "nets", "Net names, e.g. [\"GND\", \"/USB_D+\"]" ),
                              params::Strings( "refs", "Reference designators, e.g. [\"U5\", \"C12\"]" ),
+                             params::Strings( "skip_nets", "net globs left alone, e.g. [\"GND\"]" ),
                              params::Boolean( "vias", "default true" ) }} );
 
     tools.push_back( { "fanout",
@@ -3786,9 +4070,12 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
                        "areas, and outside the parts' courtyards (under_parts=true allows them there). Then "
                        "one via in each island of the net's copper that has none (islands=false skips it). "
                        "Net class via size. The zones are refilled before and after; one undoable edit; "
-                       "dry_run counts without adding.", json::object(),
+                       "dry_run counts without adding. at: [x, y] or [[x, y], ...] mm (net required) puts one via "
+                       "at each instead (no pour or grid needed; a via route can't place on its own), checked as "
+                       "route's vias are, each said with what of the net it lands on (zone, track, pad, or nothing yet).", json::object(),
                        [&aIpc]( const json& a ) { return stitchVias( aIpc, a ); }, "", std::vector<params::PARAM>{
                              params::Array( "area", params::Number( "" ) ),
+                             params::Any( "at", { "array" }, "[x, y] mm or [[x, y], ...]: vias just there" ),
                              params::Boolean( "dry_run" ),
                              params::Boolean( "islands" ),
                              params::Integer( "max" ).Range( 0 ),

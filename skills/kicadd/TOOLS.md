@@ -154,17 +154,19 @@ Arguments:
 
 Route the shortest unrouted connections of given parts / nets, one by one as route does, with vias where one layer won't do.
 
-Route the unrouted connections (ratsnest lines) of refs and / or nets, shortest first (the short ones have the fewest ways round, so they go first and block the least), each as route does; max_length (mm) leaves the long ones to the user. Through-hole to through-hole: F.Cu, then B.Cu if blocked, unless layer is given; when the nearest copper of the other end can't be reached (a track on the far layer), the pads and vias joined to it, nearest first. A connection that can't be done on one layer gets vias (vias=false: none): ends on different layers one via on the way, on the same layer over the other side and back, the spots along the straight line tried in turn, none inside the pads of an IC with an exposed / thermal pad (a QFN: allow_under_ic=true allows it; an LQFP's body is free). The failures say how far they got and what is in the way (delete_tracks or move the part). All of it is one undoable edit; dry_run reports what would and would not route without drawing.
+Route the unrouted connections (ratsnest lines) of refs and / or nets, shortest first (the short ones have the fewest ways round, so they go first and block the least), each as route does; max_length (mm) leaves the long ones to the user. Through-hole to through-hole: F.Cu, then B.Cu if blocked, unless layer is given; when the nearest copper of the other end can't be reached (a track on the far layer), the pads and vias joined to it, nearest first. A connection that can't be done on one layer gets vias (vias=false: none): ends on different layers one via on the way, on the same layer over the other side and back, the spots along the straight line tried in turn, none inside the pads of an IC with an exposed / thermal pad (a QFN: allow_under_ic=true allows it; an LQFP's body is free). The failures say how far they got and what is in the way (delete_tracks or move the part). Nets with a copper zone that come in through refs are skipped and listed (the pour joins them; include_poured=true, or name the net in nets, to route them); skip_nets (globs) leaves others alone, e.g. a net to be poured later. All of it is one undoable edit; dry_run reports what would and would not route without drawing.
 
 Arguments:
 
 - `allow_under_ic` (boolean): vias under a QFN's body too (default false)
 - `detail` (boolean): List every part / violation (default: long lists cut short)
 - `dry_run` (boolean)
+- `include_poured` (boolean): also nets with a zone (default: skipped)
 - `layer` (string)
 - `max_length` (number, mm, > 0)
 - `nets` (strings): Net names, e.g. ["GND", "/USB_D+"]
 - `refs` (strings): Reference designators, e.g. ["U5", "C12"]
+- `skip_nets` (strings): net globs left alone, e.g. ["GND"]
 - `vias` (boolean): default true
 
 ## fanout
@@ -186,11 +188,12 @@ Arguments:
 
 Stitching vias on a grid over a net's pours (default GND), plus one per unconnected island.
 
-Stitching vias for a net's pours (default GND): through vias on a grid (spacing, default 5 mm; area [x0, y0, x1, y1] mm, default the whole pour), each inside the net's filled copper on two or more layers (a net poured on one layer only, an inner plane: inside it, area required), clear of pads, tracks, holes, the edge and rule areas, and outside the parts' courtyards (under_parts=true allows them there). Then one via in each island of the net's copper that has none (islands=false skips it). Net class via size. The zones are refilled before and after; one undoable edit; dry_run counts without adding.
+Stitching vias for a net's pours (default GND): through vias on a grid (spacing, default 5 mm; area [x0, y0, x1, y1] mm, default the whole pour), each inside the net's filled copper on two or more layers (a net poured on one layer only, an inner plane: inside it, area required), clear of pads, tracks, holes, the edge and rule areas, and outside the parts' courtyards (under_parts=true allows them there). Then one via in each island of the net's copper that has none (islands=false skips it). Net class via size. The zones are refilled before and after; one undoable edit; dry_run counts without adding. at: [x, y] or [[x, y], ...] mm (net required) puts one via at each instead (no pour or grid needed; a via route can't place on its own), checked as route's vias are, each said with what of the net it lands on (zone, track, pad, or nothing yet).
 
 Arguments:
 
 - `area` (array)
+- `at` (array): [x, y] mm or [[x, y], ...]: vias just there
 - `dry_run` (boolean)
 - `islands` (boolean)
 - `max` (integer, >= 0)
@@ -480,7 +483,7 @@ Arguments:
 
 Open a .kicad_pcb / .kicad_pro, or make a new project, on the server (headless only); refused with unsaved changes unless discard.
 
-Open or make the project on the server (kicad-cli api-server), replacing the open one: the board, its schematic when there is one, the project's rules; the agent history starts over. open: a .kicad_pcb or .kicad_pro (absolute). reload=true: the open board (and schematic) from disk again, after the files were changed outside (save first; also in the desktop editor, which shows them anew: no need to close KiCad). new: {path (the folder, absolute; made when missing, or its .kicad_pro), name (default the folder's name), copper_layers (2), thickness (mm, 1.6) or stackup (a JLCPCB one, as board_setup), outline [width, height] mm (a rectangle at (100, 100), corner_radius)}: writes <name>.kicad_pro, an empty .kicad_pcb and .kicad_sch (refused when any is there: never written over), opens and saves them. Both are refused while the open board has unsaved changes, unless discard=true (the refusal lists what board_diff finds changed). open / new not with the desktop editor: there the user opens and makes projects.
+Open or make the project on the server (kicad-cli api-server), replacing the open one: the board, its schematic when there is one, the project's rules; the agent history starts over. open: a .kicad_pcb or .kicad_pro (absolute). reload=true: the open board (and schematic) from disk again, after the files were changed outside (save first; also in the desktop editor, which shows them anew: no need to close KiCad). new: {path (the folder, absolute; made when missing, or its .kicad_pro), name (default the folder's name), copper_layers (2), thickness (mm, 1.6) or stackup (a JLCPCB one, as board_setup), outline [width, height] mm (a rectangle centred on the sheet clear of the title block; a larger sheet when A4 is too small; corner_radius)}: writes <name>.kicad_pro, an empty .kicad_pcb and .kicad_sch (refused when any is there: never written over), opens and saves them. Both are refused while the open board has unsaved changes, unless discard=true (the refusal lists what board_diff finds changed). rename: "new_name": the open project's files in their folder under the new name (.kicad_pro / _pcb / _sch / _prl / _dru, the backups folder, a title block titled with the old name), saved first and reopened; refused when a file of that name is there. open / new / rename not with the desktop editor: there the user opens and makes projects.
 
 Parameter notes:
 
@@ -499,6 +502,7 @@ Arguments:
   - `new.thickness` (number, mm, > 0)
 - `discard` (boolean): Drop the open board's unsaved changes (default false)
 - `reload` (boolean): The open files from disk again
+- `rename` (string): The open project's new name (files renamed)
 
 ## save_board
 
@@ -704,7 +708,7 @@ Arguments:
 
 Move / rotate a schematic part; its connections go with it, and a move that would change a pin's net is refused.
 
-Move and/or rotate a placed part on the schematic: x/y (mm, the new anchor) or dx/dy, rotation 0/90/180/270. Its wire stubs, net labels, power symbols and no-connect flags go with it (re-drawn on the side each pin now faces), so its connections stay; other wires ending on its pins are dragged along. unit picks one unit of a multi-unit part (needed with x/y; dx/dy moves all units). A move that would change any pin's net (a pin, stub or label landing on another net) is refused and undone, with the per-pin diff, unless allow_rewire. Returns the part's pins at their new place.
+Move and/or rotate a placed part on the schematic: x/y (mm, the new anchor) or dx/dy, rotation 0/90/180/270. Its wire stubs, net labels, power symbols and no-connect flags go with it (re-drawn on the side each pin now faces), so its connections stay; other wires ending on its pins are dragged along and listed (straight, an L where it would run askew, or removed when left zero length). unit picks one unit of a multi-unit part (needed with x/y; dx/dy moves all units). A move that would change any pin's net (a pin, stub or label landing on another net) is refused and undone, with the per-pin diff, unless allow_rewire. Returns the part's pins at their new place.
 
 Arguments:
 

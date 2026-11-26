@@ -220,7 +220,7 @@ message SchSave
 
 // Move and/or rotate a placed part. Its stubs, net labels and no-connect flags go with it (a
 // stub is re-drawn on the side the pin now faces); other wires ending on a pin are dragged
-// along (they may end up diagonal). unit 0 = every unit of the part (only with dx/dy).
+// along (one that would run askew becomes an L; one left zero length is removed). unit 0 = every unit of the part (only with dx/dy).
 // Returns SchPartResponse (the part at its new place, with its pins)
 message SchMove
 {
