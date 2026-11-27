@@ -118,6 +118,7 @@ struct SAVED_SYMBOL
     std::vector<std::string> pins;         ///< pin numbers, sorted
     bool                     registered = false;   ///< the LCSC row was added to sym-lib-table now
     std::string              note;
+    bool                     kept = false; ///< the project's own (edited) copy kept, not replaced
     std::string              pinTypes;     ///< "pin types inferred ...: 8 power_in, ..." ("" none)
     std::map<std::string, std::string> pinNames;   ///< pin number -> name
 };
@@ -128,9 +129,9 @@ struct SAVED_SYMBOL
  * the project sym-lib-table has the LCSC library. Call after FetchPart (it reads the cache).
  */
 bool SaveSymbolToProjectLibrary( BOARD* aBoard, KIWAY* aKiway, const PART& aPart,
-                                 SAVED_SYMBOL& aSaved, std::string& aError );
+                                 SAVED_SYMBOL& aSaved, std::string& aError, bool aReplace = false );
 bool SaveSymbolToProjectLibrary( const wxString& aProjectDir, KIWAY* aKiway, const PART& aPart,
-                                 SAVED_SYMBOL& aSaved, std::string& aError );
+                                 SAVED_SYMBOL& aSaved, std::string& aError, bool aReplace = false );
 
 /// M4d: everything the editors' "Add LCSC part" commands need, in one call.
 struct FETCHED

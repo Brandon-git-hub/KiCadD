@@ -1781,7 +1781,14 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::connectAll( const SchConn
     if( !power.empty() )
         schematic()->Hierarchy().GetSymbols( powerRefs, SYMBOL_FILTER_POWER );
 
-    std::map<std::string, std::string> asked;   // REF.PIN -> net, in this call
+    std::map<std::string, std::string> asked;   // REF.PIN -> net, in this call (the pin's number)
+
+    // REF.NUMBER for a symbol's pin (whether asked by number or by name), else REF.PIN as given
+    auto pinKey = []( const SchPinNet& aLink, const PIN_AT& aAt )
+    {
+        return aAt.pin && !aAt.sheetPin ? aLink.ref() + "." + str( aAt.pin->GetNumber() )
+                                        : aLink.ref() + "." + aLink.pin();
+    };
     const std::map<std::string, std::string> netsBefore = pinNets();   // to see what it joined
     std::vector<std::pair<SCH_SCREEN*, BOX2I>> textPlaced;   // the labels / power symbols made here
 
@@ -1817,7 +1824,7 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::connectAll( const SchConn
         std::string err;
 
         if( findPin( link.ref(), link.pin(), at, err ) )
-            netNow[link.ref() + "." + link.pin()] = pinNet( at.item, at.sheet );
+            netNow[pinKey( link, at )] = pinNet( at.item, at.sheet );
     }
 
     for( const SchPinNet& link : aReq.links() )
@@ -1837,6 +1844,9 @@ HANDLER_RESULT<SchConnectResponse> KICADD_HANDLER_SCH::connectAll( const SchConn
             out.add_errors( err );
             continue;
         }
+
+        // a pin given by name ("D1.K") is checked afterwards by its number, as pinNets() keys it
+        label = pinKey( link, at );
 
         // the same pin twice in this call: its wire is not in the connectivity yet
         if( auto seen = asked.find( label ); seen != asked.end() )

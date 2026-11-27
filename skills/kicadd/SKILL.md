@@ -214,10 +214,16 @@ jobs.
 1. Find candidates by specification: `lcsc_search` (`value`, `package`, `tolerance`,
    `dielectric`, `voltage_min`, `keyword`, `basic_only`). Prefer **basic** parts (no JLCPCB
    setup fee), then preferred, then extended; the first hit is checked live for stock (`live`,
-   default 1). **Live checks and fetches share one EasyEDA rate limit:** after about 30
+   default 1). **Live checks and fetches share one EasyEDA rate limit:** after about 20
    requests in a few minutes, EasyEDA refuses requests (HTTP 403) for a while. Browse with
    `live: 0`, fetch each part number once, and wait rather than retry when refused.
-   The index already has JLC stock; the live check is a second opinion.
+   The index already has JLC stock; the live check is a second opinion. A part the index
+   lists may still be "not found" at EasyEDA (no symbol / footprint there): pick another.
+   An edge connector's EasyEDA footprint may draw the board edge (an edge-launch SMA): the
+   fetch puts that line on Dwgs.User with a "PCB Edge" text, which the edge rules use. On
+   Edge.Cuts it would join the board outline (DRC `invalid_outline`, auto_place refusing:
+   their errors name the footprint); a footprint fetched before this version: `lcsc_fetch
+   refresh=true` and place it again.
    MOSFETs, LDOs, op-amps, inductors and diodes list their electrical parameters (one test
    condition each, after @: `Rds(on) 17 mΩ @10V`); filter with `where`, your thresholds in
    SI with prefixes: `category "MOSFET", where {"rds_on": "<=20m", "vds": ">=30", "vgs_th":
@@ -453,7 +459,10 @@ From a blank project, before placing parts:
    `measure_only=true` reports the numbers without moving anything.
    Connectors (USB, RJ45, DC jack): an edge rule `{"J1": "left"}` turns one to open over that
    edge, with the footprint's own "PCB Edge" line on the board edge (KiCad's library has it for
-   many connectors), else its courtyard front flush with the edge. `{"J1": {"side": "left",
+   many connectors), else its courtyard front flush with the edge. The opening comes from that
+   line, else the courtyard reaching past the pads, else the 3D model's body past them (an
+   edge-launch SMA), else the pads; with none of them it is not a connector to the rule (the
+   reply says so): give `rotation` yourself. `{"J1": {"side": "left",
    "overhang": 1}}` puts the front 1 mm past the edge; `"inside": true` keeps it inside. The
    reply's `edge:` lines say which way each went and why; check flush ones against the
    connector's datasheet (the enclosure decides the real overhang).
@@ -613,12 +622,13 @@ length matching, dense escapes).
 
 ## Board texts, silkscreen fields, moving the board
 
-- `pcb_text`: no arguments lists the board texts with ids; `add` / `edit` (by `id` or `match`,
+- `pcb_text`: no arguments lists the board texts with ids; `add` (`[{"text": "REV A", "at":
+  [x, y], "layer": "F.SilkS"}]`) / `edit` (by `id` or `match`,
   `by: [dx, dy]` moves) / `remove`. `${REVISION}` and other variables stay as written (the list
   shows what they print). Back layers read mirrored, as in the editor.
 - A part's reference / value on the silkscreen: `pcb_set_fields` with a layout per field,
   `{"R1": {"Value": {"layer": "silk", "at": [0, 1.5], "size": 0.8}}}` (`at` from the part's
-  origin, board axes), or `silk` for many at once: `refs [...]` with `set {"silk":
+  origin, board axes), or `silk` for many at once: `refs [...]` (patterns too: `["C*"]`) with `set {"silk":
   "value_only"}` (or `ref_only`, `both`, `none`; the other one goes to Fab). Then `silk_tidy`
   and `board_render layers=["silk"]` to check. Layouts survive `sync_pcb`.
 - `board_transform {dx, dy}` or `{center_on_sheet: true}` moves everything (tracks, zones and

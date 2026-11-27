@@ -188,7 +188,7 @@ Python or Node runtime is needed.
 | `run_drc` | full DRC; `local=true` with `refs`: local DRC for those parts without moving |
 | `project` / `save_board` | `open` another project or make a `new` one (board + schematic; `discard=true` drops unsaved changes) / write the in-memory board to disk |
 
-beta.14 declares every tool parameter once (one schema, one check, one error format: `path: wanted; got value`) and adds `model check:` lines to `simulate`. beta.13 merged thin tools (the old names are gone): `undo
+beta.15 removes the reasons to edit files by hand: `board_transform` (move / centre the whole board), `pcb_text` (board texts), field layouts in `pcb_set_fields`, `sync_pcb update_footprints: "changed"`, `project {reload, rename}`; `audit` gains `mouth` (connector openings, also from the 3D model). beta.14 declares every tool parameter once (one schema, one check, one error format: `path: wanted; got value`) and adds `model check:` lines to `simulate`. beta.13 merged thin tools (the old names are gone): `undo
 {target, redo}` (was undo / redo / sch_undo / sch_redo), `set_rules` with no arguments (get_rules),
 `run_drc {local}` (check_drc), `board_summary` (flush_ratsnest), `project {open | new}`
 (open_board, new_project), `export {fab, assembly, schematic_pdf}` (export_fab, export_assembly,

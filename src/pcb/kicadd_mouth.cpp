@@ -12,8 +12,15 @@
 #include <cmath>
 #include <vector>
 
+#include <3d_cache/3d_cache.h>
+#include <3d_math.h>
+#include <board.h>
 #include <footprint.h>
+#include <footprint_library_adapter.h>
+#include <libraries/library_manager.h>
 #include <pad.h>
+#include <plugins/3dapi/c3dmodel.h>
+#include <project_pcb.h>
 #include <pcb_shape.h>
 #include <pcb_text.h>
 #include <trigo.h>
@@ -52,6 +59,96 @@ int along( const BOX2I& aBox, int aSide )
     case EDGE_TOP:   return -aBox.GetTop();
     default:         return aBox.GetBottom();
     }
+}
+
+/// The footprint's 3D models seen from above, in its own frame at rotation 0 (nm, y down), or
+/// nothing (no model, not loadable, a part on the back)
+std::optional<BOX2I> modelOutline( const FOOTPRINT& aFp )
+{
+    const BOARD* board = aFp.GetBoard();
+
+    if( aFp.IsFlipped() || !board || !board->GetProject() || aFp.Models().empty() )
+        return std::nullopt;
+
+    PROJECT*   project = board->GetProject();
+    S3D_CACHE* cache = PROJECT_PCB::Get3DCacheManager( project );
+
+    if( !cache )
+        return std::nullopt;
+
+    wxString basePath;
+
+    if( FOOTPRINT_LIBRARY_ADAPTER* adapter = PROJECT_PCB::FootprintLibAdapter( project ) )
+    {
+        std::optional<LIBRARY_TABLE_ROW*> row = adapter->GetRow( aFp.GetFPID().GetLibNickname() );
+
+        if( row )
+            basePath = LIBRARY_MANAGER::GetFullURI( *row, true );
+    }
+
+    std::optional<BOX2I> box;
+
+    for( const FP_3DMODEL& placement : aFp.Models() )
+    {
+        if( !placement.m_Show || placement.m_Filename.IsEmpty() )
+            continue;
+
+        std::vector<const EMBEDDED_FILES*> embedded = { aFp.GetEmbeddedFiles(), board->GetEmbeddedFiles() };
+        S3DMODEL* model = cache->GetModel( placement.m_Filename, basePath, std::move( embedded ) );
+
+        if( !model )
+            continue;
+
+        const glm::mat4 m = CalcModelMatrix(
+                SFVEC3F( placement.m_Offset.x, placement.m_Offset.y, placement.m_Offset.z ),
+                SFVEC3F( placement.m_Rotation.x, placement.m_Rotation.y, placement.m_Rotation.z ),
+                SFVEC3F( placement.m_Scale.x, placement.m_Scale.y, placement.m_Scale.z ) );
+
+        for( unsigned int i = 0; i < model->m_MeshesSize; ++i )
+        {
+            const SMESH& mesh = model->m_Meshes[i];
+
+            for( unsigned int k = 0; k < mesh.m_VertexSize; ++k )
+            {
+                const glm::vec4 v = m * glm::vec4( mesh.m_Positions[k].x, mesh.m_Positions[k].y,
+                                                   mesh.m_Positions[k].z, 1.0f );
+
+                if( !std::isfinite( v.x ) || !std::isfinite( v.y ) )
+                    continue;
+
+                // the model's mm, y up -> the footprint's nm, y down
+                const VECTOR2I p( KiROUND( v.x * 1e6 ), KiROUND( -v.y * 1e6 ) );
+
+                if( box )
+                    box->Merge( p );
+                else
+                    box = BOX2I( p, VECTOR2I( 0, 0 ) );
+            }
+        }
+    }
+
+    return box;
+}
+
+
+/// The side of aOuter that reaches well past aInner (1.5 mm, twice any other side), or -1
+int farSide( const BOX2I& aOuter, const BOX2I& aInner )
+{
+    int reach[4];
+
+    for( int s = 0; s < 4; ++s )
+        reach[s] = along( aOuter, s ) - along( aInner, s );
+
+    const int best = (int) ( std::max_element( reach, reach + 4 ) - reach );
+    int       second = 0;
+
+    for( int s = 0; s < 4; ++s )
+    {
+        if( s != best )
+            second = std::max( second, reach[s] );
+    }
+
+    return reach[best] >= 1.5 * MM && reach[best] >= 2 * second ? best : -1;
 }
 
 } // namespace
@@ -181,23 +278,24 @@ MOUTH Find( const FOOTPRINT& aFp, std::optional<double> aOverhang )
     // by shape: the courtyard well past the pads on one side only
     if( !out.marked )
     {
-        int reach[4];
+        const int byShape = farSide( *crt, *cu );
+        int       byModel = -1;
 
-        for( int s = 0; s < 4; ++s )
-            reach[s] = along( *crt, s ) - along( *cu, s );
-
-        const int best = (int) ( std::max_element( reach, reach + 4 ) - reach );
-        int       second = 0;
-
-        for( int s = 0; s < 4; ++s )
+        if( byShape < 0 )
         {
-            if( s != best )
-                second = std::max( second, reach[s] );
+            // the body only in the 3D model (an edge-launch SMA: its courtyard stops at the pads)
+            if( std::optional<BOX2I> model = modelOutline( aFp ) )
+                byModel = farSide( *model, *cu );
         }
 
-        if( reach[best] >= 1.5 * MM && reach[best] >= 2 * second )
+        if( byShape >= 0 )
         {
-            out.side = best;
+            out.side = byShape;
+        }
+        else if( byModel >= 0 )
+        {
+            out.side = byModel;
+            out.byModel = true;
         }
         else
         {

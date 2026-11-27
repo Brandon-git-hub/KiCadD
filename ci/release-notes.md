@@ -2,7 +2,7 @@
      {{UPSTREAM}} is filled from patches/UPSTREAM_BASE; build info and SHA-256 are appended. -->
 KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修剪版 Windows x64 build，加上 Agent（MCP）協同設計。
 
-> ⚠️ Beta（pre-release）。已能走完整個設計流程，功能仍會持續加入。由 GitHub Actions 自動建置；44 個端到端測試在 Linux 上全部通過（含桌面版），Windows CI 跑 smoke test 與 headless 的出廠、貼片、電路圖文件、模擬、PDN / 反射、新專案、開關 KiCad、工具、設定、undo 歷史測試；桌面版在 Windows 上只有人工試用。
+> ⚠️ Beta（pre-release）。已能走完整個設計流程，功能仍會持續加入。由 GitHub Actions 自動建置；47 個端到端測試在 Linux 上全部通過（含桌面版），Windows CI 跑 smoke test 與 headless 的出廠、貼片、電路圖文件、模擬、PDN / 反射、新專案、開關 KiCad、工具、設定、undo 歷史測試；桌面版在 Windows 上只有人工試用。
 
 ## 使用前須知
 完整的使用說明（安裝、接上 Agent、skill、存檔格式、做得到 / 做不到）：[docs/GUIDE.md](https://github.com/Brandon-git-hub/KiCadD/blob/main/docs/GUIDE.md)。
@@ -13,7 +13,40 @@ KiCadD 試用版：以 KiCad nightly（upstream {{UPSTREAM}}）為基礎的修�
 - **一次一個專案：** 一個服務同時只開一個專案（板子加電路圖），換專案請用 `project {open}`，新專案用 `project {new}`。
 - **目前不支援：** 差分對與等長佈線、全板自動佈線（`route` 只代替重複的手動佈線）、電路圖自動排版、多實例重複圖紙、STEP 匯出與 STEP 模型（3D 只有 VRML）、ODB++ / IPC-2581 / DXF。
 
-## 這一版（beta.14）
+## 這一版（beta.15）
+目標：Agent 從零設計一塊板時，不必再「關 KiCad → 直接改檔 → 重開」。上一版在一塊類比量測板上這樣做了約 8 次（有一次漏改 transform，造成 135 個未連線）。這一版的盲測（類比前端、USB-C、螺絲端子、香蕉座、SMA、2×5 排針的兩層板）從頭到出廠檔：ERC 0、DRC 0 錯誤、未佈線 0，**直接改檔 0 次**。工具 58 → 60 個。
+
+- **新工具：**
+  - `board_transform`：整板平移或置中到圖紙（整數 mm），外框、零件、走線、鋪銅、文字一起動，undo 一次還原。
+  - `pcb_text`：板上文字的列出 / 新增 / 修改 / 刪除（版本號、`${REVISION}` 等變數照原樣保留）。
+- **不必再改檔：**
+  - `pcb_set_fields` 可改欄位的版面（層、顯示、位置、大小、對齊、角度），`silk` 一次切換 value_only / ref_only / both / none；refs 可用 `"C*"` 這類樣式。
+  - `sync_pcb update_footprints: "changed"`：library 裡改過的 footprint 會換到板上（保留位置、旋轉、文字、網路）。
+  - `project {reload}`（桌面版也能用）、`project {rename}`（連同 .kicad_pro / pcb / sch / prl / dru 改名再重開）。
+  - `sch_add_part` 可補放多單元零件的其他 unit；`sch_set_fields` 可改 Reference。
+  - `stitch_vias {at: [x, y], net}`：在指定點放單顆 via，回應說明它落在什麼上。
+- **不再靜默出錯：**
+  - `lcsc=` 不會覆蓋專案裡改過的 footprint、3D 模型或符號（`lcsc.kicad_sym`），回應會說明；`refresh=true` 才取代。
+  - 有銅環的 NPTH 外殼腳會編號並改為鍍通。
+  - 重鋪銅後列出整片消失、面積少一半以上、整層浮接的鋪銅。
+  - `board_render` 照板上的可見性畫出數值。
+  - `close_kicad` 清掉這次留下的 `~*.lck`。
+  - `route_short` 預設略過已經有鋪銅的網路（列出，`include_poured` 或 `skip_nets` 控制）。
+  - `sch_move` 拖動時線保持水平 / 垂直（轉成 L 形），不再拉出斜線；`sch_delete dangling` 不會刪掉只靠中段 T 接著的線。
+  - EasyEDA footprint 畫在 Edge.Cuts 上的板邊線（板邊型 SMA）改放到 Dwgs.User 並標「PCB Edge」，不再弄壞板框；板框無效時錯誤會點名是哪顆 footprint。
+  - `pcb_set_fields` 沒改到任何東西時直說，不記 undo。
+  - `sch_connect` 用腳名（`D1.A`）時不再被誤判。
+- **擺放與檢查：**
+  - `project new` 的板框置中在圖紙上、避開標題欄，放不下就換大一號的圖紙。
+  - `silk_tidy` 量出離別的零件比離自己近的位號（讀的人會認錯），重排時避開，並讓同一排零件的位號放在同一側。
+  - `auto_place` 的 region 規則可寫 `"block:名稱"`，套到整個功能區塊。SKILL 建議類比前端、高阻抗節點先手擺並固定。
+  - `audit` 新增 `mouth`：每個接頭開口朝哪、前緣到板邊的距離、前方擋住的零件；`mouth_edge_mm` / `mouth_clear_mm` 才給警告。開口從 footprint 的 PCB Edge 線、courtyard、**3D 模型**（板邊型 SMA）或焊盤判斷，都判斷不出就說「opening unknown」。`auto_place` 的 edge 規則用同一套判斷轉向。
+  - `lcsc_search`：沒有零件符合所有關鍵字時，列出各字單獨的筆數並放寬重查（`relaxed: dropped "socket"`）；每列標 JLC 貼片類別（BASIC / preferred / extended，live 檢查說不能貼就標 NOT-for-assembly）。
+  - CPL 的 through-hole 提示也涵蓋 EasyEDA 匯入、沒標 THT 的零件。
+- **SKILL：** kicad-cli 的位置與常用指令、EasyEDA 限速（約 20 次請求）、上述新工具與參數。
+- **測試：** 新增 `report_e2e`、`edit_e2e`、`behave_e2e`，共 47 個。
+
+## beta.14
 根本改進：把一次次個別修正的模型與工具問題，改成有系統的檢查。工具數不變（58 個），`tools/list` 的大小不變。
 
 - **模擬模型的情境測試（新測試 `simmodel_e2e`，66 項）：** LDO、運放、MOSFET、二極體 / Zener / 蕭特基、電容、電感、磁珠，各以固定參數跑典型情境（壓降、反向、限流、PSRR、飽和、崩潰…），測出並修正：

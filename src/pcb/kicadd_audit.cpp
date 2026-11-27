@@ -961,7 +961,8 @@ void checkMouths( BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& aOu
         for( PAD* pad : fp->Pads() )
             wired += pad->GetNetCode() > 0;
 
-        if( !asked || wired < 2 )
+        // (named in mouth_refs: measured whatever its nets)
+        if( !asked || ( globs.empty() && wired < 2 ) )
             continue;
 
         const kicadd::mouth::MOUTH m = kicadd::mouth::Find( *fp, std::nullopt );
@@ -1000,14 +1001,24 @@ void checkMouths( BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& aOu
             face.y = dir.y > 0 ? body.GetBottom() : body.GetTop();
 
         const char* sideName = horizontal ? ( dir.x > 0 ? "right" : "left" ) : ( dir.y > 0 ? "down" : "up" );
-        const char* how = m.marked ? "its footprint's edge line" : m.byPads ? "its pads" : "its courtyard";
+        const char* how = m.marked ? "its footprint's edge line" : m.byPads ? "its pads" : m.byModel ? "its 3D model" : "its courtyard";
         std::string msg = ref + " opens " + sideName + " (" + how + "): ";
         bool        warn = false;
         double      toEdge = 0;   // mm; < 0: past the edge
 
+        // its pads on the board? (a part still waiting outside the outline has no edge to face)
+        bool onBoard = false;
+
+        for( PAD* pad : fp->Pads() )
+            onBoard = onBoard || ( haveOutline && outline.Contains( pad->GetPosition() ) );
+
         if( !haveOutline )
         {
             msg += "no board outline";
+        }
+        else if( !onBoard )
+        {
+            msg += "not on the board (its pads are outside the outline): place it first";
         }
         else if( outline.Contains( VECTOR2I( KiROUND( face.x ), KiROUND( face.y ) ) ) )
         {
@@ -1023,11 +1034,11 @@ void checkMouths( BOARD& aBoard, const BoardAudit& aReq, BoardAuditResponse& aOu
         {
             std::optional<double> d = rayToEdge( face, -dir );
             toEdge = d ? -*d / 1e6 : 0;
-            msg += "its front " + mm( -toEdge ) + " mm past the board edge";
+            msg += "its front " + mm( std::fabs( toEdge ) ) + " mm past the board edge";
         }
 
         // other parts in front: the corridor as wide as the face, to the edge (or clear mm)
-        const double reach = clearLimit > 0 ? clearLimit : toEdge > 0 && std::isfinite( toEdge ) ? toEdge : 0;
+        const double reach = !onBoard ? 0 : clearLimit > 0 ? clearLimit : toEdge > 0 && std::isfinite( toEdge ) ? toEdge : 0;
         std::vector<std::pair<double, std::string>> inFront;
 
         if( reach > 0 )

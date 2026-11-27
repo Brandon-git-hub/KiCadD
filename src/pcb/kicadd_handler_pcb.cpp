@@ -95,6 +95,34 @@ using namespace kicadd::board;
 namespace
 {
 
+/// "; the outline is broken by lines in footprints: J5 (2 on Edge.Cuts) ..." or "" when none:
+/// a footprint that draws on Edge.Cuts adds those lines to the board's outline.
+std::string edgeCutsInFootprints( const BOARD& aBoard )
+{
+    std::string list;
+    int         n = 0;
+
+    for( FOOTPRINT* fp : aBoard.Footprints() )
+    {
+        int lines = 0;
+
+        for( BOARD_ITEM* item : fp->GraphicalItems() )
+            lines += item->GetLayer() == Edge_Cuts;
+
+        if( lines && n++ < 8 )
+            list += ( list.empty() ? "" : ", " ) + fp->GetReference().ToStdString( wxConvUTF8 ) + " ("
+                    + std::to_string( lines ) + ")";
+    }
+
+    if( list.empty() )
+        return "";
+
+    return "; footprints that draw on Edge.Cuts join the outline: " + list
+           + " (an edge connector marking where the board edge goes: replace the part with lcsc= again, "
+             "which moves that line to Dwgs.User, or delete it in the footprint editor)";
+}
+
+
 constexpr int DEFAULT_RADIUS_LIMIT = 64;
 constexpr int DEFAULT_NET_LIMIT    = 256;
 
@@ -1420,10 +1448,10 @@ PCB_LAYER_ID fieldLayer( const BOARD* aBoard, const FOOTPRINT* aFp, const std::s
     std::transform( n.begin(), n.end(), n.begin(), ::tolower );
 
     if( n == "silk" || n == "silkscreen" )
-        return aFp->IsFlipped() ? B_SilkS : F_SilkS;
+        return aFp && aFp->IsFlipped() ? B_SilkS : F_SilkS;
 
     if( n == "fab" )
-        return aFp->IsFlipped() ? B_Fab : F_Fab;
+        return aFp && aFp->IsFlipped() ? B_Fab : F_Fab;
 
     PCB_LAYER_ID layer = aBoard->GetLayerID( wxString::FromUTF8( aName ) );
 
@@ -1603,16 +1631,30 @@ KICADD_HANDLER_PCB::handleSetFields( const HANDLER_CONTEXT<FpSetFields>& aCtx )
         }
 
         std::vector<FOOTPRINT*> same;
+        const wxString          wanted = wxString::FromUTF8( e.ref() );
+        const bool              glob = wanted.find_first_of( wxS( "*?" ) ) != wxString::npos;
+
+        if( glob && newRef )
+            return bad( e.ref() + ": a pattern cannot be renumbered; give one reference" );
 
         for( FOOTPRINT* fp : b->Footprints() )
         {
-            if( fp->GetReference() == wxString::FromUTF8( e.ref() ) )
+            if( glob ? fp->GetReference().Matches( wanted ) : fp->GetReference() == wanted )
                 same.push_back( fp );
         }
 
         if( same.empty() )
         {
             out.add_missing( e.ref() );
+            continue;
+        }
+
+        // a pattern ("C*", "*"): the same edit on every part it matches
+        if( glob )
+        {
+            for( FOOTPRINT* fp : same )
+                edits.emplace_back( fp, &e );
+
             continue;
         }
 
@@ -1775,6 +1817,19 @@ KICADD_HANDLER_PCB::handleSetFields( const HANDLER_CONTEXT<FpSetFields>& aCtx )
                                 v->Add( fp );
                         },
                         wxString::FromUTF8( "Agent: " + entry.label ), out );
+
+    // nothing different (every part was already so): no history entry, else an undo of it
+    // "was already undone"
+    bool changed = false;
+
+    for( size_t i = 0; i < targets.size(); ++i )
+        changed = changed || ( layout ? !matches( targets[i], was[i] ) : !( stateOf( targets[i], true ) == entry.before[i] ) );
+
+    if( !changed )
+    {
+        out.add_notes( "nothing changed: every part was already so" );
+        return out;
+    }
 
     for( size_t i = 0; i < targets.size(); ++i )
     {
@@ -5350,8 +5405,12 @@ KICADD_HANDLER_PCB::handleFetchLcsc( const HANDLER_CONTEXT<FetchLcsc>& aCtx )
             // M4b: the schematic symbol, into the project's lcsc.kicad_sym
             kicadd::lcsc::SAVED_SYMBOL sym;
 
-            if( kicadd::lcsc::SaveSymbolToProjectLibrary( b, m_context->GetKiway(), part, sym, err ) )
+            if( kicadd::lcsc::SaveSymbolToProjectLibrary( b, m_context->GetKiway(), part, sym, err,
+                                                          aCtx.Request.refresh() ) )
             {
+                if( !sym.note.empty() )
+                    note += ( note.empty() ? "" : "; " ) + sym.note;
+
                 LcscSymbol* s = out.mutable_symbol();
                 s->set_lib_id( sym.libId );
                 s->set_file( sym.file );
@@ -6992,7 +7051,8 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
 
     if( !b->GetBoardPolygonOutlines( outline, false ) || outline.OutlineCount() == 0 )
         return tl::unexpected( makeError( ApiStatusCode::AS_BAD_REQUEST,
-                                          "the board has no closed outline on Edge.Cuts to place into" ) );
+                                          "the board has no closed outline on Edge.Cuts to place into"
+                                                  + edgeCutsInFootprints( *b ) ) );
 
     const AutoPlace&      req = aCtx.Request;
     AutoPlaceResponse     out;
@@ -7384,9 +7444,11 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
 
             if( m.side < 0 )
             {
-                if( given )
-                    out.add_edge_notes( ref + ": no opening found (its courtyard is not well past its pads on one side): "
-                                        "kept inside the edge" );
+                // said either way: without it the part reads as a connector turned on purpose
+                out.add_edge_notes( ref + ": no opening found (no PCB Edge line; neither its courtyard nor its 3D "
+                                    "model reaches well past its pads on one side): placed inside the edge like any "
+                                    "part, not turned to open over it; give rotation if it is a connector"
+                                    + std::string( given ? " (overhang not used)" : "" ) );
 
                 continue;
             }
@@ -7411,6 +7473,10 @@ HANDLER_RESULT<AutoPlaceResponse> KICADD_HANDLER_PCB::handleAutoPlace( const HAN
             else if( m.byPads )
                 std::snprintf( buf, sizeof( buf ), "its courtyard flush with it (the mouth taken from its pads: signal "
                                                    "pins at the back, mounting pads at the front; check the datasheet; "
+                                                   "overhang=<mm> to go further)" );
+            else if( m.byModel )
+                std::snprintf( buf, sizeof( buf ), "its courtyard flush with it (the mouth taken from its 3D model: "
+                                                   "the body well past the pads that way; check the datasheet; "
                                                    "overhang=<mm> to go further)" );
             else
                 std::snprintf( buf, sizeof( buf ), "its courtyard flush with it (no edge line in the footprint; "
@@ -8934,7 +9000,8 @@ ZONE* KICADD_HANDLER_PCB::createZone( const ZoneCreate& aReq, std::string& aErro
 
         if( !b->GetBoardPolygonOutlines( outline, false ) || outline.OutlineCount() == 0 )
         {
-            aError = "the board has no closed outline on Edge.Cuts (board_outline draws one), or give outline points";
+            aError = "the board has no closed outline on Edge.Cuts (board_outline draws one), or give outline points"
+                     + edgeCutsInFootprints( *b );
             return nullptr;
         }
 
@@ -10302,10 +10369,8 @@ HANDLER_RESULT<PcbTextResponse> KICADD_HANDLER_PCB::handlePcbText( const HANDLER
         if( aSpec.has_layer() || aNew )
         {
             wxString     name = aSpec.has_layer() ? wxString::FromUTF8( aSpec.layer() ) : wxString( wxS( "F.SilkS" ) );
-            PCB_LAYER_ID layer = b->GetLayerID( name );
-
-            if( layer == UNDEFINED_LAYER )
-                layer = b->GetLayerID( name == wxS( "F.Silkscreen" ) ? wxString( wxS( "F.SilkS" ) ) : name );
+            // either name (F.SilkS / F.Silkscreen, F.Fab / F.Fabrication), or "silk" / "fab"
+            PCB_LAYER_ID layer = fieldLayer( b, nullptr, name.ToStdString( wxConvUTF8 ) );
 
             if( layer == UNDEFINED_LAYER || !b->IsLayerEnabled( layer ) )
             {

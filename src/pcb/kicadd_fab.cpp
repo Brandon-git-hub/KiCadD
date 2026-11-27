@@ -318,7 +318,14 @@ bool ExportFab( BOARD* aBoard, const wxString& aDir, bool aZip, kicadd::board::E
         if( fp->IsExcludedFromPosFiles() )
             continue;
 
-        if( fp->GetAttributes() & FP_THROUGH_HOLE )
+        // through-hole: the footprint says so, or it has plated holes (EasyEDA's imports are
+        // marked neither SMD nor through-hole)
+        bool plated = ( fp->GetAttributes() & FP_THROUGH_HOLE ) != 0;
+
+        for( const PAD* pad : fp->Pads() )
+            plated = plated || pad->GetAttribute() == PAD_ATTRIB::PTH;
+
+        if( plated )
             tht++;
 
         // the Gerbers' frame: absolute, Y up

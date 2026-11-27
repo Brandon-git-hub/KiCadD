@@ -11,7 +11,8 @@ usage: python3 -I behave_e2e.py --build BUILD --demos DEMOS_DIR --work DIR
   rename     project rename: the files under the new name, the old ones gone, reopened; refused
              when a file of that name is there
   sch_move   a wire dragged along becomes an L (no diagonal), the nets stay; sch_delete dangling
-             leaves a wire teed into another's middle alone
+             leaves a wire teed into another's middle alone, and a run with both ends free that
+             joins two pins through wires teed into it
   silk       silk_tidy counts the references nearer another part than their own; placed again
              (all=true) none is
   block      auto_place region rule "block:X" keeps that block's parts in the box; an unknown
@@ -26,6 +27,7 @@ import os
 import re
 import shutil
 import sys
+import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from m5_e2e import FAILS, Mcp, Server, binaries, check  # noqa: E402
@@ -147,6 +149,55 @@ def main():
         check(ln.startswith("warning:") and "mm from the board edge (over 2)" in ln, "moved in: " + ln[:140])
         m.tool("undo", {})
 
+        print("[connector]")
+        err, t = m.tool("add_footprint", {"lcsc": "C22467594", "ref": "J9", "x": 120, "y": 42})
+        check(not err, "an edge-launch SMA (courtyard stops at its pads): " + t.splitlines()[0][:90])
+        err, t = m.tool("audit", {"sections": ["mouth"], "mouth_refs": ["J9"]})
+        check(re.search(r"J9 opens \w+ \(its 3D model\)", t), "its mouth from the 3D model: "
+              + next((ln.strip() for ln in t.splitlines() if "J9" in ln), t[-120:]))
+        err, t = m.tool("auto_place", {"refs": ["J9"], "rules": {"edge": {"J9": "top"}}, "force": True})
+        check(not err and "J9: opens over the board's top edge" in t and "3D model" in t,
+              "edge rule: turned to open over it: " + next((ln.strip() for ln in t.splitlines() if "J9:" in ln), t[:120]))
+        err, t = m.tool("add_footprint", {"lcsc": "C496550", "ref": "J10", "x": 150, "y": 42})
+        mod = open(os.path.join(proj, "lcsc.pretty", "SMA-SMD_BWSMA-KE-P001.kicad_mod"), encoding="utf-8").read()
+        check(not err and "Edge.Cuts" not in mod and '"PCB Edge"' in mod,
+              "an EasyEDA footprint's board-edge line: on Dwgs.User with a PCB Edge text, not Edge.Cuts")
+        err, t = m.tool("board_summary", {})
+        check("outline=73.6" in t, "the board outline intact: " + next((w for w in t.split() if w.startswith("outline=")), "?"))
+        err, t = m.tool("audit", {"sections": ["mouth"], "mouth_refs": ["J10"]})
+        check("J10 opens right (its footprint's edge line)" in t, "its mouth from that line: "
+              + next((ln.strip() for ln in t.splitlines() if "J10" in ln), t[-120:]))
+        # the project's own edit of an LCSC symbol survives a fetch of the same part
+        lib = os.path.join(proj, "lcsc.kicad_sym")
+        text = open(lib, encoding="utf-8").read()
+        i = text.find('(symbol "A-SMA-KE-13.5A"')
+        j = text.find('(name "', i)
+        k = text.find('"', j + 7)
+        old_name = text[j + 7:k]
+        open(lib, "w", encoding="utf-8").write(text[:j + 7] + "EDITED" + text[k:])
+        err, t = m.tool("lcsc_fetch", {"lcsc": "C22467594"})
+        check(not err and "kept the symbol LCSC:A-SMA-KE-13.5A" in t and "EDITED" in open(lib, encoding="utf-8").read(),
+              "lcsc.kicad_sym edited: kept, said: " + (re.search(r"kept the symbol[^;\n]*", t) or re.search(r".{0,90}$", t)).group(0)[:90])
+        err, t = m.tool("lcsc_fetch", {"lcsc": "C22467594", "refresh": True})
+        check(not err and "EDITED" not in open(lib, encoding="utf-8").read(), f"refresh=true replaces it (pin {old_name!r} again)")
+        m.tool("undo", {}); m.tool("undo", {}); m.tool("undo", {})
+
+        print("[names]")
+        err, t = m.tool("pcb_text", {"add": [{"text": "S", "at": [130, 70], "layer": "F.SilkS"}]})
+        check(not err and "F.Silkscreen" in t, "pcb_text layer F.SilkS: " + t.splitlines()[0][:60])
+        m.tool("undo", {})
+        err, t = m.tool("pcb_set_fields", {"refs": ["C*"], "set": {"silk": "ref_only"}})
+        check(not err and "nothing changed" in t, "a pattern, nothing to change: said, no history entry: " + t.strip()[:60])
+        err, t = m.tool("pcb_set_fields", {"refs": ["C*"], "set": {"silk": "value_only"}})
+        n = re.search(r"set fields of (\d+) footprint", t)
+        check(not err and n and int(n.group(1)) > 1, "refs [\"C*\"]: " + t.strip()[:60])
+        err, t = m.tool("undo", {})
+        check(not err and t.startswith("undid: set fields"), "undo takes it back: " + t.splitlines()[0][:60])
+        m.tool("sch_disconnect", {"pins": ["D8.2"]})
+        err, t = m.tool("sch_connect", {"nets": {"LEDTEST": ["D8.A"]}})
+        check(not err and "1 pin(s) connected" in t, "sch_connect by pin name (D8.A): " + t.strip()[:80])
+        check(any(k.endswith("LEDTEST") and "D8.2" in v for k, v in netlist(m).items()), "D8's pin 2 (A) on LEDTEST")
+
         print("[lcsc]")
         err, t = m.tool("lcsc_search", {"keyword": "AMS1117 3.3 zzzq", "live": 0})
         check(not err and '"zzzq" 0' in t and 'dropped "zzzq"' in t and "C6186 BASIC" in t,
@@ -217,6 +268,29 @@ def main():
         err, t = m.tool("sch_wire", {"points": [[q[0], q[1] + 7.62], [q[0] + 12.7, q[1] + 7.62]]})
         err, t = m.tool("sch_delete", {"dangling": True})
         check(not err and netlist(m) == before, "sch_delete dangling: nets unchanged (" + t.strip()[:60] + ")")
+        # a run with both ends free, joining two pins only through wires teed into its middle (as
+        # a merge on save leaves it; sch_wire would split it): dangling keeps it
+        pa, pc = {}, {}
+        for r, d in ((ra, pa), (rc, pc)):
+            err, t = m.tool("sch_part", {"ref": r})
+            d.update({n: (float(px), float(py)) for n, px, py in re.findall(r"^\s+(\S+) .*?@(-?[\d.]+),(-?[\d.]+)", t, re.M)})
+        a1, c2 = pa["1"], pc["2"]
+        far_y = 127.0
+        sch = os.path.join(ecc, "ecc83-pp.kicad_sch")
+        m.tool("sch_save", {})
+        w = lambda x1, y1, x2, y2: (f'\t(wire (pts (xy {x1} {y1}) (xy {x2} {y2})) (stroke (width 0) (type default)) '
+                                    f'(uuid "{uuid.uuid4()}"))\n')
+        lo, hi = min(a1[0], c2[0]) - 5.08, max(a1[0], c2[0]) + 5.08
+        text = open(sch, encoding="utf-8").read().rstrip()
+        assert text.endswith(")")
+        text = text[:-1] + w(lo, far_y, hi, far_y) + w(a1[0], a1[1], a1[0], far_y) + w(c2[0], c2[1], c2[0], far_y) + ")\n"
+        open(sch, "w", encoding="utf-8").write(text)
+        err, t = m.tool("project", {"reload": True})
+        nets = netlist(m)
+        joined = [n for n, pins in nets.items() if ra + ".1" in pins and rc + ".2" in pins]
+        check(not err and joined, f"{ra}.1 and {rc}.2 joined only through a run teed in its middle: {joined}")
+        err, t = m.tool("sch_delete", {"dangling": True})
+        check(not err and netlist(m) == nets, "dangling keeps that run: nets unchanged (" + t.strip()[:60] + ")")
     finally:
         m.close()
         server.stop()

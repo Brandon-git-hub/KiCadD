@@ -136,7 +136,9 @@ def main():
                   and (r in (90, 270)) == horiz, f"along {side}: rotation {r:g}, {note}")
             mcp.tool("undo")
         err, t = mcp.tool("auto_place", {"refs": ["J6"], "rules": {"edge": {"J6": "top"}, "rotation": {"J6": 0}}, "time_limit": 1})
-        note = next((ln.strip() for ln in t.splitlines() if "edge: J6" in ln), "")
+        note = next((ln.strip() for ln in t.splitlines() if "edge: J6" in ln and "at the board's" in ln), "")
+        check("J6: no opening found" in t and "not turned to open over it" in t,
+              "a header with an edge rule: said it is not taken for a connector")
         check("its long side across it (along=true turns it parallel)" in note, "turned across the top edge: said, " + note)
         mcp.tool("undo")
         mcp.tool("undo")

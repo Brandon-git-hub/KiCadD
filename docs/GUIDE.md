@@ -55,7 +55,7 @@ Claude Code：`claude mcp add kicadd -- C:\KiCadD\bin\kicadd-mcp.exe --stdio`（
 
 ## 3. Skill：讓 Agent 知道怎麼用這些工具
 
-58 個工具的搭配方式寫成一份 skill，內容包括先查再改、新板設定、審查、擺件、佈線、找料、出廠流程、undo、批次和常見陷阱。
+60 個工具的搭配方式寫成一份 skill，內容包括先查再改、新板設定、審查、擺件、佈線、找料、出廠流程、undo、批次和常見陷阱。
 
 - **Claude Code：** 把 `share\kicadd\skills\kicadd` 整個資料夾複製到 `%USERPROFILE%\.claude\skills\`（所有專案都能用）或專案的 `.claude\skills\`。
 - **Claude Desktop：** 在設定的 Skills 頁面上傳 release 附的 `kicadd-skill.zip`。

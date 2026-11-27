@@ -14,6 +14,7 @@
 #include <pcb_field.h>
 #include <pcb_group.h>
 #include <pcb_shape.h>
+#include <pcb_text.h>
 #include <zone.h>
 #include <paths.h>
 #include <pgm_base.h>
@@ -198,6 +199,40 @@ void tidy( FOOTPRINT& aFp )
     }
 
     std::vector<BOARD_ITEM*> drop;
+
+    // An edge connector's footprint (an edge-launch SMA) draws where the board edge goes on the
+    // board outline layer: on a board that line is part of the outline and breaks it. Moved to
+    // Dwgs.User with a "PCB Edge" text, as KiCad's own library marks it (auto_place's edge rules
+    // and audit's mouth read it there).
+    {
+        PCB_SHAPE* longest = nullptr;
+
+        for( BOARD_ITEM* item : aFp.GraphicalItems() )
+        {
+            if( item->GetLayer() != Edge_Cuts )
+                continue;
+
+            item->SetLayer( Dwgs_User );
+            PCB_SHAPE* s = dynamic_cast<PCB_SHAPE*>( item );
+
+            if( s && s->GetShape() == SHAPE_T::SEGMENT
+                && ( !longest || s->GetLength() > longest->GetLength() ) )
+                longest = s;
+        }
+
+        if( longest )
+        {
+            PCB_TEXT* t = new PCB_TEXT( &aFp );
+            t->SetText( wxS( "PCB Edge" ) );
+            t->SetLayer( Dwgs_User );
+            t->SetTextSize( VECTOR2I( pcbIUScale.mmToIU( 0.5 ), pcbIUScale.mmToIU( 0.5 ) ) );
+            t->SetTextThickness( pcbIUScale.mmToIU( 0.08 ) );
+            t->SetPosition( ( longest->GetStart() + longest->GetEnd() ) / 2 );
+            const VECTOR2I d = longest->GetEnd() - longest->GetStart();
+            t->SetTextAngle( std::abs( d.x ) >= std::abs( d.y ) ? ANGLE_0 : ANGLE_90 );
+            aFp.Add( t, ADD_MODE::APPEND );
+        }
+    }
 
     for( BOARD_ITEM* item : aFp.GraphicalItems() )
     {
@@ -981,7 +1016,7 @@ bool SaveToProjectLibrary( const wxString& dir, PART& aPart, SAVED& aSaved, std:
 
 
 bool SaveSymbolToProjectLibrary( BOARD* aBoard, KIWAY* aKiway, const PART& aPart,
-                                 SAVED_SYMBOL& aSaved, std::string& aError )
+                                 SAVED_SYMBOL& aSaved, std::string& aError, bool aReplace )
 {
     wxString dir = aBoard ? projectDir( aBoard ) : wxString();
 
@@ -991,12 +1026,12 @@ bool SaveSymbolToProjectLibrary( BOARD* aBoard, KIWAY* aKiway, const PART& aPart
         return false;
     }
 
-    return SaveSymbolToProjectLibrary( dir, aKiway, aPart, aSaved, aError );
+    return SaveSymbolToProjectLibrary( dir, aKiway, aPart, aSaved, aError, aReplace );
 }
 
 
 bool SaveSymbolToProjectLibrary( const wxString& dir, KIWAY* aKiway, const PART& aPart,
-                                 SAVED_SYMBOL& aSaved, std::string& aError )
+                                 SAVED_SYMBOL& aSaved, std::string& aError, bool aReplace )
 {
     aSaved = SAVED_SYMBOL();
 
@@ -1040,7 +1075,8 @@ bool SaveSymbolToProjectLibrary( const wxString& dir, KIWAY* aKiway, const PART&
                  { "datasheet", aPart.datasheet },
                  { "description", desc },
                  { "keywords", aPart.lcsc + " " + aPart.title + " LCSC EasyEDA" },
-                 { "attribution", ATTRIBUTION } };
+                 { "attribution", ATTRIBUTION },
+                 { "replace", aReplace } };
 
     if( !aPart.pinTypeSet.empty() )
         req["pin_types_set"] = aPart.pinTypeSet;
@@ -1071,7 +1107,20 @@ bool SaveSymbolToProjectLibrary( const wxString& dir, KIWAY* aKiway, const PART&
             aSaved.pinNames[number] = name.get<std::string>();
     }
 
-    aSaved.registered = registerLibrary( dir, true, aSaved.note );
+    if( ans.value( "kept", false ) )
+    {
+        aSaved.kept = true;
+        aSaved.note = "kept the symbol " + aSaved.libId + " in lcsc.kicad_sym: it differs from what the EasyEDA "
+                      "data gives (edited in the project?); placed as the library has it, lcsc_fetch "
+                      "refresh=true replaces it";
+    }
+
+    std::string tableNote;
+    aSaved.registered = registerLibrary( dir, true, tableNote );
+
+    if( !tableNote.empty() )
+        aSaved.note += ( aSaved.note.empty() ? "" : "; " ) + tableNote;
+
     return true;
 }
 
@@ -1102,7 +1151,7 @@ bool FetchAndSave( const wxString& aProjectDir, KIWAY* aKiway, const std::string
     addNote( aOut.footprintSaved ? aOut.footprint.note : "footprint not saved: " + err );
 
     err.clear();
-    aOut.symbolSaved = SaveSymbolToProjectLibrary( aProjectDir, aKiway, aOut.part, aOut.symbol, err );
+    aOut.symbolSaved = SaveSymbolToProjectLibrary( aProjectDir, aKiway, aOut.part, aOut.symbol, err, aRefresh );
     addNote( aOut.symbolSaved ? aOut.symbol.note : "symbol not saved: " + err );
 
     if( aOut.symbolSaved )

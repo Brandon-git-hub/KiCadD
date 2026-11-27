@@ -23,6 +23,7 @@
 #include <sch_pin.h>
 #include <lib_id.h>
 #include <ki_exception.h>
+#include <richio.h>
 #include <sch_io/easyeda/sch_easyeda_parser.h>
 #include <sch_io/kicad_sexpr/sch_io_kicad_sexpr.h>
 
@@ -593,10 +594,33 @@ wxString KicaddLcscSymbol( const wxString& aRequest )
         setUserField( *sym, wxS( "LCSC" ), wx( lcsc ), false );
         setUserField( *sym, wxS( "Source" ), wx( jstr( req, "attribution" ) ), false );
 
+        // This part is in the project's library already, and that copy differs from what the
+        // data gives: edited in the project (pins renamed, a body redrawn). Kept, unless asked to
+        // replace it (refresh, or pin types set now).
+        const bool replace = req.value( "replace", false ) || req.contains( "pin_types_set" );
+        const LIB_SYMBOL* kept = nullptr;
+
+        if( const LIB_SYMBOL* old = io.LoadSymbol( libPath, name ); old && !replace )
+        {
+            const SCH_FIELD* f = old->GetField( wxS( "LCSC" ) );
+
+            if( f && f->GetText() == wx( lcsc ) )
+            {
+                STRING_FORMATTER was, now;
+                SCH_IO_KICAD_SEXPR::FormatLibSymbol( const_cast<LIB_SYMBOL*>( old ), was );
+                SCH_IO_KICAD_SEXPR::FormatLibSymbol( sym.get(), now );
+
+                if( was.GetString() != now.GetString() )
+                    kept = old;
+            }
+        }
+
+        const LIB_SYMBOL* placed = kept ? kept : sym.get();
+
         std::set<wxString> pinSet;
         json               pinNames = json::object();
 
-        for( SCH_PIN* pin : sym->GetGraphicalPins( 0, 0 ) )
+        for( SCH_PIN* pin : const_cast<LIB_SYMBOL*>( placed )->GetGraphicalPins( 0, 0 ) )
         {
             pinSet.insert( pin->GetNumber() );
             pinNames[pin->GetNumber().ToStdString( wxConvUTF8 )] = pin->GetName().ToStdString( wxConvUTF8 );
@@ -609,11 +633,18 @@ wxString KicaddLcscSymbol( const wxString& aRequest )
 
         json out = { { "ok", true },
                      { "name", name.ToStdString( wxConvUTF8 ) },
-                     { "reference", ref.ToStdString( wxConvUTF8 ) },
-                     { "units", sym->GetUnitCount() },
+                     { "reference", kept ? kept->GetReferenceField().GetText().ToStdString( wxConvUTF8 )
+                                         : ref.ToStdString( wxConvUTF8 ) },
+                     { "units", placed->GetUnitCount() },
                      { "pins", pins },
                      { "pin_types", pinTypes },
                      { "pin_names", pinNames } };
+
+        if( kept )
+        {
+            out["kept"] = true;
+            return answer( out );
+        }
 
         io.SaveSymbol( libPath, std::move( sym ) );
         return answer( out );

@@ -1623,9 +1623,19 @@ TOOL_RESULT pcbSetFields( IPC_CLIENT& aIpc, const json& aArgs )
         return error( err );
 
     std::string t = r.history_label().empty() ? "nothing changed" : r.history_label() + " (undo takes it back)";
+    bool        already = false;   // every part was already so: not an error
 
     for( const std::string& n : r.notes() )
+    {
+        if( n.rfind( "nothing changed", 0 ) == 0 )
+        {
+            already = true;
+            t = n;
+            continue;
+        }
+
         t += "\nnote: " + n;
+    }
 
     if( !r.missing().empty() )
     {
@@ -1635,7 +1645,7 @@ TOOL_RESULT pcbSetFields( IPC_CLIENT& aIpc, const json& aArgs )
             t += " " + m;
     }
 
-    return { t + "\n", r.history_label().empty() };
+    return { t + "\n", r.history_label().empty() && !already };
 }
 
 
@@ -4318,7 +4328,7 @@ std::vector<TOOL> MakeTools( IPC_CLIENT& aIpc, bool aAllowLaunch )
     tools.push_back( { "pcb_set_fields",
                        "Change footprints' fields and attributes on the board as one undoable edit. parts: "
                        "{\"R1\": {\"Value\": \"10k\", \"LCSC\": \"C25804\", \"dnp\": true}}, or refs [...] with "
-                       "set {...} for many. Value is the value; other names are user fields (added hidden when "
+                       "set {...} for many (refs and parts keys may be patterns: \"C*\", \"*\"). Value is the value; other names are user fields (added hidden when "
                        "missing; null removes one). Reference renumbers the part: {\"R22\": {\"Reference\": \"R23\"}} "
                        "(to a reference no other part has; of two parts with the same one, the one placed by "
                        "hand). Attributes: dnp, exclude_from_bom, exclude_from_pos. The footprint is not "

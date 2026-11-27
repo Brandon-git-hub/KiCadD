@@ -9,6 +9,8 @@
  *   by shape   else the side where the courtyard reaches well past the pads (1.5 mm, twice any
  *              other side): the body of a socket with its pins at the back; the courtyard's
  *              front goes on the edge (flush), or overhang mm past it
+ *   by model   else the same on the 3D model's outline seen from above (an edge-launch SMA whose
+ *              courtyard stops at the pads, the barrel only in the model)
  *
  * All in the footprint's frame at rotation 0 relative to its anchor, as auto_place's model.
  *
@@ -32,6 +34,7 @@ struct MOUTH
     int         front = 0;        ///< nm from the anchor towards side: the courtyard's far end
     bool        marked = false;   ///< from the footprint's own edge line
     bool        byPads = false;   ///< from its pads: signal pins at the back, mounting pads at the mouth
+    bool        byModel = false;  ///< from its 3D model: the body well past the pads on one side
     std::string error;            ///< found but unusable (pads past the edge line)
 };
 
